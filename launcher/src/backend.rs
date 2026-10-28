@@ -2182,8 +2182,7 @@ fn installed_launcher_version(path: &Path) -> Option<String> {
 /// Puts `new` at `exe`, the path this launcher started from. The running process keeps its
 /// file (unlinked) and works on. Unix only: `self_replace` asks the system where the running
 /// binary is, and Linux answers "<path> (deleted)" once the file has been replaced, so a second
-/// update in the same run failed with "No such file or directory". Windows keeps a running
-/// binary locked, so there `self_replace` moves it aside first.
+/// update in the same run failed with "No such file or directory".
 #[cfg(unix)]
 fn replace_binary(new: &Path, exe: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -2202,9 +2201,44 @@ fn replace_binary(new: &Path, exe: &Path) -> std::io::Result<()> {
     result
 }
 
+/// Windows keeps a running binary from being written or deleted but lets it be renamed: the
+/// running one steps aside to `<name>.old-<pid>-<n>` in its folder, the new one takes its path,
+/// and the old file stays beside it until it is removed. The `self_replace` crate
+/// did this by copying the launcher under a random hidden name and starting that copy to delete
+/// the original through a hidden `cmd.exe`, which Microsoft Defender quarantines as
+/// Trojan:Script/Wacatac (#3175).
 #[cfg(not(unix))]
-fn replace_binary(new: &Path, _exe: &Path) -> std::io::Result<()> {
-    self_replace::self_replace(new)
+fn replace_binary(new: &Path, exe: &Path) -> std::io::Result<()> {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    // A second update in the same run moves the first one's binary aside too.
+    static MOVED: AtomicU32 = AtomicU32::new(0);
+    let dir = exe.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "the launcher has no folder")
+    })?;
+    let name = exe.file_name().unwrap_or_default().to_string_lossy();
+    let pid = std::process::id();
+    let temp = dir.join(format!("{name}.update-{pid}"));
+    let old = dir.join(format!(
+        "{name}.old-{pid}-{}",
+        MOVED.fetch_add(1, Ordering::Relaxed)
+    ));
+    if let Err(e) = fs::copy(new, &temp) {
+        let _ = fs::remove_file(&temp);
+        return Err(e);
+    }
+    match fs::rename(exe, &old) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            let _ = fs::remove_file(&temp);
+            return Err(e);
+        }
+        _ => {}
+    }
+    if let Err(e) = fs::rename(&temp, exe) {
+        let _ = fs::rename(&old, exe);
+        let _ = fs::remove_file(&temp);
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// The app bundle the launcher runs from (`…/Horizon.app` for `…/Horizon.app/Contents/MacOS/
