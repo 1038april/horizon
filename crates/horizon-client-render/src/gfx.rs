@@ -77,6 +77,7 @@ mod end_sky;
 mod flat;
 mod frame_gen;
 mod hdr;
+mod hdr_stats;
 pub mod lightning;
 mod lod;
 mod native_material;
@@ -631,6 +632,9 @@ pub struct Renderer {
     world_post: world_post::Post,
     /// HDR output (Horizon setting): `Some` while the swapchain is HDR.
     hdr: Option<hdr::Hdr>,
+    /// Which pixels of each block sprite may shine in HDR output (terrain.wgsl's
+    /// `emission_thresholds`), measured when HDR output turns on.
+    emission_stats: hdr_stats::EmissionStats,
     /// The HDR output the window's surface can present.
     hdr_output: Option<hdr::Output>,
     /// The marker file of an HDR output that has not presented a frame yet
@@ -776,6 +780,7 @@ fn terrain_group(
     sprite_sampler: &wgpu::Sampler,
     lightmap: &wgpu::TextureView,
     lightmap_sampler: &wgpu::Sampler,
+    emission_thresholds: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     let view = |binding, view| wgpu::BindGroupEntry {
         binding,
@@ -806,6 +811,7 @@ fn terrain_group(
             view(9, &sprites[5]),
             view(10, &sprites[6]),
             view(11, &sprites[7]),
+            view(12, emission_thresholds),
         ],
     })
 }
@@ -1463,6 +1469,15 @@ impl Renderer {
                 entry(9, vf, sprite_array),
                 entry(10, vf, sprite_array),
                 entry(11, vf, sprite_array),
+                entry(
+                    12,
+                    vf,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
             ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1766,6 +1781,8 @@ impl Renderer {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
+        let emission_stats =
+            hdr_stats::EmissionStats::new(&device, split, sprite_textures.len() as u32);
         let group = terrain_group(
             &device,
             "Horizon terrain resources",
@@ -1775,6 +1792,7 @@ impl Renderer {
             &sprite_sampler,
             &lightmap_view,
             &lightmap_sampler,
+            &emission_stats.view,
         );
         let crosshair_group = terrain_group(
             &device,
@@ -1785,6 +1803,7 @@ impl Renderer {
             &sprite_sampler,
             &lightmap_view,
             &lightmap_sampler,
+            &emission_stats.view,
         );
         let index_quads = 1 << 16;
         let indices = Self::quad_indices(&device, index_quads);
@@ -2926,6 +2945,7 @@ impl Renderer {
             layout: crate::chunk::ColumnLayout::VANILLA,
             world_post,
             hdr: None,
+            emission_stats,
             hdr_output,
             hdr_marker: None,
             pack_post: None,
@@ -3635,6 +3655,7 @@ impl Renderer {
                 ),
                 None => log::info!("Horizon renderer: HDR off"),
             }
+            self.measure_emission();
         }
         if let Some(hdr) = &mut self.hdr {
             hdr.ui = ui;
@@ -3646,6 +3667,15 @@ impl Renderer {
             hdr.peak = peak;
             hdr.black = black;
             self.send_hdr_metadata();
+        }
+    }
+    /// Measures which pixels of each block sprite may shine (`hdr_stats`), at the current
+    /// masks. Only with HDR output on: without it the frame's alpha is never read.
+    pub fn measure_emission(&mut self) {
+        if let Some(hdr) = &self.hdr {
+            let views = sprite_views(&self.sprite_textures, &self.sprite_unused, None);
+            self.emission_stats
+                .measure(&self.device, &self.queue, &views, hdr.masks);
         }
     }
     /// Whether what the system reports for the display changed (another output, the
@@ -3875,6 +3905,7 @@ impl Renderer {
             &self.sprite_sampler,
             &self.lightmap_view,
             &self.lightmap_sampler,
+            &self.emission_stats.view,
         );
     }
     /// The Mipmap Levels option: block textures sample at most `levels`
