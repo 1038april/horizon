@@ -101,7 +101,7 @@ pub struct Masks {
     pub whole: f32,
 }
 pub const MASKS: Masks = Masks {
-    parts: 0.1,
+    parts: 0.32,
     whole: 0.0,
 };
 
