@@ -2203,7 +2203,7 @@ fn replace_binary(new: &Path, exe: &Path) -> std::io::Result<()> {
 
 /// Windows keeps a running binary from being written or deleted but lets it be renamed: the
 /// running one steps aside to `<name>.old-<pid>-<n>` in its folder, the new one takes its path,
-/// and the old file stays beside it until it is removed. The `self_replace` crate
+/// and a later start removes the old file (`remove_replaced_binaries`). The `self_replace` crate
 /// did this by copying the launcher under a random hidden name and starting that copy to delete
 /// the original through a hidden `cmd.exe`, which Microsoft Defender quarantines as
 /// Trojan:Script/Wacatac (#3175).
@@ -2239,6 +2239,36 @@ fn replace_binary(new: &Path, exe: &Path) -> std::io::Result<()> {
         return Err(e);
     }
     Ok(())
+}
+
+/// Deletes the binaries earlier self-updates moved aside (`replace_binary`). The one the launcher
+/// just restarted from is still exiting, so this keeps trying for a few seconds in the
+/// background; one that stays in use (another launcher window) goes on a later start.
+#[cfg(windows)]
+pub fn remove_replaced_binaries() {
+    let exe = exe_path();
+    let (Some(dir), Some(name)) = (exe.parent(), exe.file_name()) else {
+        return;
+    };
+    let dir = dir.to_path_buf();
+    let prefix = format!("{}.old-", name.to_string_lossy());
+    std::thread::spawn(move || {
+        for _ in 0..10 {
+            let Ok(entries) = fs::read_dir(&dir) else {
+                return;
+            };
+            let mut left = false;
+            for entry in entries.flatten() {
+                if entry.file_name().to_string_lossy().starts_with(&prefix) {
+                    left |= fs::remove_file(entry.path()).is_err();
+                }
+            }
+            if !left {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    });
 }
 
 /// The app bundle the launcher runs from (`…/Horizon.app` for `…/Horizon.app/Contents/MacOS/
