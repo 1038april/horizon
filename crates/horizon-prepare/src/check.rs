@@ -66,7 +66,9 @@ pub fn check(root: &Path, resources: &Path) -> Result<Vec<String>, String> {
 
 /// What a preparation may leave out when the player's asset store lacks it, as the launcher's
 /// `COMPLETIONS` check it (launcher/src/backend.rs): what, whether it is missing, the command.
-const EXTRAS: [(&str, fn(&Path) -> bool, &str); 5] = [
+type Extra = (&'static str, fn(&Path) -> bool, &'static str);
+
+const EXTRAS: [Extra; 5] = [
     ("the built-in packs", lacks_packs, "packs"),
     ("the title panorama", lacks_panorama, "panorama"),
     ("the Unifont glyphs", lacks_unifont, "fonts"),
