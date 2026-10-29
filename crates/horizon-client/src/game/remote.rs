@@ -2480,6 +2480,7 @@ impl Game<'_> {
                     self.remote_firework_explosion(p.id);
                 }
                 self.remote_fangs_event(p.id as u32, p.event);
+                self.remote_boat_event(p.id, p.event);
                 // LivingEntity.handleEntityEvent 2: a spear's hit felt.
                 if p.event == 2 {
                     self.remote_kinetic_hit(p.id);
