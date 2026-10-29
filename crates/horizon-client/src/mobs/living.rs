@@ -899,6 +899,11 @@ impl Mob {
             self.fall_to_passengers(distance, modifier, events);
         }
         if damage > 0.0 {
+            // Llama.causeFallDamage: only a fall of six blocks or more hurts the
+            // llama and its riders.
+            if super::llama::is_llama(self.species()) && distance < 6.0 {
+                return;
+            }
             let at = [self.position.x, self.position.y, self.position.z];
             // Monster.getFallSounds: the hostile pair.
             let monster = super::ai::is_monster(self.species());
@@ -908,7 +913,10 @@ impl Mob {
                 (false, true) => "entity.generic.big_fall",
                 (false, false) => "entity.generic.small_fall",
             };
-            events.push(MobEvent::Sound(sound, at, 1.0, 1.0));
+            // Llama makes no generic fall sound.
+            if !super::llama::is_llama(self.species()) {
+                events.push(MobEvent::Sound(sound, at, 1.0, 1.0));
+            }
             self.damage(damage as f32, super::Damage::fall());
             if horse {
                 self.fall_to_passengers(distance, modifier, events);
