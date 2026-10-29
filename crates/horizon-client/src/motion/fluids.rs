@@ -82,6 +82,10 @@ pub struct PlayerFluids {
     pub first_tick: bool,
     /// The dimension's `FAST_LAVA` (the Nether), set by the game.
     pub fast_lava: bool,
+    /// The player rides a boat that is not underwater and whose box spans the
+    /// eye height: `Entity.updateFluidOnEyes` then finds no fluid on the eyes.
+    /// Set by the game before each base tick.
+    pub boat_shelters_eyes: bool,
 }
 impl Default for PlayerFluids {
     fn default() -> Self {
@@ -91,6 +95,7 @@ impl Default for PlayerFluids {
             was_eye_in_water: false,
             first_tick: true,
             fast_lava: false,
+            boat_shelters_eyes: false,
         }
     }
 }
@@ -245,6 +250,9 @@ impl MotionWorld<'_, '_, '_> {
     pub fn update_fluids(&mut self) -> Result<bool> {
         let mut interaction = std::mem::take(&mut self.player.fluids.interaction);
         let result = entity_fluid_tick::update(&mut interaction, self, WATER, LAVA, 1_000_000);
+        if self.player.fluids.boat_shelters_eyes {
+            interaction.clear_eyes_inside();
+        }
         self.player.fluids.interaction = interaction;
         result.map_err(|e| e.to_string().into())
     }
