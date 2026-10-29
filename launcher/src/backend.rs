@@ -72,6 +72,14 @@ pub const LAUNCHER_ASSET: Option<&str> = Some("horizon-launcher-windows-x64.zip"
 )))]
 pub const LAUNCHER_ASSET: Option<&str> = None;
 
+/// The launcher as an AppImage (`packaging/linux/appimage.sh`): the program and its libraries in
+/// one file. A launcher running from one updates by replacing that file ([`appimage_path`]), so it
+/// needs this archive rather than the platform's `.tar.gz`.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub const LAUNCHER_APPIMAGE_ASSET: Option<&str> = Some("horizon-launcher-linux-x86_64.AppImage");
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+pub const LAUNCHER_APPIMAGE_ASSET: Option<&str> = None;
+
 const LAUNCHER_BINARY: &str = if cfg!(windows) {
     "horizon-launcher.exe"
 } else {
@@ -341,7 +349,7 @@ fn launcher_releases_in_with(
     list: &serde_json::Value,
     json: impl Fn(String) -> Result<serde_json::Value, String>,
 ) -> Vec<Release> {
-    let found = parse_releases(list, LAUNCHER_ASSET, is_launcher_tag);
+    let found = parse_releases(list, launcher_asset(), is_launcher_tag);
     if found.iter().any(|r| r.asset.is_some()) {
         return found;
     }
@@ -359,7 +367,7 @@ fn launcher_releases_in_with(
         if let Ok(release) = json(format!("{api}/releases/tags/{tag}")) {
             let one = parse_releases(
                 &serde_json::json!([release]),
-                LAUNCHER_ASSET,
+                launcher_asset(),
                 is_launcher_tag,
             );
             if one.iter().any(|r| r.asset.is_some()) {
@@ -2420,6 +2428,41 @@ pub fn exe_path() -> &'static Path {
     EXE.get_or_init(|| std::env::current_exe().unwrap_or_else(|_| PathBuf::from(LAUNCHER_BINARY)))
 }
 
+/// The AppImage this launcher runs from, when it does: the runtime sets `$APPIMAGE` to the file it
+/// mounted, while [`exe_path`] then names a copy inside that read-only mount, gone with it. Updating
+/// and restarting work on this file, and the menu entry starts it.
+pub fn appimage_path() -> Option<PathBuf> {
+    appimage_path_in(std::env::var_os("APPIMAGE").as_deref())
+}
+
+/// `$APPIMAGE`, if it names a file still there (a launcher started from a path that has since
+/// moved keeps updating the binary it started from).
+fn appimage_path_in(appimage: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+    appimage
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute() && path.is_file())
+}
+
+/// The file a self-update replaces and a restart starts: the AppImage when the launcher runs from
+/// one, the binary this process started from otherwise.
+pub fn update_target() -> PathBuf {
+    appimage_path().unwrap_or_else(|| exe_path().to_path_buf())
+}
+
+/// The launcher archive this build installs from: the AppImage's when it runs from one (a `.tar.gz`
+/// binary would be written inside the read-only mount), this platform's otherwise.
+pub fn launcher_asset() -> Option<&'static str> {
+    launcher_asset_running_from(appimage_path().is_some())
+}
+
+fn launcher_asset_running_from(appimage: bool) -> Option<&'static str> {
+    if appimage {
+        LAUNCHER_APPIMAGE_ASSET
+    } else {
+        LAUNCHER_ASSET
+    }
+}
+
 /// Development builds and `HORIZON_LAUNCHER_NO_SELF_UPDATE` never replace themselves.
 pub fn self_update_allowed() -> bool {
     !cfg!(debug_assertions) && std::env::var_os("HORIZON_LAUNCHER_NO_SELF_UPDATE").is_none()
@@ -2572,8 +2615,8 @@ fn replace_bundle(_new: &Path, _app: &Path) -> Result<(), String> {
     Err("App bundles are a macOS thing.".into())
 }
 
-/// Downloads a launcher release and puts its binary in place of this one. The running process
-/// keeps working; `restart` starts the new one. When the file there already is that release or
+/// Downloads a launcher release and puts it in place of this one. The running process keeps
+/// working; `restart` starts the new one. When the file there already is that release or
 /// a newer one (updated from the command line or another window), there is nothing to do.
 pub fn self_update(release: &Release, progress: impl Fn(f32)) -> Result<(), String> {
     let (url, size) = release
@@ -2581,18 +2624,38 @@ pub fn self_update(release: &Release, progress: impl Fn(f32)) -> Result<(), Stri
         .clone()
         .ok_or("This launcher release has no build for this platform.")?;
     let target = launcher_version(&release.tag).unwrap_or("0");
-    if installed_launcher_version(exe_path())
+    if installed_launcher_version(&update_target())
         .is_some_and(|v| v != VERSION && compare_versions(&v, target).is_ge())
     {
         progress(1.0);
         return Ok(());
     }
-    let sha256 = signed_digest(&release.tag, LAUNCHER_ASSET.unwrap_or_default())?;
+    let sha256 = signed_digest(&release.tag, launcher_asset().unwrap_or_default())?;
     let work = data_dir().join(".launcher-update");
     let _ = fs::remove_dir_all(&work);
     fs::create_dir_all(&work).map_err(|e| e.to_string())?;
     let archive = work.join("download");
     download(&url, size, &sha256, &archive, &progress)?;
+    // An AppImage is the whole program: the new one takes the place of the file `$APPIMAGE` names
+    // (the running mount keeps its copy until `restart` starts it). Its archive is not a `.tar.gz`
+    // to unpack, so this comes before the unpacking below.
+    if let Some(appimage) = appimage_path() {
+        if !url.ends_with(".AppImage") {
+            return Err(format!(
+                "{} is not an AppImage, and this launcher runs from one. Install it from its release page instead.",
+                release.tag
+            ));
+        }
+        replace_binary(&archive, &appimage).map_err(|e| {
+            format!(
+                "Could not replace the AppImage at {}: {e}",
+                appimage.display()
+            )
+        })?;
+        let _ = fs::remove_dir_all(&work);
+        progress(1.0);
+        return Ok(());
+    }
     let unpacked = work.join("unpacked");
     unpack(&archive, &url, &unpacked)?;
     // A launcher inside Horizon.app replaces the whole bundle (its Info.plist, icon and
@@ -2633,11 +2696,12 @@ fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
     None
 }
 
-/// Starts the launcher again (the updated binary) with the same arguments in place of this one:
-/// on Unix the process becomes the new binary (exec), on Windows the new one starts and this one
-/// exits. Returns only when the new binary could not start.
+/// Starts the launcher again (the updated binary, or the replaced AppImage) with the same
+/// arguments in place of this one: on Unix the process becomes the new binary (exec), on Windows
+/// the new one starts and this one exits. Returns only when the new one could not start.
 pub fn restart() -> String {
-    let mut cmd = Command::new(exe_path());
+    let target = update_target();
+    let mut cmd = Command::new(&target);
     cmd.args(std::env::args_os().skip(1));
     #[cfg(unix)]
     let error = {
@@ -2651,7 +2715,7 @@ pub fn restart() -> String {
     };
     format!(
         "Could not start {}: {error}. Close the launcher and open it again.",
-        exe_path().display()
+        target.display()
     )
 }
 
@@ -3617,6 +3681,40 @@ mod tests {
         );
     }
 
+    /// A launcher in an AppImage updates with the AppImage's own file: the `.tar.gz` binary would
+    /// be written inside the AppImage's read-only mount.
+    #[test]
+    fn an_appimage_updates_with_the_appimage() {
+        assert_eq!(launcher_asset_running_from(false), LAUNCHER_ASSET);
+        assert_eq!(launcher_asset_running_from(true), LAUNCHER_APPIMAGE_ASSET);
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        assert_eq!(
+            launcher_asset_running_from(true),
+            Some("horizon-launcher-linux-x86_64.AppImage")
+        );
+    }
+
+    /// `$APPIMAGE` names the file the runtime mounted; a path that is not there (moved or deleted
+    /// since the launcher started) is no AppImage, and the launcher updates its own binary again.
+    #[test]
+    fn only_an_appimage_file_counts() {
+        use std::ffi::OsStr;
+        assert_eq!(appimage_path_in(None), None);
+        assert_eq!(
+            appimage_path_in(Some(OsStr::new("Horizon.AppImage"))),
+            None,
+            "a relative path is no $APPIMAGE"
+        );
+        assert_eq!(
+            appimage_path_in(Some(OsStr::new("/nonexistent/Horizon.AppImage"))),
+            None
+        );
+        let file = std::env::temp_dir().join(format!("horizon-appimage-{}", std::process::id()));
+        std::fs::write(&file, b"#!AppImage").unwrap();
+        assert_eq!(appimage_path_in(Some(file.as_os_str())), Some(file.clone()));
+        let _ = std::fs::remove_file(&file);
+    }
+
     #[test]
     fn game_0_2_follows_every_date_release() {
         assert_eq!(compare_versions("v0.2.0", "v2026.10.19.15"), Greater);
@@ -3672,7 +3770,9 @@ mod tests {
 
     #[test]
     fn the_fallback_looks_for_0_2_launchers_first() {
-        let asset = LAUNCHER_ASSET.unwrap_or("unsupported");
+        // The asset the launcher reading this list installs with (the AppImage's own when it runs
+        // from one), as launcher_releases_in_with looks for it.
+        let asset = launcher_asset().unwrap_or("unsupported");
         let release = |tag: &str| serde_json::json!({"tag_name": tag, "assets": [{"name": asset, "browser_download_url": "u", "size": 1}]});
         let asked = std::cell::RefCell::new(Vec::new());
         let lookup = |with_new: bool| {

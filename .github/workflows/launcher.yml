@@ -8,6 +8,9 @@ name: launcher
 # feature. The version and the tag are given to the build (HORIZON_LAUNCHER_VERSION, HORIZON_LAUNCHER_TAG): no bump
 # commits.
 # Never marked latest. Pushes to launcher branches only build. RELEASES_PAUSED=1 stops releases.
+# Linux ships two archives of one binary: the .tar.gz the launcher updates itself from, and an
+# AppImage (packaging/linux/appimage.sh) for players without a distribution package, which replaces
+# itself instead (launcher/src/backend.rs).
 # macOS: with the repository variable MACOS_SIGN_IDENTITY set, Horizon.app and the .dmg are signed with
 # Developer ID, notarized and stapled, from the runner's signing keychain (packaging/macos/README.md);
 # unset (forks), they are signed ad hoc.
@@ -18,7 +21,7 @@ on:
   push:
     branches: [main, launcher, 'launcher-*']
     paths:
-      # Every crate the launcher builds in, as tools/release_train.py's LAUNCHER_PATHS.
+      # Everything the launcher is built and packaged from, as tools/release_train.py's LAUNCHER_PATHS.
       - 'launcher/**'
       - 'crates/horizon-bench/**'
       - 'crates/horizon-friends/**'
@@ -28,6 +31,8 @@ on:
       - 'crates/horizon-release-sign/**'
       - 'crates/horizon-telemetry/**'
       - 'crates/horizon-theme/**'
+      - 'packaging/linux/**'
+      - 'packaging/icons/**'
       - '.github/workflows/launcher.yml'
   schedule:
     - cron: '7-59/10 * * * *'
@@ -227,6 +232,13 @@ jobs:
             DMGBUILD="$RUNNER_TEMP/dmg/bin/dmgbuild" ../packaging/macos/package.sh target/release/${{ matrix.binary }} "$version" out
             rm -rf out/Horizon.app
           else
+            version=${HORIZON_LAUNCHER_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)}
+            if [[ "$RUNNER_OS" == "Linux" ]]; then
+              # The .tar.gz below is what the launcher updates itself from; the AppImage is what a
+              # player downloads and double-clicks, and it replaces itself instead
+              # (packaging/linux/appimage.sh, launcher/src/backend.rs).
+              ../packaging/linux/appimage.sh target/release/${{ matrix.binary }} "$version" out
+            fi
             mkdir -p dist
             cp target/release/${{ matrix.binary }} dist/
             if [[ "${{ matrix.asset }}" == *.tar.gz ]]; then
