@@ -851,6 +851,10 @@ fn backends_name(backends: wgpu::Backends) -> &'static str {
         _ => "graphics",
     }
 }
+/// Whether an adapter renders on the CPU (WARP, llvmpipe).
+fn is_software(kind: wgpu::DeviceType) -> bool {
+    kind == wgpu::DeviceType::Cpu
+}
 /// A device and what it came from.
 struct Opened {
     instance: wgpu::Instance,
@@ -932,6 +936,32 @@ async fn open_device(
     api: GraphicsApi,
     layers: u32,
 ) -> Result<Opened> {
+    // A software adapter (WARP, llvmpipe) is a last resort: a later backend may
+    // have the real GPU (#3978: a Fermi GPU with no Vulkan and no DX12 driver
+    // still has OpenGL).
+    match open_device_with(window, offscreen, api, layers, false).await {
+        Ok(opened) => Ok(opened),
+        Err(first) => match open_device_with(window, offscreen, api, layers, true).await {
+            Ok(opened) => {
+                log::warn!(
+                    "Horizon renderer: no GPU adapter could be used ({first}); \
+                     rendering on the CPU, which is slow"
+                );
+                Ok(opened)
+            }
+            Err(_) => Err(first),
+        },
+    }
+}
+/// `open_device`, taking an adapter of the CPU type (software rendering) only
+/// when `allow_cpu`.
+async fn open_device_with(
+    window: &Arc<Window>,
+    offscreen: bool,
+    api: GraphicsApi,
+    layers: u32,
+    allow_cpu: bool,
+) -> Result<Opened> {
     let order = backend_order(
         api.with_env(),
         std::env::consts::OS,
@@ -970,6 +1000,13 @@ async fn open_device(
                 continue;
             }
         };
+        if !allow_cpu && is_software(adapter.get_info().device_type) {
+            failures.push(format!(
+                "{name}: only a software adapter ({})",
+                adapter.get_info().name
+            ));
+            continue;
+        }
         describe_adapter(&adapter);
         let info = adapter.get_info();
         let limits = adapter.limits();
@@ -5816,6 +5853,14 @@ mod tests {
                 .collect::<Vec<_>>(),
             [0, 1, 3, 4, 11, 2, 7, 9, 10, 5, 6, 8]
         );
+    }
+    #[test]
+    fn software_adapters_are_last_resort() {
+        use super::is_software;
+        assert!(is_software(wgpu::DeviceType::Cpu));
+        assert!(!is_software(wgpu::DeviceType::DiscreteGpu));
+        assert!(!is_software(wgpu::DeviceType::IntegratedGpu));
+        assert!(!is_software(wgpu::DeviceType::VirtualGpu));
     }
     #[test]
     fn auto_tries_vulkan_then_directx_12_then_opengl() {
