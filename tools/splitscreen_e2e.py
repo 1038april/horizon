@@ -28,6 +28,7 @@ Exit status 0 when every check passed.
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -41,7 +42,7 @@ except ImportError:
     import lab
 
 ROOT = Path(__file__).resolve().parents[1]
-CTL = lab.cargo_target() / 'fast/horizon-ctl'
+CTL = lab.cargo_target() / ('fast/horizon-ctl' + ('.exe' if os.name == 'nt' else ''))
 RESOURCES = ROOT / '.local/horizon-client/26.3'
 # Logical; the views are checked as fractions of what P1 gets alone, so any scale works.
 WIDTH, HEIGHT = 1000, 600
