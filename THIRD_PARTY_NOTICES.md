@@ -22,8 +22,9 @@ the same grid.
 
 ## AMD FidelityFX SDK (FSR 3.1 frame generation)
 
-`crates/horizon-client-render/src/gfx/frame_gen/optical_flow.wgsl` is a port to WGSL of the
-optical flow shaders of the [AMD FidelityFX SDK](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK)
-1.1.4 (`sdk/include/FidelityFX/gpu/opticalflow`), Copyright (C) 2024 Advanced Micro Devices,
-Inc., under the MIT license, whose text heads the file. AMD and FidelityFX are AMD's
+`crates/horizon-client-render/src/gfx/frame_gen/optical_flow.wgsl` and `interpolation.wgsl` are
+ports to WGSL of the optical flow and frame interpolation shaders of the
+[AMD FidelityFX SDK](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK) 1.1.4
+(`sdk/include/FidelityFX/gpu/{opticalflow,frameinterpolation}`), Copyright (C) 2024 Advanced
+Micro Devices, Inc., under the MIT license, whose text heads each file. AMD and FidelityFX are AMD's
 trademarks; Horizon is not affiliated with AMD.
