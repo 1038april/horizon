@@ -1,0 +1,478 @@
+{
+  "format": "horizon-benchmark-report",
+  "version": 1,
+  "kind": "game",
+  "created": "2026-10-29T12:16:26Z",
+  "app": {
+    "name": "horizon-client",
+    "version": "0.1.0"
+  },
+  "hardware": {
+    "os": "windows",
+    "os_version": "Microsoft Windows [Version 10.0.28000.2269]",
+    "arch": "x86_64",
+    "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+    "cpu_threads": 20,
+    "cpu_cores": 14,
+    "cpu_base_mhz": 3500,
+    "ram_mb": 16243,
+    "storage": "nvme",
+    "form": "desktop",
+    "gpu": {
+      "name": "NVIDIA GeForce RTX 3070",
+      "vendor": "nvidia",
+      "driver": "NVIDIA 617.42",
+      "backend": "vulkan",
+      "kind": "discrete",
+      "vram_mb": 8192
+    },
+    "display": {
+      "width": 2560,
+      "height": 1440,
+      "scale": 1.0,
+      "refresh_hz": 240
+    }
+  },
+  "conditions": {
+    "scenario": "standard",
+    "seed": "1234",
+    "render_distance": 16,
+    "simulation_distance": 12,
+    "window": [
+      2560,
+      1440
+    ],
+    "vsync": false,
+    "offscreen": false,
+    "repeats": 1,
+    "warmup_s": 2.0
+  },
+  "metrics": {
+    "chunks.forest.generated_count": {
+      "n": 1,
+      "mean": 1057.0,
+      "stdev": null,
+      "min": 1057.0,
+      "max": 1057.0,
+      "ci95": null
+    },
+    "chunks.forest.generated_per_s": {
+      "n": 1,
+      "mean": 242.653,
+      "stdev": null,
+      "min": 242.653,
+      "max": 242.653,
+      "ci95": null
+    },
+    "chunks.forest.load_ms": {
+      "n": 1,
+      "mean": 4356.019,
+      "stdev": null,
+      "min": 4356.019,
+      "max": 4356.019,
+      "ci95": null
+    },
+    "chunks.forest.meshed_count": {
+      "n": 1,
+      "mean": 28038.0,
+      "stdev": null,
+      "min": 28038.0,
+      "max": 28038.0,
+      "ci95": null
+    },
+    "chunks.mountain.generated_count": {
+      "n": 1,
+      "mean": 1057.0,
+      "stdev": null,
+      "min": 1057.0,
+      "max": 1057.0,
+      "ci95": null
+    },
+    "chunks.mountain.generated_per_s": {
+      "n": 1,
+      "mean": 239.85,
+      "stdev": null,
+      "min": 239.85,
+      "max": 239.85,
+      "ci95": null
+    },
+    "chunks.mountain.load_ms": {
+      "n": 1,
+      "mean": 4406.913,
+      "stdev": null,
+      "min": 4406.913,
+      "max": 4406.913,
+      "ci95": null
+    },
+    "chunks.mountain.meshed_count": {
+      "n": 1,
+      "mean": 26318.0,
+      "stdev": null,
+      "min": 26318.0,
+      "max": 26318.0,
+      "ci95": null
+    },
+    "chunks.ocean.generated_count": {
+      "n": 1,
+      "mean": 1057.0,
+      "stdev": null,
+      "min": 1057.0,
+      "max": 1057.0,
+      "ci95": null
+    },
+    "chunks.ocean.generated_per_s": {
+      "n": 1,
+      "mean": 447.86,
+      "stdev": null,
+      "min": 447.86,
+      "max": 447.86,
+      "ci95": null
+    },
+    "chunks.ocean.load_ms": {
+      "n": 1,
+      "mean": 2360.11,
+      "stdev": null,
+      "min": 2360.11,
+      "max": 2360.11,
+      "ci95": null
+    },
+    "chunks.ocean.meshed_count": {
+      "n": 1,
+      "mean": 24195.0,
+      "stdev": null,
+      "min": 24195.0,
+      "max": 24195.0,
+      "ci95": null
+    },
+    "chunks.village.generated_count": {
+      "n": 1,
+      "mean": 893.0,
+      "stdev": null,
+      "min": 893.0,
+      "max": 893.0,
+      "ci95": null
+    },
+    "chunks.village.generated_per_s": {
+      "n": 1,
+      "mean": 394.598,
+      "stdev": null,
+      "min": 394.598,
+      "max": 394.598,
+      "ci95": null
+    },
+    "chunks.village.load_ms": {
+      "n": 1,
+      "mean": 2263.063,
+      "stdev": null,
+      "min": 2263.063,
+      "max": 2263.063,
+      "ci95": null
+    },
+    "chunks.village.meshed_count": {
+      "n": 1,
+      "mean": 23643.0,
+      "stdev": null,
+      "min": 23643.0,
+      "max": 23643.0,
+      "ci95": null
+    },
+    "fps.forest.avg_fps": {
+      "n": 1,
+      "mean": 1353.014,
+      "stdev": null,
+      "min": 1353.014,
+      "max": 1353.014,
+      "ci95": null
+    },
+    "fps.forest.low_01pct_fps": {
+      "n": 1,
+      "mean": 228.915,
+      "stdev": null,
+      "min": 228.915,
+      "max": 228.915,
+      "ci95": null
+    },
+    "fps.forest.low_1pct_fps": {
+      "n": 1,
+      "mean": 375.692,
+      "stdev": null,
+      "min": 375.692,
+      "max": 375.692,
+      "ci95": null
+    },
+    "fps.mountain.avg_fps": {
+      "n": 1,
+      "mean": 1332.211,
+      "stdev": null,
+      "min": 1332.211,
+      "max": 1332.211,
+      "ci95": null
+    },
+    "fps.mountain.low_01pct_fps": {
+      "n": 1,
+      "mean": 138.813,
+      "stdev": null,
+      "min": 138.813,
+      "max": 138.813,
+      "ci95": null
+    },
+    "fps.mountain.low_1pct_fps": {
+      "n": 1,
+      "mean": 323.818,
+      "stdev": null,
+      "min": 323.818,
+      "max": 323.818,
+      "ci95": null
+    },
+    "fps.ocean.avg_fps": {
+      "n": 1,
+      "mean": 1286.736,
+      "stdev": null,
+      "min": 1286.736,
+      "max": 1286.736,
+      "ci95": null
+    },
+    "fps.ocean.low_01pct_fps": {
+      "n": 1,
+      "mean": 128.828,
+      "stdev": null,
+      "min": 128.828,
+      "max": 128.828,
+      "ci95": null
+    },
+    "fps.ocean.low_1pct_fps": {
+      "n": 1,
+      "mean": 266.577,
+      "stdev": null,
+      "min": 266.577,
+      "max": 266.577,
+      "ci95": null
+    },
+    "fps.village.avg_fps": {
+      "n": 1,
+      "mean": 1106.45,
+      "stdev": null,
+      "min": 1106.45,
+      "max": 1106.45,
+      "ci95": null
+    },
+    "fps.village.low_01pct_fps": {
+      "n": 1,
+      "mean": 140.393,
+      "stdev": null,
+      "min": 140.393,
+      "max": 140.393,
+      "ci95": null
+    },
+    "fps.village.low_1pct_fps": {
+      "n": 1,
+      "mean": 307.76,
+      "stdev": null,
+      "min": 307.76,
+      "max": 307.76,
+      "ci95": null
+    },
+    "game.binary_bytes": {
+      "n": 1,
+      "mean": 57385472.0,
+      "stdev": null,
+      "min": 57385472.0,
+      "max": 57385472.0,
+      "ci95": null
+    },
+    "memory.gpu_mb": {
+      "n": 1,
+      "mean": 997.568,
+      "stdev": null,
+      "min": 997.568,
+      "max": 997.568,
+      "ci95": null
+    },
+    "startup.title_ms": {
+      "n": 1,
+      "mean": 8800.31,
+      "stdev": null,
+      "min": 8800.31,
+      "max": 8800.31,
+      "ci95": null
+    },
+    "startup.world_ms": {
+      "n": 1,
+      "mean": 16088.819,
+      "stdev": null,
+      "min": 16088.819,
+      "max": 16088.819,
+      "ci95": null
+    }
+  },
+  "frames": [
+    {
+      "phase": "village",
+      "repeat": 0,
+      "frames": 13278,
+      "seconds": 12.001,
+      "avg_fps": 1106.45,
+      "low_1pct_fps": 307.76,
+      "low_01pct_fps": 140.393,
+      "p50_ms": 0.853,
+      "p95_ms": 1.256,
+      "p99_ms": 2.196,
+      "p999_ms": 3.661,
+      "max_ms": 30.963,
+      "cpu_p50_ms": 0.691,
+      "gpu_p50_ms": 0.433,
+      "histogram": [
+        11605,
+        1501,
+        119,
+        45,
+        5,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "phase": "forest",
+      "repeat": 0,
+      "frames": 16237,
+      "seconds": 12.001,
+      "avg_fps": 1353.014,
+      "low_1pct_fps": 375.692,
+      "low_01pct_fps": 228.915,
+      "p50_ms": 0.682,
+      "p95_ms": 1.036,
+      "p99_ms": 1.983,
+      "p999_ms": 3.679,
+      "max_ms": 6.954,
+      "cpu_p50_ms": 0.451,
+      "gpu_p50_ms": 0.565,
+      "histogram": [
+        15335,
+        743,
+        124,
+        26,
+        7,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "phase": "ocean",
+      "repeat": 0,
+      "frames": 15441,
+      "seconds": 12.0,
+      "avg_fps": 1286.736,
+      "low_1pct_fps": 266.577,
+      "low_01pct_fps": 128.828,
+      "p50_ms": 0.669,
+      "p95_ms": 1.101,
+      "p99_ms": 2.156,
+      "p999_ms": 6.366,
+      "max_ms": 11.382,
+      "cpu_p50_ms": 0.471,
+      "gpu_p50_ms": 0.549,
+      "histogram": [
+        13219,
+        2035,
+        112,
+        29,
+        11,
+        16,
+        9,
+        6,
+        2,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "phase": "mountain",
+      "repeat": 0,
+      "frames": 15987,
+      "seconds": 12.0,
+      "avg_fps": 1332.211,
+      "low_1pct_fps": 323.818,
+      "low_01pct_fps": 138.813,
+      "p50_ms": 0.663,
+      "p95_ms": 1.124,
+      "p99_ms": 2.02,
+      "p999_ms": 4.461,
+      "max_ms": 13.375,
+      "cpu_p50_ms": 0.46,
+      "gpu_p50_ms": 0.511,
+      "histogram": [
+        14144,
+        1682,
+        118,
+        27,
+        3,
+        3,
+        2,
+        4,
+        2,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}
