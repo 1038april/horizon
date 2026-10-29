@@ -1523,6 +1523,8 @@ struct Game<'a> {
     keyboard_mouse: bool,
     /// This view's corner in its shared window; cursor warps include the offset.
     view_at: [u32; 2],
+    /// Splitscreen: what it draws over this player's view (its badge, questions, notices).
+    split_hud: split::Hud,
     focused: bool,
     /// The keyboard's modifier state (`KeyEvent.modifiers`).
     modifiers: winit::keyboard::ModifiersState,
@@ -6132,6 +6134,7 @@ impl Game<'_> {
         }
         if self.screen == Screen::Options {
             self.draw_options(&mut batch);
+            self.draw_split_hud(&mut batch, true);
             return batch;
         }
         if let Some(title) = &mut self.title {
@@ -14090,6 +14093,7 @@ impl<'a> Game<'a> {
             captured: false,
             keyboard_mouse: true,
             view_at: [0, 0],
+            split_hud: Default::default(),
             focused: true,
             modifiers: winit::keyboard::ModifiersState::empty(),
             fullscreen: horizon_client::window::FullscreenState::new(false),
