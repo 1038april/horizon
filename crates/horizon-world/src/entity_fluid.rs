@@ -197,13 +197,6 @@ impl EntityFluidInteraction {
             .iter()
             .any(|t| t.eyes_inside && tags.fluid_in_tag(t.fluid, tag))
     }
-    /// Forget that the eyes are in any fluid (`Entity.updateFluidOnEyes` returns
-    /// early for a rider whose eyes are inside a boat that is not underwater).
-    pub fn clear_eyes_inside(&mut self) {
-        for t in &mut self.trackers {
-            t.eyes_inside = false;
-        }
-    }
     pub fn apply_current<W: CurrentTarget>(
         &self,
         world: &mut W,
@@ -340,34 +333,5 @@ impl EntityFluidInteraction {
             }
         }
         Ok(last.is_some())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct Water;
-    impl FluidMembership for Water {
-        fn fluid_in_tag(&self, _: FluidKind, _: FluidTagId) -> bool {
-            true
-        }
-    }
-
-    /// A rider sheltered by a boat has no fluid on the eyes (#4001), while the
-    /// body still counts as in the fluid.
-    #[test]
-    fn clearing_the_eyes_keeps_the_immersion_height() {
-        let tag = FluidTagId(0);
-        let mut interaction = EntityFluidInteraction::new([tag]);
-        interaction.trackers.push(FluidTracker {
-            fluid: FluidKind::Water,
-            height: 0.5,
-            eyes_inside: true,
-        });
-        assert!(interaction.is_eye_in_fluid(&Water, tag));
-        interaction.clear_eyes_inside();
-        assert!(!interaction.is_eye_in_fluid(&Water, tag));
-        assert!(interaction.is_in_fluid(&Water, tag));
     }
 }

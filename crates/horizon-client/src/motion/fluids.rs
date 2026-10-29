@@ -9,6 +9,7 @@ use horizon_world::{
     },
     entity_fluid_tick::{self, EntityFluidTickWorld},
     fluid::{FluidHeightWorld, FluidKind, FluidState, FluidStateTable},
+    fluid_box::{self, BoatFluidBoxWorld},
     fluid_flow::{FluidFlowWorld, flow_at},
     fluid_shape::FluidShapeCache,
     water_splash::{self, SplashParticle, WaterSplashWorld},
@@ -71,6 +72,24 @@ impl FluidResources {
         self.ice.get(state.0 as usize).copied().unwrap_or(false)
     }
 }
+/// The boat a passenger rides, as `AbstractBoat.modifyPassengerFluidInteractionBox`
+/// reads it: whether the boat is underwater (`isUnderWater`) and its box.
+#[derive(Clone, Copy, Debug)]
+pub struct PassengerFluidBox {
+    pub under_water: bool,
+    pub bounds: Aabb,
+}
+/// The adapter `fluid_box::boat_passenger_box` asks for a boat's state.
+struct RiddenBoat(PassengerFluidBox);
+impl BoatFluidBoxWorld for RiddenBoat {
+    type Error = std::convert::Infallible;
+    fn is_under_water(&mut self) -> std::result::Result<bool, Self::Error> {
+        Ok(self.0.under_water)
+    }
+    fn boat_bounds(&self) -> Aabb {
+        self.0.bounds
+    }
+}
 /// The player's `EntityFluidInteraction` and the water flags around it.
 pub struct PlayerFluids {
     pub interaction: EntityFluidInteraction,
@@ -82,10 +101,10 @@ pub struct PlayerFluids {
     pub first_tick: bool,
     /// The dimension's `FAST_LAVA` (the Nether), set by the game.
     pub fast_lava: bool,
-    /// The player rides a boat that is not underwater and whose box spans the
-    /// eye height: `Entity.updateFluidOnEyes` then finds no fluid on the eyes.
-    /// Set by the game before each base tick.
-    pub boat_shelters_eyes: bool,
+    /// The boat the player rides, set by the game before each base tick; `None`
+    /// when the vehicle is not a boat. `Entity.getFluidInteractionBox` lets it
+    /// trim the passenger's fluid box.
+    pub boat: Option<PassengerFluidBox>,
 }
 impl Default for PlayerFluids {
     fn default() -> Self {
@@ -95,7 +114,7 @@ impl Default for PlayerFluids {
             was_eye_in_water: false,
             first_tick: true,
             fast_lava: false,
-            boat_shelters_eyes: false,
+            boat: None,
         }
     }
 }
@@ -250,9 +269,6 @@ impl MotionWorld<'_, '_, '_> {
     pub fn update_fluids(&mut self) -> Result<bool> {
         let mut interaction = std::mem::take(&mut self.player.fluids.interaction);
         let result = entity_fluid_tick::update(&mut interaction, self, WATER, LAVA, 1_000_000);
-        if self.player.fluids.boat_shelters_eyes {
-            interaction.clear_eyes_inside();
-        }
         self.player.fluids.interaction = interaction;
         result.map_err(|e| e.to_string().into())
     }
@@ -299,10 +315,16 @@ impl FluidInteractionWorld for MotionWorld<'_, '_, '_> {
     type Error = Box<dyn std::error::Error>;
     type Chunk = ();
     fn interaction_box(&mut self) -> Result<Option<Aabb>> {
-        // Entity.getFluidInteractionBox (not riding).
-        Ok(Some(
-            self.player.bounds().deflate(Vec3::new(0.001, 0.001, 0.001)),
-        ))
+        // Entity.getFluidInteractionBox: a passenger asks the vehicle, and a
+        // boat keeps only the part above its own top.
+        let bounds = self.player.bounds().deflate(Vec3::new(0.001, 0.001, 0.001));
+        let Some(boat) = self.player.fluids.boat else {
+            return Ok(Some(bounds));
+        };
+        Ok(fluid_box::boat_passenger_box(
+            &mut RiddenBoat(boat),
+            bounds,
+        )?)
     }
     fn loaded_chunk(&mut self, x: i32, z: i32) -> Result<Option<()>> {
         Ok(self.scene.chunks.contains_key(&(x, z)).then_some(()))

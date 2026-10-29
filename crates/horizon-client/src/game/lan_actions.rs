@@ -2758,11 +2758,11 @@ impl Game<'_> {
             let health = &motion.health;
             let freeze_immune = game.wears_freeze_immune();
             let burn_immune = game.wears_burn_from_stepping_immunity();
-            let sheltered = game.boat_shelters_eyes();
+            let boat = game.riding_boat_fluid_box();
             let Some(player) = game.player.as_mut() else {
                 return (Vec::new(), None);
             };
-            player.fluids.boat_shelters_eyes = sheltered;
+            player.fluids.boat = boat;
             let mut w = MotionWorld {
                 entities: &[],
                 player,

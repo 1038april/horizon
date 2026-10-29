@@ -9,6 +9,7 @@ use horizon_client::{
     items::ItemStack,
     mesher::Vertex,
     mobs::{Part, anim::Poses, riders},
+    motion::PassengerFluidBox,
 };
 use horizon_core::{
     geometry::{Aabb, Vec3},
@@ -585,20 +586,17 @@ impl Game<'_> {
         }
         false
     }
-    /// The `Entity.updateFluidOnEyes` shortcut: a rider whose eyes are inside
-    /// the box of a boat that is not underwater has no fluid on the eyes, so a
-    /// boat bobbing in water never drowns its passenger.
-    pub(super) fn boat_shelters_eyes(&self) -> bool {
-        let Some(player) = self.player.as_ref() else {
-            return false;
-        };
-        let eye = player.position.y + f64::from(player.dimensions.eye_height);
+    /// `AbstractBoat.modifyPassengerFluidInteractionBox`: the ridden boat's box
+    /// and whether it is underwater, for `Entity.getFluidInteractionBox`. A boat
+    /// keeps only the part of the passenger's box above its own top, so a boat
+    /// bobbing on water never sinks the passenger's eyes or body.
+    pub(super) fn riding_boat_fluid_box(&self) -> Option<PassengerFluidBox> {
         self.boats
             .iter()
             .find(|b| Some(b.id) == self.riding)
-            .is_some_and(|b| {
-                let bounds = b.bounds();
-                !b.under_water() && bounds.max_position().y >= eye && bounds.min_position().y <= eye
+            .map(|b| PassengerFluidBox {
+                under_water: b.under_water(),
+                bounds: b.bounds(),
             })
     }
     /// The player's tick while riding: steer, tick the boat, sit in it.
