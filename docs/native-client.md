@@ -45,6 +45,11 @@ version until they are prepared again. `--complete` prepares, copies the sounds,
 unless `--check` would then pass: one command for resources with nothing missing.
 `--progress json` prints one JSON object a line instead of plain text: `{"message": …}` for
 each log line, `{"fraction": F}` (0 to 1) as each stage begins, `{"error": …}` on failure.
+A launcher whose files are laid out its own way names them one by one instead of
+`--minecraft-dir`: `--version-json` (the pinned version's JSON), `--client-jar`,
+`--libraries-dir` (the client's libraries, Maven layout) and `--assets-dir` (the asset store,
+with `indexes/` and `objects/`); each replaces only what it names, and every file is still
+checked against `research-lock.json`'s pins.
 Exit codes: 0 done, 1 failed or gaps found, 2 a refused command line.
 
 ```sh

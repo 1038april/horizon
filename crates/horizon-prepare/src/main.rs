@@ -30,6 +30,11 @@ Usage: horizon-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [-
                         (default: HORIZON_SERVER_JAR, or the copy imported before)
   --minecraft-dir PATH  The official launcher's game directory with your installed copy
                         (default: HORIZON_MINECRAFT_DIR, or the launcher's own)
+  --version-json PATH   The pinned version's JSON, where --minecraft-dir has none
+  --client-jar PATH     The pinned client jar, where --minecraft-dir has none
+  --libraries-dir PATH  The folder of the client's libraries (Maven layout)
+  --assets-dir PATH     The asset store, with indexes/ and objects/
+                        (each of these four replaces what --minecraft-dir would give)
   --root PATH           The Horizon folder to prepare (default: the folder this program is
                         in, else the nearest folder above the current one with research-lock.json)
   --output PATH         Where the resources go (default: <root>/.local/horizon-client/<version>);
@@ -81,6 +86,7 @@ fn main() -> ExitCode {
         minecraft_dir: None,
         server_jar: None,
         java_home: None,
+        inputs: Default::default(),
         output: None,
     };
     let mut root = None;
@@ -121,6 +127,14 @@ fn main() -> ExitCode {
             }
             "--server-jar" => value("--server-jar").map(|v| options.server_jar = Some(v)),
             "--minecraft-dir" => value("--minecraft-dir").map(|v| options.minecraft_dir = Some(v)),
+            "--version-json" => {
+                value("--version-json").map(|v| options.inputs.version_json = Some(v))
+            }
+            "--client-jar" => value("--client-jar").map(|v| options.inputs.client_jar = Some(v)),
+            "--libraries-dir" => {
+                value("--libraries-dir").map(|v| options.inputs.libraries_dir = Some(v))
+            }
+            "--assets-dir" => value("--assets-dir").map(|v| options.inputs.assets_dir = Some(v)),
             "--root" => value("--root").map(|v| root = Some(v)),
             "--output" => value("--output").map(|v| options.output = Some(v)),
             "--check" if inline.is_none() => {
@@ -193,6 +207,7 @@ fn main() -> ExitCode {
                 &options.root,
                 options.output.as_deref(),
                 options.minecraft_dir.as_deref(),
+                &options.inputs,
                 &log,
             )
         }
@@ -232,6 +247,7 @@ fn complete_resources(
         &options.root,
         Some(&resources),
         options.minecraft_dir.as_deref(),
+        &options.inputs,
         log,
     )?;
     let lacking = horizon_prepare::check(&options.root, &resources)?;

@@ -98,6 +98,9 @@ pub struct Options {
     /// The Java runtime to try after JAVA_HOME and the PATH (the launcher's pick, e.g. Minecraft's
     /// own Java it downloaded from Mojang).
     pub java_home: Option<PathBuf>,
+    /// Files named one by one instead of found in `minecraft_dir` (`--version-json`,
+    /// `--client-jar`, `--libraries-dir`, `--assets-dir`).
+    pub inputs: artifacts::Inputs,
     /// Where the resources go (`--output`); None for `root`'s `.local/horizon-client/<version>`.
     /// The exporters' scratch files stay in `root`'s `.local/` either way.
     pub output: Option<PathBuf>,
@@ -331,6 +334,7 @@ struct Run<'a> {
     origin: Value,
     log: Log<'a>,
     progress: Progress<'a>,
+    inputs: artifacts::Inputs,
     /// The stages of `steps` begun so far.
     stages: std::cell::Cell<u32>,
 }
@@ -493,6 +497,7 @@ fn prepare_impl(
                     root,
                     &lock,
                     options.minecraft_dir.as_deref(),
+                    &options.inputs,
                     options.server_jar.as_deref(),
                     log,
                 )?;
@@ -548,6 +553,7 @@ fn prepare_impl(
         origin,
         log,
         progress,
+        inputs: options.inputs.clone(),
         stages: std::cell::Cell::new(0),
     };
     if compile_only {
@@ -782,7 +788,7 @@ fn steps(
     // the vanilla pack's icon (`pack.png`) for the pack screen.
     run.stage();
     (run.log)("Copying the client's assets and data");
-    let mut indexed = sounds::Assets::load(repo, Some(root), minecraft, run.log);
+    let mut indexed = sounds::Assets::load(repo, Some(root), minecraft, &run.inputs, run.log);
     let (version, count) = extract_client_resources(&run.client, root, indexed.as_mut().ok())?;
     sounds::optional_imports(indexed.as_mut().map_err(|e| e.as_str()), run.log);
 
