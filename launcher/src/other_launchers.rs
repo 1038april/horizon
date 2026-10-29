@@ -23,8 +23,12 @@
 //!   instance's game folder in `profiles/<name>/`.
 //!   <https://support.modrinth.com/en/articles/8797641-modrinth-app-storage-folder-location>,
 //!   <https://github.com/modrinth/code/issues/5825>
+//! - ATLauncher: its folder keeps each instance in `Instances/<name>/`, the game folder itself
+//!   beside an `instance.json` (the game's version in `id`, the loader in `launcher.loaderVersion`,
+//!   a `type` and a `version`, and the name in `launcher.name`).
+//!   <https://github.com/ATLauncher/ATLauncher/blob/master/src/main/java/com/atlauncher/data/Instance.java>
 //!
-//! Neither app describes where it records an instance's Minecraft version, so the player names
+//! Neither the CurseForge app nor the Modrinth App describes where it records an instance's Minecraft version, so the player names
 //! it when copying one.
 use crate::instances::{self, Instance};
 use crate::loaders;
@@ -81,6 +85,7 @@ const SKIPPED: [&str; 4] = [
 ];
 const CURSEFORGE: &str = "the CurseForge app";
 const MODRINTH_APP: &str = "the Modrinth App";
+const ATLAUNCHER: &str = "ATLauncher";
 
 fn loader_of_uid(uid: &str) -> Option<&'static str> {
     match uid {
@@ -282,6 +287,57 @@ pub fn modrinth_app_profiles(root: &Path) -> Vec<Found> {
     game_folders(&root.join("profiles"), MODRINTH_APP)
 }
 
+/// One ATLauncher instance folder: its `instance.json` names the Minecraft version (`id`), the
+/// loader (`launcher.loaderVersion`, whose `type` is `Fabric`, `Quilt`, `NeoForge` or `Forge`)
+/// and the instance (`launcher.name`). Its game folder is the folder itself.
+pub fn atlauncher_instance(dir: &Path) -> Option<Found> {
+    let json: Value =
+        serde_json::from_str(&fs::read_to_string(dir.join("instance.json")).ok()?).ok()?;
+    let minecraft = json["id"].as_str().filter(|v| !v.is_empty())?.to_string();
+    let loader = &json["launcher"]["loaderVersion"];
+    let loader = match (loader["type"].as_str(), loader["version"].as_str()) {
+        (Some(kind), Some(version)) => ["fabric", "quilt", "neoforge", "forge"]
+            .into_iter()
+            .find(|n| n.eq_ignore_ascii_case(kind))
+            .map(|name| Loader {
+                name,
+                version: version.to_string(),
+            }),
+        _ => None,
+    };
+    let folder = dir.file_name()?.to_string_lossy().into_owned();
+    let name = json["launcher"]["name"]
+        .as_str()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .map(String::from)
+        .unwrap_or(folder);
+    Some(Found {
+        launcher: ATLAUNCHER,
+        name,
+        minecraft: Some(minecraft),
+        loader,
+        game: dir.to_path_buf(),
+        shared: false,
+    })
+}
+
+/// The ATLauncher instances in its folder `root` (or in its `Instances/` itself).
+pub fn atlauncher_instances(root: &Path) -> Vec<Found> {
+    let dir = if root.join("Instances").is_dir() {
+        root.join("Instances")
+    } else {
+        root.to_path_buf()
+    };
+    let mut found: Vec<Found> = fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| atlauncher_instance(&e.path()))
+        .collect();
+    found.sort_by_key(|f| f.name.to_lowercase());
+    found
+}
 /// What one folder holds: an official launcher's profiles, a Prism or MultiMC root (or its
 /// `instances/`), the CurseForge app's modding folder, the Modrinth App's folder, or a single
 /// instance folder.
@@ -297,7 +353,14 @@ pub fn in_folder(dir: &Path, launcher: Option<&'static str>) -> Vec<Found> {
             .filter(|f| f.game.file_name() == name)
             .collect();
     }
+    if dir.join("instance.json").is_file() {
+        return atlauncher_instance(dir).into_iter().collect();
+    }
     if dir.join("Instances").is_dir() {
+        let atlauncher = atlauncher_instances(dir);
+        if !atlauncher.is_empty() {
+            return atlauncher;
+        }
         return curseforge_instances(dir);
     }
     if dir.join("profiles").is_dir() {
@@ -334,6 +397,7 @@ pub fn scan(os: Os, folders: &Folders) -> Vec<Found> {
             OFFICIAL => found.extend(official_profiles(&dir)),
             "Prism Launcher" | "MultiMC" => found.extend(prism_instances(&dir, launcher)),
             "Modrinth App" => found.extend(modrinth_app_profiles(&dir)),
+            ATLAUNCHER => found.extend(atlauncher_instances(&dir)),
             _ => {}
         }
     }
