@@ -41,8 +41,11 @@ exits 0 when the resources are complete and current for this preparer, and other
 each gap with the command that fills it and exits 1; it runs no Java and reads no game files.
 A preparation stamps its resources with the preparer's `OUTPUT_VERSION`
 (`horizon-prepare.json`); resources prepared before the stamp existed report an unknown
-version until they are prepared again. Exit codes: 0 done, 1 failed or gaps found, 2 a refused
-command line.
+version until they are prepared again. `--complete` prepares, copies the sounds, and fails
+unless `--check` would then pass: one command for resources with nothing missing.
+`--progress json` prints one JSON object a line instead of plain text: `{"message": …}` for
+each log line, `{"fraction": F}` (0 to 1) as each stage begins, `{"error": …}` on failure.
+Exit codes: 0 done, 1 failed or gaps found, 2 a refused command line.
 
 ```sh
 cargo run --release -p horizon-prepare -- --prepare --server-jar ~/Downloads/server.jar

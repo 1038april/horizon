@@ -16,6 +16,7 @@ const HELP: &str = "\
 horizon-prepare: prepare Horizon's resources from your own Minecraft Java Edition
 
 Usage: horizon-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [--root PATH] [--output PATH]
+                       [--complete] [--progress json]
        horizon-prepare --check [--root PATH] [--output PATH]
        horizon-prepare compile-exporters [--root PATH]
        horizon-prepare sounds [--minecraft-dir PATH] [--root PATH] [--output PATH]
@@ -35,6 +36,10 @@ Usage: horizon-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [-
                         the exporters' scratch files stay in <root>/.local
   --check               Exit 0 when the resources are complete and current for this preparer,
                         else 1, printing what each gap needs; runs no Java and reads no game files
+  --complete            Also copy the sounds, then fail unless --check would pass: one command
+                        for resources the game plays with nothing missing
+  --progress json       One JSON object a line on stdout: {\"message\": ...} for each log line,
+                        {\"fraction\": F} as the work advances (0 to 1), {\"error\": ...} on failure
 
 Needs Minecraft played once from the official launcher, and Java of the version
 research-lock.json pins. Releases use a runtime; development or changed exporters need a JDK.
@@ -80,6 +85,8 @@ fn main() -> ExitCode {
     };
     let mut root = None;
     let mut check = false;
+    let mut complete = false;
+    let mut json = false;
     let mut args = std::env::args_os().skip(1).peekable();
     let assets = args.next_if(|a| {
         matches!(
@@ -120,6 +127,18 @@ fn main() -> ExitCode {
                 check = true;
                 Ok(())
             }
+            "--complete" if inline.is_none() && assets.is_none() => {
+                complete = true;
+                Ok(())
+            }
+            "--progress" => match value("--progress") {
+                Ok(v) if v.as_os_str() == "json" => {
+                    json = true;
+                    Ok(())
+                }
+                Ok(v) => Err(format!("--progress takes json, not {}", v.display())),
+                Err(e) => Err(e),
+            },
             "-h" | "--help" => {
                 print!("{HELP}");
                 return ExitCode::SUCCESS;
@@ -149,10 +168,21 @@ fn main() -> ExitCode {
         }
         return check_resources(&options);
     }
-    let log = |line: &str| {
+    let print = |line: &str| {
         let mut out = std::io::stdout().lock();
         let _ = writeln!(out, "{line}");
         let _ = out.flush();
+    };
+    let log = |line: &str| match json {
+        true => print(&json_line("message", line)),
+        false => print(line),
+    };
+    // Preparing is most of a complete run; the sounds and the check are the rest.
+    let scale = if complete { 0.9 } else { 1.0 };
+    let progress = |fraction: f32| {
+        if json {
+            print(&format!("{{\"fraction\": {:.3}}}", fraction * scale));
+        }
     };
     let result = match assets.as_deref().and_then(|a| a.to_str()) {
         Some("compile-exporters") => horizon_prepare::compile_exporters(&options, &log)
@@ -166,15 +196,63 @@ fn main() -> ExitCode {
                 &log,
             )
         }
-        _ => horizon_prepare::prepare(&options, &log),
+        _ => horizon_prepare::prepare_with_progress(&options, &log, &progress).and_then(
+            |resources| match complete {
+                true => complete_resources(&options, resources, &log),
+                false => Ok(resources),
+            },
+        ),
     };
     match result {
-        Ok(_) => ExitCode::SUCCESS,
+        Ok(_) => {
+            // A plain preparation reported its 1 already.
+            if json && (complete || assets.is_some()) {
+                print("{\"fraction\": 1.000}");
+            }
+            ExitCode::SUCCESS
+        }
         Err(e) => {
+            if json {
+                print(&json_line("error", &e));
+            }
             eprintln!("error: {e}");
             ExitCode::FAILURE
         }
     }
+}
+
+/// `--complete` after preparing: the sounds, then nothing may be missing.
+fn complete_resources(
+    options: &horizon_prepare::Options,
+    resources: PathBuf,
+    log: horizon_prepare::Log,
+) -> Result<PathBuf, String> {
+    horizon_prepare::add_assets(
+        "sounds",
+        &options.root,
+        Some(&resources),
+        options.minecraft_dir.as_deref(),
+        log,
+    )?;
+    let lacking = horizon_prepare::check(&options.root, &resources)?;
+    if lacking.is_empty() {
+        return Ok(resources);
+    }
+    for line in &lacking {
+        log(line);
+    }
+    Err(format!(
+        "the resources are not complete: {}",
+        lacking.join("; ")
+    ))
+}
+
+/// `{"key": "text"}` on one line.
+fn json_line(key: &str, text: &str) -> String {
+    let mut out = format!("{{\"{key}\": ");
+    horizon_prepare::pyjson::write_string(&mut out, text);
+    out.push('}');
+    out
 }
 
 /// `--check`: each gap on its own line on stdout, exit 1 when there is one.

@@ -34,6 +34,12 @@ use std::path::{Path, PathBuf};
 /// Where progress lines go: the terminal for the binary, the log pane for the launcher.
 pub type Log<'a> = &'a dyn Fn(&str);
 
+/// Where the fraction done goes (`--progress json`), from 0 to 1.
+pub type Progress<'a> = &'a dyn Fn(f32);
+
+/// The stages of `steps`, each opened by `Run::stage`: what the fraction counts.
+const STAGES: u32 = 18;
+
 /// The manifest's `schema`: the prepared files' layout, which the launcher compares.
 pub const SCHEMA: i64 = 7;
 
@@ -324,11 +330,21 @@ struct Run<'a> {
     previous: Value,
     origin: Value,
     log: Log<'a>,
+    progress: Progress<'a>,
+    /// The stages of `steps` begun so far.
+    stages: std::cell::Cell<u32>,
 }
 
 const PARITY: &str = "mods/horizon/src/test/java/dev/horizonlab/parity";
 
 impl Run<'_> {
+    /// Opens the next stage of `steps`: the fraction done is the stages before it.
+    fn stage(&self) {
+        let done = self.stages.get();
+        (self.progress)(done.min(STAGES) as f32 / STAGES as f32);
+        self.stages.set(done + 1);
+    }
+
     fn bundle(&self) -> Result<&Path, String> {
         if self.bundles.get().is_none() {
             self.bundles.set(exporters::classes(self)?).unwrap();
@@ -432,15 +448,29 @@ impl Run<'_> {
 
 /// Prepares the resources; returns their folder (`resources_dir`).
 pub fn prepare(options: &Options, log: Log) -> Result<PathBuf, String> {
-    prepare_impl(options, log, false)
+    prepare_impl(options, log, &|_| {}, false)
+}
+
+/// `prepare`, telling `progress` the fraction done as each stage begins, and 1 at the end.
+pub fn prepare_with_progress(
+    options: &Options,
+    log: Log,
+    progress: Progress,
+) -> Result<PathBuf, String> {
+    prepare_impl(options, log, progress, false)
 }
 
 /// Release build tool: compile and link-check only Horizon's original exporter classes.
 pub fn compile_exporters(options: &Options, log: Log) -> Result<PathBuf, String> {
-    prepare_impl(options, log, true)
+    prepare_impl(options, log, &|_| {}, true)
 }
 
-fn prepare_impl(options: &Options, log: Log, compile_only: bool) -> Result<PathBuf, String> {
+fn prepare_impl(
+    options: &Options,
+    log: Log,
+    progress: Progress,
+    compile_only: bool,
+) -> Result<PathBuf, String> {
     let root = &std::path::absolute(&options.root)
         .map_err(|e| format!("{}: {e}", options.root.display()))?;
     let lock = artifacts::Lock::read(root)?;
@@ -517,12 +547,15 @@ fn prepare_impl(options: &Options, log: Log, compile_only: bool) -> Result<PathB
         previous,
         origin,
         log,
+        progress,
+        stages: std::cell::Cell::new(0),
     };
     if compile_only {
         return Ok(run.bundle()?.to_path_buf());
     }
     steps(&run, &lock, &oracle, options.minecraft_dir.as_deref())?;
     check::write_stamp(&resources)?;
+    progress(1.0);
     log(&format!(
         "Prepared Horizon native-client resources: {}",
         resources.display()
@@ -553,6 +586,7 @@ fn steps(
         .unwrap()
         .iter()
         .all(|(k, v)| run.previous(k) == Some(v));
+    run.stage();
     if !(origin_same
         && facts.exists()
         && run.previous("facts_sha256") == Some(&run.file_hash("facts.json")?))
@@ -574,6 +608,7 @@ fn steps(
     let helper = run.oracle("VanillaCuboidModelOracle.java");
     let binding_sources = source_hashes(repo, &[&binding, &helper])?;
     let model_states = root.join("model-states.json");
+    run.stage();
     if !(run.previous("model_state_exporters_sha256") == Some(&binding_sources)
         && run.same("client_sha256")
         && model_states.exists()
@@ -591,6 +626,7 @@ fn steps(
         )?;
     }
 
+    run.stage();
     let block_tags = "data/minecraft/tags/block/";
     let tags = json_resources(&mut open_zip(&run.server)?, block_tags)?;
     if tags != json_resources(&mut open_zip(&run.client)?, block_tags)? {
@@ -613,6 +649,7 @@ fn steps(
         "attributes.json",
         "landing-definitions.json",
     ];
+    run.stage();
     if !(run.previous("motion_exporters_sha256") == Some(&motion_sources)
         && run.same("server_sha256")
         && run.previous("block_tags_sha256") == Some(&run.file_hash("block-tags.json")?)
@@ -651,6 +688,7 @@ fn steps(
         "damage-catalog.json",
         "player-float-ids.json",
     ];
+    run.stage();
     if !(run.previous("health_exporters_sha256") == Some(&health_sources)
         && run.same("server_sha256")
         && run.files_unchanged("health_files_sha256", &health_files)?)
@@ -690,6 +728,7 @@ fn steps(
     }
 
     let collision_file = root.join("cached-collision.nbt");
+    run.stage();
     if !(run.previous("collision_exporters_sha256") == Some(&collision_sources)
         && run.same("server_sha256")
         && collision_file.exists()
@@ -712,6 +751,7 @@ fn steps(
 
     let render_sources = source_hashes(repo, &[&visibility, &collision, oracle])?;
     let render_files = ["render-definitions.json", "occlusion.nbt"];
+    run.stage();
     if !(run.previous("render_exporters_sha256") == Some(&render_sources)
         && run.same("server_sha256")
         && run.previous("block_tags_sha256") == Some(&run.file_hash("block-tags.json")?)
@@ -740,6 +780,7 @@ fn steps(
     // The playable client needs every client asset (textures, models, fonts, GUI)
     // and every data-pack resource (worldgen, recipes, loot tables, tags), and
     // the vanilla pack's icon (`pack.png`) for the pack screen.
+    run.stage();
     (run.log)("Copying the client's assets and data");
     let mut indexed = sounds::Assets::load(repo, Some(root), minecraft, run.log);
     let (version, count) = extract_client_resources(&run.client, root, indexed.as_mut().ok())?;
@@ -781,6 +822,7 @@ fn steps(
         }
         Ok(hashes)
     };
+    run.stage();
     let gameplay_sources = single(
         "gameplay facts",
         "gameplay-facts.json",
@@ -793,6 +835,7 @@ fn steps(
         "gameplay-export.log",
     )?;
     // Entity dimensions, categories and default attributes for the client's mobs.
+    run.stage();
     let entity_types_sources = single(
         "entity types",
         "entity-types.json",
@@ -806,6 +849,7 @@ fn steps(
     )?;
     // Block classes, instance configuration and per-state support/signal/fluid
     // facts for horizon-world's level behaviour (level::Behaviours::load).
+    run.stage();
     let behaviour_sources = single(
         "block behaviours",
         "block-behaviours.json",
@@ -818,6 +862,7 @@ fn steps(
         "behaviour-export.log",
     )?;
 
+    run.stage();
     if datagen_reports_missing(root) || !run.same("server_sha256") {
         // Vanilla's own data generator reports every item's default components.
         (run.log)("Running vanilla's data generator reports");
@@ -855,8 +900,10 @@ fn steps(
     }
 
     // Biome parameter tables come from the data generator reports above.
+    run.stage();
     prepare_worldgen(run)?;
 
+    run.stage();
     let entity_sources = single(
         "entity models",
         "entity-models.json",
@@ -870,6 +917,7 @@ fn steps(
     )?;
     // Mob AI and animation facts: per-state path types, spawn placements and the
     // client's keyframe animation definitions (needs the client jar).
+    run.stage();
     let mob_sources = single(
         "mob data",
         "mob-data.json",
@@ -887,6 +935,7 @@ fn steps(
     let command_registries = root.join("command-registries.json");
     let command_oracle = run.oracle("VanillaCommandParseOracle.java");
     let command_sources = source_hashes(repo, &[&command_oracle])?;
+    run.stage();
     if !(run.previous("command_registries_exporters_sha256") == Some(&command_sources)
         && command_registries.exists()
         && run.same("server_sha256"))
@@ -908,6 +957,7 @@ fn steps(
     // The creative inventory (creative-inventory.json): every tab built by vanilla's
     // CreativeModeTabs over the vanilla data pack's registries, with the search
     // tab's tooltip lines and tags.
+    run.stage();
     let creative_sources = single(
         "the creative inventory",
         "creative-inventory.json",
@@ -928,6 +978,7 @@ fn steps(
                 .collect::<Result<_, String>>()?,
         ))
     };
+    run.stage();
     let mut manifest = vec![("schema".to_string(), Value::Int(SCHEMA.to_string()))];
     manifest.extend(run.origin.as_object().unwrap().iter().cloned());
     manifest.extend([
@@ -1291,6 +1342,15 @@ mod tests {
             install_datagen_reports(&root, &reports).unwrap();
         }
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// `--progress json` reaches 1 only at the end: `STAGES` counts the stages `steps` opens.
+    #[test]
+    fn steps_open_every_stage() {
+        let source = include_str!("lib.rs");
+        let body = &source[source.find("\nfn steps(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        assert_eq!(body.matches("run.stage();").count() as u32, STAGES);
     }
 
     #[test]
