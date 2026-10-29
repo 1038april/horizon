@@ -86,7 +86,7 @@ impl Pack {
             .map_err(|e| PackError::Zip(e.to_string()))?;
         let entries: BTreeMap<String, usize> = (0..archive.len())
             .filter_map(|i| {
-                let name = archive.name_for_index(i)?.replace('\\', "/");
+                let name = archive.name_for_index(i)?.ok()?.replace('\\', "/");
                 let inner = name.strip_prefix(ROOT)?.strip_prefix('/')?;
                 (!inner.is_empty() && !inner.ends_with('/')).then(|| (inner.to_owned(), i))
             })

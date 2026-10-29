@@ -113,7 +113,10 @@ pub fn import(path: &Path) -> Result<Pack, String> {
 }
 
 fn names(zip: &zip::ZipArchive<fs::File>) -> Vec<String> {
-    zip.file_names().map(str::to_owned).collect()
+    zip.file_names()
+        .filter_map(Result::ok)
+        .map(|name| name.into_owned())
+        .collect()
 }
 
 fn read_json(zip: &mut zip::ZipArchive<fs::File>, name: &str) -> Result<Option<Value>, String> {

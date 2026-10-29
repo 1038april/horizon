@@ -238,7 +238,12 @@ pub(crate) fn zip_text(
 /// The archive's member names in its own order (Python's `namelist`).
 fn zip_names(archive: &zip::ZipArchive<fs::File>) -> Vec<String> {
     (0..archive.len())
-        .filter_map(|i| archive.name_for_index(i).map(str::to_string))
+        .filter_map(|i| {
+            archive
+                .name_for_index(i)
+                .and_then(Result::ok)
+                .map(|name| name.into_owned())
+        })
         .collect()
 }
 
