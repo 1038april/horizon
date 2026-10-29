@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 
-use glam::{DVec3, DMat4};
+use glam::{DMat4, DVec3};
 use horizon_shaders::{Format, Group, Kind, Post, Val};
 
 use super::pack_draw::DrawUniforms;
@@ -2466,10 +2466,7 @@ impl PackPost {
         );
 
         // Copy depth1 texture (shadowtex1) if it exists.
-        if let (Some((cached_tex, _)), Some((current_tex, _))) = (
-            &cached.depth1,
-            &current.depth1,
-        ) {
+        if let (Some((cached_tex, _)), Some((current_tex, _))) = (&cached.depth1, &current.depth1) {
             encoder.copy_texture_to_texture(
                 cached_tex.as_image_copy(),
                 current_tex.as_image_copy(),
@@ -2479,10 +2476,9 @@ impl PackPost {
 
         // Copy color textures (shadowcolor buffers).
         for i in 0..2 {
-            if let (Some(cached_views), Some(current_views)) = (
-                cached.color[i].as_ref(),
-                current.color[i].as_ref(),
-            ) {
+            if let (Some(cached_views), Some(current_views)) =
+                (cached.color[i].as_ref(), current.color[i].as_ref())
+            {
                 for side in 0..2 {
                     encoder.copy_texture_to_texture(
                         cached_views[side].texture().as_image_copy(),
@@ -2524,18 +2520,35 @@ impl PackPost {
         };
 
         // Create cache targets if they don't exist or if the size changed.
-        let cache_size = self.shadow_cache.targets.as_ref().map(|t| t.size).unwrap_or(0);
+        let cache_size = self
+            .shadow_cache
+            .targets
+            .as_ref()
+            .map(|t| t.size)
+            .unwrap_or(0);
         if cache_size != current.size || self.shadow_cache.targets.is_none() {
             // Create new cache targets with COPY_SRC | COPY_DST usage.
             let copy_usage = wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST;
             let depth_format = wgpu::TextureFormat::Depth32Float;
 
             // Create cache depth texture.
-            let depth = Self::create_cache_texture(device, "shadow_cache_depth", current.size, depth_format, copy_usage);
+            let depth = Self::create_cache_texture(
+                device,
+                "shadow_cache_depth",
+                current.size,
+                depth_format,
+                copy_usage,
+            );
 
             // Create cache depth1 texture if needed.
             let depth1 = current.depth1.as_ref().map(|_| {
-                Self::create_cache_texture(device, "shadow_cache_depth1", current.size, depth_format, copy_usage)
+                Self::create_cache_texture(
+                    device,
+                    "shadow_cache_depth1",
+                    current.size,
+                    depth_format,
+                    copy_usage,
+                )
             });
 
             // Create cache color textures.
@@ -2545,8 +2558,22 @@ impl PackPost {
                     // Get the format from the actual color texture.
                     let color_format = current_views[0].texture().format();
                     color[n] = Some([
-                        Self::create_cache_texture(device, &format!("shadow_cache_color{}_A", n), current.size, color_format, copy_usage).1,
-                        Self::create_cache_texture(device, &format!("shadow_cache_color{}_B", n), current.size, color_format, copy_usage).1,
+                        Self::create_cache_texture(
+                            device,
+                            &format!("shadow_cache_color{}_A", n),
+                            current.size,
+                            color_format,
+                            copy_usage,
+                        )
+                        .1,
+                        Self::create_cache_texture(
+                            device,
+                            &format!("shadow_cache_color{}_B", n),
+                            current.size,
+                            color_format,
+                            copy_usage,
+                        )
+                        .1,
                     ]);
                 }
             }
@@ -2580,7 +2607,9 @@ impl PackPost {
             );
 
             // Copy depth1 texture if it exists.
-            if let (Some((current_tex, _)), Some((cached_tex, _))) = (&current.depth1, &cached.depth1) {
+            if let (Some((current_tex, _)), Some((cached_tex, _))) =
+                (&current.depth1, &cached.depth1)
+            {
                 encoder.copy_texture_to_texture(
                     current_tex.as_image_copy(),
                     cached_tex.as_image_copy(),
@@ -2590,7 +2619,9 @@ impl PackPost {
 
             // Copy color textures.
             for n in 0..2 {
-                if let (Some(current_views), Some(cached_views)) = (&current.color[n], &cached.color[n]) {
+                if let (Some(current_views), Some(cached_views)) =
+                    (&current.color[n], &cached.color[n])
+                {
                     for side in 0..2 {
                         encoder.copy_texture_to_texture(
                             current_views[side].texture().as_image_copy(),
@@ -2629,7 +2660,9 @@ impl PackPost {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT | usage,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
+                | usage,
             view_formats: &[],
         });
         let view = texture.create_view(&Default::default());
