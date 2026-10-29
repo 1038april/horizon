@@ -297,6 +297,9 @@ impl Game<'_> {
             && let Some(want) = self.fullscreen.request(s.fullscreen)
         {
             w.set_fullscreen(want.then_some(Fullscreen::Borderless(None)));
+            if !want {
+                windowed_again(w);
+            }
         }
         let mut volumes = s.volumes;
         volumes[0] = 1.0;
@@ -337,8 +340,16 @@ impl Game<'_> {
     }
     /// F11 (key.fullscreen): Window.toggleFullScreen, remembered in options.txt.
     pub(super) fn toggle_fullscreen(&mut self) {
-        // Splitscreen: the window is P1's; another player's F11 leaves it alone.
+        // Splitscreen: another player's F11 toggles the window it plays in, kept out of its
+        // options (a profile that saved it would turn the next window fullscreen on joining).
         if self.options.split_guest {
+            if let Some(w) = &self.window {
+                let on = w.fullscreen().is_none();
+                w.set_fullscreen(on.then_some(Fullscreen::Borderless(None)));
+                if !on {
+                    windowed_again(w);
+                }
+            }
             return;
         }
         self.settings.fullscreen = !self.settings.fullscreen;
@@ -388,5 +399,30 @@ impl Game<'_> {
                 horizon_client::window::end_frame(&mut self.limiter, limit, &mut clock);
             }
         }
+    }
+}
+
+/// Out of fullscreen, a window that splitscreen opened to fill a monitor (no border, the
+/// monitor's size) is a window again: its border back and, still covering the monitor, the game's
+/// first size (854 x 480) in the middle of it, to be moved and sized.
+fn windowed_again(w: &winit::window::Window) {
+    // Only those: an ordinary window has its border, and its own size comes back by itself.
+    if w.is_decorated() {
+        return;
+    }
+    w.set_decorations(true);
+    let Some(m) = w.current_monitor() else {
+        return;
+    };
+    let (size, screen) = (w.inner_size(), m.size());
+    if size.width >= screen.width && size.height >= screen.height {
+        let scale = m.scale_factor();
+        let small = winit::dpi::LogicalSize::new(854.0, 480.0).to_physical::<u32>(scale);
+        let _ = w.request_inner_size(small);
+        let at = m.position();
+        w.set_outer_position(winit::dpi::PhysicalPosition::new(
+            at.x + (screen.width.saturating_sub(small.width) / 2) as i32,
+            at.y + (screen.height.saturating_sub(small.height) / 2) as i32,
+        ));
     }
 }
