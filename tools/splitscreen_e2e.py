@@ -27,6 +27,7 @@ Exit status 0 when every check passed.
 """
 
 import argparse
+import contextlib
 import json
 import os
 import shutil
@@ -77,9 +78,13 @@ class Game:
 
     def ctl(self, n, *words):
         socket = self.sockets / ('c.sock' if n == 1 else f'c.sock{n}')
-        out = subprocess.run([str(CTL), '--socket', str(socket), *words], env=self.env,
-                             cwd=self.home, capture_output=True, text=True)
-        reply = json.loads(out.stdout or '{}')
+        # The reply through a file, not a pipe: on Windows the game `launch` starts inherits the
+        # pipe, which then never closes while it runs.
+        with tempfile.TemporaryFile('w+') as out:
+            subprocess.run([str(CTL), '--socket', str(socket), *words], env=self.env,
+                           cwd=self.home, stdout=out, stderr=subprocess.DEVNULL)
+            out.seek(0)
+            reply = json.loads(out.read() or '{}')
         if VERBOSE:
             print(f'P{n} {" ".join(words)} -> {json.dumps(reply)[:400]}', file=sys.stderr, flush=True)
         if 'error' in reply:
@@ -123,7 +128,8 @@ class Game:
             self.wait(lambda: not self.alive(1), 'the game to quit')
         except (RuntimeError, json.JSONDecodeError):
             # Not answering (still starting, or stuck): stop it by its socket (`--control-socket`).
-            subprocess.run(['pkill', '-f', str(self.sockets)], capture_output=True)
+            with contextlib.suppress(OSError):  # no pkill on Windows
+                subprocess.run(['pkill', '-f', str(self.sockets)], capture_output=True)
         shutil.rmtree(self.sockets, ignore_errors=True)
 
 
