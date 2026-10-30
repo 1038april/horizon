@@ -3249,6 +3249,10 @@ impl Game<'_> {
                 if p.event == 21 {
                     self.start_guardian_sound(p.id as u32);
                 }
+                // Witch.handleEntityEvent 15: the magic puffs over its hat.
+                if p.event == 15 {
+                    self.witch_magic_particles(p.id as u32);
+                }
                 // Fox.handleEntityEvent 45: the crumbs of the food in its mouth.
                 if p.event == 45 {
                     self.fox_eat_particles(p.id as u32);
