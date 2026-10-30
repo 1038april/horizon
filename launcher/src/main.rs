@@ -216,6 +216,8 @@ struct Launcher {
     auth_status: HashMap<String, account::session::Status>,
     auth_progress: HashMap<String, account::session::Phase>,
     profile_heads: profile_heads::Heads,
+    /// When page switches last checked every account's sign-in.
+    auth_checked: Option<Instant>,
     sign_in_target: Option<account::Account>,
     auth_busy: HashMap<String, u64>,
     auth_next: u64,
@@ -451,6 +453,7 @@ impl Launcher {
             auth_status: HashMap::new(),
             auth_progress: HashMap::new(),
             profile_heads: profile_heads::Heads::default(),
+            auth_checked: None,
             sign_in_target: None,
             auth_busy: HashMap::new(),
             auth_next: 0,
@@ -544,7 +547,15 @@ impl Launcher {
         // changed the accounts: read them again (small files, once a switch).
         self.offline_name = offline_name();
         self.accounts = Accounts::load();
-        self.load_auth_statuses(false);
+        // Each check reads the keychain (a prompt on macOS): page switches check every account
+        // at most once a minute, and an account added meanwhile at once.
+        if self
+            .auth_checked
+            .is_none_or(|t| t.elapsed() >= Duration::from_secs(60))
+            || (self.accounts.accounts.iter()).any(|a| !self.auth_status.contains_key(&a.uuid))
+        {
+            self.load_auth_statuses(false);
+        }
         self.load_profile_heads();
         if page != self.page {
             self.page = page;
@@ -711,7 +722,9 @@ impl Launcher {
                 Msg::Reused(_) => self.installed = backend::installed(),
                 Msg::Keychain(said) => self.keychain = said,
                 Msg::Owner(owns) => self.owner = Some(owns),
-                Msg::AccountHead(uuid, url, face) => self.profile_heads.loaded(&uuid, &url, face),
+                Msg::AccountHead(uuid, url, face, failed) => {
+                    self.profile_heads.loaded(&uuid, &url, face, failed)
+                }
                 Msg::AccountProgress(uuid, generation, phase) => {
                     if self.auth_busy.get(&uuid) == Some(&generation) {
                         self.auth_progress.insert(uuid, phase);
@@ -1340,6 +1353,7 @@ impl Launcher {
     /// Only workers read the keychain or contact authentication services. Cached public status
     /// keeps drawing independent of keychain prompts, network timeouts and refresh operations.
     fn load_auth_statuses(&mut self, renew_due: bool) {
+        self.auth_checked = Some(Instant::now());
         for account in self.accounts.accounts.clone() {
             let Some(generation) = self.begin_auth_job(&account.uuid) else {
                 continue;
@@ -3901,7 +3915,7 @@ impl Launcher {
                         .child(account_status_line(status, progress, &t))
                         .when(!busy, |row| {
                             row.when_some(status.filter(|s| s.message != s.label()), |row, s| {
-                                row.child(div().child(s.message.clone()))
+                                row.child(div().child(tr(&s.message).to_string()))
                             })
                         })
                         .into_any_element(),

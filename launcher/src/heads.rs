@@ -76,14 +76,17 @@ fn profile_pixels(png: &[u8]) -> Option<Vec<[u8; 4]>> {
 }
 
 /// A signed-in profile's public skin, cached independently of its authentication tokens.
-/// This may do disk/network I/O and must run on a worker. Missing skins use the UUID default.
+/// This may do disk/network I/O and must run on a worker. Missing skins use the UUID default;
+/// the `bool` says the download failed, so the real skin is worth asking for again later.
 pub fn profile_face(
     account: &crate::account::Account,
     cache: &Path,
     resources: &Path,
-) -> Option<Vec<[u8; 4]>> {
-    profile_face_with(account, cache, resources, &|url| {
+) -> (Option<Vec<[u8; 4]>>, bool) {
+    let failed = std::cell::Cell::new(false);
+    let face = profile_face_with(account, cache, resources, &|url| {
         use std::io::Read;
+        failed.set(true);
         let response = crate::proxy::agent(
             ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(10)),
             url,
@@ -98,8 +101,10 @@ pub fn profile_face(
             .take(1024 * 1024)
             .read_to_end(&mut bytes)
             .ok()?;
+        failed.set(false);
         Some(bytes)
-    })
+    });
+    (face, failed.get())
 }
 
 fn profile_face_with(

@@ -210,5 +210,11 @@
   "Delete…": "Удалить…",
   "Keep": "Оставить",
   "Move to Trash": "В корзину",
-  "Move {name} to the Trash, with its worlds and settings? You can get it back from there.": "Переместить {name} в корзину вместе с мирами и настройками? Оттуда его можно вернуть."
+  "Move {name} to the Trash, with its worlds and settings? You can get it back from there.": "Переместить {name} в корзину вместе с мирами и настройками? Оттуда его можно вернуть.",
+  "Sign in again in your browser.": "Войдите снова в браузере.",
+  "Check Minecraft: Java Edition ownership and your profile at minecraft.net.": "Проверьте владение Minecraft: Java Edition и свой профиль на minecraft.net.",
+  "Could not read the saved sign-in. Sign in again.": "Не удалось прочитать сохранённый вход. Войдите снова.",
+  "Could not read the saved sign-in.": "Не удалось прочитать сохранённый вход.",
+  "Could not save the renewed sign-in.": "Не удалось сохранить обновлённый вход.",
+  "The renewed sign-in could not be saved in the keychain. Unlock it and retry.": "Не удалось сохранить обновлённый вход в связке ключей. Разблокируйте её и повторите."
 }

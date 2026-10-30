@@ -210,5 +210,11 @@
   "Minecraft {version} (Java Edition). Play downloads it from Mojang for your account the first time, with the Java it needs.": "Minecraft {version} (Java Edition). Za pierwszym razem Graj pobiera go od Mojang dla Twojego konta, razem z potrzebną Javą.",
   "Move to Trash": "Przenieś do kosza",
   "Move {name} to the Trash, with its worlds and settings? You can get it back from there.": "Przenieść {name} do kosza razem z jego światami i ustawieniami? Możesz go stamtąd przywrócić.",
-  "Native mods compile into a game of their own. Installing one turns Native mods on: you then build the game with it in Settings > Native mods. The first build downloads Rust and can take 20 to 30 minutes; later builds are faster.": "Mody natywne kompilują się we własną wersję gry. Zainstalowanie jednego włącza mody natywne: potem budujesz z nim grę w Ustawienia > Mody natywne. Pierwsza kompilacja pobiera Rust i może potrwać od 20 do 30 minut; kolejne są szybsze."
+  "Native mods compile into a game of their own. Installing one turns Native mods on: you then build the game with it in Settings > Native mods. The first build downloads Rust and can take 20 to 30 minutes; later builds are faster.": "Mody natywne kompilują się we własną wersję gry. Zainstalowanie jednego włącza mody natywne: potem budujesz z nim grę w Ustawienia > Mody natywne. Pierwsza kompilacja pobiera Rust i może potrwać od 20 do 30 minut; kolejne są szybsze.",
+  "Sign in again in your browser.": "Zaloguj się ponownie w przeglądarce.",
+  "Check Minecraft: Java Edition ownership and your profile at minecraft.net.": "Sprawdź na minecraft.net posiadanie Minecraft: Java Edition i swój profil.",
+  "Could not read the saved sign-in. Sign in again.": "Nie można odczytać zapisanego logowania. Zaloguj się ponownie.",
+  "Could not read the saved sign-in.": "Nie można odczytać zapisanego logowania.",
+  "Could not save the renewed sign-in.": "Nie można zapisać odnowionego logowania.",
+  "The renewed sign-in could not be saved in the keychain. Unlock it and retry.": "Nie można zapisać odnowionego logowania w pęku kluczy. Odblokuj go i spróbuj ponownie."
 }

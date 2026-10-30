@@ -1677,11 +1677,10 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
             let status = account::session::refresh(&who)?;
             if as_json {
                 json(serde_json::to_value(&status).map_err(|e| e.to_string())?);
+            } else if status.state != account::session::State::Ready {
+                return Err(format!("{}: {}", status.label(), status.message));
             } else {
                 println!("{}: {}", status.label(), status.message);
-            }
-            if !as_json && status.state != account::session::State::Ready {
-                return Err(status.message);
             }
         }
         AccountCmd::Session { who } => {

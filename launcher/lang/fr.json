@@ -210,5 +210,11 @@
   "Delete…": "Supprimer…",
   "Keep": "Garder",
   "Move to Trash": "Mettre à la corbeille",
-  "Move {name} to the Trash, with its worlds and settings? You can get it back from there.": "Mettre {name} à la corbeille, avec ses mondes et ses réglages ? Vous pourrez l'y récupérer."
+  "Move {name} to the Trash, with its worlds and settings? You can get it back from there.": "Mettre {name} à la corbeille, avec ses mondes et ses réglages ? Vous pourrez l'y récupérer.",
+  "Sign in again in your browser.": "Reconnectez-vous dans votre navigateur.",
+  "Check Minecraft: Java Edition ownership and your profile at minecraft.net.": "Vérifiez la possession de Minecraft: Java Edition et votre profil sur minecraft.net.",
+  "Could not read the saved sign-in. Sign in again.": "Impossible de lire la connexion enregistrée. Reconnectez-vous.",
+  "Could not read the saved sign-in.": "Impossible de lire la connexion enregistrée.",
+  "Could not save the renewed sign-in.": "Impossible d'enregistrer la connexion renouvelée.",
+  "The renewed sign-in could not be saved in the keychain. Unlock it and retry.": "Impossible d'enregistrer la connexion renouvelée dans le trousseau. Déverrouillez-le et réessayez."
 }
