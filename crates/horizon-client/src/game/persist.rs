@@ -654,9 +654,89 @@ impl Game<'_> {
         }
         i
     }
-    /// `RootVehicle.Attach` names the immediate mount, not the root of its tree.
-    pub(super) fn root_vehicle_uuid(&mut self, id: Option<u32>) -> Option<[i32; 4]> {
-        Some(self.uuid_for(id?))
+    /// `Entity.getRootVehicle` of a vehicle: the bottom of a mob stack, or
+    /// the boat under it (the entity saved with the others as passengers).
+    fn vehicle_root(&self, id: u32) -> u32 {
+        let Some(i) = self.mobs.iter().position(|m| m.id == id) else {
+            return id;
+        };
+        let r = &self.mobs[self.mob_root(i)];
+        match r.extra.mount {
+            Some(v) if self.boats.iter().any(|b| b.id == v) => v,
+            _ => r.id,
+        }
+    }
+    /// The root vehicle `root` with its passengers (`Entity.save`).
+    fn vehicle_tree_nbt(&mut self, root: u32) -> Option<Tag> {
+        if let Some(i) = self.mobs.iter().position(|m| m.id == root) {
+            return Some(self.mob_tree_nbt(i));
+        }
+        if self.boats.iter().any(|b| b.id == root) {
+            let uuid = self.uuid_for(root);
+            let b = self.boats.iter().find(|b| b.id == root)?;
+            let mut tag = entity_nbt::boat_to_nbt(
+                &b.entity_type(),
+                b.position,
+                b.velocity,
+                b.yaw,
+                uuid,
+                self.persist.raw.get(&root),
+                b.chest.then_some(&b.items[..]),
+            );
+            self.put_mob_passengers(&mut tag, root);
+            return Some(tag);
+        }
+        if !self.carts.iter().any(|c| c.id == root) {
+            return None;
+        }
+        let uuid = self.uuid_for(root);
+        let c = self.carts.iter().find(|c| c.id == root)?;
+        Some(c.to_nbt(uuid, self.persist.raw.get(&root)))
+    }
+    /// `ServerPlayer.saveParentVehicle`: a player riding `vehicle` saves
+    /// RootVehicle {Attach: that mount's UUID, Entity: the root vehicle with
+    /// its passengers}, only while it is the root's one player passenger
+    /// (`Entity.hasExactlyOnePlayerPassenger`); `others` are the vehicles the
+    /// other players in the level ride. With the root and the mount's UUID.
+    pub(super) fn parent_vehicle_tag(
+        &mut self,
+        vehicle: Option<u32>,
+        others: &[u32],
+    ) -> Option<(Tag, u32, [i32; 4])> {
+        let vehicle = vehicle?;
+        let root = self.vehicle_root(vehicle);
+        if others.iter().any(|&o| self.vehicle_root(o) == root) {
+            return None;
+        }
+        let entity = self.vehicle_tree_nbt(root)?;
+        let attach = self.uuid_for(vehicle);
+        let tag = Tag::compound([
+            ("Attach", Tag::IntArray(attach.to_vec())),
+            ("Entity", entity),
+        ]);
+        Some((tag, root, attach))
+    }
+    /// `PlayerList.remove`: the root vehicle and its passengers leave the
+    /// world with the player (`setRemoved(UNLOADED_WITH_PLAYER)`).
+    pub(super) fn remove_vehicle_tree(&mut self, root: u32) {
+        let mut gone = vec![root];
+        let mut k = 0;
+        while k < gone.len() {
+            let v = gone[k];
+            gone.extend(
+                self.mobs
+                    .iter()
+                    .filter(|m| m.extra.mount == Some(v))
+                    .map(|m| m.id),
+            );
+            k += 1;
+        }
+        self.mobs.retain(|m| !gone.contains(&m.id));
+        self.boats.retain(|b| !gone.contains(&b.id));
+        self.carts.retain(|c| !gone.contains(&c.id));
+        for g in gone {
+            self.forget_entity(g);
+        }
     }
     /// The vehicle with this UUID, among the ones in the world.
     pub(super) fn vehicle_by_uuid(&self, uuid: [i32; 4]) -> Option<u32> {

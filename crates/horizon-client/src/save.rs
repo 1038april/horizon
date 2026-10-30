@@ -3294,9 +3294,8 @@ impl Level {
                 .collect(),
             _ => Vec::new(),
         };
-        // ServerPlayer.saveParentVehicle: the vehicle the player rides, by
-        // UUID. Horizon keeps the vehicle in the world, so the file names it
-        // instead of holding a second copy of it.
+        // ServerPlayer.saveParentVehicle: the mount the player rides, by
+        // UUID; the vehicle tree stays in the raw compound until it is back.
         self.root_vehicle = p
             .get("RootVehicle")
             .and_then(|r| uuid_from_tag(r.get("Attach")));
@@ -3508,9 +3507,9 @@ impl Level {
                 map.entry(key.into()).or_insert(value);
             }
         }
-        // ServerPlayer.saveParentVehicle: the vehicle the player rides, by
-        // UUID. Horizon keeps the vehicle in the world, so the file names it
-        // instead of holding a second copy of it.
+        // ServerPlayer.saveParentVehicle: the savers put the whole
+        // RootVehicle in the compound; a mount known by UUID alone (older
+        // Horizon files) is still named.
         if let Some(vehicle) = self.root_vehicle
             && p.get("RootVehicle").is_none()
         {
