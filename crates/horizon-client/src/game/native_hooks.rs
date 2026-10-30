@@ -6,6 +6,8 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 9 adds opt-in texture-matched emissive material requests (`native_emissive`).
+//!
 //! API 8 adds bounded world-space rim and colored-light requests (`native_visuals`).
 //!
 //! API 7 adds block-change observations (`native_block_changed`).
@@ -53,7 +55,7 @@ use winit::{event::MouseButton, keyboard::KeyCode};
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 8;
+pub(crate) const NATIVE_HOOKS_API: u32 = 9;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -341,6 +343,12 @@ impl Game<'_> {
         lights: &mut Vec<NativeColoredLight>,
     ) {
         let _ = (rims, lights);
+    }
+    /// At most 32 pairs of already-loaded base and transparent overlay sprites.
+    /// Per-pixel alpha in the overlay marks full-bright material, without
+    /// illuminating the surrounding block or changing gameplay light.
+    pub(super) fn native_emissive(&self, layers: &mut Vec<(&'static str, &'static str)>) {
+        let _ = layers;
     }
     /// The world's phases, read-only; `error_text` carries the engine's
     /// own open-failure text, empty otherwise. Server-side; the deprecated

@@ -60,6 +60,13 @@ state. Helpers `native_lit_block_name` and `native_flame_particle` read loaded
 blocks and emit a nearby vanilla flame particle; native mods must rate-limit
 emission. Bundles using these features need `"hooks": 8`.
 
+API 9 adds `native_emissive`: a world-frame hook for at most 32 pairs of
+already-loaded terrain sprites. Transparent pixels in an overlay leave its
+base unchanged; opaque pixels are drawn full-bright without changing gameplay
+light or the surrounding rock. The source pack must supply the overlay texture
+under `assets/<namespace>/textures/emissive/`. When no mod requests overlays,
+the terrain shader skips the lookup. Bundles using this hook need `"hooks": 9`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads
