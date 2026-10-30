@@ -8,6 +8,14 @@ developers, with upstream fixes applied
 [gfx-rs/wgpu#10714](https://github.com/gfx-rs/wgpu/pull/10714)). It is licensed under MIT or
 Apache-2.0; both licenses are in that folder (`LICENSE.MIT`, `LICENSE.APACHE`).
 
+## naga
+
+`third_party/naga` is [naga](https://github.com/gfx-rs/wgpu) 30.0.1 by the gfx-rs developers, with
+fixes to its GLSL frontend that shader packs need (textureGather, atomic functions, subgroup
+operations, pointers to struct fields and array elements passed as `out` arguments and others),
+each applied in the commit that needed it. It is licensed under MIT or Apache-2.0; both licenses
+are in that folder (`LICENSE.MIT`, `LICENSE.APACHE`).
+
 ## Pixelify Sans
 
 `crates/horizon-theme/fonts/PixelifySans-*.ttf` is [Pixelify Sans](https://github.com/eifetx/Pixelify-Sans)
