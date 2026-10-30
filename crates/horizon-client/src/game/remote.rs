@@ -8419,13 +8419,30 @@ impl Game<'_> {
         }
         let (w, h) = (batch.width, batch.height);
         if let Some(since) = r.reconfiguring {
+            // ServerReconfigScreen narrates its title.
+            horizon_client::widgets::begin_screen(|| {
+                horizon_client::widgets::ScreenInfo::new(
+                    "reconfiguring",
+                    super::screen_info::tr("connect.reconfiguring", &[]),
+                )
+            });
             self.draw_reconfiguring(batch, since);
             return true;
         }
         if r.joined || loading {
             // LevelLoadingScreen: the world's terrain comes in. A server's
             // chunk status view and progress are the integrated server's alone
-            // (`LevelLoadTracker.statusView`, `hasProgress`).
+            // (`LevelLoadTracker.statusView`, `hasProgress`), and so is what
+            // the narrator says of it.
+            let progress = self
+                .integrated
+                .as_ref()
+                .map(|i| i.load_view())
+                .filter(|v| v.has_progress())
+                .map(|v| v.server_progress());
+            horizon_client::widgets::begin_screen(|| {
+                super::screen_info::level_loading(progress, &super::screen_info::tr)
+            });
             self.draw_level_loading_background(batch, r.level_load.reason);
             let atlas = &self.gui.atlas;
             match self.integrated.as_ref().map(|i| i.load_view()) {
@@ -8453,6 +8470,16 @@ impl Game<'_> {
             ));
         }
         let Some(r) = &self.remote else { return false };
+        // ConnectScreen: `GameNarrator.NO_TITLE`, then its Cancel; single
+        // player's server is joined under its LevelLoadingScreen.
+        let single_player = self.integrated.is_some();
+        horizon_client::widgets::begin_screen(|| {
+            if single_player {
+                super::screen_info::level_loading(None, &super::screen_info::tr)
+            } else {
+                horizon_client::widgets::ScreenInfo::new("connect", "")
+            }
+        });
         let atlas = &self.gui.atlas;
         let status = horizon_client::text::Text::literal(r.status.as_str());
         horizon_client::level_loading::draw_connecting(batch, atlas, &status, self.cursor, cancel);

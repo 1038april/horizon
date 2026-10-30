@@ -795,6 +795,7 @@ impl Loading {
             // 20 ticks a second: the startup menu runs no tick rate.
             let delta_ticks = now.duration_since(*frame).as_secs_f32() * 20.0;
             *frame = now;
+            horizon_client::widgets::begin_screen(|| win.screen_info());
             win.draw(batch, &gui.atlas, delta_ticks, Default::default());
             if win.finished(batch.height) {
                 self.menu.win = None;
