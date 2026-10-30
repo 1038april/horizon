@@ -70,8 +70,10 @@ impl Game<'_> {
             let loaded = horizon_client::crash::contain(|| {
                 match Pack::open(&path) {
                     Ok(pack) => {
-                        let macros = Macros::standard();
+                        let mut macros = Macros::standard();
+                        renderer.define_pack_macros(&mut macros);
                         let text = pack.read_text("shaders.properties").unwrap_or_default();
+                        // Its conditionals test the pack's options too.
                         let properties = Properties::parse(
                             &text,
                             &horizon_shaders::with_options(&pack, &macros),
