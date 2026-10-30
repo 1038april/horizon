@@ -2557,7 +2557,7 @@ impl Renderer {
                 .get_downlevel_capabilities()
                 .flags
                 .contains(wgpu::DownlevelFlags::INDIRECT_EXECUTION);
-        // Without indirect draws (OpenGL before 4.3 without compute shaders)
+        // Without indirect draws (OpenGL before 4.0 without indirect execution)
         // even creating an indirect buffer fails; one draw per section reads
         // `draws` on the CPU instead.
         let indirect = device.create_buffer(&wgpu::BufferDescriptor {
