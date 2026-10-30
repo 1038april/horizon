@@ -701,6 +701,17 @@ fn date(secs: u64) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
+/// What a submission branch's commit carries to say the form wrote it for
+/// `login`: signed with the service's key, so a retry by the same account
+/// may start that branch again.
+fn submission_tag(config: &Config, branch: &str, login: &str) -> String {
+    let signed = sign(
+        &config.session_key,
+        &format!("submission\n{branch}\n{}", login.to_lowercase()),
+    );
+    signed.rsplit('.').next().unwrap_or("").to_owned()
+}
+
 /// The submission, past its checks: the entry written on a new branch and a
 /// pull request opened. Returns the pull request's address.
 pub fn publish(
@@ -857,10 +868,14 @@ pub fn publish(
     gh.stage(&format!("{sha256}.{extension}"), file)
         .map_err(github_down)?;
     let branch = format!("submit/{}-{}", form.id, version.version);
+    // Its commit's record of whose it is: only this service can write it,
+    // where a commit's text or author can be anyone's who writes to the repository.
+    let submission = format!("Submission: {}", submission_tag(config, &branch, login));
     if !gh.branch(&branch).map_err(github_down)? {
         // The branch is there: a pull request, someone else's submission, or
         // this submitter's own that GitHub broke off (a timeout past the
-        // branch's creation). Only the last is taken up again, from main.
+        // branch's creation). Only the last is taken up again, from main: the
+        // branch holds no commit yet, or the one this form wrote for them.
         if let Some(url) = gh.open_pull(&branch).map_err(github_down)? {
             return Err(Refusal::new(
                 StatusCode::CONFLICT,
@@ -870,9 +885,12 @@ pub fn publish(
                 ),
             ));
         }
-        let mine = format!("submitted by @{} through the form.", login.to_lowercase());
         let commits = gh.commits(&branch).map_err(github_down)?;
-        if commits.iter().any(|m| !m.to_lowercase().contains(&mine)) {
+        let theirs = commits.len() <= 1
+            && commits
+                .iter()
+                .all(|m| m.lines().any(|l| l.trim() == submission));
+        if !theirs {
             return Err(Refusal::new(
                 StatusCode::CONFLICT,
                 format!(
@@ -885,7 +903,7 @@ pub fn publish(
     }
     let what = if is_new { "Add" } else { "Update" };
     let message = format!(
-        "{what} {} {}\n\nSubmitted by @{login} through the form.\n\nCo-authored-by: {login} <{user_id}+{login}@users.noreply.github.com>",
+        "{what} {} {}\n\nSubmitted by @{login} through the form.\n\n{submission}\nCo-authored-by: {login} <{user_id}+{login}@users.noreply.github.com>",
         form.id, version.version
     );
     gh.put(

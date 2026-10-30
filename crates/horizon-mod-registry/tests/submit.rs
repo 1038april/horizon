@@ -611,7 +611,8 @@ async fn a_retry_takes_up_its_own_branch() {
     let branch = "submit/coords_hud-0.1.0".to_owned();
     let key = (branch.clone(), "mods/coords_hud.toml".to_owned());
 
-    // Someone else's branch, with no pull request: not taken over.
+    // Someone else's branch, with no pull request: not taken over, even when
+    // its commit copies the form's words for alice (only the service signs them).
     let csrf = client.sign_in().await;
     {
         let mut m = mock.lock().unwrap();
@@ -620,7 +621,7 @@ async fn a_retry_takes_up_its_own_branch() {
             key.clone(),
             (
                 "x".into(),
-                "Add coords_hud 0.1.0\n\nSubmitted by @bob through the form.".into(),
+                "Add coords_hud 0.1.0\n\nSubmitted by @alice through the form.\n\nSubmission: forged".into(),
                 None,
             ),
         );
@@ -655,10 +656,10 @@ async fn a_retry_takes_up_its_own_branch() {
     {
         let m = mock.lock().unwrap();
         assert_eq!(m.resets, [branch.as_str()]);
+        let message = &m.commits[&key].1;
         assert!(
-            m.commits[&key]
-                .1
-                .contains("Submitted by @alice through the form.")
+            message.contains("Submitted by @alice through the form.\n\nSubmission: "),
+            "{message}"
         );
         assert_eq!(m.pulls[0]["head"], branch.as_str());
     }
