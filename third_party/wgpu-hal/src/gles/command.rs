@@ -1140,6 +1140,10 @@ impl crate::CommandEncoder for super::CommandEncoder {
             return;
         }
         self.prepare_draw(0);
+        #[allow(
+            clippy::clone_on_copy,
+            reason = "False positive when cloning glow::UniformLocation"
+        )]
         self.cmd_buffer.commands.push(C::DrawIndirect {
             topology: self.state.topology,
             indirect_buf: buffer.raw.unwrap(),
@@ -1162,6 +1166,10 @@ impl crate::CommandEncoder for super::CommandEncoder {
             wgt::IndexFormat::Uint16 => glow::UNSIGNED_SHORT,
             wgt::IndexFormat::Uint32 => glow::UNSIGNED_INT,
         };
+        #[allow(
+            clippy::clone_on_copy,
+            reason = "False positive when cloning glow::UniformLocation"
+        )]
         self.cmd_buffer.commands.push(C::DrawIndexedIndirect {
             topology: self.state.topology,
             index_type,
