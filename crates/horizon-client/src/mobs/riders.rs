@@ -16,12 +16,6 @@ const CONTROLLED: u8 = MOVE | JUMP | LOOK;
 /// `EntityType` passenger attachment of a vehicle (before rotation): where a
 /// rider's attachment point sits relative to the vehicle's feet.
 pub fn passenger_attachment(v: &Mob) -> [f64; 3] {
-    let [x, y, z] = base_attachment(v);
-    // AbstractHorse.getPassengerAttachmentPoint: a rearing horse slides it.
-    let rear = super::equine::rear_offset(v);
-    [x + rear[0], y + rear[1], z + rear[2]]
-}
-fn base_attachment(v: &Mob) -> [f64; 3] {
     match v.species() {
         Species::Chicken => [0.0, 0.7, -0.1],
         Species::Spider => [0.0, 0.765, 0.0],
@@ -32,7 +26,10 @@ fn base_attachment(v: &Mob) -> [f64; 3] {
         Species::SkeletonHorse | Species::ZombieHorse => [0.0, 1.31875, 0.0],
         Species::Pig => [0.0, 0.86875, 0.0],
         Species::Nautilus | Species::ZombieNautilus => [0.0, 1.1375, 0.0],
-        Species::Camel | Species::CamelHusk => super::camel::passenger_attachment(v),
+        // Camel.getPassengerAttachmentPoint for a lone standing driver.
+        Species::Camel | Species::CamelHusk if !super::camel::sitting(v) => {
+            [0.0, f64::from(v.height()) - 0.375, 0.5]
+        }
         // The default attachments: the top of the bounding box.
         _ => [0.0, f64::from(v.height()), 0.0],
     }
