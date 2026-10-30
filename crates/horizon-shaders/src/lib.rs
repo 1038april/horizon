@@ -6,6 +6,8 @@
 //! - [`discover`]: the packs in a `shaderpacks` folder.
 //! - [`Properties`]: `shaders.properties` and the id files, with their conditional directives (3.1, 1.5).
 //! - [`Lang`]: the pack's translated names (8.4).
+//! - [`options`], [`Screens`]: the options the player can change, and how the pack lays them out
+//!   on its screens (8.1 to 8.3); [`Pack::with_chosen`] runs the pack with the player's values.
 //! - [`preprocess`]: a stage file through `#include` and the GLSL preprocessor, lines mapped back (1.4, 1.5).
 //! - [`translate_composite`], [`translate_gbuffers`], [`translate_shadow`]: a program into naga modules and its interface (1.6, 2.2).
 //! - [`Config`] and [`draw_buffers`]: the buffer settings and output lists stage files carry (1.7, 6.1).
@@ -26,6 +28,7 @@ mod pack;
 mod post;
 mod preprocess;
 mod properties;
+mod screens;
 mod textures;
 mod translate;
 
@@ -37,7 +40,10 @@ pub use custom::{Custom, Val};
 pub use discover::{Found, discover};
 pub use lang::Lang;
 pub use macros::{MC_VERSION, Macros, RENDER_STAGES, render_stage};
-pub use options::{switches_on, value_options, with_options};
+pub use options::{
+    PackOption, apply as apply_options, chosen_file, chosen_text, options, parse_chosen,
+    switches_on, value_options, with_options,
+};
 pub use pack::{Pack, PackError};
 pub use post::{
     Blend, BufferObject, BufferSize, CELESTIAL_BLEND, CustomImage, Factor, GameInputs, Group,
@@ -45,6 +51,7 @@ pub use post::{
 };
 pub use preprocess::{Diagnostic, Origin, Preprocessed, preprocess};
 pub use properties::{Entry, Note, Properties};
+pub use screens::{Item as ScreenItem, Screens};
 pub use textures::{
     CustomTexture, Dim as TextureDim, Texels, Texture, TextureSource, decode_png, load_textures,
 };
