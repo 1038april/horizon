@@ -175,6 +175,15 @@ pub(crate) fn hold_lock(dir: &Path, log: Log) -> Result<fs::File, String> {
     Ok(file)
 }
 
+/// Whether two folders are one, through `..`, links and case; a missing folder is created first.
+fn same_dir(a: &Path, b: &Path) -> Result<bool, String> {
+    let real = |dir: &Path| {
+        mkdir(dir)?;
+        fs::canonicalize(dir).map_err(|e| format!("{}: {e}", dir.display()))
+    };
+    Ok(real(a)? == real(b)?)
+}
+
 pub(crate) fn read_json(path: &Path) -> Result<Value, String> {
     let text = String::from_utf8(read(path)?).map_err(|e| format!("{}: {e}", path.display()))?;
     pyjson::loads(&text).map_err(|e| format!("{}: {e}", path.display()))
@@ -513,7 +522,13 @@ fn prepare_impl(options: &Options, log: Log, compile_only: bool) -> Result<PathB
         }
         None => resources_dir(root, &lock.version, None),
     };
-    let _resources_lock = hold_lock(&resources, log)?;
+    // `--output` may name the `.local` folder itself, whose lock is held already: a second
+    // handle on the same lock file would wait for this process forever.
+    let _resources_lock = if same_dir(&resources, &local)? {
+        None
+    } else {
+        Some(hold_lock(&resources, log)?)
+    };
     let manifest_path = resources.join("horizon-resources.json");
     let oracle = root.join(PARITY).join("VanillaHeightmapOracle.java");
     let origin = Value::Object(vec![
@@ -1280,6 +1295,17 @@ fn export_block_behavior(run: &Run, export: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_output_in_the_scratch_folder_is_one_folder_however_it_is_named() {
+        let dir = std::env::temp_dir().join(format!("horizon-prepare-same-{}", std::process::id()));
+        let local = dir.join(".local");
+        assert!(same_dir(&local, &dir.join("x").join("..").join(".local")).unwrap());
+        assert!(!same_dir(&local, &local.join("horizon-client")).unwrap());
+        // The lock it would have taken twice: once, then the output skips it.
+        let _held = hold_lock(&local, &|_| {}).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn datagen_reports_are_installed_beside_resources_and_missing_reports_need_repair() {
