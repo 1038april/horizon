@@ -467,7 +467,10 @@ mod tests {
     fn world_packs_supply_dialog_entries_and_tags() {
         use horizon_world::loot::PackOverlay;
         let mut entries = Entries {
-            names: vec!["minecraft:quick_actions".into(), "minecraft:server_links".into()],
+            names: vec![
+                "minecraft:quick_actions".into(),
+                "minecraft:server_links".into(),
+            ],
             json: vec![serde_json::json!({ "type": "minecraft:dialog_list" }); 2],
         };
         let files = vec![
@@ -492,9 +495,16 @@ mod tests {
         SyncData::merge_dialog_entries(&mut entries, &overlay);
         assert_eq!(
             entries.names,
-            ["minecraft:quick_actions", "minecraft:server_links", "test:menu"]
+            [
+                "minecraft:quick_actions",
+                "minecraft:server_links",
+                "test:menu"
+            ]
         );
-        assert_eq!(entries.json[0]["title"], "Quick", "a pack overrides an entry");
+        assert_eq!(
+            entries.json[0]["title"], "Quick",
+            "a pack overrides an entry"
+        );
         let dynamic = Dynamic {
             registries: HashMap::from([(
                 "minecraft:dialog".to_owned(),
@@ -522,7 +532,11 @@ mod tests {
             .iter()
             .find(|t| t.name == "minecraft:quick_actions")
             .unwrap();
-        assert_eq!(quick.ids, [2, 1], "the pack's dialog, then the nested tag's");
+        assert_eq!(
+            quick.ids,
+            [2, 1],
+            "the pack's dialog, then the nested tag's"
+        );
     }
 
     #[test]

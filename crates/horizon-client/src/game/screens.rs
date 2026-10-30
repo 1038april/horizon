@@ -4,7 +4,7 @@ use horizon_client::{
     Result,
     command::args::GameMode,
     confirm_screen::Confirm,
-    dialog::{Dialog},
+    dialog::Dialog,
     hud::{HudBatch, rgba},
     text::{self, Text},
     ui,
@@ -103,7 +103,12 @@ fn pause_buttons(
 /// `FRIENDS_ICON` (vanilla's `CommonButtons.friends`) opens Horizon's
 /// Play with Friends; the others stay inactive.
 const FRIENDS_ICON: usize = 2;
-fn pause_icons(w: f32, h: f32, links: bool, additions_count: usize) -> [(f32, f32, &'static str); 4] {
+fn pause_icons(
+    w: f32,
+    h: f32,
+    links: bool,
+    additions_count: usize,
+) -> [(f32, f32, &'static str); 4] {
     let x0 = ((w - 212.0) * 0.5).floor() + 60.0;
     let links_down = if links { 24.0 } else { 0.0 };
     let additions_h = additions_count as f32 * 24.0;
@@ -150,7 +155,10 @@ impl Game<'_> {
             Some(d) => d,
             None => return Vec::new(),
         };
-        let tag = match registries.dialog_tags.get("minecraft:pause_screen_additions") {
+        let tag = match registries
+            .dialog_tags
+            .get("minecraft:pause_screen_additions")
+        {
             Some(t) => t,
             None => return Vec::new(),
         };
@@ -162,14 +170,17 @@ impl Game<'_> {
                 let dialog = Dialog::parse(dialog_tag)?;
                 // Only dialogs with external_title and pause:true appear in pause menu
                 if dialog.external_title.is_some() && dialog.pause {
-                    Some((dialog.external_title.unwrap_or(dialog.title), dialog_tag.clone()))
+                    Some((
+                        dialog.external_title.unwrap_or(dialog.title),
+                        dialog_tag.clone(),
+                    ))
                 } else {
                     None
                 }
             })
             .collect()
     }
-    
+
     /// Singleplayer also has a connection, backed by the integrated server.
     pub(super) fn external_server(&self) -> bool {
         self.remote.is_some() && self.integrated.is_none()
@@ -192,7 +203,9 @@ impl Game<'_> {
         let links = !self.server_links().is_empty();
         let additions = self.pause_screen_additions();
         let mut tooltip = None;
-        for (x, y, bw, key, id, active) in pause_buttons(w, h, self.external_server(), links, additions.len()) {
+        for (x, y, bw, key, id, active) in
+            pause_buttons(w, h, self.external_server(), links, additions.len())
+        {
             let hover = active && ui::hovered(self.cursor, x, y, bw, 20.0);
             ui::button(
                 batch,
@@ -221,19 +234,12 @@ impl Game<'_> {
         for (i, (label, _)) in additions.iter().enumerate() {
             let y = base_y + i as f32 * 24.0;
             let hover = ui::hovered(self.cursor, x0 + 4.0, y, 204.0, 20.0);
-            ui::button(
-                batch,
-                atlas,
-                x0 + 4.0,
-                y,
-                204.0,
-                20.0,
-                label,
-                true,
-                hover,
-            );
+            ui::button(batch, atlas, x0 + 4.0, y, 204.0, 20.0, label, true, hover);
         }
-        for (i, (x, y, sprite)) in pause_icons(w, h, links, additions.len()).into_iter().enumerate() {
+        for (i, (x, y, sprite)) in pause_icons(w, h, links, additions.len())
+            .into_iter()
+            .enumerate()
+        {
             let active = i == FRIENDS_ICON && friends;
             let hover = ui::hovered(self.cursor, x, y, 20.0, 20.0);
             // The icon has no label: name it for controller focus and the
@@ -287,13 +293,13 @@ impl Game<'_> {
         let links = !self.server_links().is_empty();
         let additions = self.pause_screen_additions();
         let friends = pause_icons(w, h, links, additions.len())[FRIENDS_ICON];
-        
+
         // Check standard pause buttons first
         let standard_hit = pause_buttons(w, h, self.external_server(), links, additions.len())
             .into_iter()
             .find(|b| b.5 && ui::hovered(self.cursor, b.0, b.1, b.2, 20.0))
             .map(|b| b.4);
-        
+
         // Check pause screen additions
         let addition_hit = if standard_hit.is_none() {
             let links_down = if links { 24.0 } else { 0.0 };
@@ -303,18 +309,21 @@ impl Game<'_> {
             let y0 = ((h - grid_h) * 0.25).floor();
             // Additions start at row 3 (y0 + 122), after server_links if present
             let base_y = y0 + 122.0 + links_down;
-            additions.iter().enumerate().find_map(|(i, (_, dialog_tag))| {
-                let y = base_y + i as f32 * 24.0;
-                if ui::hovered(self.cursor, x0 + 4.0, y, 204.0, 20.0) {
-                    Some((i, dialog_tag.clone()))
-                } else {
-                    None
-                }
-            })
+            additions
+                .iter()
+                .enumerate()
+                .find_map(|(i, (_, dialog_tag))| {
+                    let y = base_y + i as f32 * 24.0;
+                    if ui::hovered(self.cursor, x0 + 4.0, y, 204.0, 20.0) {
+                        Some((i, dialog_tag.clone()))
+                    } else {
+                        None
+                    }
+                })
         } else {
             None
         };
-        
+
         // Check friends icon
         let friends_hit = if standard_hit.is_none() && addition_hit.is_none() {
             (self.friends_view().shown
@@ -323,7 +332,7 @@ impl Game<'_> {
         } else {
             None
         };
-        
+
         // Handle standard buttons
         if let Some(hit) = standard_hit {
             match hit {
@@ -354,7 +363,7 @@ impl Game<'_> {
             self.screen = Screen::Friends;
             self.audio.play_button_click();
         }
-        
+
         Ok(())
     }
     /// DeathScreen: gradient, the title at double size, the cause and score.
