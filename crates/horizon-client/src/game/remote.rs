@@ -1558,7 +1558,7 @@ impl Game<'_> {
             .get("minecraft:worldgen/biome")
             .map(|list| {
                 list.iter()
-                    .map(|(name, _)| self.res.biomes().id(name))
+                    .map(|(name, _)| world_biomes!(self).id(name))
                     .collect()
             })
             .unwrap_or_default();

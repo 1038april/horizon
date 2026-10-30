@@ -352,7 +352,7 @@ impl Game<'_> {
                 .chunks
                 .get(&(b[0] >> 4, b[2] >> 4))
                 .map_or(0, |c| c.biome(b[0], b[1], b[2]));
-            let rains = self.res.biomes().get(biome).precipitation;
+            let rains = world_biomes!(self).get(biome).precipitation;
             update_rain_fog(
                 &mut self.fog,
                 rain,
@@ -382,7 +382,7 @@ impl Game<'_> {
         };
         let world = &self.world;
         let facts = self.res.facts();
-        let biomes = self.res.biomes();
+        let biomes = world_biomes!(self);
         let properties = &self.pack.assets.properties;
         let raining = rain > 0.2;
         let raining_at = |p: [i32; 3]| {

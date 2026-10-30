@@ -30,6 +30,16 @@ macro_rules! world_stations {
         }
     };
 }
+/// The biome table the world plays with (`Game::biomes`), as a field-level
+/// borrow: the world's packs' over the game's own.
+macro_rules! world_biomes {
+    ($s:expr) => {
+        match &$s.world_biomes {
+            Some(b) => b,
+            None => $s.res.biomes(),
+        }
+    };
+}
 
 /// The world's packs' content files, as a field-level borrow (see the macros).
 fn pack_files(world_tables: &Option<WorldTables>) -> horizon_world::loot::PackOverlay<'_> {
@@ -1758,6 +1768,9 @@ struct Game<'a> {
     weather_parameters: horizon_client::weather::ParameterCache,
     panorama_rotation: horizon_client::gfx::panorama::Rotation,
     world: World,
+    /// The biome table the world plays with: the game's own with the world's
+    /// packs over it (`Biomes::with_packs`), `None` before a world opens.
+    world_biomes: Option<Arc<Biomes>>,
     streaming: Streaming,
     lod: Option<horizon_client::lod::Lod>,
     lod_source_attempted: bool,
@@ -2983,7 +2996,7 @@ impl Game<'_> {
                 state,
                 pos,
                 &region,
-                self.res.biomes(),
+                world_biomes!(self),
                 self.streaming.biome_zoom,
                 self.streaming.biome_blend,
             )
@@ -3477,7 +3490,7 @@ impl Game<'_> {
             player_box,
             guest_boxes,
             player_collision,
-            biomes: self.res.biomes(),
+            biomes: world_biomes!(self),
             seed: self.level.seed,
             behaviours: self.res.behaviours(),
             items: world_items!(self),
@@ -10362,6 +10375,9 @@ impl Game<'_> {
         let dim = Dim::from_id(&level.dimension);
         self.level_shapes = shapes;
         self.world_root = save_root.clone();
+        // The world's packs over the game's biomes (`Biomes::with_packs`),
+        // the table its chunks were built with.
+        self.world_biomes = self.packed_biomes();
         horizon_client::crash::set_detail(
             "World",
             format!("{} ({})", level.name, save_root.display()),
@@ -10554,7 +10570,7 @@ impl Game<'_> {
         let keys: Vec<_> = self.world.modified.drain().collect();
         let chunks = self.with_entities(keys.iter().filter_map(|k| self.world.chunks.get(k)));
         self.save
-            .save(&chunks, self.pack.assets.registry, self.res.biomes())?;
+            .save(&chunks, self.pack.assets.registry, world_biomes!(self))?;
         self.save_dimension_entities()?;
         // Coordinates scale by 8 between the Overworld and the Nether.
         let scale = match (self.dim, target) {
@@ -13072,7 +13088,7 @@ impl Game<'_> {
         let keys: Vec<_> = self.world.modified.drain().collect();
         let chunks = self.with_entities(keys.iter().filter_map(|k| self.world.chunks.get(k)));
         self.save
-            .save_later(&chunks, self.pack.assets.registry, self.res.biomes())?;
+            .save_later(&chunks, self.pack.assets.registry, world_biomes!(self))?;
         // Prepare entities while the chunk writer runs, then use one barrier.
         self.save_entities(false)?;
         self.save_raids();
@@ -13286,7 +13302,7 @@ impl Game<'_> {
         // EnvironmentAttributeProbe: the spatially interpolated biome colours,
         // Gaussian-weighted over the noise biomes around the camera (plains
         // where no chunk is loaded, as ClientLevel.getUncachedNoiseBiome).
-        let biomes = self.res.biomes();
+        let biomes = world_biomes!(self);
         let weights = {
             let chunks = &self.world.chunks;
             let plains = biomes.id("minecraft:plains");
@@ -14192,7 +14208,7 @@ impl Game<'_> {
         if !modified.is_empty()
             && let Err(e) = horizon_client::spans::time("save_chunks", || {
                 self.save
-                    .save_later(&modified, self.pack.assets.registry, self.res.biomes())
+                    .save_later(&modified, self.pack.assets.registry, world_biomes!(self))
             })
         {
             log::warn!("Horizon: failed to save unloaded chunks: {e}");
@@ -15578,6 +15594,7 @@ impl<'a> Game<'a> {
             &gui.atlas.translucent,
         );
         Ok(Game {
+            world_biomes: None,
             res: res.clone(),
             rest_loader: None,
             pending_entry: None,
@@ -16211,6 +16228,27 @@ impl Game<'_> {
         }
     }
     /// The world's packs' content files, none without packs.
+    /// The game's biomes with the world's packs over them, `None` when the
+    /// world has no biome files of its own.
+    fn packed_biomes(&self) -> Option<Arc<Biomes>> {
+        let files = functions::content_overlay(&self.world_root, &self.options.resources, false);
+        let overlay = horizon_world::loot::PackOverlay { files: &files };
+        let packed: Vec<(String, serde_json::Value)> = overlay
+            .kind("worldgen/biome")
+            .filter_map(|(id, files)| {
+                let v =
+                    serde_json::from_slice(horizon_world::loot::PackOverlay::top(files)).ok()?;
+                Some((id.to_owned(), v))
+            })
+            .collect();
+        (!packed.is_empty()).then(|| {
+            Arc::new(
+                self.res
+                    .biomes()
+                    .with_packs(packed.iter().map(|(i, v)| (i.as_str(), v))),
+            )
+        })
+    }
     fn pack_files(&self) -> horizon_world::loot::PackOverlay<'_> {
         pack_files(&self.world_tables)
     }

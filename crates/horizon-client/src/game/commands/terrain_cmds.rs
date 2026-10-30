@@ -176,7 +176,11 @@ impl Game<'_> {
         if volume > i64::from(limit) {
             return Err(err("commands.fillbiome.toobig", &[&limit, &volume]));
         }
-        let Some(target) = self.res.biomes().list.iter().position(|b| b.name == biome) else {
+        let Some(target) = world_biomes!(self)
+            .list
+            .iter()
+            .position(|b| b.name == biome)
+        else {
             return Err(err(
                 "argument.resource.not_found",
                 &[&biome, &"minecraft:worldgen/biome"],
@@ -203,7 +207,7 @@ impl Game<'_> {
                         continue;
                     };
                     let current = chunk.biome(x, y, z);
-                    let current_name = &self.res.biomes().list[usize::from(current)].name;
+                    let current_name = &world_biomes!(self).list[usize::from(current)].name;
                     if let Some(f) = &filter
                         && !self.biome_matches(f, current_name)
                     {

@@ -469,7 +469,7 @@ impl Game<'_> {
             });
         let flat = preset == horizon_client::save::WorldPreset::Flat;
         let settings = if flat {
-            let biomes = self.res.biomes();
+            let biomes = world_biomes!(self);
             let (settings, errors) = horizon_client::flatgen::settings_from_json(
                 &props.generator_settings,
                 |b| self.pack.assets.registry.default_state(b).is_some(),
