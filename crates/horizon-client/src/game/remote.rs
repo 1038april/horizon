@@ -35,7 +35,7 @@ use horizon_protocol::{
         Empty,
         play::{self, Clientbound as C, Serverbound as S},
     },
-    registry::{Builtin, DimensionType, Dynamic, ceil_log2},
+    registry::{Builtin, DimensionType, Dynamic, SyncedNames, ceil_log2},
     secure_chat::Signature,
     text::{Language, plain},
 };
@@ -837,6 +837,16 @@ impl Game<'_> {
             },
             s,
         )
+    }
+    /// `HashedStack.create` with the connection's registries (the client's
+    /// `decoratedHashOpsGenerator`).
+    fn hashed_stack(&self, s: &Option<ItemStack>) -> Option<Hashed> {
+        let r = self.remote.as_ref()?;
+        let names = SyncedNames {
+            builtin: &r.builtin,
+            dynamic: &r.registries,
+        };
+        self.to_network(s).map(|s| Hashed::create(&s, &names))
     }
     /// A line in the connection's chat, with its styles, click and hover
     /// events (ChatComponent.addMessage). The lines the Chat option hides
@@ -2484,18 +2494,25 @@ impl Game<'_> {
             // the rope.
             C::SetEntityLink(p) => {
                 let me = self.remote.as_ref().map(|r| r.entity_id);
+                use horizon_client::mobs::leash::Holder;
+                let holder = match p.dest {
+                    0 => None,
+                    d if Some(d) == me => Some(Holder::Player),
+                    d => match self.remote_knots.get(&(d as u32)) {
+                        Some(&block) => Some(Holder::Knot(block)),
+                        // Not a known knot yet: kept by id until the knot
+                        // arrives (game/remote_objects.rs).
+                        None if self.boats.iter().any(|b| b.id == d as u32) => {
+                            Some(Holder::Boat(d as u32))
+                        }
+                        None => Some(Holder::Mob(d as u32)),
+                    },
+                };
                 if let Some(m) = self.mobs.iter_mut().find(|m| m.id == p.source as u32) {
-                    use horizon_client::mobs::leash::Holder;
-                    m.extra.leash = match p.dest {
-                        0 => None,
-                        d if Some(d) == me => Some(Holder::Player),
-                        d => match self.remote_knots.get(&(d as u32)) {
-                            Some(&block) => Some(Holder::Knot(block)),
-                            // Not a known knot yet: kept by id until the knot
-                            // arrives (game/remote_objects.rs).
-                            None => Some(Holder::Mob(d as u32)),
-                        },
-                    };
+                    m.extra.leash = holder;
+                } else if let Some(b) = self.boats.iter_mut().find(|b| b.id == p.source as u32) {
+                    // A leashed boat or raft (AbstractBoat is Leashable).
+                    b.leash = holder;
                 }
             }
             C::MoveVehicle(p) => self.remote_move_vehicle(p.position, p.yaw),
@@ -4959,10 +4976,18 @@ impl Game<'_> {
         let stepped = &mut r.stepped;
         let head_lerps = &mut r.head_lerps;
         let players = &r.level_players;
+        let tab_players = &r.tab_players;
         let mut using = Vec::new();
         let mut mob_fx = Vec::new();
         for (m, rain) in self.mobs.iter_mut().zip(rain) {
             let player = players.contains_key(&(m.id as i32));
+            if player {
+                // AvatarRenderer.extractRenderState: isSpectator, from the player list.
+                m.extra.spectator = players
+                    .get(&(m.id as i32))
+                    .and_then(|uuid| tab_players.get(uuid))
+                    .is_some_and(|t| t.game_mode == SPECTATOR);
+            }
             if (!running && !player) || driven == Some(m.id) {
                 continue;
             }
@@ -5660,6 +5685,12 @@ impl Game<'_> {
             }));
             if passes {
                 return false;
+            }
+            // MinecartCommandBlock.interact on the client: the editor opens.
+            if self.carts.iter().any(|c| {
+                c.id as i32 == hit.id && c.kind == super::minecarts::CartKind::CommandBlock
+            }) {
+                self.open_cart_command_block(hit.id as u32);
             }
             if response.unwrap_or(true) {
                 self.swing_arm();
@@ -7054,7 +7085,7 @@ impl Game<'_> {
     }
     fn send_clicks(&mut self, container: i32, clicks: Vec<Predicted>) {
         let state = self.remote.as_ref().map_or(0, |r| r.state_id);
-        let hashed = |g: &Self, s: &Option<ItemStack>| g.to_network(s).map(|s| Hashed::of(&s));
+        let hashed = |g: &Self, s: &Option<ItemStack>| g.hashed_stack(s);
         for (slot, button, input, changed, carried) in clicks {
             let changed = changed.iter().map(|(i, s)| (*i, hashed(self, s))).collect();
             let carried = hashed(self, &carried);
@@ -7101,7 +7132,7 @@ impl Game<'_> {
             }
             self.swing_arm();
         }
-        let carried = self.to_network(&self.carried).map(|s| Hashed::of(&s));
+        let carried = self.hashed_stack(&self.carried);
         let state = self.remote.as_ref().map_or(0, |r| r.state_id);
         self.send(S::ContainerClick(play::ContainerClick {
             container,

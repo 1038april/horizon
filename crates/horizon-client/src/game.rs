@@ -54,6 +54,7 @@ mod block_entity_anims;
 mod block_entity_ticks;
 mod block_items;
 mod blockctl;
+mod boat_leads;
 mod boat_passengers;
 mod boats;
 mod books;
@@ -73,6 +74,7 @@ mod code_of_conduct;
 mod combat;
 mod command_blocks;
 mod command_harness;
+mod command_minecarts;
 mod commands;
 mod composter;
 mod consume;
@@ -899,8 +901,7 @@ impl GameLevel<'_> {
             )
     }
     /// `DetectorRailBlock.getAnalogOutputSignal`: a powered rail reads the
-    /// minecart on it, a command block cart first (its success count, which
-    /// is 0 here), else the first container cart's fullness.
+    /// minecart on it, a command block cart first (its success count), else the first container cart's fullness.
     fn detector_rail_signal(&self, pos: BlockPos, powered: bool) -> i32 {
         if !powered {
             return 0;
@@ -920,7 +921,7 @@ impl GameLevel<'_> {
                 continue;
             }
             match cart.kind {
-                minecarts::CartKind::CommandBlock => return 0,
+                minecarts::CartKind::CommandBlock => return cart.command.success_count,
                 minecarts::CartKind::Chest | minecarts::CartKind::Hopper => {
                     // Counted here, for the cart a comparator reads, not for
                     // every cart on every block tick.
@@ -998,6 +999,36 @@ impl LevelAccess for GameLevel<'_> {
         if self.native_authoritative {
             self.native_neighbor_changed(self.dimension, pos, state, changed, moved);
         }
+    }
+    fn allow_spread(
+        &self,
+        kind: horizon_world::level::Spread,
+        from: BlockPos,
+        to: BlockPos,
+    ) -> bool {
+        let mut canceled = false;
+        if self.native_authoritative {
+            let kind = match kind {
+                horizon_world::level::Spread::Fluid => "fluid",
+                horizon_world::level::Spread::Fire => "fire",
+            };
+            self.native_block_spread(self.dimension, kind, from, to, &mut canceled);
+        }
+        !canceled
+    }
+    fn allow_piston_move(
+        &self,
+        piston: BlockPos,
+        direction: horizon_core::geometry::Direction,
+        push: &[BlockPos],
+        destroy: &[BlockPos],
+    ) -> bool {
+        let mut canceled = false;
+        if self.native_authoritative {
+            let step = direction.normal();
+            self.native_piston_move(self.dimension, piston, step, push, destroy, &mut canceled);
+        }
+        !canceled
     }
     fn is_client_side(&self) -> bool {
         self.client_side
@@ -1725,6 +1756,8 @@ struct Game<'a> {
     spawn: Option<Vec3>,
     clock: FixedStep,
     previous_position: Vec3,
+    /// `yRotO` / `xRotO` of the local player: the view at the start of the tick.
+    rope_rot_old: (f32, f32),
     eye: f32,
     previous_eye: f32,
     yaw: f32,
@@ -2059,6 +2092,8 @@ struct Game<'a> {
     /// `LocalPlayer.experienceDisplayStartTick`: (last progress, seen a change, tick).
     experience_display: (f32, bool, u64),
     boats: Vec<boats::Boat>,
+    /// The boats a mob's lead can hang on, for this tick's mob ticks.
+    leash_boats: Vec<(u32, horizon_client::mobs::leash::HolderState)>,
     boat_models: boats::BoatModels,
     /// EndCrystalModel's baked layer.
     crystal_model: Option<horizon_client::mobs::Part>,
@@ -6026,6 +6061,7 @@ impl Game<'_> {
             analog: None,
         }
         .with_stick(stick.filter(|_| playing));
+        self.rope_rot_old = (self.yaw, self.pitch);
         if !riding {
             self.previous_position = player.position;
         }
@@ -11156,6 +11192,11 @@ impl Game<'_> {
             if !self.may_build() {
                 return Ok(UseResult::Fail);
             }
+            let mut canceled = false;
+            self.native_fill_bucket(stack, hit.pos, &mut canceled);
+            if canceled {
+                return Ok(UseResult::Fail);
+            }
             if self.is_powder_snow(hit.pos) {
                 self.pick_up_powder_snow(hit.pos)?;
                 return Ok(UseResult::Success { swing: true });
@@ -11203,6 +11244,11 @@ impl Game<'_> {
                 return Ok(UseResult::Fail);
             }
             let target = self.bucket_target(content, &hit);
+            let mut canceled = false;
+            self.native_fill_bucket(stack, target, &mut canceled);
+            if canceled {
+                return Ok(UseResult::Fail);
+            }
             let pos = BlockPos::new(target[0], target[1], target[2]);
             // `Player.isShiftKeyDown`: only air takes a fluid under Shift.
             let sneaking = self.keys.contains(&KeyCode::ShiftLeft);
@@ -15220,6 +15266,7 @@ impl<'a> Game<'a> {
             spawn: None,
             clock: FixedStep::default(),
             previous_position: Vec3::ZERO,
+            rope_rot_old: (0.0, 10.0),
             eye: 1.62,
             previous_eye: 1.62,
             yaw: look.map_or(level.rotation[0], |l| l.0),
@@ -15428,6 +15475,7 @@ impl<'a> Game<'a> {
             locator_camera: None,
             experience_display: Default::default(),
             boats: Vec::new(),
+            leash_boats: Vec::new(),
             boat_models: prepared.boat_models,
             crystal_model: prepared.crystal_model,
             cushion_model: prepared.cushion_model,
