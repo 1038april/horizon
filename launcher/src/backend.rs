@@ -1136,13 +1136,29 @@ fn lacks_packs(resources: &Path) -> bool {
         .any(|pack| !resources.join("assets").join(pack).is_file())
 }
 
-/// Whether the first panorama face is missing or the client jar's 1x1 placeholder (a PNG's
-/// width is the big-endian word at byte 16, in the IHDR chunk).
+/// The panorama needs six equally sized, non-placeholder square faces and an overlay.
+/// Prepared resources may contain only some of the full-size assets after an interrupted import.
 fn lacks_panorama(resources: &Path) -> bool {
-    let face = resources.join("assets/minecraft/textures/gui/title/background/panorama_0.png");
-    fs::read(face).map_or(true, |png| {
-        png.get(16..20).is_none_or(|width| width == [0, 0, 0, 1])
-    })
+    let background = resources.join("assets/minecraft/textures/gui/title/background");
+    let mut expected = None;
+    for face in 0..6 {
+        let Ok(png) = fs::read(background.join(format!("panorama_{face}.png"))) else {
+            return true;
+        };
+        if png.get(..16) != Some(b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR") {
+            return true;
+        }
+        let Some(dimensions) = png.get(16..24) else {
+            return true;
+        };
+        let width = u32::from_be_bytes(dimensions[..4].try_into().unwrap());
+        let height = u32::from_be_bytes(dimensions[4..].try_into().unwrap());
+        if width <= 1 || width != height || expected.is_some_and(|size| size != width) {
+            return true;
+        }
+        expected = Some(width);
+    }
+    !background.join("panorama_overlay.png").is_file()
 }
 
 /// Adds what a prepared version lacks of `COMPLETIONS`: a new version reuses the resources of the
@@ -4248,6 +4264,37 @@ pub fn {f}("
             .collect();
         assert!(left.is_empty());
         let _ = fs::remove_dir_all(&versions);
+    }
+
+    #[test]
+    fn panorama_completion_detects_missing_and_inconsistent_faces() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-panorama-check-{}", std::process::id()));
+        let background = dir.join("assets/minecraft/textures/gui/title/background");
+        fs::create_dir_all(&background).unwrap();
+        let header = |width: u32, height: u32| {
+            let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+            png.extend(width.to_be_bytes());
+            png.extend(height.to_be_bytes());
+            png
+        };
+        for face in 0..6 {
+            fs::write(
+                background.join(format!("panorama_{face}.png")),
+                header(2, 2),
+            )
+            .unwrap();
+        }
+        assert!(lacks_panorama(&dir));
+        fs::write(background.join("panorama_overlay.png"), b"overlay").unwrap();
+        assert!(!lacks_panorama(&dir));
+        fs::write(background.join("panorama_4.png"), header(1, 1)).unwrap();
+        assert!(lacks_panorama(&dir));
+        fs::write(background.join("panorama_4.png"), header(3, 3)).unwrap();
+        assert!(lacks_panorama(&dir));
+        fs::remove_file(background.join("panorama_4.png")).unwrap();
+        assert!(lacks_panorama(&dir));
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
