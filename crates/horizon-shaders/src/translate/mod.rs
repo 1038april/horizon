@@ -610,6 +610,23 @@ pub fn translate_compute(compute: &Preprocessed) -> Result<ComputeProgram, Vec<E
     main.push_str("    hz_main();\n}\n");
     let header = resources(&uniforms, &samplers, &images) + &c.prelude();
     let text = format!("{header}{}{main}", c.rewrite(&samplers, &uniforms));
+    // `workGroups` is an ivec3, `workGroupsRender` a vec2 (a third number, the depth of a 2D
+    // render, is taken as 1); anything else is not understood rather than guessed.
+    let mut sizes = |name: &str, counts: &[usize]| {
+        let v = constant(&c, name)?;
+        if !counts.contains(&v.len()) {
+            errors.push(Error {
+                file: compute.files.first().cloned().unwrap_or_default(),
+                line: 0,
+                message: format!("`{name}` must have {counts:?} numbers, not {}", v.len()),
+            });
+            return None;
+        }
+        Some(v)
+    };
+    let work_groups = sizes("workGroups", &[3]).map(|v| [v[0] as u32, v[1] as u32, v[2] as u32]);
+    let work_groups_render =
+        sizes("workGroupsRender", &[2, 3]).map_or([1.0, 1.0], |v| [v[0] as f32, v[1] as f32]);
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -643,16 +660,8 @@ pub fn translate_compute(compute: &Preprocessed) -> Result<ComputeProgram, Vec<E
     Ok(ComputeProgram {
         module,
         interface,
-        work_groups: constant(&c, "workGroups").and_then(|v| match v[..] {
-            [x, y, z] => Some([x as u32, y as u32, z as u32]),
-            _ => None,
-        }),
-        work_groups_render: constant(&c, "workGroupsRender")
-            .and_then(|v| match v[..] {
-                [x, y] => Some([x as f32, y as f32]),
-                _ => None,
-            })
-            .unwrap_or([1.0, 1.0]),
+        work_groups,
+        work_groups_render,
     })
 }
 
@@ -1384,6 +1393,24 @@ mod tests {
             .unwrap_or_else(|e| panic!("{e:?}"));
         assert_eq!(c.work_groups, Some([2, 1, 1]));
         assert_eq!(c.work_groups_render, [1.0, 1.0]);
+        let render = |decl: &str| {
+            let csh =
+                format!("#version 430\nlayout(local_size_x = 8) in;\n{decl}\nvoid main() {{}}\n");
+            let pack =
+                Pack::from_zip_bytes("P.zip", zip(&[("shaders/deferred_a.csh", &csh)])).unwrap();
+            translate_compute(&preprocess(&pack, "deferred_a.csh", &Macros::standard()))
+                .map(|c| c.work_groups_render)
+                .map_err(|e| e[0].message.clone())
+        };
+        assert_eq!(
+            render("const vec2 workGroupsRender = vec2(0.5, 0.25);"),
+            Ok([0.5, 0.25])
+        );
+        assert_eq!(
+            render("const vec3 workGroupsRender = vec3(0.5, 1.0, 1.0);"),
+            Ok([0.5, 1.0])
+        );
+        assert!(render("const float workGroupsRender = 0.5;").is_err());
         assert_eq!(c.module.entry_points[0].workgroup_size, [64, 1, 1]);
         let i = &c.interface;
         assert_eq!(

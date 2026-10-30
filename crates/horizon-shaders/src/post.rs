@@ -231,20 +231,26 @@ impl BufferSize {
             return None;
         };
         if w.contains('.') || h.contains('.') {
-            let (w, h) = (w.parse().ok()?, h.parse().ok()?);
-            Some(Self::Relative([w, h]))
+            let (w, h): (f32, f32) = (w.parse().ok()?, h.parse().ok()?);
+            let fine = |f: f32| f.is_finite() && f > 0.0;
+            (fine(w) && fine(h)).then_some(Self::Relative([w, h]))
         } else {
             Some(Self::Absolute([w.parse().ok()?, h.parse().ok()?]))
         }
     }
 
-    /// The size for a render size of `render`, at least one pixel.
+    /// The size for a render size of `render`, at least one pixel and at most
+    /// [`BufferSize::MAX`].
     pub fn resolve(self, render: [u32; 2]) -> [u32; 2] {
-        match self {
-            Self::Relative(s) => [0, 1].map(|k| ((render[k] as f32 * s[k]) as u32).max(1)),
-            Self::Absolute(s) => s.map(|n| n.max(1)),
-        }
+        let size = match self {
+            Self::Relative(s) => [0, 1].map(|k| (render[k] as f32 * s[k]) as u32),
+            Self::Absolute(s) => s,
+        };
+        size.map(|n| n.clamp(1, Self::MAX))
     }
+
+    /// The largest side a buffer may have, the size every device takes for a 2D texture.
+    pub const MAX: u32 = 8192;
 }
 
 pub struct Post {
@@ -899,6 +905,22 @@ mod tests {
     const FSH: &str = "#version 120\nuniform sampler2D colortex0;\nvarying vec2 uv;\n\
                        void main() {\n/* DRAWBUFFERS:3 */\n\
                        gl_FragData[0] = texture2D(colortex0, uv);\n}\n";
+
+    #[test]
+    fn buffer_sizes_are_bounded() {
+        let relative = BufferSize::parse("0.5 0.25").unwrap();
+        assert_eq!(relative.resolve([1920, 1080]), [960, 270]);
+        assert_eq!(
+            BufferSize::parse("1e30 1.0").unwrap().resolve([1920, 1080])[0],
+            BufferSize::MAX
+        );
+        assert_eq!(BufferSize::parse("inf 1.0"), None);
+        assert_eq!(BufferSize::parse("-0.5 1.0"), None);
+        assert_eq!(
+            BufferSize::parse("100000 0").unwrap().resolve([1, 1]),
+            [BufferSize::MAX, 1]
+        );
+    }
 
     #[test]
     fn programs_load_in_order_with_their_settings() {
