@@ -6084,6 +6084,10 @@ impl Game<'_> {
             return;
         }
         self.use_delay = 4;
+        // Minecraft.startUseItem: nothing is used while the hands paddle a boat.
+        if self.hands_busy() {
+            return;
+        }
         // Resolve the crosshair once. A passing entity interaction keeps
         // that target and may only fall back to using the item itself.
         let entity = self.entity_targeted();
