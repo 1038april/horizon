@@ -17,5 +17,11 @@ windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Media_Spe
 [target.'cfg(target_os = "linux")'.dependencies]
 libloading = "0.8.9"
 
+# NarratorMac: AppKit's NSSpeechSynthesizer, the voice of the system's spoken content settings.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6.5", default-features = false, features = ["std"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSSpeechSynthesizer"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString"] }
+
 [lints]
 workspace = true
