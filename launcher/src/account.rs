@@ -127,7 +127,7 @@ fn now() -> u64 {
 // ----- The device-code flow ----------------------------------------------------------------------
 
 /// What the player types at the verification page.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct DeviceCode {
     pub user_code: String,
     pub verification_uri: String,
@@ -1252,7 +1252,7 @@ pub fn write_session_file(
 }
 
 /// Where a background sign-in is (the window and the MCP server show it).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum SignInState {
     Starting,
     /// Waiting for the player at `verification_uri` with `user_code`.

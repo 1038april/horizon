@@ -1044,9 +1044,7 @@ impl Launcher {
         changed |= self.servers_tick();
         changed |= self.mods_tick();
         if let Some(sign_in) = &self.sign_in {
-            let state = sign_in.state();
-            let changed_state = format!("{state:?}") != format!("{:?}", self.sign_in_state);
-            if changed_state {
+            if let Some(state) = sign_in_change(&mut self.sign_in_state, sign_in.state()) {
                 if let SignInState::Done(Ok(ref account)) = state {
                     self.auth_busy.remove(&account.uuid);
                     self.accounts = Accounts::load();
@@ -1060,7 +1058,6 @@ impl Launcher {
                         self.settings.save();
                     }
                 }
-                self.sign_in_state = Some(state);
                 changed = true;
             }
         }
@@ -1767,6 +1764,16 @@ enum PlayPress {
     PrepareThenPlay,
     /// Not prepared and no owner (signing in comes first), or busy preparing or playing.
     Nothing,
+}
+
+/// Polling must handle each sign-in transition once. Replaying a completed sign-in
+/// restarts every account's status worker and leaves the UI perpetually checking.
+fn sign_in_change(shown: &mut Option<SignInState>, next: SignInState) -> Option<SignInState> {
+    if shown.as_ref() == Some(&next) {
+        return None;
+    }
+    *shown = Some(next.clone());
+    Some(next)
 }
 
 /// `owner`: whether an account here owns the game, by the keychain (`Launcher::owner`).
@@ -4827,6 +4834,36 @@ mod tests {
         assert!(!starts_now(true, true, false), "prepared again under way");
         assert!(!starts_now(false, false, false), "not prepared");
         assert!(!starts_now(true, false, true), "already running");
+    }
+
+    #[test]
+    fn a_completed_sign_in_is_handled_once_across_ui_polls() {
+        use super::{sign_in_change, SignInState};
+        let mut shown = None;
+        let completed = SignInState::Done(Ok(horizon_launcher::account::Account {
+            uuid: "11111111111111111111111111111111".into(),
+            name: "TestAccount".into(),
+            skin: None,
+            cape: None,
+        }));
+        assert!(sign_in_change(&mut shown, SignInState::Starting).is_some());
+        assert!(sign_in_change(&mut shown, SignInState::Starting).is_none());
+        let mut account_reloads = 0;
+        for _ in 0..100 {
+            if matches!(
+                sign_in_change(&mut shown, completed.clone()),
+                Some(SignInState::Done(Ok(_)))
+            ) {
+                account_reloads += 1;
+            }
+        }
+        assert_eq!(
+            account_reloads, 1,
+            "completed sign-in must not restart account checks every frame"
+        );
+        let failed = SignInState::Done(Err("Sign-in cancelled".into()));
+        assert!(sign_in_change(&mut shown, failed.clone()).is_some());
+        assert!(sign_in_change(&mut shown, failed).is_none());
     }
 
     #[test]
