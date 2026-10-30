@@ -345,7 +345,9 @@ impl Game<'_> {
             }
             self.audio.play_button_click();
         } else if let Some((_, dialog_tag)) = addition_hit {
-            // Handle pause screen additions - open the dialog
+            // Handle pause screen additions - close pause menu, then open the dialog
+            self.screen = Screen::Playing;
+            self.capture(true);
             self.show_dialog(&dialog_tag);
             self.audio.play_button_click();
         } else if friends_hit.is_some() {
