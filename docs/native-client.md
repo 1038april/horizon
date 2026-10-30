@@ -47,7 +47,11 @@ before it writes anything, so `--check` reports a folder being prepared, or whos
 stopped, as not current. Resources prepared before the stamp existed report an unknown version
 until they are prepared again. One preparation at a time writes to a folder: each holds
 `.horizon-prepare.lock` in the resources and in the version folder's `.local/`, and a second one
-waits for the first. Exit codes: 0 done, 1 failed or gaps found, 2 a refused command line.
+waits for the first. `--complete` prepares, copies the sounds, and fails unless `--check` would
+then pass: one command for resources with nothing missing. `--progress json` prints one JSON
+object a line instead of plain text (its format is part of the Launch API:
+[docs/api/launch.md](api/launch.md#--progress-json)). Exit codes: 0 done, 1 failed or gaps found,
+2 a refused command line.
 
 ```sh
 cargo run --release -p horizon-prepare -- --prepare --server-jar ~/Downloads/server.jar
