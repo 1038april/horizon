@@ -8137,6 +8137,13 @@ impl Game<'_> {
         if !right && self.sort_press() {
             return;
         }
+        // AbstractRecipeBookScreen lets the book handle its buttons before
+        // AbstractContainerScreen starts a drag or chooses an outside slot.
+        // Toggling it can move the inventory under the pointer before release.
+        if self.recipe_book_click(right) {
+            self.inv_clicks.skip_release();
+            return;
+        }
         let (slot, outside) = self.inventory_target();
         let shift = self.has_shift_down();
         let target = Target::of(slot, outside);
@@ -8148,13 +8155,6 @@ impl Game<'_> {
             false,
         );
         if outside {
-            // AbstractRecipeBookScreen.mouseClicked: the book takes the click
-            // before the outside test, and its tabs sit left of the strip
-            // hasClickedOutside counts as the book.
-            if self.recipe_book_click(right) {
-                self.inv_clicks.skip_release();
-                return;
-            }
             // slotId -999: an empty hand throws nothing; a carried stack
             // starts a drag whose release drops it.
             match input {
@@ -17198,3 +17198,4 @@ mod tests {
         }
     }
 }
+
