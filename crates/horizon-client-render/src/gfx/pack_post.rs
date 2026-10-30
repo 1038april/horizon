@@ -1116,7 +1116,9 @@ fn build_pass(
         })
     };
     let mask = |flips: &[(u32, bool)]| flips.iter().filter(|f| f.1).fold(0u16, |m, f| m | 1 << f.0);
-    let interface = &p.program.interface;
+    let mut p = p;
+    let program = p.program.take()?;
+    let interface = &program.interface;
     let draw = interface.draw;
     let (entries, samplers, slots, reads, shadow_reads, images) = bindings(
         features, interface, &p.name, p.group, &p.buffers, geometry, formats, shadow, notes, pack,
@@ -1192,7 +1194,7 @@ fn build_pass(
                 source: wgpu::ShaderSource::Naga(std::borrow::Cow::Owned(m)),
             })
         };
-        let (vs, fs) = (module(p.program.vertex), module(p.program.fragment));
+        let (vs, fs) = (module(program.vertex), module(program.fragment));
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(&p.name),
             layout: Some(&pipeline_layout),
@@ -1234,7 +1236,7 @@ fn build_pass(
             return None;
         }
     };
-    let interface = &p.program.interface;
+    let interface = &program.interface;
     let missing: Vec<&str> = interface
         .uniforms
         .iter()
@@ -1458,18 +1460,43 @@ impl PackPost {
             let in_shadow = p.group.shadow();
             let compute = std::mem::take(&mut p.compute);
             let group = p.group;
-            let mut pass = build_pass(
-                device,
-                p,
-                if in_shadow { &shadow_space } else { &formats },
-                shadow_formats.as_ref(),
-                screen,
-                &mut notes,
-                geometry,
-                &custom_names,
-                &draws.layout,
-                &pack,
-            )?;
+            let mut computes: Vec<Pass> = compute
+                .into_iter()
+                .filter_map(|(name, c)| {
+                    build_compute(
+                        device,
+                        name,
+                        group,
+                        c,
+                        if in_shadow { &shadow_space } else { &formats },
+                        shadow_formats.as_ref(),
+                        &mut notes,
+                        &custom_names,
+                        &pack,
+                    )
+                })
+                .collect();
+            let mut pass = if p.program.is_none() {
+                // Compute stages only: the last is the pass, the others run before it.
+                let mut last = computes.pop()?;
+                last.compute = computes;
+                computes = Vec::new();
+                last
+            } else {
+                build_pass(
+                    device,
+                    p,
+                    if in_shadow { &shadow_space } else { &formats },
+                    shadow_formats.as_ref(),
+                    screen,
+                    &mut notes,
+                    geometry,
+                    &custom_names,
+                    &draws.layout,
+                    &pack,
+                )?
+            };
+            pass.compute.append(&mut computes);
             // A pass's attachments share a size: the depth buffer's, for the passes that draw
             // the world.
             let size =
@@ -1487,19 +1514,6 @@ impl PackPost {
                     pass.name
                 ));
                 return None;
-            }
-            for (name, c) in compute {
-                pass.compute.extend(build_compute(
-                    device,
-                    name,
-                    group,
-                    c,
-                    if in_shadow { &shadow_space } else { &formats },
-                    shadow_formats.as_ref(),
-                    &mut notes,
-                    &custom_names,
-                    &pack,
-                ));
             }
             for p in std::iter::once(&pass).chain(&pass.compute) {
                 if !in_shadow {
@@ -2973,6 +2987,15 @@ impl PackPost {
         );
         let mut comp = std::mem::take(&mut self.shadow_comp);
         for pass in &mut comp {
+            let mut compute = std::mem::take(&mut pass.compute);
+            for c in &mut compute {
+                self.dispatch(device, queue, encoder, c, size);
+            }
+            pass.compute = compute;
+            if matches!(pass.pipeline, Pipeline::Compute { .. }) {
+                self.dispatch(device, queue, encoder, pass, size);
+                continue;
+            }
             let group = self.bind(device, queue, encoder, pass, size);
             let t = self.shadow_targets.as_ref().expect("shadow pass");
             let mut attachments: Vec<Option<wgpu::RenderPassColorAttachment>> = Vec::new();
@@ -3216,6 +3239,10 @@ impl PackPost {
                 self.dispatch(device, queue, encoder, c, size);
             }
             pass.compute = compute;
+            if matches!(pass.pipeline, Pipeline::Compute { .. }) {
+                self.dispatch(device, queue, encoder, pass, size);
+                continue;
+            }
             let stale = pass.mipmaps & self.mipped & !self.mips_valid;
             for b in (0..BUFFERS).filter(|b| stale & 1 << b != 0) {
                 self.mipmap(encoder, b);
