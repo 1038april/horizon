@@ -135,7 +135,7 @@ reason = "Sent chat messages it didn't declare."
 date = "2026-10-24"
 ```
 
-The submission form's service (`crates/horizon-mod-registry`) writes these entries: it signs the creator in with GitHub, runs the file's checks, uploads the file to the repository's `staging` release as `<sha256>.<extension>` and opens the pull request. Only an entry's `owners` publish updates through it.
+The submission form's service (`crates/horizon-mod-registry`) writes these entries: it signs the creator in with GitHub, runs the file's checks, uploads the file to the repository's `staging` release as `<sha256>.<extension>` and opens the pull request. Only an entry's `owners` publish updates through it; an owner may turn a `mod` into a `native-mod` once by sending an `.hnmod`, and no other kind change goes through. A submission that GitHub broke off after making its `submit/<id>-<version>` branch can be sent again: the same account's retry starts that branch again from `main` while it has no open pull request; anyone else's is refused.
 
 Unknown keys are refused. Its CI runs `cargo-horizon-mod` (`crates/cargo-horizon-mod`):
 

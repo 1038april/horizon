@@ -757,6 +757,8 @@ pub fn publish(
     };
     let existing = gh.entry(&form.id).map_err(github_down)?;
     let is_new = existing.is_none();
+    let turns_native =
+        kind == Kind::NativeMod && existing.as_ref().is_some_and(|(e, _)| e.kind == Kind::Mod);
     let (entry, blob) = match existing {
         None => (
             Entry {
@@ -786,8 +788,18 @@ pub fn publish(
                     ),
                 ));
             }
+            // A mod may turn native once, never back (`registry::review`,
+            // docs/native-mods.md): its `.hmod` versions stay published.
             if entry.kind != kind {
-                return Err(bad(format!("{} is a {}", form.id, entry.kind.name())));
+                if (&entry.kind, &kind) != (&Kind::Mod, &Kind::NativeMod) {
+                    return Err(bad(format!(
+                        "{} is a {}, not a {}: a project's kind never changes (only a mod may turn native-mod, once)",
+                        form.id,
+                        entry.kind.name(),
+                        kind.name()
+                    )));
+                }
+                entry.kind = kind.clone();
             }
             if entry.versions.iter().any(|v| v.version == version.version) {
                 return Err(Refusal::new(
@@ -846,13 +858,30 @@ pub fn publish(
         .map_err(github_down)?;
     let branch = format!("submit/{}-{}", form.id, version.version);
     if !gh.branch(&branch).map_err(github_down)? {
-        return Err(Refusal::new(
-            StatusCode::CONFLICT,
-            format!(
-                "{} {} was already submitted: its pull request is open",
-                form.id, version.version
-            ),
-        ));
+        // The branch is there: a pull request, someone else's submission, or
+        // this submitter's own that GitHub broke off (a timeout past the
+        // branch's creation). Only the last is taken up again, from main.
+        if let Some(url) = gh.open_pull(&branch).map_err(github_down)? {
+            return Err(Refusal::new(
+                StatusCode::CONFLICT,
+                format!(
+                    "{} {} was already submitted: its pull request is open ({url})",
+                    form.id, version.version
+                ),
+            ));
+        }
+        let mine = format!("submitted by @{} through the form.", login.to_lowercase());
+        let commits = gh.commits(&branch).map_err(github_down)?;
+        if commits.iter().any(|m| !m.to_lowercase().contains(&mine)) {
+            return Err(Refusal::new(
+                StatusCode::CONFLICT,
+                format!(
+                    "{} {} was already submitted by someone else: give this file a new version",
+                    form.id, version.version
+                ),
+            ));
+        }
+        gh.reset(&branch).map_err(github_down)?;
     }
     let what = if is_new { "Add" } else { "Update" };
     let message = format!(
@@ -891,7 +920,13 @@ pub fn publish(
             .map_or(config.public_url.as_str(), |(_, host)| host),
         id = form.id,
         kind = kind.name(),
-        new = if is_new { "new" } else { "update" },
+        new = if is_new {
+            "new"
+        } else if turns_native {
+            "update: turns native, its `.hmod` versions stay published"
+        } else {
+            "update"
+        },
         version = v.version,
         game = v.game,
         file = v.file.name,
