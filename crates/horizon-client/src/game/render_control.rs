@@ -33,7 +33,7 @@ impl Game<'_> {
             "pass-timing" => {
                 let r = self.renderer.as_mut().ok_or("no renderer")?;
                 let times = r.shader_pass_times();
-                return Ok(Some(json!({ "passes": times })));
+                Ok(Some(json!({ "passes": times })))
             }
             "setblock" => {
                 let state = self.parse_state(words.get(4).ok_or("missing state")?)?;
