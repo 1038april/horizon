@@ -258,39 +258,30 @@ pub(super) struct Weather {
 struct ShadowCache {
     /// The cached shadow targets (depth, depth1, color buffers).
     targets: Option<super::pack_shadow::ShadowTargets>,
-    /// The sun angle when the cache was created.
-    sun_angle: f32,
-    /// The moon angle when the cache was created.
-    moon_angle: f32,
-    /// The snapped camera position in shadow view space when the cache was created.
-    snapped_camera: Option<DVec3>,
-    /// Hash of shadow settings when the cache was created.
-    shadow_settings_hash: u64,
-    /// Whether the cache is valid for the current frame.
-    valid: bool,
+    key: Option<ShadowCacheKey>,
 }
 
 impl Default for ShadowCache {
     fn default() -> Self {
         Self {
             targets: None,
-            sun_angle: 0.0,
-            moon_angle: 0.0,
-            snapped_camera: None,
-            shadow_settings_hash: 0,
-            valid: false,
+            key: None,
         }
     }
 }
 
 /// Key for validating the shadow cache.
 /// Must match the cache state exactly to be considered valid.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct ShadowCacheKey {
     sun_angle: f32,
     moon_angle: f32,
     snapped_camera: Option<DVec3>,
     shadow_settings_hash: u64,
+    shadow_scene_revision: (u64, u64),
+    ticks: u64,
+    day_time: i64,
+    shadow_uniforms_hash: u64,
 }
 
 pub struct PackPost {
@@ -2315,16 +2306,25 @@ impl PackPost {
         terrain: &mut TerrainDraw<'_>,
         frame: &super::Frame,
     ) {
+        // Opt-in only (`horizon-graphics.txt` shadowCache). Off: always redraw, drop any cache.
+        if !frame.shadow_cache {
+            self.shadow_cache = ShadowCache::default();
+            self.draw_shadow_pass(device, queue, encoder, terrain);
+            return;
+        }
+
         // Compute the current frame's cache key before borrowing shadow_targets mutably.
         let cache_key = self.compute_shadow_cache_key(frame);
 
-        // Check if we can use the cached shadow map.
-        let cache_hit = self.shadow_cache.valid
-            && self.shadow_cache.sun_angle == cache_key.sun_angle
-            && self.shadow_cache.moon_angle == cache_key.moon_angle
-            && self.shadow_cache.shadow_settings_hash == cache_key.shadow_settings_hash
-            && self.shadow_cache.snapped_camera == cache_key.snapped_camera
-            && self.shadow_cache.targets.is_some();
+        // Entity vertices are interpolated each frame, so their shadows cannot be reused.
+        let has_shadow_entities = self
+            .entities
+            .as_ref()
+            .is_some_and(|entities| entities.geometry.draws.iter().any(|draw| draw.shadow));
+        let cache_hit = !has_shadow_entities
+            && self.shadow_cache.key == Some(cache_key)
+            && self.shadow_cache.targets.is_some()
+            && self.shadow_targets.is_some();
 
         if cache_hit {
             // Cache hit: copy the cached textures to the current shadow targets.
@@ -2333,71 +2333,80 @@ impl PackPost {
             {
                 Self::copy_cached_shadow_targets(encoder, cached, t);
             }
-            self.shadow_cache.valid = true;
-        } else {
-            // Cache miss: run the normal shadow pass.
-            let Some(t) = &mut self.shadow_targets else {
-                return;
-            };
-            t.begin_frame();
-            let size = [t.size; 2];
-            self.draw_terrain(
-                device,
-                queue,
-                encoder,
-                size,
-                TerrainList::ShadowSolid,
-                terrain,
-            );
-            self.draw_shadow_entities(device, queue, encoder, size);
-            let t = self.shadow_targets.as_mut().expect("shadow pass");
-            t.clear_rest(encoder);
-            t.copy_depth1(encoder);
-            self.draw_terrain(
-                device,
-                queue,
-                encoder,
-                size,
-                TerrainList::ShadowTranslucent,
-                terrain,
-            );
-            let mut comp = std::mem::take(&mut self.shadow_comp);
-            for pass in &mut comp {
-                let group = self.bind(device, queue, pass, size);
-                let t = self.shadow_targets.as_ref().expect("shadow pass");
-                let mut attachments: Vec<Option<wgpu::RenderPassColorAttachment>> = Vec::new();
-                for &(location, buffer) in &pass.writes {
-                    let l = location as usize;
-                    if attachments.len() <= l {
-                        attachments.resize(l + 1, None);
-                    }
-                    // Overwritten whole.
-                    let ops = wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    };
-                    attachments[l] = t.color(buffer, true).and_then(|v| attach(v, ops));
-                }
-                {
-                    let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some(&pass.name),
-                        color_attachments: &attachments,
-                        timestamp_writes: self.timing.as_mut().and_then(|t| t.writes(&pass.name)),
-                        ..Default::default()
-                    });
-                    rp.set_pipeline(&pass.pipeline);
-                    rp.set_bind_group(0, &group, &[]);
-                    rp.draw(0..6, 0..1);
-                }
-                if let Some(t) = &mut self.shadow_targets {
-                    t.main ^= pass.flip;
-                }
-            }
-            self.shadow_comp = comp;
-
-            // Store the rendered shadow map in the cache for future frames.
-            self.store_shadow_cache(device, encoder, cache_key);
+            return;
         }
+
+        // Cache miss: run the normal shadow pass, then store the result.
+        self.draw_shadow_pass(device, queue, encoder, terrain);
+        self.store_shadow_cache(device, encoder, cache_key);
+    }
+
+    /// The shadow pass body: terrain, entities, clears, and `shadowcomp`.
+    fn draw_shadow_pass(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        terrain: &mut TerrainDraw<'_>,
+    ) {
+        let Some(t) = &mut self.shadow_targets else {
+            return;
+        };
+        t.begin_frame();
+        let size = [t.size; 2];
+        self.draw_terrain(
+            device,
+            queue,
+            encoder,
+            size,
+            TerrainList::ShadowSolid,
+            terrain,
+        );
+        self.draw_shadow_entities(device, queue, encoder, size);
+        let t = self.shadow_targets.as_mut().expect("shadow pass");
+        t.clear_rest(encoder);
+        t.copy_depth1(encoder);
+        self.draw_terrain(
+            device,
+            queue,
+            encoder,
+            size,
+            TerrainList::ShadowTranslucent,
+            terrain,
+        );
+        let mut comp = std::mem::take(&mut self.shadow_comp);
+        for pass in &mut comp {
+            let group = self.bind(device, queue, pass, size);
+            let t = self.shadow_targets.as_ref().expect("shadow pass");
+            let mut attachments: Vec<Option<wgpu::RenderPassColorAttachment>> = Vec::new();
+            for &(location, buffer) in &pass.writes {
+                let l = location as usize;
+                if attachments.len() <= l {
+                    attachments.resize(l + 1, None);
+                }
+                // Overwritten whole.
+                let ops = wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                };
+                attachments[l] = t.color(buffer, true).and_then(|v| attach(v, ops));
+            }
+            {
+                let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some(&pass.name),
+                    color_attachments: &attachments,
+                    timestamp_writes: self.timing.as_mut().and_then(|t| t.writes(&pass.name)),
+                    ..Default::default()
+                });
+                rp.set_pipeline(&pass.pipeline);
+                rp.set_bind_group(0, &group, &[]);
+                rp.draw(0..6, 0..1);
+            }
+            if let Some(t) = &mut self.shadow_targets {
+                t.main ^= pass.flip;
+            }
+        }
+        self.shadow_comp = comp;
     }
 
     /// Computes the cache key for the current frame.
@@ -2436,6 +2445,7 @@ impl PackPost {
             hf.hash(&mut hasher);
         }
         for color in &shadow.colors {
+            format!("{:?}", color.format).hash(&mut hasher);
             color.clear.hash(&mut hasher);
             if let Some(cc) = color.clear_color {
                 for c in cc {
@@ -2445,13 +2455,58 @@ impl PackPost {
             color.mipmap.hash(&mut hasher);
         }
         let shadow_settings_hash = hasher.finish();
+        let shadow_uniforms_hash = self.shadow_uniforms_hash();
 
         ShadowCacheKey {
             sun_angle: frame.sky.sun_angle,
             moon_angle: frame.sky.moon_angle,
             snapped_camera,
             shadow_settings_hash,
+            shadow_scene_revision: frame.shadow_scene_revision,
+            ticks: frame.ticks,
+            day_time: frame.pack.day_time,
+            shadow_uniforms_hash,
         }
+    }
+
+    fn shadow_uniforms_hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let passes = self
+            .shadow_terrain
+            .iter()
+            .chain(self.shadow_water.iter())
+            .chain(self.shadow_comp.iter())
+            .chain(
+                self.entities
+                    .iter()
+                    .flat_map(|entities| entities.shadow.iter().flatten()),
+            );
+        for pass in passes {
+            pass.name.hash(&mut hasher);
+            for (index, ty, offset) in &pass.uniforms {
+                index.hash(&mut hasher);
+                ty.hash(&mut hasher);
+                offset.hash(&mut hasher);
+                let Some(value) = index.and_then(|index| self.uniforms.values.get(index)) else {
+                    continue;
+                };
+                match value {
+                    pack_uniforms::Value::F(values) => {
+                        0u8.hash(&mut hasher);
+                        for value in values {
+                            value.to_bits().hash(&mut hasher);
+                        }
+                    }
+                    pack_uniforms::Value::I(values) => {
+                        1u8.hash(&mut hasher);
+                        values.hash(&mut hasher);
+                    }
+                }
+            }
+        }
+        hasher.finish()
     }
 
     /// Copies the cached shadow targets to the current shadow targets.
@@ -2493,20 +2548,6 @@ impl PackPost {
 
         // Copy the main buffer index.
         current.main = cached.main;
-    }
-
-    /// Updates the shadow cache with the current shadow targets.
-    #[allow(dead_code)]
-    fn update_shadow_cache(&mut self, cache_key: ShadowCacheKey) {
-        // We need to store the shadow targets for the next frame.
-        // Since wgpu textures are not cloneable, we just mark the cache as valid
-        // and store the key. The actual texture data is copied in the next frame
-        // by `copy_cached_shadow_targets` if the cache is valid.
-        self.shadow_cache.sun_angle = cache_key.sun_angle;
-        self.shadow_cache.moon_angle = cache_key.moon_angle;
-        self.shadow_cache.snapped_camera = cache_key.snapped_camera;
-        self.shadow_cache.shadow_settings_hash = cache_key.shadow_settings_hash;
-        self.shadow_cache.valid = true;
     }
 
     /// Stores the current shadow targets into the cache for future reuse.
@@ -2636,11 +2677,7 @@ impl PackPost {
         }
 
         // Update the cache key.
-        self.shadow_cache.sun_angle = cache_key.sun_angle;
-        self.shadow_cache.moon_angle = cache_key.moon_angle;
-        self.shadow_cache.snapped_camera = cache_key.snapped_camera;
-        self.shadow_cache.shadow_settings_hash = cache_key.shadow_settings_hash;
-        self.shadow_cache.valid = true;
+        self.shadow_cache.key = Some(cache_key);
     }
 
     /// Creates a texture with COPY_SRC | COPY_DST usage for cache storage.
@@ -2946,6 +2983,36 @@ impl PackPost {
 mod tests {
     use super::*;
     use wgpu::TextureFormat as T;
+
+    #[test]
+    fn shadow_cache_key_tracks_world_and_time_changes() {
+        let key = ShadowCacheKey {
+            sun_angle: 0.0,
+            moon_angle: 180.0,
+            snapped_camera: Some(DVec3::ZERO),
+            shadow_settings_hash: 1,
+            shadow_scene_revision: (2, 3),
+            ticks: 4,
+            day_time: 5,
+            shadow_uniforms_hash: 6,
+        };
+
+        assert_ne!(
+            key,
+            ShadowCacheKey {
+                shadow_scene_revision: (8, 3),
+                ..key
+            }
+        );
+        assert_ne!(key, ShadowCacheKey { day_time: 9, ..key });
+        assert_ne!(
+            key,
+            ShadowCacheKey {
+                shadow_uniforms_hash: 10,
+                ..key
+            }
+        );
+    }
 
     /// Two textures with a sampler each become two textures sharing one sampler variable.
     #[test]
