@@ -385,9 +385,15 @@ impl VanillaTerrain {
         self.generator.worker().locate(names, from, radius)
     }
     /// `NoiseBasedChunkGenerator.addDebugScreenInfo`: F3's `Density` line at
-    /// the feet.
+    /// the feet. F3 draws on the window thread every frame, so the line is
+    /// left out while a long query (`/locate biome`, `/place jigsaw`) holds
+    /// the worker, rather than freezing the frame behind it.
     pub fn density_debug_line(&self, feet: [i32; 3]) -> Option<String> {
-        let mut worker = self.query.lock().unwrap_or_else(|e| e.into_inner());
+        let mut worker = match self.query.try_lock() {
+            Ok(worker) => worker,
+            Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
         let worker = worker.get_or_insert_with(|| self.generator.worker());
         worker.debug_density_line(feet)
     }
