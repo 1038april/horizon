@@ -106,6 +106,9 @@ pub(super) struct Split<'a> {
     /// monitor, and P1's.
     windows: Vec<layout::Window>,
     p1_window: u8,
+    /// Whether Window 1 is shown (hidden while nobody plays in it): set once per change, since
+    /// Wayland can't say whether a window is visible.
+    window1_shown: bool,
     /// Where each numbered window was when it closed, to open there again (this session).
     window_rects: std::collections::HashMap<u8, (LogicalPosition<f64>, LogicalSize<f64>)>,
     /// The monitors with their names, left to right, and the one Window 1 is on: read once a
@@ -155,6 +158,7 @@ impl<'a> Split<'a> {
                 placement: Placement::Free(None),
             }],
             p1_window: 1,
+            window1_shown: true,
             window_rects: Default::default(),
             screens: Vec::new(),
             main_screen: None,
@@ -489,6 +493,7 @@ impl<'a> Split<'a> {
             .chain(self.guests.iter().map(|g| &g.game.renderer))
             .collect();
         let vsync = self.host.settings.vsync;
+        let paced = windows::paced_surface(self.window1_shown, self.surfaces.len());
         for (k, surface) in self.surfaces.iter_mut().enumerate() {
             let frames: Vec<_> = renderers
                 .iter()
@@ -496,7 +501,7 @@ impl<'a> Split<'a> {
                 .filter(|(_, v)| v.0 == k)
                 .filter_map(|(r, v)| Some((r.as_ref()?.offscreen_frame()?, v.1)))
                 .collect();
-            surface.compositor.set_vsync(vsync && k == 0);
+            surface.compositor.set_vsync(vsync && k == paced);
             surface.compositor.present(&frames);
         }
         // One player's CPU work overlapped the GPU drawing another's.
@@ -693,7 +698,10 @@ impl ApplicationHandler for Split<'_> {
             .unwrap_or(60);
         let refresh_hz = self
             .surfaces
-            .first()
+            .get(windows::paced_surface(
+                self.window1_shown,
+                self.surfaces.len(),
+            ))
             .and_then(|s| s.window.current_monitor()?.refresh_rate_millihertz())
             .map_or(60, |mhz| mhz.div_ceil(1000) as i32);
         if !(self.host.settings.vsync && limit >= refresh_hz) {
