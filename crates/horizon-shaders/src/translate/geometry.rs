@@ -260,6 +260,11 @@ fn combine(
     for s in &gs {
         match &s.kind {
             Kind::Interface("in", vars) => {
+                // The input primitive is a triangle: `in vec3 v[]` has three elements.
+                let vars: Vec<(String, String)> = vars
+                    .iter()
+                    .map(|(n, ty)| (n.clone(), ty.replace("[]", "[3]")))
+                    .collect();
                 gs_ins.extend(vars.iter().cloned());
                 // One declaration per name (naga types `T a[3], b[3]`'s second wrong).
                 let decls: String = vars
@@ -506,5 +511,58 @@ fn strip_storage(text: &mut [String], tokens: &[&str], range: std::ops::Range<us
                 " ".into()
             };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pack::tests::zip;
+    use crate::{Macros, Pack, preprocess};
+
+    #[test]
+    fn a_geometry_stage_folds_into_the_vertex_stage() {
+        let vsh = "#version 430\nout vec3 vPos;\nout vec4 vColor;\nvoid main() {\n    \
+                   vPos = gl_Vertex.xyz;\n    vColor = gl_Color;\n    gl_Position = ftransform();\n}\n";
+        let gsh = "#version 430\nlayout(triangles) in;\nlayout(triangle_strip, max_vertices = 4) out;\n\
+                   in vec3 vPos[];\nin vec4 vColor[];\nout vec4 gColor;\nvoid main() {\n    \
+                   for (int i = 0; i < 3; i++) {\n        gColor = vColor[i];\n        \
+                   gl_Position = gl_in[i].gl_Position;\n        EmitVertex();\n    }\n    \
+                   gl_Position = vec4(vPos[0], 1.0);\n    EmitVertex();\n    EndPrimitive();\n}\n";
+        let fsh = "#version 430\nin vec4 gColor;\nvoid main() {\n    gl_FragData[0] = gColor;\n}\n";
+        let pack = Pack::from_zip_bytes(
+            "P.zip",
+            zip(&[
+                ("shaders/shadow.vsh", vsh),
+                ("shaders/shadow.gsh", gsh),
+                ("shaders/shadow.fsh", fsh),
+            ]),
+        )
+        .unwrap();
+        let pp = |file: &str| preprocess(&pack, file, &Macros::standard());
+        let inputs = GeometryInputs {
+            inputs: GbuffersInputs {
+                declarations: "layout(set = 3, binding = 1) readonly buffer HzVertices { uint hz_vertices[]; };\n\
+                               layout(location = 0) in vec3 hz_v_pos;"
+                    .into(),
+                body: "    hz_Vertex = vec4(hz_v_pos, 1.0);\n    hz_Color = vec4(1.0);\n".into(),
+                ..Default::default()
+            },
+            pull: "        hz_v_pos = uintBitsToFloat(uvec3(hz_vertices[hz_vertex_index * 3u], \
+                   hz_vertices[hz_vertex_index * 3u + 1u], hz_vertices[hz_vertex_index * 3u + 2u]));\n"
+                .into(),
+            index: "uint(@)".into(),
+        };
+        let (program, triangles) = translate_geometry(
+            &pp("shadow.vsh"),
+            &pp("shadow.gsh"),
+            &pp("shadow.fsh"),
+            &inputs,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+        // A strip of four corners is two triangles.
+        assert_eq!(triangles, 2);
+        assert_eq!(program.vertex.entry_points.len(), 1);
+        assert_eq!(program.fragment.entry_points.len(), 1);
     }
 }

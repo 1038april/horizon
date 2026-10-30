@@ -944,10 +944,18 @@ impl Loader<'_> {
         if self.post.images.is_empty() || !pp.code.contains("image") {
             return pp;
         }
-        let lines: Vec<String> = pp
-            .code
-            .split('\n')
-            .map(|line| {
+        let source: Vec<&str> = pp.code.split('\n').collect();
+        let lines: Vec<String> = source
+            .iter()
+            .enumerate()
+            .map(|(n, &line)| {
+                // A qualifier on the line before (`layout(r32ui)` then `uniform uimage3D v;`).
+                let qualified = line.contains("layout")
+                    || source[..n]
+                        .iter()
+                        .rev()
+                        .find(|l| !l.trim().is_empty())
+                        .is_some_and(|l| l.trim_start().starts_with("layout") && !l.contains(';'));
                 let words: Vec<&str> = line
                     .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
                     .collect();
@@ -959,7 +967,7 @@ impl Loader<'_> {
                 match image {
                     Some(i)
                         if words.contains(&"uniform")
-                            && !line.contains("layout")
+                            && !qualified
                             && words
                                 .iter()
                                 .any(|w| w.ends_with("image2D") || w.ends_with("image3D")) =>
@@ -1301,6 +1309,47 @@ mod tests {
         assert_eq!(names, ["final"]);
         let post = load_post(&pack, "", &properties, &macros, &GameInputs::default());
         assert!(post.programs.iter().any(|p| p.name == "composite3"));
+    }
+
+    #[test]
+    fn image_declarations_get_their_format_once() {
+        let csh = |decl: &str| {
+            format!(
+                "#version 430\nlayout(local_size_x = 1) in;\n{decl}\nvoid main() {{ imageStore(voxels, ivec3(0), uvec4(1u)); }}\n"
+            )
+        };
+        let bare = csh("writeonly uniform uimage3D voxels;");
+        let split = csh("layout(r32ui)\nwriteonly uniform uimage3D voxels;");
+        let pack = Pack::from_zip_bytes(
+            "P.zip",
+            zip(&[
+                ("shaders/composite.vsh", VSH),
+                (
+                    "shaders/composite.fsh",
+                    "#version 120\nvoid main() { gl_FragColor = vec4(1.0); }\n",
+                ),
+                ("shaders/composite.csh", &bare),
+                ("shaders/composite_a.csh", &split),
+            ]),
+        )
+        .unwrap();
+        let properties = Properties::parse(
+            "image.voxels = none RED_INTEGER R32UI UNSIGNED_INT false false 4 4 4\n",
+            &Macros::standard(),
+        );
+        let post = load_post(
+            &pack,
+            "",
+            &properties,
+            &Macros::standard(),
+            &GameInputs::default(),
+        );
+        let compute: Vec<&str> = post.programs[0]
+            .compute
+            .iter()
+            .map(|c| c.0.as_str())
+            .collect();
+        assert_eq!(compute, ["composite", "composite_a"], "{:?}", post.notes);
     }
 
     /// The shadow pass runs when a program reads a shadow buffer or `shadow.enabled` says so;
