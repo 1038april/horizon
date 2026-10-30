@@ -58,6 +58,9 @@ pub(super) struct InstanceDialog {
 pub(super) struct Instances {
     pub(super) list: Vec<Instance>,
     pub(super) dialog: Option<InstanceDialog>,
+    /// The instance whose Delete is waiting for its confirmation, and why the last one failed.
+    confirm_delete: Option<String>,
+    delete_error: Option<String>,
     icons: HashMap<(String, u32), Option<Arc<RenderImage>>>,
 }
 
@@ -189,12 +192,15 @@ impl Launcher {
             let (open, sub) = match i.kind {
                 InstanceKind::Default | InstanceKind::Own => (
                     self.page == Page::Play && selected.as_ref() == Some(&i.id),
-                    match (&tag, &i.version) {
-                        (None, Some(own)) => trf("{version} is not installed", &[("version", own)]),
-                        (None, None) => tr("No version installed").into(),
-                        (Some(_), _) if !prepared => tr("Needs preparing").into(),
-                        (Some(tag), Some(_)) => format!("{} · {tag}", tr("Ready")),
-                        (Some(_), None) => tr("Ready").into(),
+                    match (&i.java, &tag, &i.version) {
+                        (Some(java), _, _) => java_line(java),
+                        (None, None, Some(own)) => {
+                            trf("{version} is not installed", &[("version", own)])
+                        }
+                        (None, None, None) => tr("No version installed").into(),
+                        (None, Some(_), _) if !prepared => tr("Needs preparing").into(),
+                        (None, Some(tag), Some(_)) => format!("{} · {tag}", tr("Ready")),
+                        (None, Some(_), None) => tr("Ready").into(),
                     },
                 ),
                 InstanceKind::Port => {
@@ -207,40 +213,16 @@ impl Launcher {
                 }
                 InstanceKind::Pack => (false, tr("From Horizon's registry").into()),
             };
-            let dot = matches!(i.kind, InstanceKind::Default | InstanceKind::Own).then(|| {
-                div()
-                    .absolute()
-                    .left(px(42.))
-                    .top(px(42.))
-                    .size(px(10.))
-                    .bg(if prepared { t.success } else { t.warn })
-                    .border_2()
-                    .border_color(t.side)
-            });
-            let icon = self.instance_icon(&i, 44.);
+            // Java instances have nothing of Horizon's to prepare: no state square.
+            let state = (matches!(i.kind, InstanceKind::Default | InstanceKind::Own)
+                && i.java.is_none())
+            .then_some(if prepared { t.success } else { t.warn });
+            let icon = self.instance_icon(&i, 36.);
             let clicked = i.clone();
             out.push(
-                blocks::side_item(format!("side-instance-{}", i.id).into(), open, &t)
-                    .child(icon)
-                    .children(dot)
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .min_w_0()
-                            .child(
-                                blocks::pixel(15., FontWeight::MEDIUM)
-                                    .text_color(t.ink)
-                                    .truncate()
-                                    .child(i.name.clone()),
-                            )
-                            .child(
-                                text(theme::CAPTION)
-                                    .text_color(t.muted)
-                                    .truncate()
-                                    .child(sub),
-                            ),
-                    )
+                shell::row(format!("side-instance-{}", i.id), open, &t)
+                    .child(div().relative().child(icon))
+                    .child(shell::row_text(i.name.clone(), sub, state, &t))
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         match clicked.kind {
                             InstanceKind::Default | InstanceKind::Own => {
@@ -266,8 +248,8 @@ impl Launcher {
             .as_ref()
             .map(|i| (i.name.clone(), i.group.clone().unwrap_or_default()))
             .unwrap_or_default();
-        *self.servers.text(Field::InstanceName) = name;
-        *self.servers.text(Field::InstanceGroup) = group;
+        self.servers.text(Field::InstanceName).set(name);
+        self.servers.text(Field::InstanceGroup).set(group);
         self.servers.focus_soon = Some(Field::InstanceName);
         self.instances.dialog = Some(InstanceDialog {
             icon: editing.as_ref().and_then(|i| i.icon.clone()),
@@ -570,7 +552,9 @@ impl Launcher {
                 button("instance-copy", "Copy…", Kind::Ghost, &t).on_click(cx.listener(
                     move |this, _: &ClickEvent, _, cx| {
                         this.open_instance_dialog(None);
-                        *this.servers.text(Field::InstanceName) = format!("{name} copy");
+                        this.servers
+                            .text(Field::InstanceName)
+                            .set(format!("{name} copy"));
                         if let Some(d) = &mut this.instances.dialog {
                             d.copy = true;
                         }
@@ -618,7 +602,8 @@ impl Launcher {
                         cx.open_with_system(&home);
                     },
                 ),
-            );
+            )
+            .children(self.delete_button(&instance, cx));
         Some(index_row(
             n,
             tr("Instance"),
@@ -640,11 +625,94 @@ impl Launcher {
                     )
                     .children(self.shortcut_note(&instance.id))
                     .child(actions)
+                    .children(self.delete_confirmation(&instance, cx))
                     .into_any_element(),
             ),
             None,
             &t,
         ))
+    }
+}
+
+impl Launcher {
+    /// Delete…, for every instance but Horizon's own (the game's home); not while a game runs.
+    fn delete_button(&self, instance: &Instance, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
+        if instance.kind == InstanceKind::Default {
+            return None;
+        }
+        let t = self.theme;
+        let delete = button("instance-delete", "Delete…", Kind::Ghost, &t);
+        if self.client.is_some() || self.starting_client.is_some() {
+            return Some(disabled(delete));
+        }
+        let id = instance.id.clone();
+        Some(
+            delete.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                this.instances.confirm_delete = Some(id.clone());
+                this.instances.delete_error = None;
+                cx.notify();
+            })),
+        )
+    }
+
+    /// "Move it to the Trash?" under the actions, once Delete… is pressed.
+    fn delete_confirmation(&self, instance: &Instance, cx: &mut Context<Self>) -> Option<Div> {
+        if self.instances.confirm_delete.as_ref() != Some(&instance.id) {
+            return None;
+        }
+        let t = self.theme;
+        let id = instance.id.clone();
+        let line = match &self.instances.delete_error {
+            Some(e) => e.clone(),
+            None => trf(
+                "Move {name} to the Trash, with its worlds and settings? You can get it back from there.",
+                &[("name", &instance.name)],
+            ),
+        };
+        Some(
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(px(8.))
+                .mt(px(8.))
+                .child(text(theme::CAPTION).text_color(t.danger).child(line))
+                .child(
+                    button("instance-keep", "Keep", Kind::Ghost, &t).on_click(cx.listener(
+                        |this, _: &ClickEvent, _, cx| {
+                            this.instances.confirm_delete = None;
+                            this.instances.delete_error = None;
+                            cx.notify();
+                        },
+                    )),
+                )
+                .child(
+                    button("instance-trash", "Move to Trash", Kind::Secondary, &t).on_click(
+                        cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.delete_instance(&id);
+                            cx.notify();
+                        }),
+                    ),
+                ),
+        )
+    }
+
+    fn delete_instance(&mut self, id: &str) {
+        if self.client.is_some() || self.starting_client.is_some() {
+            return;
+        }
+        match instances::delete(id) {
+            Ok(_) => {
+                self.instances.confirm_delete = None;
+                // Play starts Horizon again; the window's copy of the settings says so too.
+                if self.settings.instance.as_deref() == Some(id) {
+                    self.settings.instance = None;
+                    self.settings.save();
+                }
+                self.reload_instances();
+            }
+            Err(e) => self.instances.delete_error = Some(e),
+        }
     }
 }
 
@@ -663,6 +731,14 @@ fn played_line(instance: &Instance) -> String {
 }
 
 /// The first letter or digit of a name, for an icon without a picture.
+/// A Java instance's line in the sidebar: "Java 1.21.4", and its loader ("· Fabric 0.16.9").
+fn java_line(j: &instances::JavaGame) -> String {
+    match &j.loader {
+        Some(l) => format!("Java {} · {} {}", j.minecraft, l.kind.name(), l.version),
+        None => format!("Java {}", j.minecraft),
+    }
+}
+
 fn initial(name: &str) -> String {
     name.chars()
         .find(|c| c.is_alphanumeric())
