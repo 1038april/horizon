@@ -395,6 +395,23 @@ impl Game<'_> {
         }
         Some(id)
     }
+    /// What a converted mob's callback does to it: the spawn finalization of
+    /// a conversion, then persistence.
+    fn finalize_converted(&mut self, id: u32) {
+        let Some(at) = self.mobs.iter().find(|m| m.id == id).map(|m| m.position) else {
+            return;
+        };
+        let facts = self.biome_facts(
+            at.x.floor() as i32,
+            at.y.floor() as i32,
+            at.z.floor() as i32,
+        );
+        let difficulty = self.local_difficulty([at.x, at.y, at.z]);
+        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+            spawning::finalize(m, &facts, &difficulty);
+            m.persistent = true;
+        }
+    }
     /// `Mob.convertTo(type, ConversionParams.single(...))` for a mob already
     /// removed: a new mob of `kind`, made without spawn finalization, takes
     /// its place with what `conversion::single` carries over, and the old
@@ -1793,6 +1810,13 @@ impl Game<'_> {
                         && let Some(m) = self.mobs.iter_mut().find(|m| Some(m.id) == id)
                     {
                         m.add_effect("minecraft:nausea", 200, 0);
+                    }
+                    // `Tadpole.ageUp`: the frog is finalized for the
+                    // conversion and made persistent.
+                    if kind == "minecraft:frog"
+                        && let Some(id) = id
+                    {
+                        self.finalize_converted(id);
                     }
                 }
                 MobEvent::DropItem { item, count, at } => self.spawn_item(

@@ -252,13 +252,14 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
                         let at = [m.position.x, m.position.y, m.position.z];
                         events.push(MobEvent::Sound("entity.tadpole.grow_up", at, 0.15, 1.0));
                     }
-                    events.push(MobEvent::SpawnKind {
-                        kind: "minecraft:frog".into(),
-                        at: [m.position.x, m.position.y, m.position.z],
-                        setup: super::SpawnSetup {
-                            yaw: m.yaw,
-                            persistent: true,
-                            ..Default::default()
+                    // `ConversionParams.single(this, false, false)`; the game
+                    // finalizes the frog and keeps it persistent.
+                    events.push(MobEvent::Convert {
+                        from: Box::new(m.clone()),
+                        kind: "minecraft:frog",
+                        params: super::conversion::Params {
+                            keep_equipment: false,
+                            preserve_can_pick_up_loot: false,
                         },
                     });
                 }
