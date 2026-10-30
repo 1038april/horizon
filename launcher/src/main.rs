@@ -1766,6 +1766,35 @@ enum PlayPress {
     Nothing,
 }
 
+/// Account state uses the same semantic colors as the launcher's other notices. Keep a
+/// distinct icon and the full label so color is never the only way to recognize a state.
+fn account_status_line(status: Option<&account::session::Status>, busy: bool, t: &Theme) -> Div {
+    use account::session::State;
+    let (icon, color, label) = if busy {
+        ("clock", t.muted, "Checking sign-in…")
+    } else {
+        let (icon, color) = match status.map(|s| s.state) {
+            Some(State::Ready) => ("check", t.success),
+            Some(State::NeedsRefresh | State::Retry) => ("reload", t.warn),
+            Some(State::SignInRequired) => ("user", t.danger),
+            Some(State::OwnershipRequired) => ("info-box", t.danger),
+            None => ("info-box", t.muted),
+        };
+        (
+            icon,
+            color,
+            status.map_or("Sign-in not checked", |s| s.label()),
+        )
+    };
+    div()
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .text_color(color)
+        .child(blocks::icon(icon, 14., color))
+        .child(tr(label))
+}
+
 /// Polling must handle each sign-in transition once. Replaying a completed sign-in
 /// restarts every account's status worker and leaves the UI perpetually checking.
 fn sign_in_change(shown: &mut Option<SignInState>, next: SignInState) -> Option<SignInState> {
@@ -3783,14 +3812,7 @@ impl Launcher {
                         } else {
                             "Microsoft account"
                         }))
-                        .child(div().child(if busy {
-                            tr("Checking sign-in…").to_owned()
-                        } else {
-                            status.map_or_else(
-                                || tr("Sign-in not checked").into(),
-                                |s| tr(s.label()).into(),
-                            )
-                        }))
+                        .child(account_status_line(status, busy, &t))
                         .when(!busy, |row| {
                             row.when_some(status.filter(|s| s.message != s.label()), |row, s| {
                                 row.child(div().child(s.message.clone()))
