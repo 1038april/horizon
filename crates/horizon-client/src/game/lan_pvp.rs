@@ -11,6 +11,7 @@ use horizon_client::{
     Result,
     mobs::Who,
     projectiles::{Hit, Projectile, ProjectileKind},
+    text::Text,
 };
 use horizon_core::geometry::{Aabb, Vec3};
 
@@ -29,6 +30,15 @@ pub(super) fn meets_players(kind: &ProjectileKind) -> bool {
 pub(super) enum Victim {
     Host,
     Guest(u32),
+}
+
+impl Victim {
+    fn conn(self) -> Option<u32> {
+        match self {
+            Victim::Host => None,
+            Victim::Guest(conn) => Some(conn),
+        }
+    }
 }
 
 /// The attacker's side of the hit.
@@ -254,16 +264,19 @@ impl Game<'_> {
             who: Who::Player,
             at,
         };
+        let shooter = self.player_attacker(&host, p.guest);
         let result = match victim {
             Victim::Host => {
                 self.lan = Some(host);
                 self.combat.refuse_player_hit = refused;
+                self.combat.projectile_attacker = shooter;
                 let r = self.projectile_hit(p, on_player);
                 self.combat.refuse_player_hit = false;
                 return r;
             }
             Victim::Guest(conn) => self.guest_hit_by(&mut host, conn, |g| {
                 g.combat.refuse_player_hit = refused;
+                g.combat.projectile_attacker = shooter;
                 let r = g.projectile_hit(p, on_player);
                 g.combat.refuse_player_hit = false;
                 r
@@ -271,6 +284,19 @@ impl Game<'_> {
         };
         self.lan = Some(host);
         result.unwrap_or(Ok(()))
+    }
+
+    fn player_attacker(&self, host: &LanHost, conn: Option<u32>) -> Option<(u32, Text)> {
+        match conn {
+            Some(conn) => {
+                let g = host.hub.guest(conn)?;
+                Some((g.entity_id as u32, self.player_text(&g.name, g.uuid)))
+            }
+            None => self.player.is_some().then(|| {
+                let name = self.player_display_text();
+                (host.host_entity as u32, name)
+            }),
+        }
     }
 
     /// The hit landing on the victim with its extra knockback, then the
@@ -294,12 +320,16 @@ impl Game<'_> {
                 1.0,
             );
         }
+        let attacker = self.player_attacker(host, s.attacker);
         // Player.attack: the hurt (with its knockback away from the
         // attacker), then causeExtraKnockback along the attacker's yaw.
         let land = |g: &mut Self| {
             g.combat.player_attacker = Some((s.from, s.disable_blocking));
             let hurt = g.mob_hits_player(s.amount, s.from, "minecraft:player_attack");
             g.combat.player_attacker = None;
+            if hurt && let Some((id, name)) = &attacker {
+                g.note_named_attacker("minecraft:player_attack", *id, name.clone());
+            }
             let (strength, xd, zd) = s.knockback;
             if hurt && strength > 0.0 {
                 g.knock_back_player(f64::from(strength), xd, zd);
@@ -363,12 +393,22 @@ impl Game<'_> {
                 }
             }
         }
-        // `Enchantment.doPostAttack`: thorns hurt the attacking player.
+        let thorns_cause = self.player_attacker(host, victim.conn());
         for damage in thorns {
             match s.attacker {
-                None => self.hurt_player_by("minecraft:thorns", damage),
+                None => {
+                    if let Some((id, name)) = &thorns_cause {
+                        self.note_named_attacker("minecraft:thorns", *id, name.clone());
+                    }
+                    self.hurt_player_by("minecraft:thorns", damage);
+                }
                 Some(conn) => {
-                    self.guest_hit_by(host, conn, |g| g.hurt_player_by("minecraft:thorns", damage));
+                    self.guest_hit_by(host, conn, |g| {
+                        if let Some((id, name)) = &thorns_cause {
+                            g.note_named_attacker("minecraft:thorns", *id, name.clone());
+                        }
+                        g.hurt_player_by("minecraft:thorns", damage)
+                    });
                 }
             }
         }
@@ -483,9 +523,13 @@ impl Game<'_> {
             }
         }
         let (xd, zd) = sweep.knockback;
+        let attacker = self.player_attacker(host, sweep.attacker);
         let land = |g: &mut Self| {
             let hurt = g.mob_hits_player(sweep.damage, sweep.from, "minecraft:player_attack");
             if hurt {
+                if let Some((id, name)) = &attacker {
+                    g.note_named_attacker("minecraft:player_attack", *id, name.clone());
+                }
                 g.knock_back_player(0.4, xd, zd);
             }
         };

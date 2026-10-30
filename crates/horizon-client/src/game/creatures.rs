@@ -2610,6 +2610,9 @@ impl Game<'_> {
         if let Some(a) = attacker.or(owner) {
             self.note_attacker(damage_type, a);
         }
+        if let Some((id, name)) = self.combat.projectile_attacker.take() {
+            self.note_named_attacker(damage_type, id, name);
+        }
         // The projectile is the direct entity: named when it has no owner.
         if let Some(name) = self.combat.projectile_direct.take() {
             self.note_direct_entity(damage_type, name);
