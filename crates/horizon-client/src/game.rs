@@ -2158,6 +2158,9 @@ struct Game<'a> {
     tick_hit: Option<Option<Hit>>,
     /// The part of a right click a guest's packet asks for (game/lan_actions.rs).
     guest_use: Option<GuestUse>,
+    /// The last `use_hand` that ended the click did so with `FAIL`, which
+    /// does not consume the action (handleUseItemOn's ANY_BLOCK_USE).
+    use_failed: bool,
     /// Level events of this tick for the guests, and the guest acting now.
     lan_events: Vec<(i32, [i32; 3], i32, Option<u32>)>,
     /// Jukebox level events 1010 (song name) and 1011 (`None`) for the guests;
@@ -4797,6 +4800,7 @@ impl Game<'_> {
     /// One hand's turn in `startUseItem`: `useItemOn` the block aimed at,
     /// then `useItem`. Whether the click ends here (it acted or failed).
     fn use_hand(&mut self, block_hit: Option<&Hit>) -> Result<bool> {
+        self.use_failed = false;
         // isSecondaryUseActive with something in either hand keeps blocks
         // from reacting.
         let sneaking = self.keys.contains(&KeyCode::ShiftLeft);
@@ -4911,8 +4915,8 @@ impl Game<'_> {
                 let player = self.use_context();
                 let at = Vec3::new(hit.point[0], hit.point[1], hit.point[2]);
                 let item = held.as_ref().map(|s| s.item.to_string());
-                let result = self.with_level(|b, level, ticks| {
-                    b.use_item_on(
+                let (result, branch) = self.with_level(|b, level, ticks| {
+                    b.use_item_on_branch(
                         level,
                         ticks,
                         BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]),
@@ -4939,6 +4943,17 @@ impl Game<'_> {
                     }
                 }
                 if result.consumes_action() {
+                    // ServerPlayerGameMode.useItemOn: ITEM_USED_ON_BLOCK with
+                    // the stack before the use, or DEFAULT_BLOCK_USE.
+                    match branch {
+                        horizon_world::level::UseBranch::ItemOn => {
+                            let used = held.unwrap_or_else(|| ItemStack::new("minecraft:air", 0));
+                            self.trigger_block("minecraft:item_used_on_block", hit.pos, &used);
+                        }
+                        horizon_world::level::UseBranch::WithoutItem => {
+                            self.trigger_default_block_use(hit.pos);
+                        }
+                    }
                     self.swing_arm();
                     return Ok(true);
                 }
@@ -4995,7 +5010,10 @@ impl Game<'_> {
                 }
                 return Ok(true);
             }
-            UseResult::Fail => return Ok(true),
+            UseResult::Fail => {
+                self.use_failed = true;
+                return Ok(true);
+            }
             UseResult::Pass => {}
         }
         // PotionItem.useOn comes before PotionItem.use's drink.
@@ -5134,6 +5152,9 @@ impl Game<'_> {
             // which ItemStack.useOn counts as a use of the item.
             if self.start_eating(&info) {
                 self.stats.add("used", &stack.item, 1);
+            } else {
+                // BlockItem.place's FAIL.
+                self.use_failed = true;
             }
             return Ok(true);
         };
@@ -15161,6 +15182,7 @@ impl<'a> Game<'a> {
             forced_hit: None,
             tick_hit: None,
             guest_use: None,
+            use_failed: false,
             lan_events: Vec::new(),
             lan_songs: Vec::new(),
             lan_cushion_breaks: Vec::new(),
