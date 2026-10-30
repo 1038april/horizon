@@ -3215,9 +3215,6 @@ impl Game<'_> {
                     self.set_menu_slot(p.container, slot as i32, stack);
                 }
                 self.carried = self.to_stack(&p.carried);
-                if p.container == self.remote_menu_id() {
-                    self.recipe_ui.ghost.clear();
-                }
                 self.remote_synced();
             }
             C::ContainerSetSlot(p) => {
@@ -3240,9 +3237,6 @@ impl Game<'_> {
                 }
                 let before = self.creative_stacks();
                 self.set_menu_slot(p.container, i32::from(p.slot), stack);
-                if p.container == self.remote_menu_id() {
-                    self.recipe_ui.ghost.clear();
-                }
                 self.remote_synced_since(&before);
             }
             C::SetCursorItem(p) => {
