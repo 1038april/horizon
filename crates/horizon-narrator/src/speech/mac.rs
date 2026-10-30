@@ -4,7 +4,7 @@
 //! Vanilla is the synthesizer's delegate: `speechSynthesizer:didFinishSpeaking:`
 //! starts the next queued message. AppKit delivers that callback through the
 //! run loop of the thread that speaks (the game's main thread in vanilla); the
-//! speech thread runs none, so `idle` asks the synthesizer every 50 ms whether
+//! speech thread only turns its run loop over in `idle`, so `idle` also asks the synthesizer every 50 ms whether
 //! it still speaks and runs `didFinishSpeaking` once it no longer does.
 //! `stopSpeaking` ends the speech too, and vanilla's delegate then fires as
 //! well (later, from the run loop), so after an interrupt or a `clear` the
@@ -21,7 +21,7 @@
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::{AnyThread, msg_send};
 use objc2_app_kit::NSSpeechSynthesizer;
-use objc2_foundation::NSString;
+use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSRunLoop, NSString};
 
 use std::collections::VecDeque;
 
@@ -91,6 +91,15 @@ impl super::Speech for Synthesizer {
     /// The delegate's callback, polled: the speech that was started ended.
     fn idle(&mut self) {
         autoreleasepool(|_| {
+            // Lets AppKit deliver what the synthesizer posts to this thread's
+            // run loop (vanilla's runs on the game's main thread), without
+            // waiting.
+            // SAFETY: the current thread's run loop, run in the default mode
+            // until a date already past: it handles what is ready and returns.
+            unsafe {
+                NSRunLoop::currentRunLoop()
+                    .runMode_beforeDate(NSDefaultRunLoopMode, &NSDate::distantPast());
+            }
             if self.speaking && !self.synth.isSpeaking() {
                 self.did_finish_speaking();
             }
