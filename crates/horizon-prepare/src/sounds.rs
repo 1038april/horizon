@@ -232,7 +232,9 @@ pub fn add_assets(
         .iter()
         .find(|(name, ..)| *name == kind)
         .ok_or_else(|| format!("no assets called {kind}"))?;
-    Assets::load(root, output, minecraft, log)?.copy(*wanted, label, required, log)
+    let mut assets = Assets::load(root, output, minecraft, log)?;
+    let _lock = crate::hold_lock(&assets.target, log)?;
+    assets.copy(*wanted, label, required, log)
 }
 
 /// A preparation's index and verified destinations. Never persisted: a later invocation

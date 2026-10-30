@@ -20,6 +20,16 @@ pub(crate) fn write_stamp(resources: &Path) -> Result<(), String> {
     )
 }
 
+pub(crate) fn remove_stamp(resources: &Path) -> Result<(), String> {
+    let path = resources.join(STAMP);
+    match std::fs::remove_file(&path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(format!("{}: {e}", path.display()))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// What the resources at `resources` lack for `root`'s pinned version, each with what to run;
 /// empty when they are complete and current. Err when `root` has no readable research-lock.json.
 pub fn check(root: &Path, resources: &Path) -> Result<Vec<String>, String> {
@@ -56,16 +66,25 @@ pub fn check(root: &Path, resources: &Path) -> Result<Vec<String>, String> {
             made_by.map_or("unknown".into(), |v| v.to_string())
         ));
     }
-    for (what, lacks, command) in EXTRAS {
-        if lacks(resources) {
-            lacking.push(format!("{what} missing: horizon-prepare {command}"));
-        }
+    for (command, what) in missing_extras(resources) {
+        lacking.push(format!("{what} missing: horizon-prepare {command}"));
     }
     Ok(lacking)
 }
 
-/// What a preparation may leave out when the player's asset store lacks it, as the launcher's
-/// `COMPLETIONS` check it (launcher/src/backend.rs): what, whether it is missing, the command.
+/// What the resources at `resources` lack of what a preparation may leave out when the player's
+/// asset store lacks it: each as its `horizon-prepare` command (`packs`, `panorama`, `fonts`,
+/// `languages`, `sounds`) and what it is. `--check` and the launcher's `COMPLETIONS`
+/// (launcher/src/backend.rs) both ask here, so they never disagree.
+pub fn missing_extras(resources: &Path) -> Vec<(&'static str, &'static str)> {
+    EXTRAS
+        .iter()
+        .filter(|(_, lacks, _)| lacks(resources))
+        .map(|(what, _, command)| (*command, *what))
+        .collect()
+}
+
+/// What, whether it is missing, the command.
 type Extra = (&'static str, fn(&Path) -> bool, &'static str);
 
 const EXTRAS: [Extra; 5] = [
@@ -170,5 +189,39 @@ mod tests {
         assert_eq!(lacking.len(), 2, "{lacking:?}");
         assert!(lacking[0].starts_with("made by output version unknown"));
         assert!(lacking[1].ends_with("horizon-prepare fonts"));
+    }
+
+    #[test]
+    fn a_preparation_removes_the_stamp_before_writing() {
+        let root = folder("restamp");
+        let out = root.join("out");
+        write_stamp(&out).unwrap();
+        remove_stamp(&out).unwrap();
+        assert!(!out.join(STAMP).exists());
+        // Nothing to remove is not an error.
+        remove_stamp(&out).unwrap();
+    }
+
+    #[test]
+    fn a_second_preparation_of_a_folder_waits_for_the_first() {
+        let root = folder("lock");
+        let first = crate::hold_lock(&root, &|_| {}).unwrap();
+        let waited = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let second = {
+            let (root, waited) = (root.clone(), waited.clone());
+            std::thread::spawn(move || {
+                let said = std::cell::Cell::new(false);
+                let _lock = crate::hold_lock(&root, &|line| {
+                    said.set(line.starts_with("Waiting for another horizon-prepare"))
+                })
+                .unwrap();
+                waited.store(said.get(), std::sync::atomic::Ordering::SeqCst);
+            })
+        };
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(!second.is_finished(), "the second lock did not wait");
+        drop(first);
+        second.join().unwrap();
+        assert!(waited.load(std::sync::atomic::Ordering::SeqCst));
     }
 }
