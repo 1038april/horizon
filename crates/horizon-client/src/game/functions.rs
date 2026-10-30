@@ -211,49 +211,50 @@ impl Game<'_> {
             .collect();
         // A pack's worldgen ids join the completion registries
         // (`command-registries.json` lists only the game's own), and so do
-        // its worldgen tag ids for the `#tag` completions.
-        let kinds = [
-            ("minecraft:worldgen/structure", "worldgen/structure/"),
-            (
-                "minecraft:worldgen/structure_set",
-                "worldgen/structure_set/",
-            ),
-            (
-                "minecraft:worldgen/template_pool",
-                "worldgen/template_pool/",
-            ),
-            (
-                "minecraft:worldgen/processor_list",
-                "worldgen/processor_list/",
-            ),
-            ("minecraft:worldgen/biome", "worldgen/biome/"),
-        ];
-        for (registry, kind) in kinds {
+        // its worldgen tag ids for the `#tag` completions. The packs are the
+        // ones the world's worldgen is built from.
+        let packs = horizon_client::datapack::discover(&self.world_root);
+        let enabled = horizon_client::datapack::enabled_ids(&self.world_root, &packs);
+        let enabled: Vec<_> = enabled
+            .iter()
+            .filter_map(|id| packs.iter().find(|p| &p.id == id))
+            .collect();
+        let (overrides, _) = horizon_client::datapack::worldgen_overrides(&enabled, |_| true);
+        for (bundle, registry) in [
+            ("biomes", "minecraft:worldgen/biome"),
+            ("structures", "minecraft:worldgen/structure"),
+            ("structure_sets", "minecraft:worldgen/structure_set"),
+            ("template_pools", "minecraft:worldgen/template_pool"),
+            ("processor_lists", "minecraft:worldgen/processor_list"),
+        ] {
             let entry = reg.by_registry.entry(registry.to_owned()).or_default();
-            for id in self.fns.store.files.keys() {
-                if let Some(rest) = id.strip_prefix(kind)
-                    && !entry.ids.contains(&rest.to_owned())
-                {
-                    entry.ids.push(rest.to_owned());
+            for (id, _) in overrides.entries(bundle) {
+                if !entry.ids.contains(&id.to_owned()) {
+                    entry.ids.push(id.to_owned());
                 }
             }
             entry.ids.sort();
         }
-        for kind in ["worldgen/structure", "worldgen/biome"] {
-            let prefix = format!("tags/{kind}/");
-            let entry = reg
-                .by_registry
-                .entry(format!("minecraft:{kind}"))
-                .or_default();
-            for id in self.fns.store.files.keys() {
-                if let Some(rest) = id.strip_prefix(prefix.as_str())
-                    && !entry.tags.contains(&rest.to_owned())
-                {
-                    entry.tags.push(rest.to_owned());
-                }
+        let entry = reg
+            .by_registry
+            .entry("minecraft:worldgen/biome".to_owned())
+            .or_default();
+        for (id, _, _) in overrides.tags("biome_tags") {
+            if !entry.tags.contains(&id.to_owned()) {
+                entry.tags.push(id.to_owned());
             }
-            entry.tags.sort();
         }
+        entry.tags.sort();
+        let entry = reg
+            .by_registry
+            .entry("minecraft:worldgen/structure".to_owned())
+            .or_default();
+        for (id, _, _) in overrides.tags("structure_tags") {
+            if !entry.tags.contains(&id.to_owned()) {
+                entry.tags.push(id.to_owned());
+            }
+        }
+        entry.tags.sort();
     }
 
     // ---- scheduled events ------------------------------------------------------
