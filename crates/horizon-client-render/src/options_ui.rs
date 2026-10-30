@@ -3198,12 +3198,44 @@ impl OptionsUi {
     ) -> Vec<Event> {
         self.size = size;
         self.framebuffer = framebuffer;
+        if let Some(level) = Self::graphics_level(self.page()) {
+            use crate::graphics_ui::Action;
+            let actions = self
+                .graphics
+                .wheel(level, s, cursor, size, framebuffer, amount);
+            let mut events = Vec::new();
+            for action in actions {
+                match action {
+                    Action::ButtonClick => events.push(Event::ButtonClick),
+                    Action::Changed => events.push(Event::Changed),
+                    Action::SliderDrag => events.push(Event::SliderDrag),
+                    Action::OpenAdvanced => self.push(Page::GraphicsAdvanced),
+                    Action::OpenHdr => self.push(Page::GraphicsHdr),
+                    Action::OpenSimple => {
+                        if self.stack.len() >= 2
+                            && self.stack[self.stack.len() - 2] == Page::Graphics
+                        {
+                            events.extend(self.back(s));
+                        } else {
+                            self.stack.pop();
+                            self.push(Page::Graphics);
+                        }
+                    }
+                    Action::Done => events.extend(self.back(s)),
+                }
+            }
+            return events;
+        }
         let plain = self.resource_error.is_none()
-            && Self::graphics_level(self.page()).is_none()
             && !(self.pack_screen.is_some() && self.stack.last() == Some(&Page::Packs));
         if !plain {
             self.scroll_at(s, size, cursor, amount);
             return Vec::new();
+        }
+        enum HoveredControl {
+            Cycle(Opt),
+            Extra(crate::extras::Item),
+            Slider(Opt, f32),
         }
         let (widgets, top, bottom, _) = self.layout(s, size.0, size.1);
         let hovered = widgets.iter().find_map(|wd| match &wd.kind {
@@ -3214,21 +3246,34 @@ impl OptionsUi {
             } if ui::hovered(cursor, wd.x, wd.y, wd.w, wd.h)
                 && !(wd.list && (cursor.1 < top || cursor.1 >= bottom)) =>
             {
-                Some((false, *opt, wd.w))
+                Some(HoveredControl::Cycle(*opt))
+            }
+            WKind::Button {
+                active: true,
+                act: Act::Extra(item),
+                ..
+            } if ui::hovered(cursor, wd.x, wd.y, wd.w, wd.h)
+                && !(wd.list && (cursor.1 < top || cursor.1 >= bottom)) =>
+            {
+                Some(HoveredControl::Extra(*item))
             }
             WKind::Slider { opt, .. }
                 if ui::hovered(cursor, wd.x, wd.y, wd.w, wd.h)
                     && !(wd.list && (cursor.1 < top || cursor.1 >= bottom)) =>
             {
-                Some((true, *opt, wd.w))
+                Some(HoveredControl::Slider(*opt, wd.w))
             }
             _ => None,
         });
         match hovered {
-            Some((false, opt, _)) if amount != 0.0 => {
+            Some(HoveredControl::Cycle(opt)) if amount != 0.0 => {
                 self.cycle_option(s, opt, amount > 0.0, framebuffer)
             }
-            Some((true, opt, w)) if amount != 0.0 => {
+            Some(HoveredControl::Extra(item)) if amount != 0.0 => {
+                item.cycle(&mut s.extras, amount > 0.0);
+                vec![Event::Changed]
+            }
+            Some(HoveredControl::Slider(opt, w)) if amount != 0.0 => {
                 self.step_slider_option(s, opt, amount > 0.0, w)
             }
             Some(_) => Vec::new(),
@@ -3497,6 +3542,42 @@ impl OptionsUi {
                     .to_owned()
             };
             return self.bind_key(s, value);
+        }
+
+        if let Some(level) = Self::graphics_level(self.page()) {
+            use crate::graphics_ui::Action;
+            let size = (self.size.0.max(480.0), self.size.1.max(240.0));
+            let fb = [self.framebuffer[0].max(480), self.framebuffer[1].max(240)];
+            let (actions, handled) = self.graphics.key_modifiers(level, s, key, shift, size, fb);
+            let mut events = Vec::new();
+            for action in actions {
+                match action {
+                    Action::ButtonClick => events.push(Event::ButtonClick),
+                    Action::Changed => events.push(Event::Changed),
+                    Action::SliderDrag => events.push(Event::SliderDrag),
+                    Action::OpenAdvanced => self.push(Page::GraphicsAdvanced),
+                    Action::OpenHdr => self.push(Page::GraphicsHdr),
+                    Action::OpenSimple => {
+                        if self.stack.len() >= 2
+                            && self.stack[self.stack.len() - 2] == Page::Graphics
+                        {
+                            events.extend(self.back(s));
+                        } else {
+                            self.stack.pop();
+                            self.push(Page::Graphics);
+                        }
+                    }
+                    Action::Done => events.extend(self.back(s)),
+                }
+            }
+            if handled {
+                return events;
+            }
+            if key == K::Escape {
+                events.extend(self.back(s));
+                return events;
+            }
+            return events;
         }
 
         // If a focused slider is in value-change mode, Escape cancels value-change mode
@@ -5479,5 +5560,75 @@ mod tests {
         let events = ui.wheel(&mut s, size, cursor, [854, 480], 1.0);
         assert!(s.master_volume > 0.5);
         assert!(events.iter().any(|e| matches!(e, Event::Volume(0, _))));
+    }
+
+    #[test]
+    fn horizon_pages_slider_and_wheel_parity() {
+        use winit::keyboard::KeyCode as K;
+        let atlas = atlas();
+        let mut s = Settings::default();
+        let mut ui = OptionsUi::default();
+
+        // 1. Extras page: scrolling wheel on Sort switch cycles it
+        ui.show(Page::Extras);
+        let size = (480.0, 600.0);
+        let (widgets, _, _, _) = ui.layout(&s, size.0, size.1);
+        let sort_wd = widgets
+            .iter()
+            .find(|w| {
+                matches!(
+                    w.kind,
+                    WKind::Button {
+                        act: Act::Extra(crate::extras::Item::Sort),
+                        ..
+                    }
+                )
+            })
+            .unwrap();
+        let cursor = (sort_wd.x + 5.0, sort_wd.y + 5.0);
+        assert!(!s.extras.sort);
+        ui.wheel(&mut s, size, cursor, [854, 480], 1.0);
+        assert!(s.extras.sort);
+        ui.wheel(&mut s, size, cursor, [854, 480], 1.0);
+        assert!(!s.extras.sort);
+
+        // 2. Horizon Graphics page through OptionsUi:
+        // Tab onto ChunkUpdates slider, ArrowRight adjusts value, Space toggles can_change_value
+        ui.show(Page::GraphicsAdvanced);
+        s.horizon.chunk_updates = 10;
+        ui.size = size;
+        ui.framebuffer = [854, 480];
+
+        // Tab into controls
+        for _ in 0..15 {
+            ui.key(&mut s, &atlas, K::Tab, None);
+            if ui.graphics.focus
+                == Some(crate::graphics_ui::Target::Item(
+                    crate::graphics_ui::Item::Horizon(crate::graphics_ui::H::ChunkUpdates),
+                ))
+            {
+                break;
+            }
+        }
+        assert_eq!(
+            ui.graphics.focus,
+            Some(crate::graphics_ui::Target::Item(
+                crate::graphics_ui::Item::Horizon(crate::graphics_ui::H::ChunkUpdates)
+            ))
+        );
+        assert!(ui.graphics.can_change_value);
+
+        // Right arrow steps ChunkUpdates to 11
+        let events = ui.key(&mut s, &atlas, K::ArrowRight, None);
+        assert_eq!(s.horizon.chunk_updates, 11);
+        assert!(events.contains(&Event::SliderDrag));
+
+        // Space toggles can_change_value to false
+        ui.key(&mut s, &atlas, K::Space, None);
+        assert!(!ui.graphics.can_change_value);
+
+        // ArrowRight does not change ChunkUpdates when can_change_value is false
+        ui.key(&mut s, &atlas, K::ArrowRight, None);
+        assert_eq!(s.horizon.chunk_updates, 11);
     }
 }

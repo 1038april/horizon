@@ -423,17 +423,8 @@ pub fn slider_ext(
         // A controller's D-pad can focus it (Horizon's controller support).
         crate::widgets::target_as([x, y, w, 20.0], kind);
     }
-    let track = if dragging || (active && focused && !can_change_value) {
-        "gui/sprites/widget/slider_highlighted"
-    } else {
-        "gui/sprites/widget/slider"
-    };
+    let (track, handle) = slider_sprites_ext(hover, active, focused, can_change_value, dragging);
     nine_slice(batch, atlas, track, x, y, w, 20.0, u32::MAX);
-    let handle = if active && (hover || can_change_value || dragging) {
-        "gui/sprites/widget/slider_handle_highlighted"
-    } else {
-        "gui/sprites/widget/slider_handle"
-    };
     nine_slice(
         batch,
         atlas,
@@ -451,15 +442,26 @@ pub fn slider_ext(
     };
     centered_text(batch, atlas, label, x + 2.0, y + 6.0, w - 4.0, color);
 }
-/// Track and handle sprites: the track outline shows only while the slider is
-/// dragged, hovering highlights just the handle.
+#[cfg(test)]
 fn slider_sprites(hover: bool, active: bool, dragging: bool) -> (&'static str, &'static str) {
-    let track = if dragging {
+    slider_sprites_ext(hover, active, false, false, dragging)
+}
+
+/// Track and handle sprites: the track outline shows while dragged or focused with
+/// keyboard navigation (!can_change_value), hovering or editing highlights the handle.
+fn slider_sprites_ext(
+    hover: bool,
+    active: bool,
+    focused: bool,
+    can_change_value: bool,
+    dragging: bool,
+) -> (&'static str, &'static str) {
+    let track = if dragging || (active && focused && !can_change_value) {
         "gui/sprites/widget/slider_highlighted"
     } else {
         "gui/sprites/widget/slider"
     };
-    let handle = if hover && active {
+    let handle = if active && (hover || can_change_value || dragging) {
         "gui/sprites/widget/slider_handle_highlighted"
     } else {
         "gui/sprites/widget/slider_handle"
