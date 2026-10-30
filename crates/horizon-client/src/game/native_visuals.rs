@@ -1,6 +1,14 @@
 use super::Game;
 use horizon_client::{dynamic_light, gizmos};
 
+fn rim_target_valid(
+    loaded: bool,
+    state: horizon_world::registry::BlockStateId,
+    air: horizon_world::registry::BlockStateId,
+) -> bool {
+    loaded && state != air
+}
+
 impl Game<'_> {
     /// Frame-local requests never persist after a mod is removed or a world changes.
     pub(super) fn native_frame_visuals(
@@ -24,15 +32,21 @@ impl Game<'_> {
         let mut edges = 0;
         for rim in rims.into_iter().take(8) {
             let pos = rim.pos;
+            let state = self.world.block(pos[0], pos[1], pos[2]);
             if edges >= 256
                 || !rim.width.is_finite()
                 || !(0.5..=4.0).contains(&rim.width)
                 || !close(pos.map(|v| f64::from(v) + 0.5))
-                || self.native_lit_block_name(pos).is_none()
+                || !rim_target_valid(
+                    self.world
+                        .chunks
+                        .contains_key(&(pos[0].div_euclid(16), pos[2].div_euclid(16))),
+                    state,
+                    self.world.air,
+                )
             {
                 continue;
             }
-            let state = self.world.block(pos[0], pos[1], pos[2]);
             let facts = self.res.facts().get(state);
             let offset = if facts.outline_offset {
                 self.pack
@@ -87,5 +101,20 @@ impl Game<'_> {
             sources.map(|l| (l.at, l.rgb, l.radius, l.intensity)),
             camera,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rim_target_valid;
+    use horizon_world::registry::BlockStateId;
+
+    #[test]
+    fn ordinary_loaded_blocks_can_have_rims() {
+        let air = BlockStateId(0);
+        let stone = BlockStateId(1); // No emission requirement.
+        assert!(rim_target_valid(true, stone, air));
+        assert!(!rim_target_valid(false, stone, air));
+        assert!(!rim_target_valid(true, air, air));
     }
 }
