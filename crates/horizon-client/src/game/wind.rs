@@ -158,7 +158,7 @@ impl Game<'_> {
             .get("minecraft:blocks_wind_charge_explosions")
             .cloned()
             .unwrap_or_default();
-        let (min_y, max_y) = (horizon_client::chunk::MIN_Y, 320);
+        let (min_y, max_y) = (self.world.bottom_y(), self.world.top_y());
         let mut set: BTreeSet<[i32; 3]> = BTreeSet::new();
         for xx in 0..16 {
             for yy in 0..16 {
@@ -517,6 +517,16 @@ impl Game<'_> {
         if !triggers(&name) {
             return Ok(());
         }
+        // BellBlock.onExplosionHit: attemptToRing with no direction, so the bell
+        // rings toward its facing, not the face the burst came from,
+        // powered or not.
+        if &*name == "minecraft:bell" {
+            self.with_level(|b, level, ticks| {
+                b.bell_attempt_to_ring(level, ticks, BlockPos::new(pos[0], pos[1], pos[2]))
+            });
+            self.process_level_events()?;
+            return Ok(());
+        }
         // Doors react in their lower half only; powered ones and pressed
         // buttons stay as they are.
         if name.ends_with("_door") && prop(self, "half").as_deref() != Some("lower") {
@@ -556,6 +566,7 @@ impl Game<'_> {
         p: &Projectile,
         at: glam::Vec3,
         light: u32,
+        partial: f32,
         out: &mut Vec<horizon_client::mesher::Vertex>,
     ) {
         static MODEL: std::sync::OnceLock<Option<horizon_client::mobs::Part>> =
@@ -573,7 +584,8 @@ impl Game<'_> {
         else {
             return;
         };
-        let age = p.age as f32;
+        // `EntityRenderState.ageInTicks`: the tick count plus the partial tick.
+        let age = p.age as f32 + partial;
         let mut poses = horizon_client::mobs::anim::Poses::new(model);
         poses.yrot("wind_charge", -age * 16.0_f32.to_radians());
         poses.yrot("wind", age * 16.0_f32.to_radians());
