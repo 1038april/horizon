@@ -562,6 +562,7 @@ pub fn fill_noise<B: TerrainBlockStates>(
         if scratch.len() < size {
             scratch.resize(size, 0.0);
         }
+        scratch[..size].fill(0.0);
         fill_noise_inner(
             chunk,
             volume,
@@ -615,21 +616,19 @@ fn fill_noise_inner<B: TerrainBlockStates>(
             let col_base = (x + z * sx) * sy;
             let col_density = &density[col_base..col_base + sy];
             // Heightmap updates at or below first-available - 2 are no-ops. In a
-            // top-down vertical sweep, once a heightmap is updated (or already bounded),
-            // all lower blocks in that column are strictly below the bound and can be
+            // top-down vertical sweep, once an opaque block updates first-available
+            // to world_y + 1, all lower blocks have world_y <= bound and can be
             // skipped entirely.
-            let bound_ocean_floor = chunk.heightmaps[HeightmapType::OceanFloorWg as usize]
+            let mut bound_ocean_floor = chunk.heightmaps[HeightmapType::OceanFloorWg as usize]
                 .as_ref()
                 .expect("ensured heightmap")
                 .first_available(x as i32, z as i32)
                 .map(|first| first.wrapping_sub(2));
-            let bound_world_surface = chunk.heightmaps[HeightmapType::WorldSurfaceWg as usize]
+            let mut bound_world_surface = chunk.heightmaps[HeightmapType::WorldSurfaceWg as usize]
                 .as_ref()
                 .expect("ensured heightmap")
                 .first_available(x as i32, z as i32)
                 .map(|first| first.wrapping_sub(2));
-            let mut ocean_floor_settled = false;
-            let mut world_surface_settled = false;
             let mut y = sy;
             while y > 0 {
                 y -= 1;
@@ -645,30 +644,40 @@ fn fill_noise_inner<B: TerrainBlockStates>(
                     }
                     aquifer.note_skipped();
                     chunk.fill_solid_run(x as i32, world_y, z as i32, run as i32, default_block)?;
-                    if !(ocean_floor_settled && world_surface_settled) {
-                        if !ocean_floor_settled {
-                            if !matches!(bound_ocean_floor, Ok(bound) if world_y <= bound) {
-                                chunk.update_heightmap(
-                                    HeightmapType::OceanFloorWg,
-                                    x as i32,
-                                    world_y,
-                                    z as i32,
-                                    default_block,
-                                )?;
-                            }
-                            ocean_floor_settled = true;
+                    let ocean_floor_covered =
+                        matches!(bound_ocean_floor, Ok(bound) if world_y <= bound);
+                    let world_surface_covered =
+                        matches!(bound_world_surface, Ok(bound) if world_y <= bound);
+                    if !(ocean_floor_covered && world_surface_covered) {
+                        if !ocean_floor_covered {
+                            chunk.update_heightmap(
+                                HeightmapType::OceanFloorWg,
+                                x as i32,
+                                world_y,
+                                z as i32,
+                                default_block,
+                            )?;
+                            bound_ocean_floor = chunk.heightmaps
+                                [HeightmapType::OceanFloorWg as usize]
+                                .as_ref()
+                                .expect("ensured heightmap")
+                                .first_available(x as i32, z as i32)
+                                .map(|first| first.wrapping_sub(2));
                         }
-                        if !world_surface_settled {
-                            if !matches!(bound_world_surface, Ok(bound) if world_y <= bound) {
-                                chunk.update_heightmap(
-                                    HeightmapType::WorldSurfaceWg,
-                                    x as i32,
-                                    world_y,
-                                    z as i32,
-                                    default_block,
-                                )?;
-                            }
-                            world_surface_settled = true;
+                        if !world_surface_covered {
+                            chunk.update_heightmap(
+                                HeightmapType::WorldSurfaceWg,
+                                x as i32,
+                                world_y,
+                                z as i32,
+                                default_block,
+                            )?;
+                            bound_world_surface = chunk.heightmaps
+                                [HeightmapType::WorldSurfaceWg as usize]
+                                .as_ref()
+                                .expect("ensured heightmap")
+                                .first_available(x as i32, z as i32)
+                                .map(|first| first.wrapping_sub(2));
                         }
                     }
                     y -= run - 1;
@@ -696,30 +705,39 @@ fn fill_noise_inner<B: TerrainBlockStates>(
                     continue;
                 }
                 chunk.set_block_raw(x as i32, world_y, z as i32, state)?;
-                if !(ocean_floor_settled && world_surface_settled) {
-                    if !ocean_floor_settled
-                        && (matches!(bound_ocean_floor, Ok(bound) if world_y <= bound)
-                            || chunk.update_heightmap(
-                                HeightmapType::OceanFloorWg,
-                                x as i32,
-                                world_y,
-                                z as i32,
-                                state,
-                            )?)
-                    {
-                        ocean_floor_settled = true;
+                let ocean_floor_covered =
+                    matches!(bound_ocean_floor, Ok(bound) if world_y <= bound);
+                let world_surface_covered =
+                    matches!(bound_world_surface, Ok(bound) if world_y <= bound);
+                if !(ocean_floor_covered && world_surface_covered) {
+                    if !ocean_floor_covered {
+                        chunk.update_heightmap(
+                            HeightmapType::OceanFloorWg,
+                            x as i32,
+                            world_y,
+                            z as i32,
+                            state,
+                        )?;
+                        bound_ocean_floor = chunk.heightmaps[HeightmapType::OceanFloorWg as usize]
+                            .as_ref()
+                            .expect("ensured heightmap")
+                            .first_available(x as i32, z as i32)
+                            .map(|first| first.wrapping_sub(2));
                     }
-                    if !world_surface_settled
-                        && (matches!(bound_world_surface, Ok(bound) if world_y <= bound)
-                            || chunk.update_heightmap(
-                                HeightmapType::WorldSurfaceWg,
-                                x as i32,
-                                world_y,
-                                z as i32,
-                                state,
-                            )?)
-                    {
-                        world_surface_settled = true;
+                    if !world_surface_covered {
+                        chunk.update_heightmap(
+                            HeightmapType::WorldSurfaceWg,
+                            x as i32,
+                            world_y,
+                            z as i32,
+                            state,
+                        )?;
+                        bound_world_surface = chunk.heightmaps
+                            [HeightmapType::WorldSurfaceWg as usize]
+                            .as_ref()
+                            .expect("ensured heightmap")
+                            .first_available(x as i32, z as i32)
+                            .map(|first| first.wrapping_sub(2));
                     }
                 }
                 if aquifer.should_schedule_fluid_update()
@@ -777,11 +795,8 @@ mod tests {
         }
     }
 
-    #[test]
-    #[ignore = "benchmark"]
-    fn benchmark_fill_noise() {
-        use std::time::Instant;
-        let registry = BlockRegistry::from_nbt(&Tag::compound([
+    fn test_registry() -> BlockRegistry {
+        BlockRegistry::from_nbt(&Tag::compound([
             ("DataVersion", Tag::Int(crate::DATA_VERSION)),
             (
                 "states",
@@ -802,7 +817,108 @@ mod tests {
                 ]),
             ),
         ]))
+        .unwrap()
+    }
+
+    #[test]
+    fn fill_noise_poisoned_scratch_does_not_leak() {
+        let registry = test_registry();
+        let volume = DensityVolume::new([16, 384, 16], [0, -64, 0], [1, 1, 1]).unwrap();
+        let sampler = ConstantSampler(1.0);
+        let mut context = SamplerContext::sparse();
+
+        let mut chunk_clean =
+            TerrainChunk::new(ChunkPos::new(0, 0), -64, 384, &registry, Properties).unwrap();
+        let mut aquifer_clean = DisabledAquifer::new(TestPicker, BlockStateId(0));
+        fill_noise(
+            &mut chunk_clean,
+            volume,
+            &sampler,
+            &mut context,
+            &mut aquifer_clean,
+            BlockStateId(2),
+        )
         .unwrap();
+
+        // Deliberately poison the thread-local scratch buffer with NaN
+        SCRATCH_DENSITY.with_borrow_mut(|scratch| {
+            scratch.fill(f32::NAN);
+        });
+
+        let mut chunk_poisoned =
+            TerrainChunk::new(ChunkPos::new(0, 0), -64, 384, &registry, Properties).unwrap();
+        let mut aquifer_poisoned = DisabledAquifer::new(TestPicker, BlockStateId(0));
+        fill_noise(
+            &mut chunk_poisoned,
+            volume,
+            &sampler,
+            &mut context,
+            &mut aquifer_poisoned,
+            BlockStateId(2),
+        )
+        .unwrap();
+
+        for (sec1, sec2) in chunk_clean
+            .blocks
+            .sections
+            .iter()
+            .zip(&chunk_poisoned.blocks.sections)
+        {
+            for idx in 0..4096 {
+                assert_eq!(sec1.get(idx).unwrap(), sec2.get(idx).unwrap());
+            }
+        }
+        for (h1, h2) in chunk_clean
+            .heightmaps
+            .iter()
+            .zip(&chunk_poisoned.heightmaps)
+        {
+            assert_eq!(
+                h1.as_ref().map(|m| m.raw_data()),
+                h2.as_ref().map(|m| m.raw_data())
+            );
+        }
+    }
+
+    #[test]
+    fn fill_noise_heightmap_matches_top_down_surface() {
+        let registry = test_registry();
+        let volume = DensityVolume::new([16, 384, 16], [0, -64, 0], [1, 1, 1]).unwrap();
+        let sampler = ConstantSampler(1.0);
+        let mut context = SamplerContext::sparse();
+
+        let mut chunk =
+            TerrainChunk::new(ChunkPos::new(0, 0), -64, 384, &registry, Properties).unwrap();
+        let mut aquifer = DisabledAquifer::new(TestPicker, BlockStateId(0));
+        fill_noise(
+            &mut chunk,
+            volume,
+            &sampler,
+            &mut context,
+            &mut aquifer,
+            BlockStateId(2),
+        )
+        .unwrap();
+
+        let ocean_floor = chunk.heightmaps[HeightmapType::OceanFloorWg as usize]
+            .as_ref()
+            .unwrap();
+        let world_surface = chunk.heightmaps[HeightmapType::WorldSurfaceWg as usize]
+            .as_ref()
+            .unwrap();
+        for z in 0..16 {
+            for x in 0..16 {
+                assert_eq!(ocean_floor.first_available(x, z).unwrap(), 320);
+                assert_eq!(world_surface.first_available(x, z).unwrap(), 320);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "benchmark"]
+    fn benchmark_fill_noise() {
+        use std::time::Instant;
+        let registry = test_registry();
 
         let volume = DensityVolume::new([16, 384, 16], [0, -64, 0], [1, 1, 1]).unwrap();
         let sampler = ConstantSampler(1.0);
