@@ -7,7 +7,7 @@ use super::{
     control::MoveKind,
     goals::{
         Avoid, AvoidEntity, BreathAir, Cx, Goal, HurtByTarget, LookAtPlayer, MeleeAttack, Panic,
-        RandomLookAround, Stroll, TryFindWater, goal_clone, reduced,
+        RandomLookAround, Stroll, Tempt, TryFindWater, goal_clone, reduced,
     },
     nav::NavKind,
 };
@@ -121,10 +121,13 @@ pub fn register(m: &mut Mob) {
             super::animal_brain::init(m, i64::from(m.id));
         }
         S::Tadpole => {
-            // TadpoleAi: panic, swim around and look about.
+            // `TadpoleAi.initIdleActivity`: panic 2.0, follow a player holding
+            // frog food at 1.25 and swim around at 0.5 (not 1.0).
+            let food = m.kind.food.clone();
             let g = &mut m.ai.goals;
             g.add(0, Panic::new(2.0));
-            g.add(4, Stroll::swimming(1.0, 40));
+            g.add(1, Tempt::new(1.25, food, false));
+            g.add(4, Stroll::swimming(0.5, 40));
             m.ai.mov.kind = MoveKind::Custom;
             m.ai.nav.kind = NavKind::Water { breach: false };
         }
