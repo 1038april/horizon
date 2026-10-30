@@ -898,6 +898,12 @@ impl Game<'_> {
     /// Hand a container the guest opened over (ServerPlayer.openMenu);
     /// false when it is not one a guest can open.
     fn lan_open_container(&mut self, host: &mut LanHost, conn: u32, pos: (i32, i32, i32)) -> bool {
+        // A chest minecart, hopper minecart or chest boat keeps its slots
+        // under a placeholder key (`ContainerEntity`): the menu is the
+        // vehicle's own, not a block's.
+        if pos.1 == super::minecarts::CART_KEY_Y {
+            return self.lan_open_vehicle_container(host, conn, pos);
+        }
         let name = &self
             .res
             .facts()
@@ -969,6 +975,51 @@ impl Game<'_> {
         let menu = match slots {
             Slots::Block(_) => horizon_client::containers::block_menu_type(name).unwrap_or(menu),
             _ => menu,
+        };
+        // ServerPlayer.openMenu closes the menu that was open.
+        self.guest_container_closed(host, conn);
+        self.lan_station_closed(host, conn, None);
+        host.hub
+            .open_container(conn, menu, title, pos, slots, items);
+        true
+    }
+
+    /// `ContainerEntity.interactWithContainerVehicle` for a guest: the menu
+    /// the vehicle's own `MenuProvider.createMenu` builds - three rows of a
+    /// `ChestMenu` for a chest boat or a chest minecart, a `HopperMenu` for a
+    /// hopper minecart - titled with the vehicle's name.
+    fn lan_open_vehicle_container(
+        &mut self,
+        host: &mut LanHost,
+        conn: u32,
+        pos: (i32, i32, i32),
+    ) -> bool {
+        let entity_type = if let Some(cart) = self.carts.iter().find(|c| c.id as i32 == pos.2) {
+            cart.kind.id().to_owned()
+        } else if let Some(boat) = self.boats.iter().find(|b| b.id as i32 == pos.2) {
+            if !boat.chest {
+                return false;
+            }
+            boat.entity_type()
+        } else {
+            return false;
+        };
+        // `createMenu` (ChestMenu.threeRows or a HopperMenu), and
+        // `MenuProvider.getDisplayName`, the vehicle's name key.
+        let Some((menu, _)) = horizon_client::containers::vehicle_menu(&entity_type) else {
+            return false;
+        };
+        let title = horizon_protocol::text::translatable(
+            &horizon_client::containers::vehicle_menu_name(&entity_type),
+            &[],
+        );
+        let slots = Slots::Block(pos);
+        let Some(items) = host
+            .hub
+            .guest(conn)
+            .and_then(|g| slots.read(&self.world, g))
+        else {
+            return false;
         };
         // ServerPlayer.openMenu closes the menu that was open.
         self.guest_container_closed(host, conn);
@@ -1455,7 +1506,11 @@ impl Game<'_> {
             // mount's inventory (`HasCustomInventoryScreen`).
             S::PlayerCommand(p) if p.action == 5 => {
                 self.as_guest(host, conn, |g| {
-                    g.open_ridden_mount_menu();
+                    // HasCustomInventoryScreen: a tamed mount's horse
+                    // inventory, or a chest boat's chest.
+                    if !g.open_ridden_mount_menu() {
+                        g.open_ridden_chest_boat();
+                    }
                 });
             }
             S::PlayerCommand(p) if p.action == 6 => self.lan_start_gliding(host, conn),
@@ -1510,12 +1565,52 @@ impl Game<'_> {
                 self.drop_guest_items(host, gi, drops);
             }
             S::ContainerClose(p) => {
+                // A vehicle's menu closed: its slots go back to the vehicle
+                // (`ContainerEntity`), and a chest boat's `stopOpen` fires
+                // CONTAINER_CLOSE with the player as the source.
+                let vehicle = host.hub.guests[gi]
+                    .menu
+                    .as_ref()
+                    .filter(|m| m.window == p.container)
+                    .and_then(|m| match m.slots {
+                        Slots::Block(key) if key.1 == super::minecarts::CART_KEY_Y => Some(key),
+                        _ => None,
+                    });
                 if host.hub.guests[gi]
                     .menu
                     .as_ref()
                     .is_some_and(|m| m.window == p.container)
                 {
                     self.guest_container_closed(host, conn);
+                }
+                if let Some(key) = vehicle {
+                    self.close_cart_container(key);
+                    // `stopOpen`: a chest boat and a chest minecart fire
+                    // CONTAINER_CLOSE with the closing player's context; a
+                    // hopper minecart keeps `Container.stopOpen`'s no-op.
+                    let at = if let Some(b) = self.boats.iter().find(|b| b.id as i32 == key.2) {
+                        Some([b.position.x, b.position.y + 0.5, b.position.z])
+                    } else if let Some(c) = self.carts.iter().find(|c| c.id as i32 == key.2) {
+                        (c.kind == super::minecarts::CartKind::Chest).then_some([
+                            c.position.x,
+                            c.position.y,
+                            c.position.z,
+                        ])
+                    } else {
+                        None
+                    };
+                    if let Some(at) = at {
+                        let spect = host.hub.guest(conn).is_some_and(|g| g.spectator());
+                        let ctx = horizon_client::sculk::Context {
+                            source: Some(horizon_client::mobs::Who::Player),
+                            spectator: spect,
+                            targetable: !spect,
+                            living: true,
+                            player: true,
+                            ..Default::default()
+                        };
+                        self.post_game_event("minecraft:container_close", at, ctx);
+                    }
                 }
                 host.hub.container_closed(conn, p.container);
                 self.guest_carried_back(host, gi);

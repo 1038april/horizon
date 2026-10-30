@@ -1069,24 +1069,7 @@ impl Game<'_> {
                 self.riding = Some(self.carts[i].id);
             }
             // AbstractMinecartContainer.interact: no sneak check.
-            CartKind::Chest | CartKind::Hopper => {
-                self.unpack_cart_loot(i);
-                let c = self.carts[i].clone();
-                let key = (i32::MAX - 15, CART_KEY_Y, c.id as i32);
-                self.world
-                    .block_entities
-                    .insert(key, BlockEntity::Chest(c.items.clone()));
-                self.container = Some(key);
-                self.screen = super::Screen::Inventory;
-                self.capture(false);
-                self.right = false;
-                if c.kind == CartKind::Chest {
-                    let at = [c.position.x, c.position.y, c.position.z];
-                    let pitch = self.world.random.next_float() * 0.1 + 0.9;
-                    self.audio
-                        .play("minecraft:block.chest.open", Some(at), 0.5, pitch);
-                }
-            }
+            CartKind::Chest | CartKind::Hopper => self.open_cart_container(i),
             CartKind::Furnace => {
                 let fuel = held
                     .as_ref()
@@ -1121,6 +1104,32 @@ impl Game<'_> {
         self.swing_arm();
         true
     }
+    /// `AbstractMinecartContainer.interact`: the menu opens over the cart's
+    /// own slots, kept under a placeholder key until it closes
+    /// (`store_cart_items`/`close_cart_container`).
+    pub(super) fn open_cart_container(&mut self, i: usize) {
+        self.unpack_cart_loot(i);
+        let c = self.carts[i].clone();
+        let key = (i32::MAX - 15, CART_KEY_Y, c.id as i32);
+        self.world
+            .block_entities
+            .insert(key, BlockEntity::Chest(c.items.clone()));
+        self.container = Some(key);
+        self.screen = super::Screen::Inventory;
+        self.capture(false);
+        self.right = false;
+        if c.kind == CartKind::Chest {
+            // `MinecartChest.interact` (which overrides
+            // `AbstractMinecartContainer.interact`): a successful open fires
+            // CONTAINER_OPEN with the player and angers the piglins that see
+            // it. `MinecartHopper` does not override it, so a hopper minecart
+            // fires neither. Vanilla plays no open sound for a chest minecart.
+            let at = [c.position.x, c.position.y, c.position.z];
+            let ctx = self.player_context(None);
+            self.post_game_event("minecraft:container_open", at, ctx);
+            self.anger_piglins(true);
+        }
+    }
     /// Closing the cart's container open under `key` copies the items back.
     pub(super) fn close_cart_container(&mut self, key: (i32, i32, i32)) {
         if key.1 != CART_KEY_Y {
@@ -1128,14 +1137,6 @@ impl Game<'_> {
         }
         self.store_cart_items(key);
         self.world.block_entities.remove(&key);
-        if let Some(c) = self.carts.iter().find(|c| c.id as i32 == key.2)
-            && c.kind == CartKind::Chest
-        {
-            let at = [c.position.x, c.position.y, c.position.z];
-            let pitch = self.world.random.next_float() * 0.1 + 0.9;
-            self.audio
-                .play("minecraft:block.chest.close", Some(at), 0.5, pitch);
-        }
     }
     /// The menu of a chest or hopper minecart or a chest boat works on the
     /// vehicle's own items (`ContainerEntity`): the placeholder under `key`

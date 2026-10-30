@@ -6399,7 +6399,7 @@ impl Game<'_> {
                     let all = self.has_control_down();
                     self.remote_drop(all);
                 }
-                KeyCode::KeyE if self.riding_mount_with_menu() => {
+                KeyCode::KeyE if self.riding_mount_with_menu() || self.riding_chest_boat() => {
                     let id = self.remote.as_ref().map_or(0, |r| r.entity_id);
                     self.send(S::PlayerCommand(play::PlayerCommand {
                         id,
@@ -6561,10 +6561,11 @@ impl Game<'_> {
                 }
                 Ok(true)
             }
-            // MultiPlayerGameMode.isServerControlledInventory: riding a
-            // horse or llama, the server opens its inventory
-            // (ServerboundPlayerCommandPacket OPEN_INVENTORY).
-            KeyCode::KeyE if self.riding_mount_with_menu() => {
+            // Open the ridden vehicle's own screen (`HasCustomInventoryScreen`)
+            // instead of the player's inventory: riding a horse, llama or
+            // chest boat, the inventory key sends
+            // ServerboundPlayerCommandPacket OPEN_INVENTORY.
+            KeyCode::KeyE if self.riding_mount_with_menu() || self.riding_chest_boat() => {
                 if let Some(r) = self.remote.as_mut() {
                     r.pending_keys.push(key);
                 }
