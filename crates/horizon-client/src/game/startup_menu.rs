@@ -150,7 +150,7 @@ impl StartupMenu {
     }
 
     /// `Screen.keyPressed` on the title screens: the action a key starts (Enter confirms, see `confirm_key` in title.rs).
-    fn title_key(&mut self, event: &KeyEvent) -> Action {
+    fn title_key(&mut self, event: &KeyEvent, viewport: (f32, f32)) -> Action {
         let shortcut = self.shortcut(event);
         let Some(title) = &mut self.title else {
             return Action::None;
@@ -172,10 +172,16 @@ impl StartupMenu {
         match event.physical_key {
             PhysicalKey::Code(KeyCode::Escape) => title.escape(),
             PhysicalKey::Code(KeyCode::F5) => title.refresh_servers(),
-            PhysicalKey::Code(KeyCode::Tab) => title.tab(),
-            PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => return title.confirm_key(),
-            PhysicalKey::Code(KeyCode::Space) if title.list_focused() => {
-                return title.confirm_key();
+            PhysicalKey::Code(KeyCode::Tab) => {
+                title.tab_dir(self.modifiers.shift_key(), viewport);
+            }
+            PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
+                return title.confirm_key_size(viewport);
+            }
+            PhysicalKey::Code(KeyCode::Space)
+                if title.list_focused() || title.focused_button.is_some() =>
+            {
+                return title.confirm_key_size(viewport);
             }
             PhysicalKey::Code(
                 key @ (KeyCode::Backspace
@@ -190,6 +196,14 @@ impl StartupMenu {
                     self.modifiers.control_key(),
                     self.modifiers.shift_key(),
                 );
+            }
+            PhysicalKey::Code(
+                key @ (KeyCode::ArrowLeft
+                | KeyCode::ArrowRight
+                | KeyCode::ArrowUp
+                | KeyCode::ArrowDown),
+            ) => {
+                title.arrow_key(key, viewport);
             }
             _ => {
                 let cleared = !title.has_caret_field()
@@ -651,7 +665,8 @@ impl Loading {
                         self.menu_option_events(events);
                     }
                 } else {
-                    let action = self.menu.title_key(&event);
+                    let batch = HudBatch::new(self.menu_size());
+                    let action = self.menu.title_key(&event, (batch.width, batch.height));
                     self.menu_action(event_loop, action);
                 }
             }

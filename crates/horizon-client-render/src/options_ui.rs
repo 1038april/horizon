@@ -377,6 +377,54 @@ impl Opt {
             Kind::Cycle => None,
         }
     }
+    /// The discrete step count for stepped sliders, or `None` if continuous.
+    pub fn slider_steps(self) -> Option<u32> {
+        match self {
+            Opt::Fov => Some(80),
+            Opt::RenderDistance => Some((crate::options_file::MAX_RENDER_DISTANCE - 2) as u32),
+            Opt::SimulationDistance => Some(27),
+            Opt::MaxFps => Some(25),
+            Opt::CloudRange => Some(126),
+            Opt::EntityDistance => Some(18),
+            Opt::BiomeBlend => Some(7),
+            Opt::Preset => Some(3),
+            Opt::Mipmaps => Some(4),
+            Opt::WeatherRadius => Some(7),
+            Opt::ChunkFade => Some(40),
+            Opt::MenuBlur => Some(10),
+            Opt::NotificationDisplayTime => Some(95),
+            Opt::PadMoveDeadzone | Opt::PadLookDeadzone => Some(50),
+            Opt::SprintWindow => Some(10),
+            _ => None,
+        }
+    }
+    /// Step a slider forward or backward, derived from its own slider definition and step count.
+    pub fn step_slider(self, s: &mut Settings, forward: bool, width: f32) {
+        if !self.available() {
+            return;
+        }
+        let Some(pos) = self.slider_position(s) else {
+            return;
+        };
+        let next_pos = if let Some(steps) = self.slider_steps() {
+            let steps = steps as f32;
+            let current = (pos * steps).round();
+            let next = if forward {
+                current + 1.0
+            } else {
+                current - 1.0
+            };
+            (next / steps).clamp(0.0, 1.0)
+        } else {
+            let delta = 1.0 / (width - 8.0).max(1.0);
+            if forward {
+                (pos + delta).min(1.0)
+            } else {
+                (pos - delta).max(0.0)
+            }
+        };
+        self.set_slider(s, next_pos);
+    }
     /// The widget message (OptionInstance.toString / CycleButton full name).
     pub fn label(self, s: &Settings) -> Text {
         let c = self.caption();
@@ -1430,8 +1478,7 @@ impl OptionsUi {
             self.packs(atlas, size).changed = p.changed;
         }
     }
-    /// Steps a slider option forward or backward (by its discrete step size if
-    /// discrete, or by 1 pixel along its track if continuous).
+    /// Steps a slider option forward or backward, derived from its own slider definition.
     pub fn step_slider_option(
         &mut self,
         s: &mut Settings,
@@ -1445,122 +1492,7 @@ impl OptionsUi {
             _ => None,
         };
         let before_vol = volume(s);
-        let track_w = (width - 8.0).max(1.0);
-        let delta = 1.0 / track_w;
-        let step = if forward { delta } else { -delta };
-
-        match opt {
-            Opt::Fov => s.fov = (s.fov + if forward { 1.0 } else { -1.0 }).clamp(30.0, 110.0),
-            Opt::RenderDistance => {
-                s.render_distance = (s.render_distance + if forward { 1 } else { -1 })
-                    .clamp(2, crate::options_file::MAX_RENDER_DISTANCE);
-            }
-            Opt::SimulationDistance => {
-                s.simulation_distance =
-                    (s.simulation_distance + if forward { 1 } else { -1 }).clamp(5, 32);
-            }
-            Opt::MaxFps => {
-                s.max_fps =
-                    (s.max_fps as i32 + if forward { 10 } else { -10 }).clamp(10, 260) as u32;
-            }
-            Opt::CloudRange => {
-                s.cloud_range = (s.cloud_range + if forward { 1 } else { -1 }).clamp(2, 128);
-            }
-            Opt::EntityDistance => {
-                s.entity_distance =
-                    (s.entity_distance + if forward { 0.25 } else { -0.25 }).clamp(0.5, 5.0);
-            }
-            Opt::BiomeBlend => {
-                s.biome_blend = (s.biome_blend + if forward { 1 } else { -1 }).clamp(0, 7);
-            }
-            Opt::Preset => {
-                let next = (preset_index(&s.graphics_preset) as i32 + if forward { 1 } else { -1 })
-                    .clamp(0, 3) as usize;
-                s.graphics_preset = PRESETS[next].into();
-                apply_preset(s);
-            }
-            Opt::Mipmaps => {
-                s.mipmap_levels = (s.mipmap_levels + if forward { 1 } else { -1 }).clamp(0, 4);
-            }
-            Opt::WeatherRadius => {
-                s.weather_radius = (s.weather_radius + if forward { 1 } else { -1 }).clamp(3, 10);
-            }
-            Opt::ChunkFade => {
-                s.chunk_fade = (s.chunk_fade + if forward { 0.05 } else { -0.05 }).clamp(0.0, 2.0);
-            }
-            Opt::MenuBlur => {
-                s.menu_blur = (s.menu_blur + if forward { 1 } else { -1 }).clamp(0, 10);
-            }
-            Opt::NotificationDisplayTime => {
-                s.notification_display_time = (s.notification_display_time
-                    + if forward { 0.1 } else { -0.1 })
-                .clamp(0.5, 10.0);
-            }
-            Opt::SprintWindow => {
-                s.sprint_window = (s.sprint_window + if forward { 1 } else { -1 }).clamp(0, 10);
-            }
-            Opt::PadMoveDeadzone => {
-                s.controller.move_deadzone = (s.controller.move_deadzone
-                    + if forward { 0.01 } else { -0.01 })
-                .clamp(0.0, 0.5);
-            }
-            Opt::PadLookDeadzone => {
-                s.controller.look_deadzone = (s.controller.look_deadzone
-                    + if forward { 0.01 } else { -0.01 })
-                .clamp(0.0, 0.5);
-            }
-            Opt::Sensitivity => s.sensitivity = (s.sensitivity + step).clamp(0.0, 1.0),
-            Opt::WheelSensitivity => {
-                s.mouse_wheel_sensitivity =
-                    (s.mouse_wheel_sensitivity + step * 9.99).clamp(0.01, 10.0);
-            }
-            Opt::Volume(0) => s.master_volume = (s.master_volume + step).clamp(0.0, 1.0),
-            Opt::Volume(i) => s.volumes[i] = (s.volumes[i] + step).clamp(0.0, 1.0),
-            Opt::Gamma => s.gamma = (s.gamma + step).clamp(0.0, 1.0),
-            Opt::ChatOpacity => s.chat_opacity = (s.chat_opacity + step).clamp(0.0, 1.0),
-            Opt::TextBackgroundOpacity => {
-                s.text_background_opacity = (s.text_background_opacity + step).clamp(0.0, 1.0);
-            }
-            Opt::ChatScale => s.chat_scale = (s.chat_scale + step).clamp(0.0, 1.0),
-            Opt::ChatWidth => s.chat_width = (s.chat_width + step).clamp(0.0, 1.0),
-            Opt::ChatHeightFocused => {
-                s.chat_height_focused = (s.chat_height_focused + step).clamp(0.0, 1.0);
-            }
-            Opt::ChatHeightUnfocused => {
-                s.chat_height_unfocused = (s.chat_height_unfocused + step).clamp(0.0, 1.0);
-            }
-            Opt::ChatLineSpacing => {
-                s.chat_line_spacing = (s.chat_line_spacing + step).clamp(0.0, 1.0);
-            }
-            Opt::PadLookSensitivity => {
-                s.controller.look_sensitivity =
-                    (s.controller.look_sensitivity + step).clamp(0.0, 1.0);
-            }
-            Opt::FovEffects | Opt::DarknessPulsing => {
-                let cur = s.file.double(opt.file_key().unwrap()).sqrt() as f32;
-                let new_v = (cur + step).clamp(0.0, 1.0);
-                s.file.set(
-                    opt.file_key().unwrap(),
-                    crate::options_file::V::Double(f64::from(new_v).powi(2)),
-                );
-            }
-            Opt::DistortionEffects
-            | Opt::DamageTilt
-            | Opt::PanoramaSpeed
-            | Opt::GlintSpeed
-            | Opt::GlintStrength => {
-                let cur = s.file.double(opt.file_key().unwrap()) as f32;
-                let new_v = (cur + step).clamp(0.0, 1.0);
-                s.file.set(
-                    opt.file_key().unwrap(),
-                    crate::options_file::V::Double(f64::from(new_v)),
-                );
-            }
-            _ => {}
-        }
-        if opt.affects_preset() {
-            s.graphics_preset = "custom".into();
-        }
+        opt.step_slider(s, forward, width);
         self.slider_value = None;
         let mut events = vec![Event::Changed, Event::SliderDrag];
         if let (Opt::Volume(source), Some(after)) = (opt, volume(s))
@@ -3235,7 +3167,6 @@ impl OptionsUi {
         enum HoveredControl {
             Cycle(Opt),
             Extra(crate::extras::Item),
-            Slider(Opt, f32),
         }
         let (widgets, top, bottom, _) = self.layout(s, size.0, size.1);
         let hovered = widgets.iter().find_map(|wd| match &wd.kind {
@@ -3257,12 +3188,6 @@ impl OptionsUi {
             {
                 Some(HoveredControl::Extra(*item))
             }
-            WKind::Slider { opt, .. }
-                if ui::hovered(cursor, wd.x, wd.y, wd.w, wd.h)
-                    && !(wd.list && (cursor.1 < top || cursor.1 >= bottom)) =>
-            {
-                Some(HoveredControl::Slider(*opt, wd.w))
-            }
             _ => None,
         });
         match hovered {
@@ -3272,9 +3197,6 @@ impl OptionsUi {
             Some(HoveredControl::Extra(item)) if amount != 0.0 => {
                 item.cycle(&mut s.extras, amount > 0.0);
                 vec![Event::Changed]
-            }
-            Some(HoveredControl::Slider(opt, w)) if amount != 0.0 => {
-                self.step_slider_option(s, opt, amount > 0.0, w)
             }
             Some(_) => Vec::new(),
             None => {
@@ -5521,7 +5443,7 @@ mod tests {
     }
 
     #[test]
-    fn slider_mouse_wheel_steps_value() {
+    fn slider_mouse_wheel_scrolls_list_parity() {
         let mut s = Settings::default();
         let mut ui = OptionsUi::default();
         ui.show(Page::Main);
@@ -5531,11 +5453,8 @@ mod tests {
 
         // Cursor over FOV slider (cx - 154.0, 29.0, 150.0, 20.0)
         let cursor = (cx - 100.0, 35.0);
-        // Scroll up (+1.0) increases FOV
+        // In vanilla parity, mouse wheel over a slider does not change the slider value.
         ui.wheel(&mut s, size, cursor, [854, 480], 1.0);
-        assert_eq!(s.fov, 71.0);
-        // Scroll down (-1.0) decreases FOV
-        ui.wheel(&mut s, size, cursor, [854, 480], -1.0);
         assert_eq!(s.fov, 70.0);
 
         // Sound page: Master Volume slider
@@ -5555,11 +5474,9 @@ mod tests {
             })
             .unwrap();
         let cursor = (master.x + 10.0, master.y + 10.0);
-
-        // Scroll up on volume slider increases volume and emits Event::Volume
         let events = ui.wheel(&mut s, size, cursor, [854, 480], 1.0);
-        assert!(s.master_volume > 0.5);
-        assert!(events.iter().any(|e| matches!(e, Event::Volume(0, _))));
+        assert_eq!(s.master_volume, 0.5);
+        assert!(!events.iter().any(|e| matches!(e, Event::Volume(0, _))));
     }
 
     #[test]
@@ -5630,5 +5547,60 @@ mod tests {
         // ArrowRight does not change ChunkUpdates when can_change_value is false
         ui.key(&mut s, &atlas, K::ArrowRight, None);
         assert_eq!(s.horizon.chunk_updates, 11);
+    }
+
+    #[test]
+    fn options_step_slider_matches_set_slider_for_all_stepped_options() {
+        let stepped_opts = [
+            Opt::Fov,
+            Opt::RenderDistance,
+            Opt::SimulationDistance,
+            Opt::MaxFps,
+            Opt::CloudRange,
+            Opt::EntityDistance,
+            Opt::BiomeBlend,
+            Opt::Preset,
+            Opt::Mipmaps,
+            Opt::WeatherRadius,
+            Opt::ChunkFade,
+            Opt::MenuBlur,
+            Opt::NotificationDisplayTime,
+            Opt::PadMoveDeadzone,
+            Opt::PadLookDeadzone,
+            Opt::SprintWindow,
+        ];
+        for opt in stepped_opts {
+            let steps = opt.slider_steps().expect("slider steps");
+            for i in 0..steps {
+                let pos = i as f32 / steps as f32;
+                let mut s1 = Settings::default();
+                let mut s2 = Settings::default();
+                opt.set_slider(&mut s1, pos);
+
+                opt.step_slider(&mut s1, true, 200.0);
+                let next_pos = (i + 1) as f32 / steps as f32;
+                opt.set_slider(&mut s2, next_pos);
+                assert_eq!(
+                    opt.slider_position(&s1),
+                    opt.slider_position(&s2),
+                    "{opt:?} forward from {i}"
+                );
+            }
+            for i in 1..=steps {
+                let pos = i as f32 / steps as f32;
+                let mut s1 = Settings::default();
+                let mut s2 = Settings::default();
+                opt.set_slider(&mut s1, pos);
+
+                opt.step_slider(&mut s1, false, 200.0);
+                let prev_pos = (i - 1) as f32 / steps as f32;
+                opt.set_slider(&mut s2, prev_pos);
+                assert_eq!(
+                    opt.slider_position(&s1),
+                    opt.slider_position(&s2),
+                    "{opt:?} backward from {i}"
+                );
+            }
+        }
     }
 }

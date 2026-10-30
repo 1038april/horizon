@@ -113,19 +113,30 @@ impl WorldOptions {
     }
     /// A press on one of the open tab's cycle buttons or switches.
     pub(super) fn press(&mut self, id: u8, creative: &mut bool) {
+        self.cycle(id, creative, 1);
+    }
+    /// A step on one of the open tab's cycle buttons or switches (mouse wheel or keyboard).
+    pub(super) fn cycle(&mut self, id: u8, creative: &mut bool, step: i32) {
         match id {
             // Survival, Hardcore, Creative.
             20 => {
-                (*creative, self.hardcore) = match (*creative, self.hardcore) {
-                    (false, false) => (false, true),
-                    (false, true) => (true, false),
-                    _ => (false, false),
-                }
+                let modes = [(false, false), (false, true), (true, false)];
+                let cur = (*creative, self.hardcore);
+                let idx = modes.iter().position(|&m| m == cur).unwrap_or(0);
+                let next_idx = ((idx as i32 + step).rem_euclid(modes.len() as i32)) as usize;
+                (*creative, self.hardcore) = modes[next_idx];
             }
-            23 => self.difficulty = (self.difficulty + 1) % DIFFICULTIES.len(),
+            23 => {
+                let len = DIFFICULTIES.len() as i32;
+                self.difficulty = ((self.difficulty as i32 + step).rem_euclid(len)) as usize;
+            }
             24 => self.commands = Some(!self.commands(*creative)),
             25 => {
-                self.world_type = self.world_type.next();
+                self.world_type = if step >= 0 {
+                    self.world_type.next()
+                } else {
+                    self.world_type.prev()
+                };
                 if self.world_type == crate::save::WorldPreset::Flat {
                     // setWorldType starts the generator from the flat preset.
                     self.flat_settings = Some(super::flat::FlatSettings::default());

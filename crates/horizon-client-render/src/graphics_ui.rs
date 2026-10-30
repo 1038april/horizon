@@ -390,6 +390,19 @@ impl H {
             _ => None,
         }
     }
+    pub fn slider_steps(self) -> Option<u32> {
+        match self {
+            H::ChunkUpdates => Some(64),
+            H::UploadBudget => Some((UPLOAD_STEPS.len() - 1) as u32),
+            H::Workers => Some(max_workers()),
+            H::ResolutionScale => Some(30),
+            H::HdrPaperWhite => Some(41),
+            H::HdrPeak => Some(37),
+            H::HdrBlackLevel => Some(100),
+            H::HdrUiBrightness => Some(15),
+            _ => None,
+        }
+    }
     fn label(self, s: &Settings) -> Text {
         let g = &s.horizon;
         match self {
@@ -675,111 +688,37 @@ impl Item {
             s.horizon.preset = Preset::Custom;
         }
     }
+    pub fn slider_steps(self) -> Option<u32> {
+        match self {
+            Item::Vanilla(o) => o.slider_steps(),
+            Item::Horizon(h) => h.slider_steps(),
+        }
+    }
     pub fn step_slider(self, s: &mut Settings, forward: bool, width: f32) {
         if !self.available() || self.blocked(s).is_some() {
             return;
         }
-        match self {
-            Item::Vanilla(opt) => match opt {
-                Opt::Fov => s.fov = (s.fov + if forward { 1.0 } else { -1.0 }).clamp(30.0, 110.0),
-                Opt::RenderDistance => {
-                    s.render_distance = (s.render_distance + if forward { 1 } else { -1 })
-                        .clamp(2, crate::options_file::MAX_RENDER_DISTANCE);
-                }
-                Opt::SimulationDistance => {
-                    s.simulation_distance =
-                        (s.simulation_distance + if forward { 1 } else { -1 }).clamp(5, 32);
-                }
-                Opt::MaxFps => {
-                    s.max_fps =
-                        (s.max_fps as i32 + if forward { 10 } else { -10 }).clamp(10, 260) as u32;
-                }
-                Opt::CloudRange => {
-                    s.cloud_range = (s.cloud_range + if forward { 1 } else { -1 }).clamp(2, 128);
-                }
-                Opt::EntityDistance => {
-                    s.entity_distance =
-                        (s.entity_distance + if forward { 0.25 } else { -0.25 }).clamp(0.5, 5.0);
-                }
-                Opt::BiomeBlend => {
-                    s.biome_blend = (s.biome_blend + if forward { 1 } else { -1 }).clamp(0, 7);
-                }
-                Opt::WeatherRadius => {
-                    s.weather_radius =
-                        (s.weather_radius + if forward { 1 } else { -1 }).clamp(3, 10);
-                }
-                Opt::Mipmaps => {
-                    s.mipmap_levels = (s.mipmap_levels + if forward { 1 } else { -1 }).clamp(0, 4);
-                }
-                _ => {
-                    let delta = 1.0 / (width - 8.0).max(1.0);
-                    let step = if forward { delta } else { -delta };
-                    if let Some(pos) = opt.slider_position(s) {
-                        opt.set_slider(s, (pos + step).clamp(0.0, 1.0));
-                    }
-                }
-            },
-            Item::Horizon(h) => {
-                let g = &mut s.horizon;
-                match h {
-                    H::ChunkUpdates => {
-                        g.chunk_updates = (g.chunk_updates as i32 + if forward { 1 } else { -1 })
-                            .clamp(0, 64) as u32;
-                    }
-                    H::UploadBudget => {
-                        let i = UPLOAD_STEPS
-                            .iter()
-                            .position(|&b| b >= g.upload_budget_kib)
-                            .unwrap_or(UPLOAD_STEPS.len() - 1);
-                        let next = if forward {
-                            (i + 1).min(UPLOAD_STEPS.len() - 1)
-                        } else {
-                            i.saturating_sub(1)
-                        };
-                        g.upload_budget_kib = UPLOAD_STEPS[next];
-                    }
-                    H::Workers => {
-                        g.workers = (g.workers as i32 + if forward { 1 } else { -1 })
-                            .clamp(0, max_workers() as i32)
-                            as u32;
-                    }
-                    H::ResolutionScale => {
-                        g.resolution_scale = (g.resolution_scale as i32
-                            + if forward { 5 } else { -5 })
-                        .clamp(50, 200) as u32;
-                    }
-                    H::HdrPaperWhite => {
-                        let cur = g.hdr_paper_white as i32;
-                        let next = if forward {
-                            if cur == 0 { 80 } else { (cur + 10).min(480) }
-                        } else {
-                            if cur <= 80 { 0 } else { cur - 10 }
-                        };
-                        g.hdr_paper_white = next as u32;
-                    }
-                    H::HdrPeak => {
-                        let cur = g.hdr_peak as i32;
-                        let next = if forward {
-                            if cur == 0 { 200 } else { (cur + 50).min(2000) }
-                        } else {
-                            if cur <= 200 { 0 } else { cur - 50 }
-                        };
-                        g.hdr_peak = next as u32;
-                    }
-                    H::HdrBlackLevel => {
-                        g.hdr_black_level = (g.hdr_black_level as i32
-                            + if forward { 1 } else { -1 })
-                        .clamp(0, 100) as u32;
-                    }
-                    H::HdrUiBrightness => {
-                        g.hdr_ui_brightness = (g.hdr_ui_brightness as i32
-                            + if forward { 5 } else { -5 })
-                        .clamp(25, 100) as u32;
-                    }
-                    _ => {}
-                }
+        let Some(pos) = self.slider(s) else {
+            return;
+        };
+        let next_pos = if let Some(steps) = self.slider_steps() {
+            let steps = steps as f32;
+            let current = (pos * steps).round();
+            let next = if forward {
+                current + 1.0
+            } else {
+                current - 1.0
+            };
+            (next / steps).clamp(0.0, 1.0)
+        } else {
+            let delta = 1.0 / (width - 8.0).max(1.0);
+            if forward {
+                (pos + delta).min(1.0)
+            } else {
+                (pos - delta).max(0.0)
             }
-        }
+        };
+        self.set_slider(s, next_pos);
         self.touched(s);
     }
 }
@@ -1113,7 +1052,8 @@ impl GraphicsUi {
         self.scroll.wheel(amount, 18.0, top, bottom, content);
     }
 
-    /// Mouse wheel over a control steps it (slider) or cycles it (button).
+    /// Mouse wheel over a control cycles it (cycle button). Sliders and disabled
+    /// rows fall through to scroll the page, matching Vanilla list behavior.
     pub fn wheel(
         &mut self,
         level: Level,
@@ -1135,19 +1075,16 @@ impl GraphicsUi {
         });
         if let Some(wd) = hovered
             && let Target::Item(item) = wd.target
+            && item.available()
+            && item.blocked(s).is_none()
+            && item.slider(s).is_none()
+            && !matches!(item, Item::Horizon(H::HdrSettings))
         {
-            if item.blocked(s).is_some() {
-                return Vec::new();
-            }
-            if item.slider(s).is_some() {
-                if amount != 0.0 {
-                    item.step_slider(s, amount > 0.0, wd.w);
-                    return vec![Action::SliderDrag];
-                }
-            } else if !matches!(item, Item::Horizon(H::HdrSettings)) && amount != 0.0 {
+            if amount != 0.0 {
                 item.cycle(s, amount > 0.0, framebuffer);
                 return vec![Action::ButtonClick, Action::Changed];
             }
+            return Vec::new();
         }
         self.scroll(level, s, h, amount);
         Vec::new()
@@ -1778,32 +1715,13 @@ mod tests {
     }
 
     #[test]
-    fn graphics_slider_and_cycle_mouse_wheel() {
+    fn graphics_cycle_wheel_cycles_and_slider_falls_through_to_scroll() {
         let mut s = Settings::default();
         let mut ui = GraphicsUi::default();
-        let size = (480.0, 600.0);
+        let size = (480.0, 300.0);
         let fb = [854, 480];
 
-        // 1. Wheel on a Horizon slider: Chunk Updates in Level::Advanced
-        s.horizon.chunk_updates = 16;
-        let (widgets, _, _) = ui.layout(Level::Advanced, &s, size.0, size.1);
-        let cu = widgets
-            .iter()
-            .find(|w| matches!(w.target, Target::Item(Item::Horizon(H::ChunkUpdates))))
-            .unwrap();
-        let cursor = (cu.x + 5.0, cu.y + 5.0);
-
-        // Scroll up (+1.0) increases Chunk Updates
-        let actions = ui.wheel(Level::Advanced, &mut s, cursor, size, fb, 1.0);
-        assert_eq!(actions, vec![Action::SliderDrag]);
-        assert_eq!(s.horizon.chunk_updates, 17);
-
-        // Scroll down (-1.0) decreases Chunk Updates
-        let actions = ui.wheel(Level::Advanced, &mut s, cursor, size, fb, -1.0);
-        assert_eq!(actions, vec![Action::SliderDrag]);
-        assert_eq!(s.horizon.chunk_updates, 16);
-
-        // 2. Wheel on a Cycle button: Far Detail
+        // 1. Wheel on a Cycle button: Far Detail cycles mode
         let (widgets, _, _) = ui.layout(Level::Advanced, &s, size.0, size.1);
         let far = widgets
             .iter()
@@ -1814,5 +1732,71 @@ mod tests {
         let actions = ui.wheel(Level::Advanced, &mut s, cursor, size, fb, 1.0);
         assert_eq!(actions, vec![Action::ButtonClick, Action::Changed]);
         assert_eq!(s.horizon.far_detail, FarDetail::Reduced);
+
+        // 2. Wheel over a slider: Chunk Updates scrolls the page, doesn't change slider value
+        s.horizon.chunk_updates = 16;
+        let (widgets, _, _) = ui.layout(Level::Advanced, &s, size.0, size.1);
+        let cu = widgets
+            .iter()
+            .find(|w| matches!(w.target, Target::Item(Item::Horizon(H::ChunkUpdates))))
+            .unwrap();
+        let cursor = (cu.x + 5.0, cu.y + 5.0);
+        let scroll_before = ui.scroll.amount;
+        let actions = ui.wheel(Level::Advanced, &mut s, cursor, size, fb, -1.0);
+        assert!(actions.is_empty());
+        assert_eq!(s.horizon.chunk_updates, 16);
+        assert!(ui.scroll.amount > scroll_before);
+    }
+
+    #[test]
+    fn graphics_step_slider_matches_set_slider_for_all_options() {
+        let options = [
+            H::ChunkUpdates,
+            H::UploadBudget,
+            H::Workers,
+            H::ResolutionScale,
+            H::HdrPaperWhite,
+            H::HdrPeak,
+            H::HdrBlackLevel,
+            H::HdrUiBrightness,
+        ];
+        for h in options {
+            let item = Item::Horizon(h);
+            let steps = h.slider_steps().expect("steps defined");
+            for i in 0..steps {
+                let pos = i as f32 / steps as f32;
+                let mut s1 = Settings::default();
+                let mut s2 = Settings::default();
+                s1.horizon.hdr = true;
+                s2.horizon.hdr = true;
+                h.set_slider(&mut s1, pos);
+
+                item.step_slider(&mut s1, true, 200.0);
+                let next_pos = (i + 1) as f32 / steps as f32;
+                h.set_slider(&mut s2, next_pos);
+                assert_eq!(
+                    item.slider(&s1),
+                    item.slider(&s2),
+                    "{h:?} step forward from {i}"
+                );
+            }
+            for i in 1..=steps {
+                let pos = i as f32 / steps as f32;
+                let mut s1 = Settings::default();
+                let mut s2 = Settings::default();
+                s1.horizon.hdr = true;
+                s2.horizon.hdr = true;
+                h.set_slider(&mut s1, pos);
+
+                item.step_slider(&mut s1, false, 200.0);
+                let prev_pos = (i - 1) as f32 / steps as f32;
+                h.set_slider(&mut s2, prev_pos);
+                assert_eq!(
+                    item.slider(&s1),
+                    item.slider(&s2),
+                    "{h:?} step backward from {i}"
+                );
+            }
+        }
     }
 }

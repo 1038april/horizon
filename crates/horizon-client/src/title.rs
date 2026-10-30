@@ -288,6 +288,8 @@ pub struct Title {
     recent: std::cell::RefCell<Option<(std::time::Instant, Vec<WorldEntry>)>>,
     /// WorldCreationGameRulesScreen, over Create New World while it is open.
     rules: RefCell<Option<RulesScreen>>,
+    /// Focused button id, for keyboard navigation.
+    pub focused_button: Option<u8>,
 }
 pub(crate) struct Button {
     x: f32,
@@ -455,6 +457,7 @@ impl Title {
             ),
             recent: std::cell::RefCell::new(None),
             rules: RefCell::new(None),
+            focused_button: None,
         }
     }
     /// Vanilla bypasses the selector when there are no saves.
@@ -672,29 +675,49 @@ impl Title {
         }
         self.scroll.get_mut().release();
     }
-    /// Mouse wheel over the classic world and server lists.
-    pub fn scroll_worlds(&mut self, delta: f32, cursor: (f32, f32), size: (f32, f32)) {
+    /// Mouse wheel over the classic world and server lists, or cycle buttons. Returns true if a button was cycled.
+    pub fn scroll_worlds(&mut self, delta: f32, cursor: (f32, f32), size: (f32, f32)) -> bool {
         if let Some(rules) = self.rules.get_mut() {
-            return rules.wheel(delta, size.1.ceil());
+            rules.wheel(delta, size.1.ceil());
+            return false;
         }
         if let Mode::Multiplayer(screen) = &mut self.mode {
             screen.wheel(delta, cursor, size);
-            return;
+            return false;
         }
         if let Mode::CreateFlat { flat, .. } = &mut self.mode {
             flat::wheel(flat, delta, cursor, size);
-            return;
+            return false;
+        }
+        if let Mode::Create {
+            creative, options, ..
+        } = &mut self.mode
+        {
+            let (w, h) = size;
+            let buttons = create_world::buttons(w, h, *creative, options);
+            if let Some(b) = buttons.iter().find(|b| {
+                b.enabled
+                    && cursor.0 >= b.x
+                    && cursor.0 < b.x + b.w
+                    && cursor.1 >= b.y
+                    && cursor.1 < b.y + 20.0
+            }) {
+                let step = if delta > 0.0 { -1 } else { 1 };
+                options.cycle(b.id, creative, step);
+                return true;
+            }
         }
         let Mode::Select { worlds, .. } = &self.mode else {
-            return;
+            return false;
         };
         let (top, bottom, _, content) = self.world_list(worlds, size);
         if cursor.1 < top || cursor.1 >= bottom {
-            return;
+            return false;
         }
         let mut scroll = self.scroll.get();
         scroll.wheel(delta, ROW_HEIGHT / 2.0, top, bottom, content);
         self.scroll.set(scroll);
+        false
     }
     pub fn failed(&mut self, error: impl std::fmt::Display) {
         let return_to = Box::new(self.mode.clone());
@@ -1856,7 +1879,8 @@ impl Title {
             let inside =
                 cursor.0 >= b.x && cursor.0 < b.x + b.w && cursor.1 >= b.y && cursor.1 < b.y + 20.0;
             crate::widgets::widget_cursor(inside, b.enabled);
-            let hover = b.enabled && inside;
+            let is_focused = self.focused_button == Some(b.id);
+            let hover = b.enabled && (inside || is_focused);
             let sprite = if !b.enabled {
                 "gui/sprites/widget/button_disabled"
             } else if hover {
@@ -1962,6 +1986,9 @@ impl Title {
             .into_iter()
             .find(|b| b.enabled && x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + 20.0)
             .map(|b| b.id);
+        if hit.is_some() {
+            self.focused_button = hit;
+        }
         if matches!(self.mode, Mode::CreateFlat { .. }) {
             self.flat_click(x, y, (w, h), hit);
             return (Action::None, hit.is_some());
@@ -2373,16 +2400,27 @@ impl Title {
     /// World creates, a rename saves, Direct Connection joins, the selected
     /// world joins.
     pub fn confirm_key(&mut self) -> Action {
+        self.confirm_key_size((854.0, 480.0))
+    }
+    /// `confirm_key` with actual viewport size for button geometry lookup.
+    pub fn confirm_key_size(&mut self, size: (f32, f32)) -> Action {
         self.remember_direct_address();
         if self.rules.get_mut().is_some() {
             return Action::None;
         }
-        if matches!(self.mode, Mode::Edit { .. }) {
+        if matches!(self.mode, Mode::Edit { .. }) && self.focused_button.is_none() {
             self.confirm_edit();
             return Action::None;
         }
-        if self.list_focused() {
+        if self.list_focused() && self.focused_button.is_none() {
             return self.join_selected();
+        }
+        if let Some(id) = self.focused_button {
+            let (w, h) = size;
+            let buttons = self.buttons(w, h);
+            if let Some(b) = buttons.into_iter().find(|b| b.id == id && b.enabled) {
+                return self.click_action(b.x, b.y, (w, h), Some(id));
+            }
         }
         match &self.mode {
             Mode::Create { .. } => self.create_action(),
@@ -2408,26 +2446,208 @@ impl Title {
         self.play(world)
     }
     pub fn tab(&mut self) {
+        self.tab_dir(false, (854.0, 480.0));
+    }
+    /// Tab navigation through widgets and fields in either forward or reverse order.
+    pub fn tab_dir(&mut self, reverse: bool, size: (f32, f32)) {
         if self.rules.get_mut().is_some() {
             return;
         }
-        if let Mode::Edit { focused, .. } = &mut self.mode {
-            *focused = !*focused;
-        }
-        if matches!(self.mode, Mode::Select { .. }) {
-            self.search_focused = !self.search_focused;
-        }
         if let Mode::Multiplayer(screen) = &mut self.mode {
             screen.tab();
+            return;
         }
-        // The open tab's one text box, then nothing.
-        if let Mode::Create { focus, options, .. } = &mut self.mode {
-            let field = if options.tab == 1 { 1 } else { 0 };
-            *focus = if *focus == field || options.tab == 2 {
-                2
-            } else {
-                field
+        let (w, h) = size;
+        let buttons = self.buttons(w, h);
+        let enabled: Vec<u8> = buttons.iter().filter(|b| b.enabled).map(|b| b.id).collect();
+
+        match &mut self.mode {
+            Mode::Select { .. } => {
+                if self.search_focused {
+                    self.search_focused = false;
+                    self.focused_button = enabled.first().copied();
+                } else if let Some(cur) = self.focused_button {
+                    if let Some(pos) = enabled.iter().position(|&id| id == cur) {
+                        if !reverse && pos + 1 < enabled.len() {
+                            self.focused_button = Some(enabled[pos + 1]);
+                        } else if reverse && pos > 0 {
+                            self.focused_button = Some(enabled[pos - 1]);
+                        } else {
+                            self.focused_button = None;
+                            self.search_focused = true;
+                        }
+                    } else {
+                        self.focused_button = None;
+                        self.search_focused = true;
+                    }
+                } else {
+                    self.search_focused = true;
+                }
+            }
+            Mode::Create { focus, options, .. } => {
+                let field_id = if options.tab == 1 { 1 } else { 0 };
+                if *focus != 2 {
+                    *focus = 2;
+                    self.focused_button = if reverse {
+                        enabled.last().copied()
+                    } else {
+                        enabled.first().copied()
+                    };
+                } else if let Some(cur) = self.focused_button {
+                    if let Some(pos) = enabled.iter().position(|&id| id == cur) {
+                        if !reverse && pos + 1 < enabled.len() {
+                            self.focused_button = Some(enabled[pos + 1]);
+                        } else if reverse && pos > 0 {
+                            self.focused_button = Some(enabled[pos - 1]);
+                        } else {
+                            self.focused_button = None;
+                            *focus = field_id;
+                        }
+                    } else {
+                        self.focused_button = None;
+                        *focus = field_id;
+                    }
+                } else {
+                    *focus = field_id;
+                }
+            }
+            Mode::Edit { focused, .. } => {
+                if *focused {
+                    *focused = false;
+                    self.focused_button = if reverse {
+                        enabled.last().copied()
+                    } else {
+                        enabled.first().copied()
+                    };
+                } else if let Some(cur) = self.focused_button {
+                    if let Some(pos) = enabled.iter().position(|&id| id == cur) {
+                        if !reverse && pos + 1 < enabled.len() {
+                            self.focused_button = Some(enabled[pos + 1]);
+                        } else if reverse && pos > 0 {
+                            self.focused_button = Some(enabled[pos - 1]);
+                        } else {
+                            self.focused_button = None;
+                            *focused = true;
+                        }
+                    } else {
+                        self.focused_button = None;
+                        *focused = true;
+                    }
+                } else {
+                    *focused = true;
+                }
+            }
+            _ => {
+                if enabled.is_empty() {
+                    return;
+                }
+                let next = match self.focused_button {
+                    Some(cur) => {
+                        if let Some(pos) = enabled.iter().position(|&id| id == cur) {
+                            if reverse {
+                                if pos == 0 {
+                                    enabled.last().copied()
+                                } else {
+                                    Some(enabled[pos - 1])
+                                }
+                            } else {
+                                if pos + 1 >= enabled.len() {
+                                    enabled.first().copied()
+                                } else {
+                                    Some(enabled[pos + 1])
+                                }
+                            }
+                        } else {
+                            if reverse {
+                                enabled.last().copied()
+                            } else {
+                                enabled.first().copied()
+                            }
+                        }
+                    }
+                    None => {
+                        if reverse {
+                            enabled.last().copied()
+                        } else {
+                            enabled.first().copied()
+                        }
+                    }
+                };
+                self.focused_button = next;
+            }
+        }
+    }
+    /// 2D spatial arrow key navigation across enabled buttons.
+    pub fn arrow_key(&mut self, key: winit::keyboard::KeyCode, size: (f32, f32)) {
+        use winit::keyboard::KeyCode;
+        if self.rules.get_mut().is_some() {
+            return;
+        }
+        if self.has_caret_field() {
+            return;
+        }
+        if self.list_focused()
+            && self.focused_button.is_none()
+            && let Mode::Select { worlds, selected } = &mut self.mode
+        {
+            let len = worlds.len();
+            if len > 0 {
+                match key {
+                    KeyCode::ArrowUp => {
+                        *selected = Some(selected.map_or(0, |i| i.saturating_sub(1)));
+                        return;
+                    }
+                    KeyCode::ArrowDown => {
+                        *selected = Some(selected.map_or(0, |i| (i + 1).min(len - 1)));
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let (w, h) = size;
+        let buttons = self.buttons(w, h);
+        let enabled: Vec<&Button> = buttons.iter().filter(|b| b.enabled).collect();
+        if enabled.is_empty() {
+            return;
+        }
+        let Some(cur_id) = self.focused_button else {
+            self.focused_button = Some(enabled[0].id);
+            return;
+        };
+        let Some(cur_b) = enabled.iter().find(|b| b.id == cur_id) else {
+            self.focused_button = Some(enabled[0].id);
+            return;
+        };
+        let (cx, cy) = (cur_b.x + cur_b.w / 2.0, cur_b.y + 10.0);
+        let mut best: Option<(u8, f32)> = None;
+        for b in &enabled {
+            if b.id == cur_id {
+                continue;
+            }
+            let (bx, by) = (b.x + b.w / 2.0, b.y + 10.0);
+            let (dx, dy) = (bx - cx, by - cy);
+            let valid = match key {
+                KeyCode::ArrowUp => dy < -4.0,
+                KeyCode::ArrowDown => dy > 4.0,
+                KeyCode::ArrowLeft => dx < -4.0,
+                KeyCode::ArrowRight => dx > 4.0,
+                _ => false,
             };
+            if !valid {
+                continue;
+            }
+            let dist = match key {
+                KeyCode::ArrowUp | KeyCode::ArrowDown => dy.abs() + dx.abs() * 2.0,
+                KeyCode::ArrowLeft | KeyCode::ArrowRight => dx.abs() + dy.abs() * 2.0,
+                _ => f32::MAX,
+            };
+            if best.as_ref().is_none_or(|(_, d)| dist < *d) {
+                best = Some((b.id, dist));
+            }
+        }
+        if let Some((next_id, _)) = best {
+            self.focused_button = Some(next_id);
         }
     }
     /// The server auto-reconnect retries now, once its countdown is over.

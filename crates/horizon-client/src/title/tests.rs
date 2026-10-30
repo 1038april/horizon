@@ -1251,3 +1251,32 @@ fn world_with_nothing_to_recover_from_is_listed_but_never_opened() {
     f.click("Back");
     assert!(matches!(f.title.mode, Mode::Select { .. }));
 }
+
+#[test]
+fn title_screen_keyboard_navigation_and_activation() {
+    let mut f = Fixture::new();
+    f.world("w1", "World 1");
+    let size = (480.0, 262.0);
+    assert_eq!(f.title.focused_button, None);
+
+    // Tab forwards focuses the first button (Singleplayer, id 1)
+    f.title.tab_dir(false, size);
+    assert_eq!(f.title.focused_button, Some(1));
+
+    // Tab again focuses Multiplayer (id 4)
+    f.title.tab_dir(false, size);
+    assert_eq!(f.title.focused_button, Some(4));
+
+    // Shift+Tab reverses focus to Singleplayer
+    f.title.tab_dir(true, size);
+    assert_eq!(f.title.focused_button, Some(1));
+
+    // Enter confirms focused button (Singleplayer opens world select)
+    let action = f.title.confirm_key_size(size);
+    assert_eq!(action, Action::None);
+    assert!(matches!(f.title.mode, Mode::Select { .. }));
+
+    // Arrow navigation on the select screen
+    f.title.tab_dir(false, size);
+    assert!(f.title.focused_button.is_some());
+}

@@ -40,6 +40,8 @@ pub(super) struct WorldOptions {
     view: View,
     /// InWorldGameRulesScreen, while it is open.
     rules: Option<RulesScreen>,
+    focused_button: Option<Button>,
+    popup_focus: Option<usize>,
 }
 /// The screen on show: the options, the lock's question over them, or the
 /// RestrictionsScreen or InWorldGameRulesScreen they opened (all return to
@@ -507,6 +509,8 @@ impl Game<'_> {
             scroll: 0.0,
             view: View::Options,
             rules: None,
+            focused_button: None,
+            popup_focus: None,
             initial: Snapshot {
                 default_mode: 0,
                 personal_mode: 0,
@@ -637,8 +641,9 @@ impl Game<'_> {
         for (line, x, y) in &p.lines {
             batch.text_styled(atlas, line, *x, *y, u32::MAX, true);
         }
-        for ((bx, by), key) in p.buttons.into_iter().zip(["gui.yes", "gui.no"]) {
-            let hover = ui::hovered(self.cursor, bx, by, POPUP_BUTTON, 20.0);
+        for (i, ((bx, by), key)) in p.buttons.into_iter().zip(["gui.yes", "gui.no"]).enumerate() {
+            let is_focused = o.popup_focus == Some(i);
+            let hover = ui::hovered(self.cursor, bx, by, POPUP_BUTTON, 20.0) || is_focused;
             let label = Text::translate(key, &[]);
             ui::button(
                 batch,
@@ -674,13 +679,17 @@ impl Game<'_> {
             batch.text_styled(atlas, line, *x, *y, u32::MAX, true);
         }
         if let Some((ax, ay)) = r.action {
-            let hover = ui::hovered(self.cursor, ax, ay, 200.0, 20.0);
+            let is_focused = self.world_options.as_ref().and_then(|o| o.popup_focus) == Some(0);
+            let hover = ui::hovered(self.cursor, ax, ay, 200.0, 20.0) || is_focused;
             let label = Text::translate("chat_restriction.chat_disabled_by_options.action", &[]);
             ui::button(batch, atlas, ax, ay, 200.0, 20.0, &label, true, hover);
         }
         batch.clip_since(first, 0.0, r.area.0, w, r.area.1);
         let (dx, dy) = Restrictions::done(w, h);
-        let hover = ui::hovered(self.cursor, dx, dy, 200.0, 20.0);
+        let is_focused = self.world_options.as_ref().is_some_and(|o| {
+            o.popup_focus == Some(1) || (o.popup_focus == Some(0) && r.action.is_none())
+        });
+        let hover = ui::hovered(self.cursor, dx, dy, 200.0, 20.0) || is_focused;
         let label = Text::translate("gui.done", &[]);
         ui::button(batch, atlas, dx, dy, 200.0, 20.0, &label, true, hover);
     }
@@ -722,7 +731,8 @@ impl Game<'_> {
         let inside = cursor.1 >= HEADER && cursor.1 < h - FOOTER;
         for (b, bx, by, bw) in o.visible_buttons(w) {
             let active = o.active(b);
-            let hover = active && inside && ui::hovered(cursor, bx, by, bw, 20.0);
+            let is_focused = o.focused_button == Some(b);
+            let hover = active && ((inside && ui::hovered(cursor, bx, by, bw, 20.0)) || is_focused);
             if b == Button::Lock {
                 let lock = if o.locked { "locked" } else { "unlocked" };
                 let state = match (active, hover) {
@@ -780,16 +790,64 @@ impl Game<'_> {
         ui::separators(batch, atlas, HEADER, h - FOOTER, true);
         for (b, bx, by, bw) in WorldOptions::footer(w, h) {
             let active = o.active(b);
-            let hover = active && ui::hovered(cursor, bx, by, bw, 20.0);
+            let is_focused = o.focused_button == Some(b);
+            let hover = active && (ui::hovered(cursor, bx, by, bw, 20.0) || is_focused);
             ui::button(batch, atlas, bx, by, bw, 20.0, &o.label(b), active, hover);
         }
     }
 
     /// The mouse wheel over the screen (ScrollableLayout, 10 pixels a step).
     pub(super) fn world_options_scroll(&mut self, delta: f32) {
-        let h = self.gui_size().1;
+        let (w, h) = self.gui_size();
         match self.world_options.as_mut() {
             Some(o) if o.view == View::Options => {
+                let hit_btn = o.hit(self.cursor, (w, h)).or(o.focused_button);
+                if let Some(btn) = hit_btn {
+                    let step = if delta > 0.0 { -1 } else { 1 };
+                    match btn {
+                        Button::DefaultMode => {
+                            o.default_mode = (o.default_mode + step).rem_euclid(4);
+                            self.audio.play_button_click();
+                            return;
+                        }
+                        Button::PersonalMode => {
+                            o.personal_mode = (o.personal_mode + step).rem_euclid(4);
+                            self.audio.play_button_click();
+                            return;
+                        }
+                        Button::Difficulty => {
+                            o.difficulty = ((o.difficulty as i32 + step).rem_euclid(4)) as u8;
+                            self.audio.play_button_click();
+                            return;
+                        }
+                        Button::Cheats => {
+                            o.cheats = !o.cheats;
+                            if !o.cheats {
+                                o.default_mode = o.initial.default_mode;
+                                o.personal_mode = o.default_mode;
+                            }
+                            self.audio.play_button_click();
+                            return;
+                        }
+                        Button::Lan => {
+                            o.lan = !o.lan;
+                            o.port.focused = false;
+                            self.audio.play_button_click();
+                            return;
+                        }
+                        Button::CommandAccess => {
+                            o.guest_commands = !o.guest_commands;
+                            self.audio.play_button_click();
+                            return;
+                        }
+                        Button::Force => {
+                            o.force = !o.force;
+                            self.audio.play_button_click();
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
                 o.scroll = (o.scroll - delta * 10.0).clamp(0.0, o.scroll_limit(h));
             }
             Some(o) => {
@@ -896,7 +954,8 @@ impl Game<'_> {
                 20.0,
             );
         let hit = o.hit(self.cursor, (w, h));
-        if hit.is_some() {
+        if let Some(b) = hit {
+            o.focused_button = Some(b);
             self.audio.play_button_click();
         }
         match hit {
@@ -960,6 +1019,9 @@ impl Game<'_> {
         let ctrl = self.keys.contains(&winit::keyboard::KeyCode::ControlLeft);
         let shortcut = self.edit_shortcut(event);
         let types_text = self.types_text();
+        let shift = self.has_shift_down();
+        let (w, h) = self.gui_size();
+        let chat_vis = self.settings.chat_visibility;
         let Some(o) = self.world_options.as_mut() else {
             return;
         };
@@ -978,15 +1040,262 @@ impl Game<'_> {
             }
             return;
         }
-        if !o.port.focused || o.view != View::Options {
+        if o.view == View::LockQuestion {
+            match key {
+                winit::keyboard::KeyCode::Tab => {
+                    let reverse = shift;
+                    o.popup_focus = match o.popup_focus {
+                        Some(0) => Some(1),
+                        Some(1) => Some(0),
+                        _ => {
+                            if reverse {
+                                Some(1)
+                            } else {
+                                Some(0)
+                            }
+                        }
+                    };
+                }
+                winit::keyboard::KeyCode::ArrowLeft | winit::keyboard::KeyCode::ArrowUp => {
+                    o.popup_focus = Some(0)
+                }
+                winit::keyboard::KeyCode::ArrowRight | winit::keyboard::KeyCode::ArrowDown => {
+                    o.popup_focus = Some(1)
+                }
+                winit::keyboard::KeyCode::Enter
+                | winit::keyboard::KeyCode::NumpadEnter
+                | winit::keyboard::KeyCode::Space => {
+                    self.audio.play_button_click();
+                    let yes = o.popup_focus == Some(0);
+                    let mut o = self.world_options.take().unwrap();
+                    if yes {
+                        return self.apply_and_close_world_options(o);
+                    } else {
+                        o.view = View::Options;
+                        self.world_options = Some(o);
+                    }
+                }
+                _ => {}
+            }
             return;
         }
-        if let Some(shortcut) = shortcut {
-            o.port.shortcut(shortcut, &mut self.clipboard);
+        if o.view == View::Restrictions {
+            let r = Restrictions::new(&self.gui.atlas.font, chat_vis, (w, h));
+            match key {
+                winit::keyboard::KeyCode::Tab => {
+                    let reverse = shift;
+                    if r.action.is_some() {
+                        o.popup_focus = match o.popup_focus {
+                            Some(0) => Some(1),
+                            Some(1) => Some(0),
+                            _ => {
+                                if reverse {
+                                    Some(1)
+                                } else {
+                                    Some(0)
+                                }
+                            }
+                        };
+                    } else {
+                        o.popup_focus = Some(1);
+                    }
+                }
+                winit::keyboard::KeyCode::ArrowUp => {
+                    if r.action.is_some() {
+                        o.popup_focus = Some(0);
+                    } else {
+                        o.popup_focus = Some(1);
+                    }
+                }
+                winit::keyboard::KeyCode::ArrowDown => o.popup_focus = Some(1),
+                winit::keyboard::KeyCode::Enter
+                | winit::keyboard::KeyCode::NumpadEnter
+                | winit::keyboard::KeyCode::Space => {
+                    self.audio.play_button_click();
+                    let action = r.action.is_some() && o.popup_focus == Some(0);
+                    o.view = View::Options;
+                    if action {
+                        self.open_options_at(false, horizon_client::options_ui::Page::Chat);
+                        self.options_to_world_options = true;
+                    }
+                }
+                _ => {}
+            }
             return;
         }
-        if !o.port.key(key, ctrl, false) && types_text {
-            self.world_options_text(event.text.as_deref());
+        if o.view != View::Options {
+            return;
+        }
+        if o.port.focused {
+            if key == winit::keyboard::KeyCode::Tab {
+                o.port.focused = false;
+                if shift {
+                    o.focused_button = Some(Button::Lan);
+                } else {
+                    o.focused_button = Some(Button::CommandAccess);
+                }
+                return;
+            }
+            if let Some(shortcut) = shortcut {
+                o.port.shortcut(shortcut, &mut self.clipboard);
+                return;
+            }
+            if !o.port.key(key, ctrl, false) && types_text {
+                self.world_options_text(event.text.as_deref());
+            }
+            return;
+        }
+        let visible = o.visible_buttons(w);
+        let footer = WorldOptions::footer(w, h);
+        let active_buttons: Vec<Button> = visible
+            .iter()
+            .filter(|b| o.active(b.0))
+            .map(|b| b.0)
+            .chain(footer.iter().filter(|b| o.active(b.0)).map(|b| b.0))
+            .collect();
+        if active_buttons.is_empty() {
+            return;
+        }
+        match key {
+            winit::keyboard::KeyCode::Tab => {
+                let reverse = shift;
+                let next = match o.focused_button {
+                    Some(cur) => {
+                        if !o.remote && o.lan {
+                            if !reverse && cur == Button::Lan {
+                                o.port.focused = true;
+                                o.focused_button = None;
+                                return;
+                            }
+                            if reverse && cur == Button::CommandAccess {
+                                o.port.focused = true;
+                                o.focused_button = None;
+                                return;
+                            }
+                        }
+                        if let Some(pos) = active_buttons.iter().position(|&b| b == cur) {
+                            if reverse {
+                                if pos == 0 {
+                                    active_buttons.last().copied()
+                                } else {
+                                    Some(active_buttons[pos - 1])
+                                }
+                            } else if pos + 1 >= active_buttons.len() {
+                                active_buttons.first().copied()
+                            } else {
+                                Some(active_buttons[pos + 1])
+                            }
+                        } else if reverse {
+                            active_buttons.last().copied()
+                        } else {
+                            active_buttons.first().copied()
+                        }
+                    }
+                    None => {
+                        if reverse {
+                            active_buttons.last().copied()
+                        } else {
+                            active_buttons.first().copied()
+                        }
+                    }
+                };
+                o.focused_button = next;
+            }
+            winit::keyboard::KeyCode::ArrowUp
+            | winit::keyboard::KeyCode::ArrowDown
+            | winit::keyboard::KeyCode::ArrowLeft
+            | winit::keyboard::KeyCode::ArrowRight => {
+                let rects: Vec<(Button, f32, f32, f32)> = visible
+                    .into_iter()
+                    .filter(|b| o.active(b.0))
+                    .chain(footer.into_iter().filter(|b| o.active(b.0)))
+                    .collect();
+                let cur_b = o.focused_button.unwrap_or(active_buttons[0]);
+                if let Some(cur) = rects.iter().find(|r| r.0 == cur_b) {
+                    let (cx, cy) = (cur.1 + cur.3 / 2.0, cur.2 + 10.0);
+                    let mut best: Option<(Button, f32)> = None;
+                    for r in &rects {
+                        if r.0 == cur_b {
+                            continue;
+                        }
+                        let (rx, ry) = (r.1 + r.3 / 2.0, r.2 + 10.0);
+                        let (dx, dy) = (rx - cx, ry - cy);
+                        let valid = match key {
+                            winit::keyboard::KeyCode::ArrowUp => dy < -4.0,
+                            winit::keyboard::KeyCode::ArrowDown => dy > 4.0,
+                            winit::keyboard::KeyCode::ArrowLeft => dx < -4.0,
+                            winit::keyboard::KeyCode::ArrowRight => dx > 4.0,
+                            _ => false,
+                        };
+                        if !valid {
+                            continue;
+                        }
+                        let dist = match key {
+                            winit::keyboard::KeyCode::ArrowUp
+                            | winit::keyboard::KeyCode::ArrowDown => dy.abs() + dx.abs() * 2.0,
+                            winit::keyboard::KeyCode::ArrowLeft
+                            | winit::keyboard::KeyCode::ArrowRight => dx.abs() + dy.abs() * 2.0,
+                            _ => f32::MAX,
+                        };
+                        if best.as_ref().is_none_or(|(_, d)| dist < *d) {
+                            best = Some((r.0, dist));
+                        }
+                    }
+                    if let Some((next_b, _)) = best {
+                        o.focused_button = Some(next_b);
+                    }
+                } else {
+                    o.focused_button = Some(active_buttons[0]);
+                }
+            }
+            winit::keyboard::KeyCode::Enter
+            | winit::keyboard::KeyCode::NumpadEnter
+            | winit::keyboard::KeyCode::Space => {
+                if let Some(btn) = o.focused_button {
+                    self.audio.play_button_click();
+                    let mut o = self.world_options.take().unwrap();
+                    match btn {
+                        Button::DefaultMode => o.default_mode = (o.default_mode + 1) % 4,
+                        Button::PersonalMode => o.personal_mode = (o.personal_mode + 1) % 4,
+                        Button::Cheats => {
+                            o.cheats = !o.cheats;
+                            if !o.cheats {
+                                o.default_mode = o.initial.default_mode;
+                                o.personal_mode = o.default_mode;
+                            }
+                        }
+                        Button::Difficulty => o.difficulty = (o.difficulty + 1) % 4,
+                        Button::Lock => o.locked = !o.locked,
+                        Button::Restrictions => o.view = View::Restrictions,
+                        Button::GameRules => {
+                            if self.remote.is_some() {
+                                o.rules = None;
+                                self.send(S::ClientCommand(play::ClientCommand { action: 2 }));
+                            } else {
+                                o.rules = Some(RulesScreen::new(&self.ui.rules));
+                            }
+                            o.view = View::GameRules;
+                        }
+                        Button::Lan => {
+                            o.lan = !o.lan;
+                            o.port.focused = false;
+                        }
+                        Button::CommandAccess => o.guest_commands = !o.guest_commands,
+                        Button::Force => o.force = !o.force,
+                        Button::Cancel => {
+                            self.world_options = Some(o);
+                            self.close_world_options();
+                            return;
+                        }
+                        Button::Apply if o.locked != o.initial.locked => {
+                            o.view = View::LockQuestion
+                        }
+                        Button::Apply => return self.apply_and_close_world_options(o),
+                    }
+                    self.world_options = Some(o);
+                }
+            }
+            _ => {}
         }
     }
     /// Digits typed into the port field (the keyboard, or a controller's
@@ -1147,6 +1456,8 @@ mod tests {
             scroll: 0.0,
             view: View::Options,
             rules: None,
+            focused_button: None,
+            popup_focus: None,
             initial: Snapshot {
                 default_mode: 0,
                 personal_mode: 0,
