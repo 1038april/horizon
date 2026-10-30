@@ -91,6 +91,8 @@ impl CheckedStage {
 #[derive(Debug)]
 pub struct Report {
     pub stages: Vec<CheckedStage>,
+    /// The manifest's `[reflection]`.
+    pub reflection: Option<crate::manifest::Reflection>,
 }
 
 /// Checks every stage of `pack`, and that each option is an `override` of
@@ -135,7 +137,10 @@ pub fn check(pack: &Pack) -> Result<Report, Vec<Problem>> {
         }
     }
     if problems.is_empty() {
-        Ok(Report { stages: checked })
+        Ok(Report {
+            stages: checked,
+            reflection: m.reflection.clone(),
+        })
     } else {
         Err(problems)
     }

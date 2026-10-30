@@ -148,8 +148,10 @@ fn texture_reads_have_a_budget() {
 #[test]
 fn reads_follows_the_stage_function_through_its_calls() {
     let material = |text: &str| {
+        // The sample's `[reflection] option` is an override of the material.
+        let text = format!("override reflections: bool = true;\n{text}");
         let mut files = sample().files;
-        files.insert("material.wgsl".into(), text.as_bytes().to_vec());
+        files.insert("material.wgsl".into(), text.into_bytes());
         let report = check(&Pack::from_files(files).unwrap()).unwrap();
         let stage = report.stages.into_iter().find(|s| s.label == "Terrain");
         stage.unwrap()
