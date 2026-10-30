@@ -3,8 +3,8 @@ use super::{
     Mob, MobEvent, MobWorld, Species,
     control::Operation,
     goals::{
-        Avoid, AvoidEntity, Breed, ClimbOnTopOfPowderSnow, Cx, Float, Goal, LookAtPlayer, Panic,
-        Stroll, Tempt, goal_clone,
+        Avoid, AvoidEntity, Breed, ClimbOnTopOfPowderSnow, Cx, Float, Goal, HurtByTarget,
+        LookAtPlayer, MeleeAttack, NearestTarget, Panic, Stroll, Tempt, goal_clone,
     },
 };
 use horizon_core::{
@@ -104,6 +104,33 @@ pub fn base_tick(m: &mut Mob) {
     }
 }
 
+/// `Rabbit.facePoint`.
+fn face_point(m: &mut Mob, x: f64, z: f64) {
+    m.yaw = trig::atan2_degrees(z - m.position.z, x - m.position.x) - 90.0;
+}
+
+/// `Rabbit.setVariant(EVIL)`, run the first time a killer bunny ticks (its
+/// variant comes from `/summon`, a save or a spawn): armor 8, the bite and
+/// target goals, attack damage plus 5 and the "Killer Bunny" name.
+fn set_evil(m: &mut Mob) {
+    use super::finalize::{Attr, Op, add_modifier, set_base};
+    if m.ai.goals.has("MeleeAttack") {
+        return;
+    }
+    set_base(m, Attr::Armor, 8.0);
+    m.ai.goals.add(4, MeleeAttack::new(1.4, true));
+    m.ai.targets.add(1, HurtByTarget::new().alert());
+    m.ai.targets.add(2, NearestTarget::player(true));
+    m.ai.targets
+        .add(2, NearestTarget::species(&[Species::Wolf], true));
+    add_modifier(m, Attr::AttackDamage, "minecraft:evil", 5.0, Op::AddValue);
+    if m.custom_name.is_none() && m.custom_name_text.is_none() {
+        let name = crate::text::Text::translate("entity.minecraft.killer_bunny", &[]);
+        m.custom_name = Some(name.plain());
+        m.custom_name_text = Some(name);
+    }
+}
+
 fn start_jumping(m: &mut Mob) {
     m.ai.jumping = true;
     m.extra.ints[JUMP_DURATION] = 15;
@@ -120,7 +147,10 @@ fn start_jumping(m: &mut Mob) {
 }
 
 /// Rabbit.customServerAiStep: start a hop toward the current path waypoint.
-pub fn server_ai_step(m: &mut Mob) {
+pub fn server_ai_step(m: &mut Mob, w: &MobWorld) {
+    if m.extra.variant == EVIL {
+        set_evil(m);
+    }
     // RabbitMoveControl.setWantedPosition applies the water override before landing checks.
     if m.fluids.in_water && m.ai.mov.speed_modifier > 0.0 {
         m.ai.mov.speed_modifier = 1.5;
@@ -133,13 +163,25 @@ pub fn server_ai_step(m: &mut Mob) {
             m.ai.jumping = false;
             m.extra.ints[MOVE_DELAY] = if m.ai.mov.speed_modifier < 2.2 { 10 } else { 3 };
         }
+        // A killer bunny within 4 blocks of its target faces it and hops at it.
+        if m.extra.variant == EVIL
+            && m.extra.ints[MOVE_DELAY] == 0
+            && let Some(t) = m.target_info(w)
+            && m.distance_sqr(t.position) < 16.0
+        {
+            face_point(m, t.position.x, t.position.z);
+            let speed = m.ai.mov.speed_modifier;
+            m.ai.mov
+                .set_wanted(t.position.x, t.position.y, t.position.z, speed);
+            start_jumping(m);
+        }
         if !m.ai.jump && m.ai.mov.has_wanted() && m.extra.ints[MOVE_DELAY] == 0 {
             let mut at = m.ai.mov.wanted;
             if let Some(path) = m.ai.nav.path.as_ref().filter(|p| !p.is_done()) {
                 let p = path.entity_pos_at(path.next, m.width());
                 at = [p.x, p.y, p.z];
             }
-            m.yaw = trig::atan2_degrees(at[2] - m.position.z, at[0] - m.position.x) - 90.0;
+            face_point(m, at[0], at[2]);
             start_jumping(m);
         }
     }

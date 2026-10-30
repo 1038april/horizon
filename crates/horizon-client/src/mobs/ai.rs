@@ -1554,7 +1554,7 @@ fn armadillo_server_ai_step(m: &mut Mob, mob_drops: bool, events: &mut Vec<MobEv
 }
 fn custom_server_ai_step(m: &mut Mob, cx: &mut Cx) {
     match m.species() {
-        Species::Rabbit => super::rabbit::server_ai_step(m),
+        Species::Rabbit => super::rabbit::server_ai_step(m, cx.w),
         Species::Cat | Species::Ocelot => super::tame::feline_server_ai_step(m),
         // Armadillo.customServerAiStep: the brain and its activity, then the scute.
         Species::Armadillo => {
