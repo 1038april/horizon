@@ -1924,14 +1924,28 @@ impl PackPost {
     }
 
     /// Writes `pass`'s uniforms for a target of `out` pixels; its bind group for the buffers'
-    /// current mapping.
+    /// current mapping. The buffers it both samples and stores to are copied first, and it
+    /// samples the copies.
     fn bind(
         &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
         pass: &mut Pass,
         out: [u32; 2],
     ) -> wgpu::BindGroup {
+        if let Some(targets) = &self.targets {
+            for i in (0..BUFFERS).filter(|i| pass.copies & 1 << i != 0) {
+                if let (Some(t), Some(copy)) = (&targets.color[i], &targets.scratch[i]) {
+                    let side = usize::from(self.main & 1 << i != 0);
+                    encoder.copy_texture_to_texture(
+                        t[side].texture().as_image_copy(),
+                        copy.texture().as_image_copy(),
+                        t[side].texture().size(),
+                    );
+                }
+            }
+        }
         let fog = self.uniforms.fog();
         // Our block members first (`hz_target`, `hz_fog_color`, `hz_fog`), then the pack's.
         let ours = [
@@ -2073,7 +2087,7 @@ impl PackPost {
         group.clone()
     }
 
-    /// Dispatches compute pass `pass` over a target of `size`: its sampled copies first.
+    /// Dispatches compute pass `pass` over a target of `size`.
     fn dispatch(
         &mut self,
         device: &wgpu::Device,
@@ -2096,18 +2110,7 @@ impl PackPost {
             [n(0), n(1), 1]
         });
         let (pipeline, groups) = (pipeline.clone(), groups);
-        let targets = self.targets.as_ref().expect("resized");
-        for i in (0..BUFFERS).filter(|i| pass.copies & 1 << i != 0) {
-            if let (Some(t), Some(copy)) = (&targets.color[i], &targets.scratch[i]) {
-                let side = usize::from(self.main & 1 << i != 0);
-                encoder.copy_texture_to_texture(
-                    t[side].texture().as_image_copy(),
-                    copy.texture().as_image_copy(),
-                    t[side].texture().size(),
-                );
-            }
-        }
-        let group = self.bind(device, queue, pass, size);
+        let group = self.bind(device, queue, encoder, pass, size);
         let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some(&pass.name),
             timestamp_writes: None,
@@ -2197,7 +2200,7 @@ impl PackPost {
                 t.depth_texture.size(),
             );
         }
-        let group = self.bind(device, queue, &mut pass, size);
+        let group = self.bind(device, queue, encoder, &mut pass, size);
         {
             let mut rp = self.begin(encoder, &pass);
             rp.set_pipeline(pass.render());
@@ -2248,7 +2251,7 @@ impl PackPost {
         let mut groups = [None, None];
         for (i, pass) in [&mut sky.basic, &mut sky.textured].into_iter().enumerate() {
             if let Some(pass) = pass {
-                groups[i] = Some(self.bind(device, queue, pass, size));
+                groups[i] = Some(self.bind(device, queue, encoder, pass, size));
                 self.mips_valid &= !pass.written;
             }
         }
@@ -2311,7 +2314,7 @@ impl PackPost {
             if draws.peek().is_none() {
                 continue;
             }
-            let group = self.bind(device, queue, pass, size);
+            let group = self.bind(device, queue, encoder, pass, size);
             {
                 let mut rp = self.begin(encoder, pass);
                 rp.set_pipeline(pass.render());
@@ -2354,7 +2357,7 @@ impl PackPost {
             if draws.peek().is_none() {
                 continue;
             }
-            let group = self.bind(device, queue, pass, size);
+            let group = self.bind(device, queue, encoder, pass, size);
             let mut rp = self.begin(encoder, pass);
             rp.set_pipeline(pass.render());
             rp.set_bind_group(0, &group, &[]);
@@ -2461,7 +2464,7 @@ impl PackPost {
         );
         geometry.prepare(device, queue, frame.hand, projection);
         if geometry.quads > 0 {
-            let group = self.bind(device, queue, &mut pass, size);
+            let group = self.bind(device, queue, encoder, &mut pass, size);
             {
                 let mut rp = self.begin(encoder, &pass);
                 rp.set_pipeline(pass.render());
@@ -2495,7 +2498,7 @@ impl PackPost {
         let (Some(mut pass), Some(clouds)) = (self.clouds.take(), self.cloud_draw.take()) else {
             return;
         };
-        let group = self.bind(device, queue, &mut pass, size);
+        let group = self.bind(device, queue, encoder, &mut pass, size);
         {
             let mut rp = self.begin(encoder, &pass);
             rp.set_pipeline(pass.render());
@@ -2566,7 +2569,7 @@ impl PackPost {
             if quads.is_empty() {
                 continue;
             }
-            let group = self.bind(device, queue, pass, size);
+            let group = self.bind(device, queue, encoder, pass, size);
             {
                 let mut rp = self.begin(encoder, pass);
                 rp.set_pipeline(pass.render());
@@ -2645,13 +2648,14 @@ impl PackPost {
         self.sky_clear.filter(|_| self.has_sky())
     }
 
+    /// Whether the pack has a sky program, drawing or not: vanilla's sky is then not drawn.
     pub fn has_sky(&self) -> bool {
-        self.hides_sky && self.sky.is_some()
+        self.hides_sky
     }
 
-    /// Whether the pack draws the sun and moon itself.
+    /// Whether the pack has the sun and moon's program, drawing or not.
     pub fn has_celestial(&self) -> bool {
-        self.hides_celestial && self.sky.is_some()
+        self.hides_celestial
     }
 
     /// Whether the pack draws translucent terrain itself.
@@ -2819,7 +2823,7 @@ impl PackPost {
         );
         let mut comp = std::mem::take(&mut self.shadow_comp);
         for pass in &mut comp {
-            let group = self.bind(device, queue, pass, size);
+            let group = self.bind(device, queue, encoder, pass, size);
             let t = self.shadow_targets.as_ref().expect("shadow pass");
             let mut attachments: Vec<Option<wgpu::RenderPassColorAttachment>> = Vec::new();
             for &(location, buffer) in &pass.writes {
@@ -3067,7 +3071,7 @@ impl PackPost {
                 Some(&(_, b)) => self.targets.as_ref().map_or(size, |t| t.sizes[b]),
                 None => size,
             };
-            let group = self.bind(device, queue, pass, out);
+            let group = self.bind(device, queue, encoder, pass, out);
             let targets = self.targets.as_ref().expect("resized");
             let view = |i: usize| {
                 targets.color[i]
