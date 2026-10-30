@@ -897,7 +897,6 @@ impl Game<'_> {
             Screen::DialogWarning => "dialog-warning",
             Screen::CommandBlock => "command-block",
             Screen::Win => "win",
-            Screen::QuickActions => "quick-actions",
         }
     }
 

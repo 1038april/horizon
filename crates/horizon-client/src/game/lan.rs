@@ -1177,7 +1177,14 @@ impl Game<'_> {
         config: HubConfig,
         host: Option<u128>,
     ) -> Result<()> {
-        let sync = sync_data(&self.options.resources, &self.pack_files())?;
+        // The preload reads the registries without a world's packs; a world
+        // that has some rebuilds them over them (`RegistryDataLoader`), so its
+        // dialogs, recipes and advancements reach the guests.
+        let overlay = self.pack_files();
+        if !overlay.files.is_empty() {
+            forget_sync_data();
+        }
+        let sync = sync_data(&self.options.resources, &overlay)?;
         let biome_names: Vec<String> = self
             .res
             .biomes()

@@ -73,6 +73,15 @@ pub struct SyncData {
     pub advancements: super::advancements::ServerAdvancements,
 }
 
+/// A resource id with its default namespace filled in.
+fn qualified(id: &str) -> String {
+    if id.contains(':') {
+        id.to_owned()
+    } else {
+        format!("minecraft:{id}")
+    }
+}
+
 /// Every `*.json` under `dir`, as (path without extension relative to dir, value), sorted.
 fn walk(dir: &Path, prefix: &str, out: &mut BTreeMap<String, Value>) {
     let Ok(read) = std::fs::read_dir(dir) else {
@@ -149,7 +158,18 @@ impl SyncData {
             );
             registries.push(((*key).to_owned(), Entries { names, json }));
         }
-        let tags = Self::load_tags(&root, &builtin, &dynamic);
+        // RegistryDataLoader: the world's packs' dialogs over the resource
+        // root's, new entries after them. `minecraft:dialog` is the registry
+        // the Quick Actions key and `show_dialog` read.
+        if let Some((_, entries)) = registries.iter_mut().find(|(k, _)| k == "minecraft:dialog") {
+            Self::merge_dialog_entries(entries, overlay);
+            dynamic.registries.insert(
+                "minecraft:dialog".to_owned(),
+                entries.names.iter().map(|n| (n.clone(), None)).collect(),
+            );
+        }
+        let mut tags = Self::load_tags(&root, &builtin, &dynamic);
+        Self::merge_dialog_tags(&mut tags, &root, overlay, &builtin, &dynamic);
         let content_identity = if resources.join(crate::content_identity::MARKER).exists() {
             Some(crate::content_identity::identity(resources)?)
         } else {
@@ -189,6 +209,9 @@ impl SyncData {
     /// world's data packs changed (`levels`) even when it knows the vanilla
     /// pack.
     pub fn registry_packets(&self, known_pack: bool, levels: &LevelShapes) -> Vec<RegistryData> {
+        // The client reads a dialog's data from the packet: it does not
+        // rebuild the registry from its known pack.
+        let always_sent = |key: &str| key == "minecraft:dialog";
         self.registries
             .iter()
             .map(|(key, e)| RegistryData {
@@ -205,7 +228,7 @@ impl SyncData {
                             id: name.clone(),
                             data: match changed {
                                 Some(json) => Some(json_to_nbt(&json)),
-                                None if known_pack => None,
+                                None if known_pack && !always_sent(key) => None,
                                 None => Some(json_to_nbt(json)),
                             },
                         }
@@ -213,6 +236,112 @@ impl SyncData {
                     .collect(),
             })
             .collect()
+    }
+
+    /// The world's packs' `data/<ns>/dialog/*.json` over the resource root's
+    /// entries: an id a pack has replaces that entry, a new id goes after the
+    /// rest (`RegistryDataLoader`).
+    fn merge_dialog_entries(entries: &mut Entries, overlay: &horizon_world::loot::PackOverlay) {
+        for (id, files) in overlay.kind("dialog") {
+            let Some(bytes) = files.last() else {
+                continue;
+            };
+            let Ok(json) = serde_json::from_slice::<Value>(bytes) else {
+                continue;
+            };
+            match entries.names.iter().position(|n| n == id) {
+                Some(i) => entries.json[i] = json,
+                None => {
+                    entries.names.push(id.to_owned());
+                    entries.json.push(json);
+                }
+            }
+        }
+    }
+
+    /// The `minecraft:dialog` tags of the pack stack: the resource root's
+    /// files, then each world pack's in order (`TagLoader`: a file adds its
+    /// values, or replaces the earlier ones with `"replace": true`), nested
+    /// tags expanded to the registry's ids.
+    fn merge_dialog_tags(
+        tags: &mut UpdateTags,
+        root: &Path,
+        overlay: &horizon_world::loot::PackOverlay,
+        builtin: &Builtin,
+        dynamic: &Dynamic,
+    ) {
+        let Some(names) = Self::registry_names(builtin, dynamic, "minecraft:dialog") else {
+            return;
+        };
+        let mut files: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+        let mut own = BTreeMap::new();
+        walk(&root.join("tags/dialog"), "", &mut own);
+        for (name, value) in own {
+            Self::add_tag_values(files.entry(qualified(&name)).or_default(), &value);
+        }
+        for (id, packs) in overlay.kind("tags/dialog") {
+            for bytes in packs {
+                if let Ok(value) = serde_json::from_slice::<Value>(bytes) {
+                    Self::add_tag_values(files.entry(id.to_owned()).or_default(), &value);
+                }
+            }
+        }
+        let mut entries = Vec::new();
+        for name in files.keys() {
+            let mut ids = Vec::new();
+            let mut seen = HashSet::new();
+            Self::expand_dialog_tag(&files, name, &names, &mut ids, &mut seen);
+            entries.push(TagEntry {
+                name: name.clone(),
+                ids,
+            });
+        }
+        tags.registries.retain(|r| r.registry != "minecraft:dialog");
+        if !entries.is_empty() {
+            tags.registries.push(RegistryTags {
+                registry: "minecraft:dialog".into(),
+                tags: entries,
+            });
+        }
+    }
+
+    /// A tag file's values, after `"replace": true` empties the earlier ones.
+    fn add_tag_values(entries: &mut Vec<Value>, json: &Value) {
+        if json["replace"].as_bool() == Some(true) {
+            entries.clear();
+        }
+        if let Some(values) = json["values"].as_array() {
+            entries.extend(values.iter().cloned());
+        }
+    }
+
+    /// A dialog tag's entries as registry ids, nested tags expanded once.
+    fn expand_dialog_tag(
+        files: &BTreeMap<String, Vec<Value>>,
+        tag: &str,
+        names: &HashMap<&str, i32>,
+        out: &mut Vec<i32>,
+        seen: &mut HashSet<String>,
+    ) {
+        if !seen.insert(tag.to_owned()) {
+            return;
+        }
+        let Some(values) = files.get(tag) else {
+            return;
+        };
+        for value in values {
+            let id = value
+                .as_str()
+                .or_else(|| value["id"].as_str())
+                .unwrap_or_default();
+            if let Some(reference) = id.strip_prefix('#') {
+                Self::expand_dialog_tag(files, &qualified(reference), names, out, seen);
+            } else if let Some(&n) = names.get(qualified(id).as_str())
+                && !out.contains(&n)
+            {
+                out.push(n);
+            }
+        }
     }
 
     fn registry_names<'a>(
@@ -333,6 +462,68 @@ fn changed_dimension_type(name: &str, json: &Value, levels: &LevelShapes) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn world_packs_supply_dialog_entries_and_tags() {
+        use horizon_world::loot::PackOverlay;
+        let mut entries = Entries {
+            names: vec!["minecraft:quick_actions".into(), "minecraft:server_links".into()],
+            json: vec![serde_json::json!({ "type": "minecraft:dialog_list" }); 2],
+        };
+        let files = vec![
+            (
+                "dialog/test:menu".to_owned(),
+                vec![br#"{"type":"minecraft:multi_action","title":"Menu"}"#.to_vec()],
+            ),
+            (
+                "dialog/minecraft:quick_actions".to_owned(),
+                vec![br#"{"type":"minecraft:dialog_list","title":"Quick"}"#.to_vec()],
+            ),
+            (
+                "tags/dialog/minecraft:quick_actions".to_owned(),
+                vec![br##"{"values":["test:menu","#minecraft:more"]}"##.to_vec()],
+            ),
+            (
+                "tags/dialog/minecraft:more".to_owned(),
+                vec![br#"{"values":["minecraft:server_links"]}"#.to_vec()],
+            ),
+        ];
+        let overlay = PackOverlay { files: &files };
+        SyncData::merge_dialog_entries(&mut entries, &overlay);
+        assert_eq!(
+            entries.names,
+            ["minecraft:quick_actions", "minecraft:server_links", "test:menu"]
+        );
+        assert_eq!(entries.json[0]["title"], "Quick", "a pack overrides an entry");
+        let dynamic = Dynamic {
+            registries: HashMap::from([(
+                "minecraft:dialog".to_owned(),
+                entries.names.iter().map(|n| (n.clone(), None)).collect(),
+            )]),
+            ..Default::default()
+        };
+        let mut tags = UpdateTags {
+            registries: Vec::new(),
+        };
+        SyncData::merge_dialog_tags(
+            &mut tags,
+            Path::new("a-resource-root-without-tags"),
+            &overlay,
+            &Builtin::default(),
+            &dynamic,
+        );
+        let dialog = tags
+            .registries
+            .iter()
+            .find(|r| r.registry == "minecraft:dialog")
+            .expect("the dialog tags are sent");
+        let quick = dialog
+            .tags
+            .iter()
+            .find(|t| t.name == "minecraft:quick_actions")
+            .unwrap();
+        assert_eq!(quick.ids, [2, 1], "the pack's dialog, then the nested tag's");
+    }
 
     #[test]
     fn json_becomes_nbt() {

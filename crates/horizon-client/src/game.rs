@@ -111,7 +111,6 @@ mod functions;
 mod game_mode;
 mod gamemode_switcher;
 mod ghasts;
-mod quick_actions;
 mod glowing;
 mod golems;
 mod growth;
@@ -190,6 +189,7 @@ mod potent_sulfur;
 mod potions;
 mod powder_snow;
 mod pumpkin;
+mod quick_actions;
 mod raids;
 mod recipe_book;
 mod remote;
@@ -650,8 +650,6 @@ enum Screen {
     Playing,
     GameModeSwitcher,
     Paused,
-    /// The Quick Actions screen (`key.quickActions`, default G).
-    QuickActions,
     Options,
     Chat,
     Creative,
@@ -6961,7 +6959,6 @@ impl Game<'_> {
             Screen::Dead => self.draw_death_screen(&mut batch),
             Screen::Stats => self.draw_stats(&mut batch),
             Screen::Advancements => self.draw_advancements(&mut batch),
-            Screen::QuickActions => self.draw_quick_actions(&mut batch),
             Screen::WorldOptions => self.draw_world_options(&mut batch),
             Screen::Friends => self.draw_friends_screen(&mut batch),
             Screen::ServerLinks => self.draw_server_links(&mut batch),
@@ -13206,7 +13203,6 @@ impl Game<'_> {
                 // the Server Links screen they came from.
                 Screen::ConfirmLink | Screen::DialogWarning => self.screen = Screen::ServerLinks,
                 Screen::Advancements => self.close_advancements(),
-                Screen::QuickActions => self.close_quick_actions(),
                 Screen::WorldOptions => self.world_options_escape(),
                 Screen::CommandBlock => self.close_command_block(),
                 Screen::Chat => self.close_chat(),
@@ -13236,9 +13232,12 @@ impl Game<'_> {
             // key.advancements.
             KeyCode::KeyL if self.screen == Screen::Playing => self.open_advancements(false),
             KeyCode::KeyL if self.screen == Screen::Advancements => self.close_advancements(),
-            // key.quickActions.
-            KeyCode::KeyG if self.screen == Screen::Playing => self.open_quick_actions(),
-            KeyCode::KeyG if self.screen == Screen::QuickActions => self.close_quick_actions(),
+            // key.quickActions: only open if a datapack provides dialog actions.
+            KeyCode::KeyG if self.screen == Screen::Playing => {
+                if self.has_quick_actions() {
+                    self.open_quick_actions();
+                }
+            }
             KeyCode::Slash if self.screen == Screen::Playing => self.open_chat_method("/"),
             // key.toggleGui is a KeyMapping: it clicks only with no screen open.
             KeyCode::F1 if self.screen == Screen::Playing => self.toggle_hide_gui(),
@@ -14214,9 +14213,6 @@ impl ApplicationHandler for Game<'_> {
                                 .as_ref()
                                 .map_or([1, 1], |r| [r.config.width, r.config.height]);
                             self.advancements_mouse(pressed, size);
-                        }
-                        Screen::QuickActions if pressed && button == MouseButton::Left => {
-                            let _ = self.quick_actions_click();
                         }
                         Screen::Stats if pressed && button == MouseButton::Left => {
                             let size = self
