@@ -237,6 +237,7 @@
   "{source} · needed by another mod": "{source} · 其他模组需要",
   "Local file · {file}": "本地文件 · {file}",
   "Update {version}": "更新到 {version}",
+  "Choose image…": "选择图片…",
   "Waiting for account access…": "正在等待访问账户…",
   "Reading keychain…": "正在读取钥匙串…",
   "Renewing Microsoft sign-in…": "正在续期 Microsoft 登录…",

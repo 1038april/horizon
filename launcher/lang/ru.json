@@ -237,6 +237,7 @@
   "{source} · needed by another mod": "{source} · нужен другому моду",
   "Local file · {file}": "Локальный файл · {file}",
   "Update {version}": "Обновить до {version}",
+  "Choose image…": "Выбрать изображение…",
   "Waiting for account access…": "Ожидание доступа к учётной записи…",
   "Reading keychain…": "Чтение связки ключей…",
   "Renewing Microsoft sign-in…": "Обновление входа Microsoft…",

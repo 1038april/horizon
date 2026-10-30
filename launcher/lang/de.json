@@ -237,6 +237,7 @@
   "{source} · needed by another mod": "{source} · von einem anderen Mod benötigt",
   "Local file · {file}": "Lokale Datei · {file}",
   "Update {version}": "Update {version}",
+  "Choose image…": "Bild wählen…",
   "Waiting for account access…": "Warten auf Kontozugriff…",
   "Reading keychain…": "Schlüsselbund wird gelesen…",
   "Renewing Microsoft sign-in…": "Microsoft-Anmeldung wird erneuert…",
