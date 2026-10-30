@@ -879,7 +879,8 @@ fn overlaps(a: Aabb, b: Aabb) -> bool {
 }
 /// What `Equippable.swapWithEquipmentSlot` leaves behind once the held piece is
 /// worn: the new hand (`None` keeps the hand as it is) and the replaced piece
-/// that still has to go through the inventory (`Inventory.add`, else a drop).
+/// that still has to go through the inventory (`Inventory.add`, else a drop, see
+/// `armor_overflow`).
 #[derive(Debug, PartialEq)]
 struct ArmorSwap {
     hand: Option<Option<ItemStack>>,
@@ -906,6 +907,12 @@ fn plan_armor_swap(held: &ItemStack, worn: Option<ItemStack>, creative: bool) ->
         hand: Some(Some(rest)),
         returned: worn,
     }
+}
+/// `Inventory.add` for a player with infinite materials (creative) returns
+/// true and zeroes a stack that did not fit, so the replaced piece is
+/// discarded and `swapWithEquipmentSlot` never drops it; survival drops it.
+fn armor_overflow(rest: ItemStack, creative: bool) -> Option<ItemStack> {
+    (!creative).then_some(rest)
 }
 impl Game<'_> {
     /// `Equippable.swapWithEquipmentSlot`: right-clicking armor swaps it into
@@ -945,10 +952,11 @@ impl Game<'_> {
         }
         if let Some(old) = swap.returned
             && let Some(rest) = self.give(old)
+            && let Some(rest) = armor_overflow(rest, self.creative)
             && let Some(eye) = self.eye_position()
         {
-            // Inventory full: Player.drop of the replaced piece.
-            self.spawn_item(rest, eye, [0.0; 3], 40);
+            // Inventory full: Player.drop(stack, false) of the replaced piece.
+            self.throw_from_eyes(rest, eye, false);
         }
         self.apply_equipment();
         self.swing_arm();
@@ -1174,6 +1182,11 @@ mod armor_swap_tests {
         assert_eq!(creative.hand, Some(Some(boots(3))));
         assert_eq!(creative.returned, Some(old()));
         assert_old_kept(&creative);
+    }
+    #[test]
+    fn a_full_inventory_drops_in_survival_and_discards_in_creative() {
+        assert_eq!(armor_overflow(old(), false), Some(old()));
+        assert_eq!(armor_overflow(old(), true), None);
     }
     #[test]
     fn a_stack_into_an_empty_slot_returns_nothing() {
