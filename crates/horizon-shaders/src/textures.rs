@@ -170,6 +170,9 @@ pub fn decode_png(bytes: &[u8]) -> Option<Texture> {
 
 /// A raw dump: `<type> <internalFormat> <dimensions...> <pixelFormat> <pixelType>`, its rows
 /// tightly packed, or padded to four bytes as GL unpacks by default.
+/// The largest size a raw texture may give one of its dimensions.
+const MAX_SIZE: u32 = 16384;
+
 fn raw(bytes: &[u8], words: &[&str]) -> Result<Texture, String> {
     let (dim, dims) = match words[0] {
         "TEXTURE_1D" => (Dim::D1, 1),
@@ -186,7 +189,7 @@ fn raw(bytes: &[u8], words: &[&str]) -> Result<Texture, String> {
         size[k] = w
             .parse()
             .ok()
-            .filter(|&n| n > 0)
+            .filter(|&n| n > 0 && n <= MAX_SIZE)
             .ok_or(format!("bad size `{w}`"))?;
     }
     let (pixel_format, pixel_type) = (words[2 + dims], words[3 + dims]);
@@ -234,19 +237,23 @@ fn raw(bytes: &[u8], words: &[&str]) -> Result<Texture, String> {
     };
     let texel = order.len() * width;
     let row = size[0] as usize * texel;
-    let rows = (size[1] * size[2]) as usize;
+    let rows = size[1] as usize * size[2] as usize;
     let padded = row.next_multiple_of(4);
-    let stride = if padded != row && bytes.len() >= padded * rows {
+    let wanted = |stride: usize| stride.checked_mul(rows - 1)?.checked_add(row);
+    let stride = if padded != row && wanted(padded).is_some_and(|n| bytes.len() >= n) {
         padded
     } else {
         row
     };
-    if bytes.len() < stride * (rows - 1) + row {
-        return Err(format!(
-            "{} bytes, {} wanted",
-            bytes.len(),
-            stride * (rows - 1) + row
-        ));
+    match wanted(stride) {
+        Some(n) if bytes.len() >= n => {}
+        n => {
+            return Err(format!(
+                "{} bytes, {} wanted",
+                bytes.len(),
+                n.map_or_else(|| "more than that".into(), |n| n.to_string())
+            ));
+        }
     }
     let out = components(format.channels);
     let count = size[0] as usize * rows;
@@ -312,6 +319,36 @@ mod tests {
 
     fn half(v: f32) -> [u8; 2] {
         half::f16::from_f32(v).to_le_bytes()
+    }
+
+    #[test]
+    fn raw_sizes_are_bounded() {
+        let huge = raw(
+            &[0; 64],
+            &[
+                "TEXTURE_3D",
+                "RGBA8",
+                "4",
+                "65536",
+                "65536",
+                "RGBA",
+                "UNSIGNED_BYTE",
+            ],
+        );
+        assert_eq!(huge.err().as_deref(), Some("bad size `65536`"));
+        let big = raw(
+            &[0; 64],
+            &[
+                "TEXTURE_3D",
+                "RGBA8",
+                "4",
+                "16384",
+                "16384",
+                "RGBA",
+                "UNSIGNED_BYTE",
+            ],
+        );
+        assert!(big.is_err_and(|e| e.starts_with("64 bytes")));
     }
 
     #[test]
