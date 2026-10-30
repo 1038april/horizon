@@ -255,19 +255,11 @@ pub(super) struct Weather {
 
 /// Shadow cache for temporal reprojection: stores the last valid shadow map
 /// to avoid re-rendering when the sun and camera haven't moved significantly.
+#[derive(Default)]
 struct ShadowCache {
     /// The cached shadow targets (depth, depth1, color buffers).
     targets: Option<super::pack_shadow::ShadowTargets>,
     key: Option<ShadowCacheKey>,
-}
-
-impl Default for ShadowCache {
-    fn default() -> Self {
-        Self {
-            targets: None,
-            key: None,
-        }
-    }
 }
 
 /// Key for validating the shadow cache.
