@@ -3474,9 +3474,13 @@ impl Renderer {
     /// stages' labels; on an error the pack that ran keeps running.
     pub fn set_native_shader_pack(
         &mut self,
-        pack: Option<(horizon_shader_api::Report, Vec<(String, f64)>)>,
+        pack: Option<(
+            horizon_shader_api::Report,
+            Vec<(String, f64)>,
+            Vec<(u32, u32)>,
+        )>,
     ) -> std::result::Result<Vec<String>, String> {
-        let Some((report, constants)) = pack else {
+        let Some((report, constants, sprite_tags)) = pack else {
             self.native = None;
             return Ok(Vec::new());
         };
@@ -3485,6 +3489,7 @@ impl Renderer {
             flat: self.flat.as_ref().map(|f| &f.draw_layout),
             sprites: self.terrain_sprites,
             format: self.config.format.remove_srgb_suffix(),
+            sprite_tags: &sprite_tags,
         };
         let (pack, labels) =
             native_pack::NativePack::new(&self.device, &terrain, report, &constants)?;
