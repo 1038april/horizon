@@ -909,20 +909,24 @@ impl Game<'_> {
         self.armor[index] = Some(equipped.clone());
         // Player.setItemSlot: onEquipItem plays the equip sound.
         self.player_equipped(slot, Some(&equipped));
-        if !self.creative {
-            let mut held = stack.clone();
-            held.count -= 1;
-            if held.count == 0 {
-                // The worn piece comes back to the hand.
+        let mut held = stack.clone();
+        if stack.count <= 1 {
+            // The worn piece comes back to the hand; an empty slot leaves the
+            // creative hand untouched.
+            if current.is_some() || !self.creative {
                 *self.held_mut() = current;
-            } else {
-                *self.held_mut() = Some(held);
-                if let Some(old) = current
-                    && let Some(rest) = self.give(old)
-                    && let Some(eye) = self.eye_position()
-                {
-                    self.spawn_item(rest, eye, [0.0; 3], 40);
-                }
+            }
+        } else {
+            // Creative keeps the held stack (`stack.copy()`); survival consumes one.
+            if !self.creative {
+                held.count -= 1;
+            }
+            *self.held_mut() = Some(held);
+            if let Some(old) = current
+                && let Some(rest) = self.give(old)
+                && let Some(eye) = self.eye_position()
+            {
+                self.spawn_item(rest, eye, [0.0; 3], 40);
             }
         }
         self.apply_equipment();
