@@ -790,6 +790,7 @@ impl<'a> Context<'a> {
                         BinaryOperator::Add
                         | BinaryOperator::Subtract
                         | BinaryOperator::Divide
+                        | BinaryOperator::Modulo
                         | BinaryOperator::And
                         | BinaryOperator::ExclusiveOr
                         | BinaryOperator::InclusiveOr
@@ -813,6 +814,7 @@ impl<'a> Context<'a> {
                         BinaryOperator::Add
                         | BinaryOperator::Subtract
                         | BinaryOperator::Divide
+                        | BinaryOperator::Modulo
                         | BinaryOperator::And
                         | BinaryOperator::ExclusiveOr
                         | BinaryOperator::InclusiveOr => {

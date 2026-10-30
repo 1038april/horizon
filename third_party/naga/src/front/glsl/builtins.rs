@@ -265,6 +265,50 @@ pub fn inject_builtin(
 
             texture_args_generator(TextureArgsOptions::SHADOW | variations.into(), f)
         }
+        "textureGather" | "textureGatherOffset" => {
+            let offset = name == "textureGatherOffset";
+            let f = |kind, dim, arrayed, multi, shadow| {
+                // Gathers read 2D, 2D array, cube and cube array images, offsets only 2D ones.
+                if multi || !matches!(dim, Dim::D2 | Dim::Cube) || (offset && dim == Dim::Cube) {
+                    return;
+                }
+                let class = match shadow {
+                    true => ImageClass::Depth { multi },
+                    false => ImageClass::Sampled { kind, multi },
+                };
+                let image = TypeInner::Image {
+                    dim,
+                    arrayed,
+                    class,
+                };
+                let coords = image_dims_to_coords_size(dim) + arrayed as usize;
+                let mut args = vec![image, make_coords_arg(coords, Sk::Float)];
+                if shadow {
+                    // textureGather(gsamplerShadow, P, float refZ [, ivec2 offset])
+                    args.push(TypeInner::Scalar(Scalar::F32));
+                }
+                if offset {
+                    args.push(make_coords_arg(2, Sk::Sint));
+                }
+                let builtin = MacroCall::TextureGather { offset, shadow };
+                if !shadow {
+                    // The optional component, a constant.
+                    let mut with_comp = args.clone();
+                    with_comp.push(TypeInner::Scalar(Scalar::I32));
+                    declaration
+                        .overloads
+                        .push(module.add_builtin(with_comp, builtin));
+                }
+                declaration
+                    .overloads
+                    .push(module.add_builtin(args, builtin));
+            };
+
+            texture_args_generator(
+                TextureArgsOptions::SHADOW | TextureArgsOptions::CUBE_ARRAY | variations.into(),
+                f,
+            )
+        }
         "textureSize" => {
             let f = |kind, dim, arrayed, multi, shadow| {
                 let class = match shadow {
@@ -1551,6 +1595,10 @@ pub enum MacroCall {
         shadow: bool,
         level_type: TextureLevelType,
     },
+    TextureGather {
+        offset: bool,
+        shadow: bool,
+    },
     TextureSize {
         arrayed: bool,
     },
@@ -1711,11 +1759,87 @@ impl MacroCall {
                         .get(num_args)
                         .copied()
                         .map_or(SampleLevel::Auto, SampleLevel::Bias);
+                    // Outside fragment shaders there are no derivatives: GLSL samples the base
+                    // level, and the bias is ignored.
+                    if frontend.meta.stage != crate::ShaderStage::Fragment {
+                        level = SampleLevel::Zero;
+                    }
                 }
 
                 texture_call(ctx, args[0], level, comps, texture_offset, meta)?
             }
 
+            MacroCall::TextureGather { offset, shadow } => {
+                let mut coords = args[1];
+                let mut extra = None;
+                if shadow {
+                    // The depth reference goes where `coordinate_components` looks for it: the
+                    // component after the coordinates, or a separate value past four.
+                    let size = match *ctx.resolve_type(coords, meta)? {
+                        TypeInner::Vector { size, .. } => size,
+                        _ => unreachable!(),
+                    };
+                    match size {
+                        VectorSize::Quad => extra = Some(args[2]),
+                        _ => {
+                            let size = match size {
+                                VectorSize::Bi => VectorSize::Tri,
+                                _ => VectorSize::Quad,
+                            };
+                            let ty = ctx.module.types.insert(
+                                Type {
+                                    name: None,
+                                    inner: TypeInner::Vector {
+                                        size,
+                                        scalar: Scalar::F32,
+                                    },
+                                },
+                                Span::default(),
+                            );
+                            coords = ctx.add_expression(
+                                Expression::Compose {
+                                    ty,
+                                    components: vec![coords, args[2]],
+                                },
+                                meta,
+                            )?;
+                        }
+                    }
+                }
+                let comps = frontend.coordinate_components(ctx, args[0], coords, extra, meta)?;
+                let mut next = 2 + shadow as usize;
+                let texture_offset = match offset {
+                    true => {
+                        next += 1;
+                        Some(args[next - 1])
+                    }
+                    false => None,
+                };
+                let component = match args.get(next) {
+                    Some(&comp) => gather_component(ctx, comp, meta)?,
+                    None => crate::SwizzleComponent::X,
+                };
+                let Some(sampler) = ctx.samplers.get(&args[0]).copied() else {
+                    return Err(Error {
+                        kind: ErrorKind::SemanticError("Bad call".into()),
+                        meta,
+                    });
+                };
+                ctx.add_expression(
+                    Expression::ImageSample {
+                        image: args[0],
+                        sampler,
+                        gather: Some(component),
+                        coordinate: comps.coordinate,
+                        array_index: comps.array_index,
+                        offset: texture_offset,
+                        level: SampleLevel::Zero,
+                        depth_ref: comps.depth_ref,
+                        clamp_to_edge: false,
+                    },
+                    meta,
+                )?
+            }
             MacroCall::TextureSize { arrayed } => {
                 let mut expr = ctx.add_expression(
                     Expression::ImageQuery {
@@ -2094,6 +2218,37 @@ fn texture_call(
             kind: ErrorKind::SemanticError("Bad call".into()),
             meta,
         })
+    }
+}
+
+/// The component a gather reads: `comp` must be a constant 0 to 3.
+fn gather_component(
+    ctx: &mut Context,
+    comp: Handle<Expression>,
+    meta: Span,
+) -> Result<crate::SwizzleComponent> {
+    let value = match ctx[comp] {
+        Expression::Literal(crate::Literal::I32(v)) => Some(v as i64),
+        Expression::Literal(crate::Literal::U32(v)) => Some(v as i64),
+        Expression::Constant(c) => match ctx.module.global_expressions[ctx.module.constants[c].init]
+        {
+            Expression::Literal(crate::Literal::I32(v)) => Some(v as i64),
+            Expression::Literal(crate::Literal::U32(v)) => Some(v as i64),
+            _ => None,
+        },
+        _ => None,
+    };
+    match value {
+        Some(0) => Ok(crate::SwizzleComponent::X),
+        Some(1) => Ok(crate::SwizzleComponent::Y),
+        Some(2) => Ok(crate::SwizzleComponent::Z),
+        Some(3) => Ok(crate::SwizzleComponent::W),
+        _ => Err(Error {
+            kind: ErrorKind::SemanticError(
+                "textureGather's component must be a constant from 0 to 3".into(),
+            ),
+            meta,
+        }),
     }
 }
 

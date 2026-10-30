@@ -86,11 +86,13 @@ impl ParsingContext<'_> {
                 let ty_name = self.expect_ident(frontend)?.0;
                 self.expect(frontend, TokenValue::LeftBrace)?;
                 let mut members = Vec::new();
+                // Std430 strides match those of array types declared outside a struct, so
+                // `S(float[2](a, b))` composes; uniform blocks lay out their own members.
                 let span = self.parse_struct_declaration_list(
                     frontend,
                     ctx,
                     &mut members,
-                    StructLayout::Std140,
+                    StructLayout::Std430,
                 )?;
                 let end_meta = self.expect(frontend, TokenValue::RightBrace)?.meta;
                 meta.subsume(end_meta);

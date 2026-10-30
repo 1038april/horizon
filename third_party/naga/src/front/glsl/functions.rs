@@ -86,8 +86,13 @@ impl Frontend {
                 let mut reject = ctx.add_expression(Expression::Literal(l0), expr_meta)?;
                 let mut accept = ctx.add_expression(Expression::Literal(l1), expr_meta)?;
 
-                ctx.implicit_splat(&mut reject, meta, vector_size)?;
-                ctx.implicit_splat(&mut accept, meta, vector_size)?;
+                // A scalar bool fills every component of a vector result.
+                let size = match ctx.module.types[ty].inner {
+                    TypeInner::Vector { size, .. } => vector_size.or(Some(size)),
+                    _ => vector_size,
+                };
+                ctx.implicit_splat(&mut reject, meta, size)?;
+                ctx.implicit_splat(&mut accept, meta, size)?;
 
                 let h = ctx.add_expression(
                     Expression::Select {
