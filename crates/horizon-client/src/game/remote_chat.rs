@@ -2,14 +2,14 @@
 //! session made from the account's chat key pair (setKeyPair), signed chat
 //! and signed command arguments (sendChat, sendCommand), and the messages
 //! the client acknowledges as seen (LastSeenMessagesTracker,
-//! MessageSignatureCache, markMessageAsProcessed). Without a signed-in
+//! markMessageAsProcessed). Without a signed-in
 //! account, or on a server that plays the account under another profile
 //! (offline mode), there is no session and everything goes unsigned.
 use super::Game;
 use horizon_client::auth::{self, ChatKeyPair};
 use horizon_protocol::{
     packets::play::{self, Serverbound as S},
-    secure_chat::{self, Body, Encoder, LastSeenTracker, SignatureCache},
+    secure_chat::{Body, Encoder, LastSeenTracker, Signature},
 };
 use std::sync::Arc;
 
@@ -22,12 +22,16 @@ pub(super) struct SecureChat {
     /// LocalChatSession: the key pair it signs with, and its chain.
     session: Option<(Arc<ChatKeyPair>, Encoder)>,
     tracker: LastSeenTracker,
-    cache: SignatureCache,
 }
 
 impl SecureChat {
     pub(super) fn signed(&self) -> bool {
         self.session.is_some()
+    }
+    /// handleDeleteChat: a deleted message that is still pending is not
+    /// acknowledged.
+    pub(super) fn ignore_pending(&mut self, signature: &Signature) {
+        self.tracker.ignore_pending(signature);
     }
 }
 
@@ -48,10 +52,11 @@ fn random_uuid() -> u128 {
 }
 
 impl Game<'_> {
-    /// handleLogin: a new session state, and prepareKeyPair.
+    /// handleLogin: a new session state and signature cache, and prepareKeyPair.
     pub(super) fn remote_chat_login(&mut self) {
         if let Some(r) = self.remote.as_mut() {
             r.secure_chat = SecureChat::default();
+            r.signatures = Default::default();
         }
         auth::prepare_chat_keys(true);
         self.update_chat_session();
@@ -194,31 +199,16 @@ impl Game<'_> {
         }));
     }
 
-    /// handlePlayerChat's bookkeeping: the body's packed last seen against
-    /// the signature cache, which then takes the message (push), and
-    /// markMessageAsProcessed for a signed one, acknowledged once more than
-    /// 64 wait. Horizon shows every message, so each counts as shown.
-    pub(super) fn remote_chat_seen(&mut self, p: &play::PlayerChat) {
+    /// markMessageAsProcessed, when the chat takes a signed message (past
+    /// any Chat Delay): whether it was shown, and an acknowledgement once more
+    /// than 64 wait (sendChatAcknowledgement).
+    pub(super) fn mark_message_processed(&mut self, signature: &Signature, shown: bool) {
         let Some(r) = self.remote.as_mut() else {
             return;
         };
-        let chat = &mut r.secure_chat;
-        let last_seen: Option<Vec<_>> = p
-            .last_seen
-            .iter()
-            .map(|(id, full)| chat.cache.unpack(*id, full.as_deref()))
-            .collect();
-        let Some(last_seen) = last_seen else {
-            log::warn!("Chat message names a signature the cache doesn't hold");
-            return;
-        };
-        let signature = p.signature.as_deref().and_then(secure_chat::signature);
-        chat.cache.push(&last_seen, signature.as_ref());
-        if let Some(signature) = signature
-            && chat.tracker.add_pending(&signature, true)
-            && chat.tracker.offset() > ACK_AFTER
-        {
-            let offset = chat.tracker.take_offset();
+        let tracker = &mut r.secure_chat.tracker;
+        if tracker.add_pending(signature, shown) && tracker.offset() > ACK_AFTER {
+            let offset = tracker.take_offset();
             self.send(S::ChatAck(play::ChatAck { offset }));
         }
     }

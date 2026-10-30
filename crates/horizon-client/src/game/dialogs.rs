@@ -421,6 +421,7 @@ impl Game<'_> {
                         position,
                         hover || held,
                         true,
+                        held,
                     );
                 }
                 Part::Item { body, rect } => {
