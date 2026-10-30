@@ -1129,7 +1129,9 @@ fn refill_own_store(tag: &str) {
     let own = data_dir().join("minecraft");
     let resources = resources_at(&versions_dir().join(tag));
     if !own.join("assets/indexes").is_dir()
-        || !(lacks_languages(&resources) || !sounds_in(&resources))
+        || !horizon_prepare::missing_extras(&resources)
+            .iter()
+            .any(|(kind, _)| matches!(*kind, "languages" | "sounds"))
         || ASKED.swap(true, std::sync::atomic::Ordering::Relaxed)
     {
         return;
