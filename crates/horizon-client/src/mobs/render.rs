@@ -970,8 +970,26 @@ pub fn base_transform(m: &Mob, alpha: f32, camera: glam::DVec3) -> glam::Mat4 {
         m.previous.x + (m.position.x - m.previous.x) * a,
         m.previous.y + (m.position.y - m.previous.y) * a,
         m.previous.z + (m.position.z - m.previous.z) * a,
-    ) - camera;
+    ) - camera
+        + enderman_render_offset(m, alpha);
     base_transform_at(m, alpha, glam::Mat4::from_translation(p.as_vec3()))
+}
+/// `EndermanRenderer.getRenderOffset`: a creepy (angry) enderman is moved by
+/// a gaussian 0.02 blocks sideways in x and z every frame. Vanilla draws from
+/// the renderer's own random; this one is seeded by the mob and the frame's
+/// age, so the body, its carried block and its eyes agree within a frame.
+fn enderman_render_offset(m: &Mob, alpha: f32) -> glam::DVec3 {
+    use horizon_core::random::{LegacyRandom, RandomSource};
+    if m.species() != Species::Enderman || !m.extra.flag {
+        return glam::DVec3::ZERO;
+    }
+    let frame = (m.age as f32 + alpha).to_bits();
+    let mut random = LegacyRandom::new((i64::from(m.id) << 32) ^ i64::from(frame));
+    // `0.02 * state.scale`, the enderman's scale being 1.
+    let d = 0.02;
+    let x = random.next_gaussian() * d;
+    let z = random.next_gaussian() * d;
+    glam::DVec3::new(x, 0.0, z)
 }
 /// `base_transform` from a pose of the entity's origin (`EntityRenderDispatcher.submit`
 /// under a pose stack, as `SpawnerRenderer` draws the mob inside a spawner).
