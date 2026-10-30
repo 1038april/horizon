@@ -1337,6 +1337,8 @@ pub struct OptionsUi {
     /// The shader pack option whose slider is held, and the handle's own position: it follows
     /// the pointer while the option takes the nearest of its values.
     shader_dragging: Option<(String, f32)>,
+    /// Shift is held during the click (it resets a shader pack option to its default).
+    pub shift: bool,
     /// The pressed slider's own position (`AbstractSliderButton.value`) and
     /// when it last moved: the handle follows the pointer while the option
     /// keeps its stepped value, then snaps to it (`resetValue`).
@@ -1393,6 +1395,7 @@ impl Default for OptionsUi {
             scroll: 0.0,
             dragging: None,
             shader_dragging: None,
+            shift: false,
             slider_value: None,
             scrollbar_drag_y: None,
             selected_key: None,
@@ -2752,6 +2755,51 @@ impl OptionsUi {
             let start = batch.vertices.len();
             let hover = ui::hovered(cursor, wd.x, wd.y, wd.w, wd.h)
                 && (!wd.list || cursor.1 >= top && cursor.1 < bottom);
+            // A pack's option: its label within the widget (the name shortened), and on hover
+            // the whole label when it was, then what the pack says of it.
+            let shader = s.shader_options.as_ref();
+            let option = match &wd.kind {
+                WKind::Button {
+                    act: Act::ShaderOption(name),
+                    ..
+                }
+                | WKind::ShaderSlider { name, .. } => Some(name),
+                _ => None,
+            };
+            let fitted = shader.zip(option).map(|(o, name)| {
+                o.option_label_within(name, wd.w - 8.0, |t| atlas.font.width_text(t))
+            });
+            if hover && let Some(o) = shader {
+                let comment = match (&wd.kind, option) {
+                    (_, Some(name)) => o.comment(&format!("option.{name}")),
+                    (
+                        WKind::Button {
+                            act: Act::ShaderScreen(screen),
+                            ..
+                        },
+                        _,
+                    ) => o.comment(&format!("screen.{screen}")),
+                    (
+                        WKind::Button {
+                            act: Act::ShaderProfile,
+                            ..
+                        },
+                        _,
+                    ) => o.comment("profile"),
+                    _ => None,
+                };
+                let whole = option
+                    .filter(|_| fitted.as_ref().is_some_and(|f| f.1))
+                    .map(|name| o.option_label(name));
+                let lines: Vec<Text> = whole
+                    .into_iter()
+                    .chain(comment)
+                    .flat_map(|t| atlas.font.split(&t, 200.0))
+                    .collect();
+                if !lines.is_empty() {
+                    tooltip = Some(lines);
+                }
+            }
             if hover {
                 if let WKind::Button {
                     act: Act::Extra(item),
@@ -2820,6 +2868,7 @@ impl OptionsUi {
             }
             match &wd.kind {
                 WKind::Button { label, active, act } => {
+                    let label = fitted.as_ref().map_or(label, |f| &f.0);
                     ui::button(batch, atlas, wd.x, wd.y, wd.w, wd.h, label, *active, hover);
                     if hover && let Act::Key(name) = act {
                         let conflicts = s.keys.conflicts(name);
@@ -2859,6 +2908,7 @@ impl OptionsUi {
                     );
                 }
                 WKind::ShaderSlider { label, value, name } => {
+                    let label = fitted.as_ref().map_or(label, |f| &f.0);
                     let held = self.shader_dragging.as_ref().filter(|(n, _)| n == name);
                     let dragging = held.is_some();
                     ui::slider(
@@ -3236,7 +3286,11 @@ impl OptionsUi {
                         }
                         Act::ShaderOption(name) => {
                             if let Some(options) = &mut s.shader_options {
-                                options.cycle(&name, false);
+                                if self.shift {
+                                    options.reset_option(&name);
+                                } else {
+                                    options.cycle(&name, false);
+                                }
                             }
                         }
                         Act::ShaderScreen(screen) => {
@@ -3263,6 +3317,10 @@ impl OptionsUi {
                 WKind::ShaderSlider { name, .. } => {
                     let at = ui::slider_value(wd.x, wd.w, x);
                     if let Some(options) = &mut s.shader_options {
+                        if self.shift {
+                            options.reset_option(&name);
+                            break;
+                        }
                         options.set_position(&name, at);
                     }
                     self.shader_dragging = Some((name, at));

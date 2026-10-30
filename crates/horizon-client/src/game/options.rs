@@ -176,6 +176,7 @@ impl Game<'_> {
             [r.config.width as i32, r.config.height as i32]
         });
         let mut ui = std::mem::take(&mut self.ui.options);
+        ui.shift = self.modifiers.shift_key();
         let events = ui.click(
             &mut self.settings,
             &self.gui.atlas,
