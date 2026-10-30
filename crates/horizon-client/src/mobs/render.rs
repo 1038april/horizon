@@ -2079,6 +2079,20 @@ pub fn held_item_transform(
     if m.species() == Species::Fox {
         return (!left).then(|| fox_item_transform(m, alpha, camera, data));
     }
+    // DolphinCarryingItemLayer: the main hand's item at the snout, lifted and
+    // pulled in as the dolphin pitches (up or down) toward 60 degrees.
+    if m.species() == Species::Dolphin {
+        return (!left).then(|| {
+            let pitch = anim::state(m, alpha).x_rot;
+            let percent = pitch.abs() / 60.0;
+            let offset = if pitch < 0.0 {
+                glam::Vec3::new(0.0, 1.0 - percent * 0.5, -1.0 + percent * 0.5)
+            } else {
+                glam::Vec3::new(0.0, 1.0 + percent * 0.8, -1.0 + percent * 0.2)
+            };
+            base_transform(m, alpha, camera) * glam::Mat4::from_translation(offset)
+        });
+    }
     if !super::illager::shows_item(m) {
         return None;
     }
