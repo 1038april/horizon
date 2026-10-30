@@ -975,6 +975,10 @@ impl Title {
             }
         })
     }
+    /// Whether the system toast holds the `ToastManager`'s first slot.
+    pub fn has_toast(&self) -> bool {
+        self.toast.is_some()
+    }
     /// The world a finished backup made before its upgrade opens next.
     pub fn take_open_request(&mut self) -> Option<String> {
         self.open_request.take()

@@ -373,7 +373,7 @@ impl Game<'_> {
                 Event::NativeSettings(i) => self.native_settings_refresh(i),
                 Event::NativeButton(i, b) => self.native_settings_event(i, b),
                 Event::Credits => self.open_win_screen(false, super::win::Finish::Options),
-                Event::Narrator => super::narrator::update_status(self.settings.narrator()),
+                Event::Narrator => self.narrator_status_changed(),
             }
         }
         Ok(())
