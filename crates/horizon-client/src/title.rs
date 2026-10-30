@@ -16,11 +16,13 @@ use std::{
 
 mod create_world;
 mod flat;
+mod onboarding;
 #[cfg(test)]
 mod tests;
 pub mod world_management;
 pub use create_world::{DIFFICULTIES, WorldOptions};
 pub use flat::{FlatLayer, FlatSettings, State as FlatEditor};
+pub use onboarding::Onboarding;
 
 /// SelectWorldScreen's `HeaderAndFooterLayout(8 + 9 + 8 + 20 + 4, 60)`.
 const LIST_TOP: f32 = 49.0;
@@ -85,6 +87,25 @@ fn recover_issues(dir: &Path) -> [Option<crate::save::DatIssue>; 2] {
 /// The SafetyScreen's column (WarningScreen: title, 12 px around the message
 /// box of its lines and 4 px padding, the checkbox, then the buttons, 8 px
 /// apart): the title's top.
+/// `LogoRenderer.extractRenderState`: the logo's top 44 of 64 rows, then the
+/// edition banner's top 14 of 16 rows overlapping its bottom by 7.
+fn draw_logo(atlas: &HudAtlas, batch: &mut HudBatch, w: f32) {
+    batch.sprite_region(
+        atlas,
+        "gui/title/minecraft",
+        [(w / 2.0).floor() - 128.0, 30.0, 256.0, 44.0],
+        256.0,
+        64.0,
+    );
+    batch.sprite_region(
+        atlas,
+        crate::title_edition::SPRITE,
+        [(w / 2.0).floor() - 64.0, 30.0 + 44.0 - 7.0, 128.0, 14.0],
+        128.0,
+        16.0,
+    );
+}
+
 fn warning_top(h: f32, lines: usize) -> f32 {
     ((h.ceil() - 102.0 - lines as f32 * 9.0) / 2.0).floor()
 }
@@ -127,6 +148,15 @@ impl WorldToast {
             ),
         }
     }
+}
+
+/// Why `WorldOpenFlows.askForBackup` asks before a world opens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StemIssue {
+    /// `WorldOptions.isOldCustomizedWorld`.
+    Customized,
+    /// A `worldGenSettingsLifecycle` that is not stable.
+    Experimental,
 }
 
 #[derive(Clone, Debug)]
@@ -188,6 +218,13 @@ pub enum Mode {
     BackupBeforeUpgrade {
         world: WorldEntry,
         downgrade: Option<String>,
+        /// With neither of the above: `WorldOpenFlows.askForBackup` over a customized or
+        /// experimental world (`openWorldCheckWorldStemCompatibility`).
+        stem: Option<StemIssue>,
+    },
+    /// `openWorldCheckDiskSpace`'s ConfirmScreen: little space is left on the device.
+    LowDiskSpace {
+        world: WorldEntry,
     },
     Delete {
         world: WorldEntry,
@@ -228,6 +265,8 @@ pub enum Mode {
         options: WorldOptions,
         flat: flat::State,
     },
+    /// AccessibilityOnboardingScreen: the first screen of a first launch.
+    Onboarding(Onboarding),
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
@@ -236,6 +275,10 @@ pub enum Action {
     Options,
     Accessibility,
     Language,
+    /// AccessibilityOnboardingScreen's Music & Sounds button.
+    Sounds,
+    /// The title's bottom text (`PlainTextButton`): `CreditsAndAttributionScreen`.
+    Credits,
     Play {
         folder: String,
     },
@@ -274,10 +317,13 @@ pub struct Title {
     message_lines: Cell<usize>,
     /// The SafetyScreen's checkbox as last drawn: x, y, width, height.
     warning_check: Cell<[f32; 4]>,
+    /// The bottom notice's `PlainTextButton` as last drawn: x, y, width, height.
+    credits_button: Cell<[f32; 4]>,
     backup: Option<mpsc::Receiver<Result<u64, String>>>,
     backup_shown: Cell<bool>,
-    /// The backup a `BackupBeforeUpgrade` asked for opens its world when done.
-    backup_then_open: bool,
+    /// The backup a `BackupBeforeUpgrade` asked for opens its world when done; whether it
+    /// was the question about customized or experimental settings, the last one asked.
+    backup_then_open: Option<bool>,
     /// The folder to open next, once that backup has finished.
     open_request: Option<String>,
     /// EditWorldScreen's and WorldOpenFlows' `SystemToast` and its slide.
@@ -288,6 +334,8 @@ pub struct Title {
     recent: std::cell::RefCell<Option<(std::time::Instant, Vec<WorldEntry>)>>,
     /// WorldCreationGameRulesScreen, over Create New World while it is open.
     rules: RefCell<Option<RulesScreen>>,
+    /// The onboarding screen has run out: the owner saves `onboardAccessibility` as false.
+    pub onboarding_finished: bool,
     /// Focused button id, for keyboard navigation.
     pub focused_button: Option<u8>,
 }
@@ -299,6 +347,8 @@ pub(crate) struct Button {
     enabled: bool,
     id: u8,
     icon: Option<(&'static str, f32)>,
+    /// `SpriteIconButton.TextAndIcon`: the icon at the right end, the text centred.
+    trailing: Option<(&'static str, f32)>,
 }
 /// Java String.hashCode for text seeds (WorldOptions.parseSeed).
 pub fn parse_seed(text: &str) -> Option<i64> {
@@ -440,9 +490,10 @@ impl Title {
             create_return_to_main: false,
             message_lines: Cell::new(1),
             warning_check: Cell::new([0.0; 4]),
+            credits_button: Cell::new([0.0; 4]),
             backup: None,
             backup_shown: Cell::new(false),
-            backup_then_open: false,
+            backup_then_open: None,
             open_request: None,
             toast: None,
             icons: RefCell::new(std::collections::HashMap::new()),
@@ -457,6 +508,7 @@ impl Title {
             ),
             recent: std::cell::RefCell::new(None),
             rules: RefCell::new(None),
+            onboarding_finished: false,
             focused_button: None,
         }
     }
@@ -729,6 +781,7 @@ impl Title {
     }
     /// Polling is done once per rendered frame so filesystem work never blocks drawing.
     pub fn poll_backup(&mut self) {
+        self.poll_onboarding(std::time::Instant::now());
         if !self.backup_shown.get() {
             return;
         }
@@ -742,11 +795,15 @@ impl Title {
         };
         self.backup = None;
         if let Mode::Backup { world } = &self.mode {
+            let world = world.clone();
             let folder = world.folder.clone();
             self.return_to_list(Some(&folder));
-            // EditWorldScreen opens the world after the backup, failed or not.
-            if std::mem::take(&mut self.backup_then_open) {
-                self.open_request = Some(folder.clone());
+            // EditWorldScreen opens the world after the backup, failed or not: through the
+            // checks WorldOpenFlows still has to make.
+            if let Some(stem_asked) = self.backup_then_open.take()
+                && let Action::Play { folder } = self.after_prompt(world.clone(), stem_asked)
+            {
+                self.open_request = Some(folder);
             }
             let toast = match result {
                 Ok(bytes) => WorldToast::Created { folder, bytes },
@@ -777,6 +834,24 @@ impl Title {
     /// The world a finished backup made before its upgrade opens next.
     pub fn take_open_request(&mut self) -> Option<String> {
         self.open_request.take()
+    }
+    /// `WorldOpenFlows.openWorldLoadLevelData` for a world opened without the list (the control
+    /// socket): level data that does not read shows RecoverWorldDataScreen. False when the world
+    /// reads and opens as usual.
+    pub fn open_recover(&mut self, folder: &str) -> bool {
+        let dir = self.saves.join(folder);
+        let Some(issue) = crate::save::level_data_needs_recovery(&dir) else {
+            return false;
+        };
+        let world = list_worlds(&self.saves)
+            .into_iter()
+            .find(|w| w.folder == folder)
+            .unwrap_or_else(|| {
+                WorldEntry::corrupted(folder.to_owned(), std::time::SystemTime::now())
+            });
+        let issues = [Some(issue), crate::save::level_dat_issue(&dir, true)];
+        self.mode = Mode::Recover { world, issues };
+        true
     }
     /// `WorldOpenFlows.openWorld`: a world that can't be locked, as one another
     /// instance has open, stays closed behind `onWorldAccessFailure`
@@ -824,6 +899,7 @@ impl Title {
             self.mode = Mode::BackupBeforeUpgrade {
                 world,
                 downgrade: None,
+                stem: None,
             };
             return Action::None;
         }
@@ -837,7 +913,38 @@ impl Title {
             self.mode = Mode::BackupBeforeUpgrade {
                 world,
                 downgrade: Some(version),
+                stem: None,
             };
+            return Action::None;
+        }
+        self.after_prompt(world, false)
+    }
+    /// What `WorldOpenFlows` does once a world's version questions are answered:
+    /// `openWorldCheckWorldStemCompatibility` (unless `stem_asked`: its backup question was
+    /// the one just answered), then `openWorldCheckDiskSpace`, then the load.
+    fn after_prompt(&mut self, world: WorldEntry, stem_asked: bool) -> Action {
+        let dir = self.saves.join(&world.folder);
+        // A world that still needs its file fixes has no 26.3 generator settings to read:
+        // its questions come after the fixes, which this build runs while it opens.
+        if !stem_asked && !crate::save::needs_file_fixes(&dir) {
+            let issue = if crate::save::is_old_customized_world(&dir) {
+                Some(StemIssue::Customized)
+            } else if crate::save::world_gen_unstable(&dir) {
+                Some(StemIssue::Experimental)
+            } else {
+                None
+            };
+            if let Some(stem) = issue {
+                self.mode = Mode::BackupBeforeUpgrade {
+                    world,
+                    downgrade: None,
+                    stem: Some(stem),
+                };
+                return Action::None;
+            }
+        }
+        if crate::save::low_disk_space(&dir) {
+            self.mode = Mode::LowDiskSpace { world };
             return Action::None;
         }
         Action::Play {
@@ -998,6 +1105,7 @@ impl Title {
             enabled,
             id,
             icon: None,
+            trailing: None,
         };
         match &self.mode {
             Mode::Main => {
@@ -1223,6 +1331,29 @@ impl Title {
                     ),
                 ]
             }
+            Mode::LowDiskSpace { .. } => {
+                let y = confirm_top(h, self.message_lines.get())
+                    + 41.0
+                    + self.message_lines.get() as f32 * 9.0;
+                vec![
+                    b(
+                        (w / 2.0).floor() - 152.0,
+                        y,
+                        150.0,
+                        &lang::get_or("gui.continue", "Continue"),
+                        true,
+                        94,
+                    ),
+                    b(
+                        (w / 2.0).floor() + 2.0,
+                        y,
+                        150.0,
+                        &lang::get_or("gui.back", "Back"),
+                        true,
+                        95,
+                    ),
+                ]
+            }
             Mode::Recover { issues, .. } => {
                 let y = recover_buttons_top(h, self.message_lines.get());
                 // The restore button is active only when level.dat is the broken one
@@ -1357,6 +1488,7 @@ impl Title {
                     ),
                 ]
             }
+            Mode::Onboarding(_) => self.onboarding_buttons(w, h),
             Mode::Backup { .. } => Vec::new(),
             Mode::Multiplayer(screen) => screen
                 .buttons(w, h)
@@ -1376,24 +1508,10 @@ impl Title {
         if let Some(rules) = self.rules.borrow_mut().as_mut() {
             return rules.draw(batch, atlas, cursor);
         }
+        let mut fade_from = None;
         match &self.mode {
             Mode::Main => {
-                // LogoRenderer: the logo's top 44 of 64 rows, then the edition
-                // banner's top 14 of 16 rows overlapping its bottom by 7.
-                batch.sprite_region(
-                    atlas,
-                    "gui/title/minecraft",
-                    [(w / 2.0).floor() - 128.0, 30.0, 256.0, 44.0],
-                    256.0,
-                    64.0,
-                );
-                batch.sprite_region(
-                    atlas,
-                    crate::title_edition::SPRITE,
-                    [(w / 2.0).floor() - 64.0, 30.0 + 44.0 - 7.0, 128.0, 14.0],
-                    128.0,
-                    16.0,
-                );
+                draw_logo(atlas, batch, w);
                 if !hide_splash && let Some(splash) = self.splash.as_deref() {
                     let tw = HudBatch::text_width(atlas, splash);
                     let start = batch.vertices.len();
@@ -1429,8 +1547,23 @@ impl Title {
                     batch.text(atlas, &nightly, 2.0, 2.0, u32::MAX, true);
                 }
                 let notice = "Not affiliated with Mojang or Microsoft";
-                let tw = HudBatch::text_width(atlas, notice);
-                batch.text(atlas, notice, w - tw - 2.0, h - 10.0, u32::MAX, true);
+                // TitleScreen.init's `PlainTextButton`: the text's width wide, 10
+                // high at `height - 10`; `extractContents` underlines it while
+                // hovered or focused, and its press opens the credits.
+                let tw = HudBatch::text_width(atlas, notice).ceil();
+                let rect = [w - tw - 2.0, h - 10.0, tw, 10.0];
+                self.credits_button.set(rect);
+                crate::widgets::record(notice, rect, true);
+                let inside = cursor.0 >= rect[0]
+                    && cursor.0 < rect[0] + rect[2]
+                    && cursor.1 >= rect[1]
+                    && cursor.1 < rect[1] + rect[3];
+                crate::widgets::widget_cursor(inside, true);
+                let mut text = Text::literal(notice);
+                if inside {
+                    text = text.underlined();
+                }
+                batch.text_styled(atlas, &text, rect[0], rect[1], u32::MAX, true);
             }
             Mode::Select { worlds, selected } => {
                 crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
@@ -1700,11 +1833,35 @@ impl Title {
                     centered(atlas, batch, line, text_top + i as f32 * 9.0, u32::MAX);
                 }
             }
-            Mode::BackupBeforeUpgrade { downgrade, .. } => {
+            Mode::BackupBeforeUpgrade {
+                downgrade, stem, ..
+            } => {
                 crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
                 // BackupStatus.DOWNGRADE is severe: its question is red (-2142128).
-                let (question, warning, color) = match downgrade {
-                    Some(version) => (
+                let (question, warning, color) = match (downgrade, stem) {
+                    (None, Some(StemIssue::Customized)) => (
+                        lang::get_or(
+                            "selectWorld.backupQuestion.customized",
+                            "Customized worlds are no longer supported",
+                        ),
+                        lang::get_or(
+                            "selectWorld.backupWarning.customized",
+                            "Unfortunately, we do not support customized worlds in this version of Minecraft. We can still load this world and keep everything the way it was, but any newly generated terrain will no longer be customized. We're sorry for the inconvenience!",
+                        ),
+                        u32::MAX,
+                    ),
+                    (None, Some(StemIssue::Experimental)) => (
+                        lang::get_or(
+                            "selectWorld.backupQuestion.experimental",
+                            "Worlds using Experimental Settings are not supported",
+                        ),
+                        lang::get_or(
+                            "selectWorld.backupWarning.experimental",
+                            "This world uses experimental settings that could stop working at any time. We cannot guarantee it will load or work. Here be dragons!",
+                        ),
+                        u32::MAX,
+                    ),
+                    (Some(version), _) => (
                         lang::get_or(
                             "selectWorld.backupQuestion.downgrade",
                             "Downgrading a world is not supported",
@@ -1716,7 +1873,7 @@ impl Title {
                         ),
                         rgba(223, 80, 80, 255),
                     ),
-                    None => (
+                    (None, None) => (
                         lang::get_or(
                             "selectWorld.backupQuestion.file_fixing_required",
                             "Create a backup before upgrading this world?",
@@ -1734,6 +1891,30 @@ impl Title {
                 centered(atlas, batch, &question, 50.0, color);
                 for (i, line) in lines.iter().enumerate() {
                     centered(atlas, batch, line, 70.0 + i as f32 * 9.0, u32::MAX);
+                }
+            }
+            Mode::LowDiskSpace { .. } => {
+                crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
+                let message = lang::get_or(
+                    "selectWorld.warning.lowDiskSpace.description",
+                    "There is not much space left on your device.\nRunning out of disk space while in game can lead to your world being damaged.",
+                );
+                let lines = wrapped(atlas, &message, w - 50.0);
+                self.message_lines.set(lines.len());
+                let top = confirm_top(h, lines.len());
+                // ChatFormatting.RED.
+                centered(
+                    atlas,
+                    batch,
+                    &lang::get_or(
+                        "selectWorld.warning.lowDiskSpace.title",
+                        "Warning! Low disk space!",
+                    ),
+                    top,
+                    rgba(255, 85, 85, 255),
+                );
+                for (i, line) in lines.iter().enumerate() {
+                    centered(atlas, batch, line, top + 17.0 + i as f32 * 9.0, u32::MAX);
                 }
             }
             Mode::Backup { .. } => {
@@ -1866,6 +2047,7 @@ impl Title {
                     true,
                 );
             }
+            Mode::Onboarding(_) => fade_from = Some(self.draw_onboarding(atlas, batch, w, h)),
             Mode::Multiplayer(screen) => screen.draw(
                 atlas,
                 batch,
@@ -1926,6 +2108,21 @@ impl Title {
                 color,
                 true,
             );
+            if let Some((icon, size)) = b.trailing {
+                // TextAndIcon: `x + width - spriteWidth - 2`, centred in the height.
+                batch.sprite_scaled(
+                    atlas,
+                    &format!("gui/sprites/{icon}"),
+                    b.x + b.w - size - 2.0,
+                    b.y + 10.0 - (size / 2.0).floor(),
+                    size,
+                    size,
+                    u32::MAX,
+                );
+            }
+        }
+        if let Some(from) = fade_from {
+            self.draw_onboarding_logo(atlas, batch, w, from);
         }
         if let Mode::Create {
             name,
@@ -1979,6 +2176,12 @@ impl Title {
             if (bx..bx + bw).contains(&x) && (by..by + bh).contains(&y) {
                 *check = !*check;
                 return (Action::None, true);
+            }
+        }
+        if matches!(self.mode, Mode::Main) {
+            let [bx, by, bw, bh] = self.credits_button.get();
+            if (bx..bx + bw).contains(&x) && (by..by + bh).contains(&y) {
+                return (Action::Credits, true);
             }
         }
         let hit = self
@@ -2038,6 +2241,13 @@ impl Title {
                 self.mode = Mode::Multiplayer(crate::multiplayer::Screen::friend());
                 Action::None
             }
+            (Mode::Onboarding(_), Some(onboarding::SOUNDS)) => Action::Sounds,
+            (Mode::Onboarding(_), Some(onboarding::ACCESSIBILITY)) => Action::Accessibility,
+            (Mode::Onboarding(_), Some(onboarding::LANGUAGE)) => Action::Language,
+            (Mode::Onboarding(_), Some(onboarding::CONTINUE)) => {
+                self.onboarding_close();
+                Action::None
+            }
             (Mode::Main, Some(3)) => Action::Options,
             (Mode::Main, Some(7)) => Action::Accessibility,
             (Mode::Main, Some(6)) => Action::Language,
@@ -2047,15 +2257,24 @@ impl Title {
                     None => Action::None,
                 }
             }
-            (Mode::BackupBeforeUpgrade { world, .. }, Some(40)) => {
+            (Mode::BackupBeforeUpgrade { world, stem, .. }, Some(40)) => {
                 let world = world.clone();
-                self.backup_then_open = true;
+                self.backup_then_open = Some(stem.is_some());
                 self.start_backup(world);
                 Action::None
             }
-            (Mode::BackupBeforeUpgrade { world, .. }, Some(41)) => Action::Play {
+            (Mode::BackupBeforeUpgrade { world, stem, .. }, Some(41)) => {
+                let (world, stem_asked) = (world.clone(), stem.is_some());
+                self.after_prompt(world, stem_asked)
+            }
+            // ConfirmScreen: Continue loads the world, Back (or Escape) leaves it closed.
+            (Mode::LowDiskSpace { world }, Some(94)) => Action::Play {
                 folder: world.folder.clone(),
             },
+            (Mode::LowDiskSpace { .. }, Some(95)) => {
+                self.escape();
+                Action::None
+            }
             (Mode::BackupBeforeUpgrade { world, .. }, Some(42)) => {
                 let folder = world.folder.clone();
                 self.return_to_list(Some(&folder));
@@ -2723,6 +2942,7 @@ impl Title {
             | Mode::Delete { world }
             | Mode::Recover { world, .. }
             | Mode::Recovered { world, .. }
+            | Mode::LowDiskSpace { world }
             | Mode::BackupBeforeUpgrade { world, .. } => {
                 let folder = world.folder.clone();
                 self.return_to_list(Some(&folder));
@@ -2739,6 +2959,8 @@ impl Title {
                 }
             }
             Mode::Create { .. } => self.cancel_create(),
+            // Screen.keyPressed: Escape closes the screen, which fades out.
+            Mode::Onboarding(_) => self.onboarding_close(),
             _ => self.mode = Mode::Main,
         }
     }
@@ -2808,6 +3030,24 @@ fn caret_field<'a>(
 #[cfg(test)]
 mod classic_tests {
     use super::*;
+
+    #[test]
+    fn the_bottom_text_button_opens_the_credits() {
+        // TitleScreen.init's PlainTextButton: a press inside its drawn rect.
+        let mut title = Title::new(
+            PathBuf::new(),
+            Path::new("/nonexistent/horizon-test-resources"),
+        );
+        title.credits_button.set([300.0, 230.0, 120.0, 10.0]);
+        assert_eq!(
+            title.click(310.0, 235.0, (427.0, 240.0)),
+            (Action::Credits, true)
+        );
+        assert_eq!(
+            title.click(310.0, 225.0, (427.0, 240.0)),
+            (Action::None, false)
+        );
+    }
 
     #[test]
     fn classic_main_menu_icons_route_language_and_accessibility() {

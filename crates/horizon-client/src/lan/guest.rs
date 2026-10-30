@@ -114,6 +114,8 @@ pub struct Guest {
     /// `LivingEntity.DATA_LIVING_ENTITY_FLAGS`: 1 while using an item, 2 if
     /// it is in the off hand.
     pub living_flags: i8,
+    /// `LivingEntity.DATA_ARROW_COUNT_ID` and `DATA_STINGER_COUNT_ID`.
+    pub stuck: (i32, i32),
     /// The bed (its head) the player sleeps in (`LivingEntity.getSleepingPos`),
     /// `Player.sleepCounter`, and the bed last told to the player itself.
     pub bed: Option<[i32; 3]>,
@@ -143,9 +145,15 @@ pub struct Guest {
     /// (receivedMovePacketCount, knownMovePacketCount).
     pub received_moves: i32,
     pub known_moves: i32,
+    /// The last accepted move left the player hovering over air
+    /// (`clientIsFloating`), and the ticks it has (`aboveGroundTickCount`).
+    pub client_is_floating: bool,
+    pub above_ground_ticks: i32,
     /// A position move arrived since the client's last ClientTickEnd
     /// (receivedPositionThisTick): a second one is a protocol error.
     pub position_this_tick: bool,
+    /// Violation levels and the checks' state (the anticheat, when on).
+    pub anticheat: horizon_anticheat::Player,
     /// It accepted a move since the last entity range checks
     /// (ServerChunkCache.move), which then check all of its pairs again.
     pub moved: bool,
@@ -314,6 +322,7 @@ impl Guest {
             flying: false,
             sleeping: false,
             living_flags: 0,
+            stuck: (0, 0),
             bed: None,
             sleep_timer: 0,
             sent_bed: None,
@@ -326,7 +335,10 @@ impl Guest {
             first_good: position,
             received_moves: 0,
             known_moves: 0,
+            client_is_floating: false,
+            above_ground_ticks: 0,
             position_this_tick: false,
+            anticheat: Default::default(),
             moved: false,
             loaded: false,
             center: None,
