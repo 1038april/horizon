@@ -291,6 +291,19 @@ pub fn brain_step(m: &mut Mob, cx: &mut Cx) {
     }
     update_activity(m, cx.w, cx.events);
 }
+/// `Zoglin.customServerAiStep` after the brain: `Zoglin.updateActivity` plays
+/// the angry grunt when the fight activity starts.
+pub fn zoglin_step(m: &mut Mob, cx: &mut Cx) {
+    let now = if m.ai.target.is_some() {
+        Activity::Fight
+    } else {
+        Activity::Idle
+    };
+    let before = std::mem::replace(&mut m.extra.piglin.activity, now);
+    if now == Activity::Fight && before != Activity::Fight {
+        m.voice("entity.zoglin.angry", cx.events);
+    }
+}
 /// `HoglinAi.updateActivity`, `PiglinAi.updateActivity` and
 /// `PiglinBruteAi.updateActivity`: take the first valid activity and, when it
 /// is not the one it was in, make the sound that goes with the new one; a
