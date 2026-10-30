@@ -48,6 +48,9 @@ pub struct VanillaTerrain {
     /// Block state id -> the block entity type of its block, if it has one.
     block_entity_types: Vec<Option<&'static str>>,
     seed: i64,
+    /// The starts (structure name, chunk) an exploration map pointed at.
+    referenced: std::sync::Mutex<std::collections::HashSet<(String, i32, i32)>>,
+    reference_file: std::sync::Mutex<Option<std::path::PathBuf>>,
     /// The world preset the terrain was generated with (`minecraft:normal`
     /// unless a saved world says otherwise); far decoration uses it too.
     preset: String,
@@ -242,6 +245,8 @@ impl VanillaTerrain {
             tick_states,
             block_entity_types,
             seed,
+            referenced: Default::default(),
+            reference_file: Default::default(),
             preset: preset.to_owned(),
             dimension: dimension.to_owned(),
             last_proto: std::sync::atomic::AtomicU64::new(0),
@@ -383,6 +388,62 @@ impl VanillaTerrain {
         radius: i32,
     ) -> Option<(String, [i32; 3])> {
         self.generator.worker().locate(names, from, radius)
+    }
+    /// `ChunkGenerator.findNearestMapStructure` for an exploration map: with
+    /// `skip_known` (`skip_existing_chunks`) the nearest start no map pointed
+    /// at yet, which then counts as pointed at (`StructureStart.addReference`,
+    /// at most one: `getMaxReferences`).
+    pub fn locate_for_map(
+        &self,
+        names: &[String],
+        from: [i32; 3],
+        radius: i32,
+        skip_known: bool,
+    ) -> Option<(String, [i32; 3])> {
+        if !skip_known {
+            return self.locate(names, from, radius);
+        }
+        let mut referenced = self.referenced.lock().unwrap_or_else(|e| e.into_inner());
+        let found =
+            self.generator
+                .worker()
+                .locate_skipping(names, from, radius, &|name, chunk| {
+                    referenced.contains(&(name.to_owned(), chunk.x, chunk.z))
+                })?;
+        referenced.insert((found.0.clone(), found.1[0] >> 4, found.1[2] >> 4));
+        self.save_references(&referenced);
+        Some(found)
+    }
+    /// Where the starts maps pointed at are kept, and the ones kept there:
+    /// vanilla keeps the count in each start's chunk (`references`), which a
+    /// start nobody visited has no file for.
+    pub fn set_reference_file(&self, path: std::path::PathBuf) {
+        let mut referenced = self.referenced.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(list) = std::fs::read(&path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Vec<(String, i32, i32)>>(&b).ok())
+        {
+            referenced.extend(list);
+        }
+        *self
+            .reference_file
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(path);
+    }
+    fn save_references(&self, referenced: &std::collections::HashSet<(String, i32, i32)>) {
+        let guard = self
+            .reference_file
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let Some(path) = guard.as_ref() else { return };
+        let mut list: Vec<_> = referenced.iter().collect();
+        list.sort();
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Err(e) = serde_json::to_vec(&list).map(|b| std::fs::write(path, b)) {
+            log::warn!("Horizon: could not save {}: {e}", path.display());
+        }
     }
     /// `/locate biome`: `BiomeSource.findClosestBiome3d`.
     pub fn find_closest_biome(

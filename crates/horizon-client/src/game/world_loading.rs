@@ -401,6 +401,10 @@ pub(super) fn make_streaming(
         if dim == Dim::Overworld && structures {
             inner.search_rings_behind();
         }
+        inner.set_reference_file(world_root.join("data").join(format!(
+            "horizon_structure_references_{}.json",
+            dim.id().replace(':', "_")
+        )));
         locator = Some(inner.clone());
         Streaming::new(
             Arc::new(Persistent {

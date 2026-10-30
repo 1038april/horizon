@@ -8,9 +8,9 @@ WorldPresets.Bootstrap	skip:data		datagen bootstrap that registers the presets
 SinglePieceStructure.findGenerationPoint	port	crates/horizon-world/src/worldgen/structure/start.rs::try_generate	DesertPyramid/JungleTemple arm: valid biome, sea-level check, stub on the surface
 SinglePieceStructure.generatePieces	port	crates/horizon-world/src/worldgen/structure/start.rs::try_generate	same arm builds the piece at the chunk corner
 structure/StructureCheck.canCreateStructure	port	crates/horizon-world/src/worldgen/structure/start.rs::try_generate	no start when the arm returns None
-structure/StructureCheck.checkStart	missing		player: an explorer map (skip_existing_chunks, default on) can point at a structure the player already reached; the reference check is not ported
-structure/StructureCheck.checkStructureInfo	missing		player: requireUnreferenced is ignored, so explorer maps do not skip known structures (see checkStart)
-structure/StructureCheck.incrementReference	missing		player: no reference counts per chunk, so explorer maps do not skip structures already reached
+structure/StructureCheck.checkStart	inline	crates/horizon-client/src/vanillagen.rs::VanillaTerrain::locate_for_map	gap: the references live in a sidecar file (data/horizon_structure_references_<dim>.json), not in the start's chunk
+structure/StructureCheck.checkStructureInfo	inline	crates/horizon-client/src/vanillagen.rs::VanillaTerrain::locate_for_map	gap: the references live in a sidecar file (data/horizon_structure_references_<dim>.json), not in the start's chunk
+structure/StructureCheck.incrementReference	inline	crates/horizon-client/src/vanillagen.rs::VanillaTerrain::locate_for_map	gap: the references live in a sidecar file (data/horizon_structure_references_<dim>.json), not in the start's chunk
 structure/StructureCheck.loadStructures	skip:other		reads saved starts for the storage cache; Horizon places saved starts with use_saved_start
 structure/StructureCheck.onStructureLoad	missing		player: starts loaded in a chunk do not record references (see incrementReference)
 structure/StructureCheck.storeFullResults	skip:other		cache write for the storage check
