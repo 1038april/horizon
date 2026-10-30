@@ -25,6 +25,8 @@ pub const UI: usize = 10;
 /// sources: `clamp((int) sqrt(255), 2, 8)` streaming, the rest static.
 pub const STATIC_CHANNELS: usize = 247;
 pub const STREAMING_CHANNELS: usize = 8;
+/// Static channels only sounds played to the listener (no position) may take.
+const HEARD_RESERVE: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlayResult {
@@ -1100,7 +1102,15 @@ impl SoundEngine {
         let looping = instance.looping && instance.delay <= 0;
         let streaming = sound.stream;
         let pool = usize::from(streaming);
-        let channel = if self.used[pool] >= self.limits[pool] {
+        // Sounds out in the world leave a few static channels free, so a flood of them (a crater's worth of blocks
+        // breaking) can't stop the ones played to the listener.
+        let positional = !instance.relative && instance.attenuation != Attenuation::None;
+        let reserved = if positional && !streaming {
+            HEARD_RESERVE
+        } else {
+            0
+        };
+        let channel = if self.used[pool] + reserved >= self.limits[pool] {
             None
         } else {
             backend.create(streaming)
@@ -1548,5 +1558,40 @@ mod tests {
         s.tick(&ctx);
         assert_eq!(s.volume, 0.0);
         assert!(!s.stopped);
+    }
+    use test_backend::Null;
+
+    #[test]
+    fn world_sounds_leave_channels_for_the_listener() {
+        let mut registry = SoundRegistry::default();
+        registry.add_file(
+            "minecraft",
+            br#"{"block.stone.break": {"sounds": ["dig/stone1"]},
+                 "ui.button.click": {"sounds": ["random/click"]}}"#,
+            &|_, _| true,
+        );
+        let (mut engine, mut backend) = (SoundEngine::new(registry), Null::default());
+        let random = || LegacyRandom::new(0);
+        let block = |i: usize| {
+            let at = [i as f64, 64.0, 0.0];
+            let source = crate::settings::sound_source("minecraft:block.stone.break");
+            SoundInstance::at(
+                "minecraft:block.stone.break",
+                source,
+                1.0,
+                1.0,
+                random(),
+                at,
+            )
+        };
+        let started = (0..STATIC_CHANNELS)
+            .filter(|&i| engine.play_new(block(i), false, &mut backend).1 == PlayResult::Started)
+            .count();
+        assert_eq!(started, STATIC_CHANNELS - HEARD_RESERVE);
+        let click = SoundInstance::for_ui("minecraft:ui.button.click", 1.0, 0.25, random());
+        assert_eq!(
+            engine.play_new(click, false, &mut backend).1,
+            PlayResult::Started
+        );
     }
 }
