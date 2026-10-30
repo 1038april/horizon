@@ -15,7 +15,11 @@ use horizon_core::{
     random::PositionalRandom,
     ticks::ProtoChunkTicks,
 };
-use std::io;
+use std::{cell::RefCell, io};
+
+thread_local! {
+    static SCRATCH_DENSITY: RefCell<Vec<f32>> = const { RefCell::new(Vec::new()) };
+}
 
 /// Behavior and resolved tags for every state in the chunk's immutable registry.
 pub trait TerrainBlockStates {
@@ -553,6 +557,32 @@ pub fn fill_noise<B: TerrainBlockStates>(
     aquifer: &mut (impl TerrainAquifer + ?Sized),
     default_block: BlockStateId,
 ) -> Result<(), TerrainError> {
+    let size = volume.size();
+    SCRATCH_DENSITY.with_borrow_mut(|scratch| {
+        if scratch.len() < size {
+            scratch.resize(size, 0.0);
+        }
+        fill_noise_inner(
+            chunk,
+            volume,
+            final_density,
+            context,
+            aquifer,
+            default_block,
+            &mut scratch[..size],
+        )
+    })
+}
+
+fn fill_noise_inner<B: TerrainBlockStates>(
+    chunk: &mut TerrainChunk<'_, B>,
+    volume: DensityVolume,
+    final_density: &dyn DensitySampler,
+    context: &mut SamplerContext,
+    aquifer: &mut (impl TerrainAquifer + ?Sized),
+    default_block: BlockStateId,
+    density: &mut [f32],
+) -> Result<(), TerrainError> {
     let [sx, sy, sz] = volume.sizes();
     let [bx, by, bz] = volume.minimum();
     if sx != 16
@@ -568,8 +598,7 @@ pub fn fill_noise<B: TerrainBlockStates>(
     }
     chunk.ensure_heightmap(HeightmapType::OceanFloorWg);
     chunk.ensure_heightmap(HeightmapType::WorldSurfaceWg);
-    let mut density = vec![0.; volume.size()];
-    final_density.sample_volume(context, &mut density, volume)?;
+    final_density.sample_volume(context, density, volume)?;
     let air_above = aquifer.air_above_y();
     // A non-air, non-fluid default block may be written as a run without asking
     // the aquifer or touching the heightmap below the run's top.
@@ -579,50 +608,68 @@ pub fn fill_noise<B: TerrainBlockStates>(
             .properties
             .heightmap_state(default_block)
             .has_fluid();
-    const MAPS: [HeightmapType; 2] = [HeightmapType::OceanFloorWg, HeightmapType::WorldSurfaceWg];
     for z in 0..sz {
         let world_z = bz.wrapping_add(z as i32);
         for x in 0..sx {
             let world_x = bx.wrapping_add(x as i32);
-            // Heightmap updates at or below first-available - 2 are no-ops; the
-            // bound only changes through an update, so skip those calls.
-            let mut settled = MAPS.map(|kind| {
-                chunk.heightmaps[kind as usize]
-                    .as_ref()
-                    .expect("ensured heightmap")
-                    .first_available(x as i32, z as i32)
-                    .map(|first| first.wrapping_sub(2))
-            });
+            let col_base = (x + z * sx) * sy;
+            let col_density = &density[col_base..col_base + sy];
+            // Heightmap updates at or below first-available - 2 are no-ops. In a
+            // top-down vertical sweep, once a heightmap is updated (or already bounded),
+            // all lower blocks in that column are strictly below the bound and can be
+            // skipped entirely.
+            let bound_ocean_floor = chunk.heightmaps[HeightmapType::OceanFloorWg as usize]
+                .as_ref()
+                .expect("ensured heightmap")
+                .first_available(x as i32, z as i32)
+                .map(|first| first.wrapping_sub(2));
+            let bound_world_surface = chunk.heightmaps[HeightmapType::WorldSurfaceWg as usize]
+                .as_ref()
+                .expect("ensured heightmap")
+                .first_available(x as i32, z as i32)
+                .map(|first| first.wrapping_sub(2));
+            let mut ocean_floor_settled = false;
+            let mut world_surface_settled = false;
             let mut y = sy;
             while y > 0 {
                 y -= 1;
                 let world_y = by.wrapping_add(y as i32);
-                let value = density[volume.index([x, y, z]).expect("valid density coordinates")];
+                let value = col_density[y];
                 // A positive-density run is entirely the default block. Write it
                 // through the section once instead of per block; the heightmap
                 // only changes at the run's top.
                 if solid_runs && value > 0.0 {
                     let mut run = 1usize;
-                    while run <= y
-                        && density[volume
-                            .index([x, y - run, z])
-                            .expect("valid density coordinates")]
-                            > 0.0
-                    {
+                    while run <= y && col_density[y - run] > 0.0 {
                         run += 1;
                     }
                     aquifer.note_skipped();
                     chunk.fill_solid_run(x as i32, world_y, z as i32, run as i32, default_block)?;
-                    for (kind, settled) in MAPS.into_iter().zip(&mut settled) {
-                        if matches!(settled, Ok(bound) if world_y <= *bound) {
-                            continue;
+                    if !(ocean_floor_settled && world_surface_settled) {
+                        if !ocean_floor_settled {
+                            if !matches!(bound_ocean_floor, Ok(bound) if world_y <= bound) {
+                                chunk.update_heightmap(
+                                    HeightmapType::OceanFloorWg,
+                                    x as i32,
+                                    world_y,
+                                    z as i32,
+                                    default_block,
+                                )?;
+                            }
+                            ocean_floor_settled = true;
                         }
-                        chunk.update_heightmap(kind, x as i32, world_y, z as i32, default_block)?;
-                        *settled = chunk.heightmaps[kind as usize]
-                            .as_ref()
-                            .expect("ensured heightmap")
-                            .first_available(x as i32, z as i32)
-                            .map(|first| first.wrapping_sub(2));
+                        if !world_surface_settled {
+                            if !matches!(bound_world_surface, Ok(bound) if world_y <= bound) {
+                                chunk.update_heightmap(
+                                    HeightmapType::WorldSurfaceWg,
+                                    x as i32,
+                                    world_y,
+                                    z as i32,
+                                    default_block,
+                                )?;
+                            }
+                            world_surface_settled = true;
+                        }
                     }
                     y -= run - 1;
                     continue;
@@ -649,16 +696,31 @@ pub fn fill_noise<B: TerrainBlockStates>(
                     continue;
                 }
                 chunk.set_block_raw(x as i32, world_y, z as i32, state)?;
-                for (kind, settled) in MAPS.into_iter().zip(&mut settled) {
-                    if matches!(settled, Ok(bound) if world_y <= *bound) {
-                        continue;
+                if !(ocean_floor_settled && world_surface_settled) {
+                    if !ocean_floor_settled
+                        && (matches!(bound_ocean_floor, Ok(bound) if world_y <= bound)
+                            || chunk.update_heightmap(
+                                HeightmapType::OceanFloorWg,
+                                x as i32,
+                                world_y,
+                                z as i32,
+                                state,
+                            )?)
+                    {
+                        ocean_floor_settled = true;
                     }
-                    chunk.update_heightmap(kind, x as i32, world_y, z as i32, state)?;
-                    *settled = chunk.heightmaps[kind as usize]
-                        .as_ref()
-                        .expect("ensured heightmap")
-                        .first_available(x as i32, z as i32)
-                        .map(|first| first.wrapping_sub(2));
+                    if !world_surface_settled
+                        && (matches!(bound_world_surface, Ok(bound) if world_y <= bound)
+                            || chunk.update_heightmap(
+                                HeightmapType::WorldSurfaceWg,
+                                x as i32,
+                                world_y,
+                                z as i32,
+                                state,
+                            )?)
+                    {
+                        world_surface_settled = true;
+                    }
                 }
                 if aquifer.should_schedule_fluid_update()
                     && chunk.blocks.properties.heightmap_state(state).has_fluid()
@@ -669,4 +731,105 @@ pub fn fill_noise<B: TerrainBlockStates>(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nbt::Tag;
+    use crate::worldgen::aquifer::FluidPicker;
+    use horizon_core::density::ConstantSampler;
+
+    #[derive(Clone, Copy)]
+    struct State(u32);
+    impl HeightmapState for State {
+        fn is_air(self) -> bool {
+            self.0 < 2
+        }
+        fn is_air_block(self) -> bool {
+            self.0 == 0
+        }
+        fn has_fluid(self) -> bool {
+            self.0 == 3
+        }
+        fn blocks_motion_in_heightmap(self) -> bool {
+            self.0 == 2
+        }
+        fn blocks_motion_in_heightmap_no_leaves(self) -> bool {
+            self.0 == 2
+        }
+    }
+    struct Properties;
+    impl TerrainBlockStates for Properties {
+        type State = State;
+        fn heightmap_state(&self, id: BlockStateId) -> Self::State {
+            State(id.0)
+        }
+    }
+    #[derive(Debug)]
+    struct TestPicker;
+    impl FluidPicker for TestPicker {
+        fn compute(&self, _: [i32; 3]) -> crate::worldgen::aquifer::FluidStatus {
+            crate::worldgen::aquifer::FluidStatus {
+                level: -64,
+                state: BlockStateId(3),
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "benchmark"]
+    fn benchmark_fill_noise() {
+        use std::time::Instant;
+        let registry = BlockRegistry::from_nbt(&Tag::compound([
+            ("DataVersion", Tag::Int(crate::DATA_VERSION)),
+            (
+                "states",
+                Tag::List(vec![
+                    Tag::compound([("id", Tag::String("minecraft:air".into()))]),
+                    Tag::compound([("id", Tag::String("minecraft:void_air".into()))]),
+                    Tag::compound([("id", Tag::String("minecraft:stone".into()))]),
+                    Tag::compound([("id", Tag::String("minecraft:water".into()))]),
+                ]),
+            ),
+            (
+                "defaults",
+                Tag::compound([
+                    ("minecraft:air", Tag::Int(0)),
+                    ("minecraft:void_air", Tag::Int(1)),
+                    ("minecraft:stone", Tag::Int(2)),
+                    ("minecraft:water", Tag::Int(3)),
+                ]),
+            ),
+        ]))
+        .unwrap();
+
+        let volume = DensityVolume::new([16, 384, 16], [0, -64, 0], [1, 1, 1]).unwrap();
+        let sampler = ConstantSampler(1.0);
+        let mut context = SamplerContext::sparse();
+
+        let iters = 50;
+        let start = Instant::now();
+        for _ in 0..iters {
+            let mut chunk =
+                TerrainChunk::new(ChunkPos::new(0, 0), -64, 384, &registry, Properties).unwrap();
+            let mut aquifer = DisabledAquifer::new(TestPicker, BlockStateId(0));
+            fill_noise(
+                &mut chunk,
+                volume,
+                &sampler,
+                &mut context,
+                &mut aquifer,
+                BlockStateId(2),
+            )
+            .unwrap();
+        }
+        let elapsed = start.elapsed();
+        println!(
+            "benchmark_fill_noise ({} chunks, 384 height): {:?} total, {:.2} ms/chunk",
+            iters,
+            elapsed,
+            elapsed.as_secs_f64() * 1000.0 / iters as f64
+        );
+    }
 }
