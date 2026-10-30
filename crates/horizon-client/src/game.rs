@@ -10466,6 +10466,19 @@ impl Game<'_> {
             }
             let _ = std::fs::remove_dir_all(dir);
         }
+        // The world's pack selection (`DataPackConfig`), for the pack stack
+        // to read: the picked packs on, the feature packs left out off.
+        if let Some(o) = create {
+            let world = std::env::current_dir()?.join("saves").join(folder);
+            let disabled: Vec<String> =
+                horizon_client::datapack::feature_packs(&self.vanilla_root())
+                    .into_iter()
+                    .map(|p| p.id)
+                    .filter(|id| !o.data_packs.contains(id))
+                    .collect();
+            let json = serde_json::json!({"enabled": o.data_packs, "disabled": disabled});
+            let _ = std::fs::write(world.join("datapacks.json"), json.to_string());
+        }
         if self
             .options
             .execution_role
@@ -14567,6 +14580,12 @@ impl ApplicationHandler for Game<'_> {
         if let WindowEvent::ModifiersChanged(m) = &event {
             self.modifiers = m.state();
         }
+        // `PackSelectionScreen.onFilesDrop` on the Create New World screen.
+        if let WindowEvent::DroppedFile(path) = &event
+            && let Some(title) = &mut self.title
+        {
+            title.drop_file(path.clone());
+        }
         // Fullscreen is a window shortcut, before screens consume keyboard input.
         if let WindowEvent::KeyboardInput { event, .. } = &event
             && event.state == ElementState::Pressed
@@ -16391,7 +16410,11 @@ impl Game<'_> {
     /// The world's packs' content files, none without packs.
     /// The biome table the world plays with, `None` before a world opens.
     fn packed_biomes(&self) -> Option<Arc<Biomes>> {
-        let table = world_loading::packed_biomes(&self.world_root, self.res.biomes());
+        let table = world_loading::packed_biomes(
+            &self.world_root,
+            &self.options.resources,
+            self.res.biomes(),
+        );
         (!Arc::ptr_eq(&table, self.res.biomes())).then_some(table)
     }
     fn pack_files(&self) -> horizon_world::loot::PackOverlay<'_> {

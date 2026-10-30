@@ -130,6 +130,21 @@ impl WorldRequest {
             )?;
             // WorldCreationUiState.getGameRules, written with the level.
             level.game_rules = o.rules.by_name();
+            // The DataPackConfig the screen chose: the picked packs on, the
+            // feature packs left out disabled.
+            level.data_packs = Some({
+                let features: Vec<String> =
+                    horizon_client::datapack::feature_packs(&options.resources)
+                        .into_iter()
+                        .map(|p| p.id)
+                        .collect();
+                let disabled = features
+                    .iter()
+                    .filter(|f| !o.data_packs.contains(f))
+                    .cloned()
+                    .collect();
+                (o.data_packs.clone(), disabled)
+            });
         }
         // Worlds made without the Create New World screen (--world, the
         // control socket) take its default: commands on for Creative only.
@@ -352,7 +367,7 @@ pub(super) fn preload_launch_world(
             // Not behind the server: the world's opening waits for it.
             let started = std::time::Instant::now();
             // Errors are left for the world opening to report.
-            let (overrides, _) = worldgen_overrides_of(&world_root, &biomes);
+            let (overrides, _) = worldgen_overrides_of(&world_root, &resources, &biomes);
             if let Ok(data) = horizon_client::vanillagen::shared_data_with(
                 &resources.join("worldgen"),
                 &overrides,
@@ -413,9 +428,10 @@ pub(super) fn preload_server_loot(resources: &std::path::Path) {
 /// biomes this table knows).
 pub(super) fn packed_biomes(
     world_root: &std::path::Path,
+    resources: &std::path::Path,
     base: &Arc<horizon_client::biome::Biomes>,
 ) -> Arc<horizon_client::biome::Biomes> {
-    let packs = horizon_client::datapack::discover(world_root);
+    let packs = horizon_client::datapack::discover_with_features(world_root, resources);
     let enabled = horizon_client::datapack::enabled_ids(world_root, &packs);
     let enabled: Vec<_> = enabled
         .iter()
@@ -433,9 +449,10 @@ pub(super) fn packed_biomes(
 }
 fn world_worldgen_overrides(
     world_root: &std::path::Path,
+    resources: &std::path::Path,
     biomes: &horizon_client::biome::Biomes,
 ) -> horizon_world::worldgen::overrides::WorldgenOverrides {
-    let (overrides, warnings) = worldgen_overrides_of(world_root, biomes);
+    let (overrides, warnings) = worldgen_overrides_of(world_root, resources, biomes);
     for warning in warnings {
         log::warn!("Horizon: data pack worldgen: {warning}");
     }
@@ -446,12 +463,13 @@ fn world_worldgen_overrides(
 /// generator leaves out of them.
 fn worldgen_overrides_of(
     world_root: &std::path::Path,
+    resources: &std::path::Path,
     biomes: &horizon_client::biome::Biomes,
 ) -> (
     horizon_world::worldgen::overrides::WorldgenOverrides,
     Vec<String>,
 ) {
-    let packs = horizon_client::datapack::discover(world_root);
+    let packs = horizon_client::datapack::discover_with_features(world_root, resources);
     let enabled = horizon_client::datapack::enabled_ids(world_root, &packs);
     let enabled: Vec<_> = enabled
         .iter()
@@ -516,7 +534,7 @@ pub(super) fn make_streaming(
     ));
     // The world's packs over the game's biomes (`RegistryDataLoader`
     // layering): the generator names the ids and the client draws them.
-    let biomes = packed_biomes(world_root, res.biomes());
+    let biomes = packed_biomes(world_root, &options.resources, res.biomes());
     let mut locator = None;
     let flat = (dim == Dim::Overworld)
         .then(|| horizon_client::save::world_gen_settings(world_root))
@@ -557,7 +575,7 @@ pub(super) fn make_streaming(
         let structures =
             horizon_client::save::WorldGen::read(world_root).is_none_or(|w| w.structures);
         let preset = horizon_client::save::WorldGen::preset(world_root);
-        let overrides = world_worldgen_overrides(world_root, &biomes);
+        let overrides = world_worldgen_overrides(world_root, &options.resources, &biomes);
         let inner = Arc::new(VanillaTerrain::for_world_with(&options.resources.join("worldgen"), &overrides, pack.assets.registry, &biomes, seed, preset, dim.id(), structures).map_err(|e| {
                 if overrides.is_empty() {
                     format!("{e}\nPrepare the worldgen bundle with the launcher, or: horizon-prepare --prepare")

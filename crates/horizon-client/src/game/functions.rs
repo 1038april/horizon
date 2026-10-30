@@ -15,7 +15,6 @@ use horizon_client::{
     text::{self, Text},
 };
 use horizon_world::nbt::Tag;
-use std::collections::BTreeSet;
 
 /// A `TimerQueue` event.
 #[derive(Clone, Debug, PartialEq)]
@@ -47,8 +46,9 @@ pub(super) enum Outcome {
     Fail,
 }
 
-/// The world's pack stack: the built-in pack (unless disabled) and the
-/// packs of `<world>/datapacks`, with the enabled ids from `datapacks.json`.
+/// The world's pack stack: the built-in pack (unless disabled), the packs
+/// of `<world>/datapacks` and the resources root's feature packs, with the
+/// enabled ids from `datapacks.json` (`PackRepository.reload`).
 pub(super) struct PackStack {
     pub builtin: Option<DataPack>,
     pub packs: Vec<DataPack>,
@@ -60,31 +60,8 @@ pub(super) fn pack_stack(
     vanilla_disabled: bool,
 ) -> PackStack {
     let builtin = (!vanilla_disabled).then(|| DataPack::builtin(resources));
-    let packs = datapack::discover(world_root);
-    let saved: Option<serde_json::Value> = std::fs::read(world_root.join("datapacks.json"))
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok());
-    let list = |key: &str| -> Vec<String> {
-        saved
-            .as_ref()
-            .and_then(|v| v[key].as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|s| s.as_str().map(str::to_owned))
-                    .collect()
-            })
-            .unwrap_or_default()
-    };
-    let disabled: BTreeSet<String> = list("disabled").into_iter().collect();
-    let mut enabled: Vec<String> = list("enabled")
-        .into_iter()
-        .filter(|id| packs.iter().any(|p| &p.id == id))
-        .collect();
-    for p in &packs {
-        if !enabled.contains(&p.id) && !disabled.contains(&p.id) {
-            enabled.push(p.id.clone());
-        }
-    }
+    let packs = datapack::discover_with_features(world_root, resources);
+    let enabled = datapack::enabled_ids(world_root, &packs);
     PackStack {
         builtin,
         packs,

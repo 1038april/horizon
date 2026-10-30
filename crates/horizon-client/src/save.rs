@@ -3321,6 +3321,9 @@ pub struct Level {
     /// `allowCommands`: read from `level.dat` or chosen on the Create New
     /// World screen; unset is written as off.
     pub allow_commands: Option<bool>,
+    /// `DataPackConfig` (Create World's Data Packs and Experiments): the
+    /// enabled and disabled pack ids. Unset keeps vanilla's defaults.
+    pub data_packs: Option<(Vec<String>, Vec<String>)>,
     /// Game rule values by name without namespace (`keep_inventory`, ...).
     pub game_rules: BTreeMap<String, i32>,
     pub player_uuid: Option<[i32; 4]>,
@@ -4014,22 +4017,21 @@ impl Level {
             }
             map.entry("WasModded".into()).or_insert(Tag::Byte(0));
             map.entry("DataPacks".into()).or_insert_with(|| {
-                Tag::compound([
-                    ("Enabled", Tag::List(vec![string("vanilla")])),
+                let (enabled, disabled) = self.data_packs.clone().unwrap_or_else(|| {
                     (
-                        "Disabled",
-                        Tag::List(
-                            [
-                                "minecart_improvements",
-                                "redstone_experiments",
-                                "trade_rebalance",
-                            ]
-                            .iter()
-                            .map(|s| string(s))
-                            .collect(),
-                        ),
-                    ),
-                ])
+                        vec!["vanilla".into()],
+                        [
+                            "minecart_improvements",
+                            "redstone_experiments",
+                            "trade_rebalance",
+                        ]
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect(),
+                    )
+                });
+                let list = |ids: Vec<String>| Tag::List(ids.iter().map(|s| string(s)).collect());
+                Tag::compound([("Enabled", list(enabled)), ("Disabled", list(disabled))])
             });
         }
         // Saved data: weather, clocks, and (when missing or legacy) world

@@ -75,6 +75,24 @@ impl DataPack {
             other => other["text"].as_str().unwrap_or_default().to_owned(),
         }
     }
+    /// The `features.enabled` flag ids of `pack.mcmeta`
+    /// (`FeatureFlagsMetadataSection`): the flags the pack asks to turn on.
+    pub fn features(&self) -> Vec<String> {
+        self.mcmeta()["features"]["enabled"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|f| f.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+    /// The `pack.mcmeta` as JSON, empty when it is missing or unreadable.
+    fn mcmeta(&self) -> serde_json::Value {
+        self.read("pack.mcmeta")
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
+    }
 }
 fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -127,14 +145,43 @@ pub fn discover(world: &Path) -> Vec<DataPack> {
     packs.sort_by(|a, b| a.id.cmp(&b.id));
     packs
 }
+/// The resources root's built-in feature packs (`ServerPacksSource`
+/// scanning the game's `data/minecraft/datapacks`): every folder with a
+/// `pack.mcmeta`, a feature pack (`PackSource.FEATURE`). Off until a world
+/// selects them.
+pub fn feature_packs(resources: &Path) -> Vec<DataPack> {
+    let Ok(entries) = std::fs::read_dir(resources.join("data").join("minecraft").join("datapacks"))
+    else {
+        return Vec::new();
+    };
+    let mut packs = Vec::new();
+    for e in entries.flatten() {
+        let path = e.path();
+        if path.join("pack.mcmeta").exists() {
+            packs.push(DataPack {
+                id: e.file_name().to_string_lossy().into_owned(),
+                source: Source::Dir(path),
+            });
+        }
+    }
+    packs.sort_by(|a, b| a.id.cmp(&b.id));
+    packs
+}
+/// The packs of `<world>/datapacks` plus the resources root's feature packs:
+/// the world's whole repository, as `PackRepository.reload` sees it.
+pub fn discover_with_features(world_root: &Path, resources: &Path) -> Vec<DataPack> {
+    let mut packs = discover(world_root);
+    packs.extend(feature_packs(resources));
+    packs
+}
 
 // ---- Create World ------------------------------------------------------------
 
 /// Create World's Data Packs screen (`PackSelectionScreen` on vanilla's
-/// `mcworld-` folder): the folder's packs (`PackSource.WORLD`) and the
-/// built-in one (`resources` holds its `pack.png`), which can be unselected
-/// and stays at the bottom. Horizon has no experiments, so their feature
-/// packs are not offered.
+/// `mcworld-` folder): the folder's packs (`PackSource.WORLD`), the
+/// built-in one (`resources` holds its `pack.png`), and the feature packs
+/// of `resources` (`PackSource.FEATURE`), available at the bottom and off
+/// until picked — the Experiments.
 pub fn screen_packs(dir: &Path, resources: &Path) -> Vec<crate::pack_screen::PackInfo> {
     use crate::{
         pack_screen::{Compat, PackInfo, Source, load_icon},
@@ -172,6 +219,23 @@ pub fn screen_packs(dir: &Path, resources: &Path) -> Vec<crate::pack_screen::Pac
         position: Position::Bottom,
         fixed: false,
     });
+    for p in feature_packs(resources) {
+        let meta = p.mcmeta();
+        let (description, description_style) =
+            crate::packs::component_root(&meta["pack"]["description"]);
+        infos.push(PackInfo {
+            icon: None,
+            id: p.id.clone(),
+            title: Text::translate(&format!("dataPack.{}.name", p.id), &[]),
+            description,
+            description_style,
+            source: Source::Feature,
+            compat: crate::packs::compatibility(&meta),
+            required: false,
+            position: Position::Bottom,
+            fixed: false,
+        });
+    }
     infos
 }
 /// A new empty folder for Create World's packs
@@ -184,6 +248,59 @@ pub fn temp_folder() -> std::io::Result<PathBuf> {
     let dir = std::env::temp_dir().join(format!("mcworld-{}-{nanos}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
+}
+/// `PackSelectionScreen.onFilesDrop`'s `PackDetector`: a zip is a pack; a
+/// folder is one when it holds a `pack.mcmeta`, or exactly one folder that
+/// does (a folder zipped by the system, which adds a wrapper). Copied into
+/// `dir`; false when `path` is no pack.
+pub fn copy_pack(path: &Path, dir: &Path) -> bool {
+    fn copy_dir(from: &Path, at: &Path) {
+        let _ = std::fs::create_dir_all(at);
+        for entry in std::fs::read_dir(from).into_iter().flatten().flatten() {
+            let path = entry.path();
+            let to = at.join(entry.file_name());
+            if path.is_dir() {
+                copy_dir(&path, &to);
+            } else {
+                let _ = std::fs::copy(&path, &to);
+            }
+        }
+    }
+    let name = || {
+        path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    if path.is_file() {
+        return path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("zip"))
+            && {
+                let _ = std::fs::create_dir_all(dir);
+                std::fs::copy(path, dir.join(name())).is_ok()
+            };
+    }
+    if !path.is_dir() {
+        return false;
+    }
+    if path.join("pack.mcmeta").is_file() {
+        copy_dir(path, &dir.join(name()));
+        return true;
+    }
+    let own: Vec<PathBuf> = std::fs::read_dir(path)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir() && p.join("pack.mcmeta").is_file())
+        .collect();
+    match own.as_slice() {
+        [one] => {
+            copy_dir(one, &dir.join(one.file_name().unwrap_or_default()));
+            true
+        }
+        _ => false,
+    }
 }
 /// What's in a folder of packs, to notice packs added or removed while the
 /// screen shows it (`PackSelectionScreen.Watcher`).
@@ -642,7 +759,10 @@ pub fn enabled_ids(world: &Path, packs: &[DataPack]) -> Vec<String> {
         .filter(|id| packs.iter().any(|p| &p.id == id))
         .collect();
     for p in packs {
-        if !enabled.contains(&p.id) && !disabled.contains(&p.id) {
+        // A pack nobody mentions comes on (`PackRepository.reload` selects
+        // every new pack), but a feature pack stays off until the world
+        // enabled it (`PackSource.FEATURE` starts unselected).
+        if !enabled.contains(&p.id) && !disabled.contains(&p.id) && p.id.starts_with("file/") {
             enabled.push(p.id.clone());
         }
     }
