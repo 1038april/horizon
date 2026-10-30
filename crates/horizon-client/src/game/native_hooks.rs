@@ -6,6 +6,8 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 8 adds bounded world-space rim and colored-light requests (`native_visuals`).
+//!
 //! API 7 adds block-change observations (`native_block_changed`).
 //!
 //! API 6 adds neighbour-change observations (`native_neighbor_changed`).
@@ -51,7 +53,7 @@ use winit::{event::MouseButton, keyboard::KeyCode};
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 7;
+pub(crate) const NATIVE_HOOKS_API: u32 = 8;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -80,6 +82,23 @@ impl GameLevel<'_> {
     ) {
         let _ = (dimension, pos, state, changed, moved);
     }
+}
+
+/// A depth-tested outline of the client's block selection shape.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct NativeBlockRim {
+    pub(crate) pos: [i32; 3],
+    pub(crate) argb: u32,
+    pub(crate) width: f32,
+}
+
+/// A camera-local visual light, with no gameplay light or shadow writes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct NativeColoredLight {
+    pub(crate) at: [f64; 3],
+    pub(crate) rgb: u32,
+    pub(crate) radius: f32,
+    pub(crate) intensity: f32,
 }
 
 /// The zoom a native mod asks for (`native_zoom`): the factor (1 is none),
@@ -314,6 +333,15 @@ impl Game<'_> {
     /// and on servers), and the server's own (`native_window` is false
     /// there: the single player server thread, a dedicated server).
     pub(super) fn native_tick(&mut self) {}
+    /// The world frame's local visual sources. Push requests; Horizon validates
+    /// and limits them before rendering. Called only while a world is visible.
+    pub(super) fn native_visuals(
+        &self,
+        rims: &mut Vec<NativeBlockRim>,
+        lights: &mut Vec<NativeColoredLight>,
+    ) {
+        let _ = (rims, lights);
+    }
     /// The world's phases, read-only; `error_text` carries the engine's
     /// own open-failure text, empty otherwise. Server-side; the deprecated
     /// in-frame path delivers no lifecycle events. A server loop or final
@@ -392,6 +420,39 @@ impl Game<'_> {
 // Native mods use these; nothing in Horizon does.
 #[allow(dead_code)]
 impl Game<'_> {
+    /// Read a loaded, light-emitting block. No implicit chunk loading.
+    pub(super) fn native_lit_block_name(&self, pos: [i32; 3]) -> Option<&str> {
+        self.world
+            .chunks
+            .contains_key(&(pos[0].div_euclid(16), pos[2].div_euclid(16)))
+            .then(|| {
+                self.res
+                    .facts()
+                    .get(self.world.block(pos[0], pos[1], pos[2]))
+            })
+            .filter(|f| f.emission > 0)
+            .map(|f| f.name.as_ref())
+    }
+    /// A small local vanilla particle; caller should rate-limit emission.
+    pub(super) fn native_flame_particle(&mut self, at: [f64; 3], soul: bool) {
+        use horizon_client::particles::{ParticleOptions, ParticleType};
+        if !self.native_window() || at.iter().any(|v| !v.is_finite()) {
+            return;
+        }
+        let Some(p) = self.native_player() else {
+            return;
+        };
+        if (at[0] - p.x).powi(2) + (at[1] - p.y).powi(2) + (at[2] - p.z).powi(2) > 1024.0 {
+            return;
+        }
+        let kind = if soul {
+            ParticleType::SoulFireFlame
+        } else {
+            ParticleType::Flame
+        };
+        self.particles
+            .add(&ParticleOptions::simple(kind), at, [0.0, 0.01, 0.0]);
+    }
     /// Whether the player left mod `mod_id` on in Options > Mods. A mod
     /// turned off does nothing (check this first in each hook) until the
     /// launcher's next build leaves it out.

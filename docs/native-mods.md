@@ -46,6 +46,20 @@ API 4 adds authoritative server tick events through `native_server_tick`: start 
 server tick, with `world_running`. A frozen world reports false except during a requested step. Bundles that
 use these events need `"hooks": 4`.
 
+API 5–7 add server block reads and neighbour/block-change observations.
+
+API 8 adds `native_visuals`: a world-frame hook that appends block-rim and
+colored-light requests. Rims trace the client's existing block outline edges,
+depth-tested against terrain. Lights add camera-local RGB illumination to the
+normal terrain/entity shaders, not gameplay light. Only the first eight rims
+and eight lights are examined; positions must be within 32 blocks of the player,
+values must be finite and bounded, and source chunks must be loaded. At most
+256 rim edges and 16 colored lights are rendered. Requests are frame-local,
+so disabling a native mod or leaving the world clears them without a retained
+state. Helpers `native_lit_block_name` and `native_flame_particle` read loaded
+blocks and emit a nearby vanilla flame particle; native mods must rate-limit
+emission. Bundles using these features need `"hooks": 8`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads

@@ -163,6 +163,7 @@ mod native_panel;
 mod native_panel_recipes;
 mod native_recipes;
 mod native_shaders;
+mod native_visuals;
 mod native_world_read;
 mod natural_spawning;
 mod nautili;
@@ -12488,6 +12489,11 @@ impl Game<'_> {
             lines.extend(g.lines);
             on_top = g.on_top;
         }
+        let colored_lights = if self.title.is_none() {
+            self.native_frame_visuals(camera, &mut lines)
+        } else {
+            Vec::new()
+        };
         let view = horizon_client::camera::view_matrix(view_yaw, view_pitch);
         let at = camera.to_array();
         // GameRenderer.render3dHud: the debug crosshair, first person with the HUD shown.
@@ -12741,6 +12747,7 @@ impl Game<'_> {
             entity_spans: &entity_spans,
             glowing: &glowing,
             dynamic_lights: &self.dynamic_lights,
+            colored_lights: &colored_lights,
             lightning: horizon_client::gfx::lightning::Input {
                 bolts: &bolts,
                 uv: horizon_client::gfx::lightning::white_uv(&self.gui.atlas.font.white()),
@@ -15818,6 +15825,7 @@ fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         entity_spans: &[],
         glowing: &[],
         dynamic_lights: &[],
+        colored_lights: &[],
         clouds: None,
         lightning: Default::default(),
         additive: &[],
