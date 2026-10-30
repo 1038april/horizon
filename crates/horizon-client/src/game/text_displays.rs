@@ -392,7 +392,8 @@ impl Game<'_> {
     }
 }
 
-/// The blocks `BuiltInBlockModels.addDefaults` gives a special model.
+/// Whether vanilla's built-in block models give this block a special model,
+/// drawn by its block-entity renderer.
 fn has_special_model(block: &str) -> bool {
     matches!(
         block,
