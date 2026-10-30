@@ -491,6 +491,29 @@ pub(super) fn make_streaming(
         horizon_client::save::dimension_dir(world_root, dim.id()),
         shape,
     ));
+    // The world's data packs over the game's biomes (`RegistryDataLoader`
+    // layering): the generator names the ids and the client draws them, so
+    // both resolve through this table.
+    let biomes = {
+        let files = super::functions::content_overlay(world_root, &options.resources, false);
+        let overlay = horizon_world::loot::PackOverlay { files: &files };
+        let packed: Vec<(String, serde_json::Value)> = overlay
+            .kind("worldgen/biome")
+            .filter_map(|(id, files)| {
+                let v =
+                    serde_json::from_slice(horizon_world::loot::PackOverlay::top(files)).ok()?;
+                Some((id.to_owned(), v))
+            })
+            .collect();
+        if packed.is_empty() {
+            res.biomes().clone()
+        } else {
+            Arc::new(
+                res.biomes()
+                    .with_packs(packed.iter().map(|(id, v)| (id.as_str(), v))),
+            )
+        }
+    };
     let mut locator = None;
     let flat = (dim == Dim::Overworld)
         .then(|| horizon_client::save::world_gen_settings(world_root))
@@ -509,7 +532,7 @@ pub(super) fn make_streaming(
                 inner: Arc::new(inner),
                 save: save.clone(),
                 registry: pack.assets.clone(),
-                biomes: res.biomes().clone(),
+                biomes: biomes.clone(),
             }),
             pack.context.clone(),
             res.threads(),
@@ -521,7 +544,7 @@ pub(super) fn make_streaming(
                 inner,
                 save: save.clone(),
                 registry: pack.assets.clone(),
-                biomes: res.biomes().clone(),
+                biomes: biomes.clone(),
             }),
             pack.context.clone(),
             res.threads(),
@@ -548,7 +571,7 @@ pub(super) fn make_streaming(
                 inner,
                 save: save.clone(),
                 registry: pack.assets.clone(),
-                biomes: res.biomes().clone(),
+                biomes: biomes.clone(),
             }),
             pack.context.clone(),
             res.threads(),
