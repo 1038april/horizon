@@ -878,6 +878,22 @@ impl Chat {
     }
 }
 
+/// `SuggestionsList.getNarrationMessage` for entry `index` of `count`.
+fn suggestion_narration(index: usize, count: usize, text: &str, tooltip: Option<&str>) -> Text {
+    let mut args = vec![
+        Text::literal((index + 1).to_string()),
+        Text::literal(count.to_string()),
+        Text::literal(text),
+    ];
+    match tooltip {
+        Some(tooltip) => {
+            args.push(Text::literal(tooltip));
+            Text::translate("narration.suggestion.tooltip", &args)
+        }
+        None => Text::translate("narration.suggestion", &args),
+    }
+}
+
 /// `CommandSuggestions.SuggestionsList`.
 #[derive(Clone, Debug)]
 struct SuggestionList {
@@ -889,8 +905,17 @@ struct SuggestionList {
     current: usize,
     last_mouse: (i32, i32),
     tab_cycles: bool,
+    /// `lastNarratedEntry`: the entry the narrator last said (-1: none yet).
+    last_narrated: isize,
 }
 impl SuggestionList {
+    /// `getNarrationMessage`: "Selected suggestion 2 out of 5: …", with its
+    /// tooltip when it has one. It marks the entry said.
+    fn narration_message(&mut self) -> Text {
+        self.last_narrated = self.current as isize;
+        let s = &self.list[self.current];
+        suggestion_narration(self.current, self.list.len(), &s.text, s.tooltip.as_deref())
+    }
     fn contains(&self, x: i32, y: i32) -> bool {
         let [rx, ry, w, h] = self.rect;
         x >= rx && x <= rx + w && y >= ry && y <= ry + h
@@ -1331,11 +1356,12 @@ impl ChatScreen {
         };
         self.suggestions = None;
         if self.allow_suggestions && self.auto_suggestions {
-            self.show_suggestions(m);
+            self.show_suggestions(m, false);
         }
     }
-    /// `CommandSuggestions.showSuggestions`.
-    fn show_suggestions(&mut self, m: &Measure) {
+    /// `CommandSuggestions.showSuggestions`: `immediate` (Tab asked for
+    /// them) has the narrator say the first one at once.
+    fn show_suggestions(&mut self, m: &Measure, immediate: bool) {
         let Some((start, list)) = self.pending.clone() else {
             return;
         };
@@ -1378,6 +1404,7 @@ impl ChatScreen {
             current: 0,
             last_mouse: (0, 0),
             tab_cycles: false,
+            last_narrated: if immediate { -1 } else { 0 },
         };
         self.select(&mut l, 0);
         self.suggestions = Some(l);
@@ -1397,6 +1424,9 @@ impl ChatScreen {
         self.input.suggestion = applied
             .strip_prefix(self.input.value.as_str())
             .map(str::to_owned);
+        if l.last_narrated != l.current as isize {
+            horizon_narrator::say_system_now(&l.narration_message().plain());
+        }
     }
     fn cycle(&mut self, l: &mut SuggestionList, dir: isize) {
         self.select(l, l.current as isize + dir);
@@ -1507,7 +1537,7 @@ impl ChatScreen {
             self.suggestions = Some(l);
             handled
         } else if key == K::Tab {
-            self.show_suggestions(m);
+            self.show_suggestions(m, true);
             true
         } else {
             false

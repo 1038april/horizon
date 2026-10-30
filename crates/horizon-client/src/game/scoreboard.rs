@@ -792,7 +792,10 @@ impl Game<'_> {
             players.len(),
             has_objective,
         );
-        self.tab_list.set_visible(shown);
+        if self.tab_list.set_visible(shown) {
+            // PlayerTabOverlay.setVisible: the names, said as the list comes up.
+            self.say_system_now(&tab_list::narration(&players, &self.score.board));
+        }
         if !shown {
             return;
         }

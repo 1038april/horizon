@@ -380,6 +380,13 @@ fn list_area(w: f32, h: f32) -> (f32, f32, f32) {
         (w / 2.0).floor() - (ROW_WIDTH / 2.0).floor(),
     )
 }
+/// `NetworkServerEntry.getServerNarration`: "LAN World" and the MOTD.
+fn lan_narration(motd: &str) -> Text {
+    Text::empty()
+        .append(Text::translate("lanServer.title", &[]))
+        .append(Text::literal(" "))
+        .append(Text::literal(motd))
+}
 fn rows(servers: usize, lan: usize) -> impl Iterator<Item = Row> {
     (0..servers)
         .map(Row::Server)
@@ -1506,6 +1513,44 @@ impl Screen {
             return None;
         }
         retry.take()
+    }
+    /// `ServerSelectionList.updateNetworkServers`' narration: for each LAN
+    /// world found since the last call whose row is in the list's view,
+    /// `multiplayer.lan.server_found` with its `getServerNarration`.
+    pub fn lan_found_narrations(&self, (w, h): (f32, f32)) -> Vec<Text> {
+        let Self::List {
+            servers,
+            lan,
+            scroll,
+            ..
+        } = self
+        else {
+            return Vec::new();
+        };
+        let found = lan.take_found();
+        if found.is_empty() {
+            return Vec::new();
+        }
+        let (top, bottom, _) = list_area(w.ceil(), h.ceil());
+        let mut scroll = *scroll;
+        scroll.clamp(
+            top,
+            bottom,
+            content_height(servers.len(), lan.games().len()),
+        );
+        found
+            .into_iter()
+            .filter(|(k, _)| {
+                // getRowTop / getRowBottom of the entry after the servers and
+                // the LAN header.
+                let row = (servers.len() + 1 + k) as f32;
+                let row_top = top + 2.0 - scroll.amount.trunc() + row * ROW_HEIGHT;
+                row_top + ROW_HEIGHT >= top && row_top <= bottom
+            })
+            .map(|(_, game)| {
+                Text::translate("multiplayer.lan.server_found", &[lan_narration(&game.motd)])
+            })
+            .collect()
     }
     /// The focused text field, its id and maximum length (copy and paste).
     pub fn focused_text(&mut self) -> Option<(crate::clipboard::FieldId, &mut String, usize)> {

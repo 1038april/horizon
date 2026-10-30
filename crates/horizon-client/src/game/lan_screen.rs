@@ -950,6 +950,13 @@ impl Game<'_> {
         self.close_world_options();
     }
 
+    /// `WorldOptionsScreen.sendPublishMessage`: a client system message the
+    /// narrator says.
+    fn send_publish_message(&mut self, message: Text) {
+        self.say_system_queued(&message);
+        self.system_message(message);
+    }
+
     pub(super) fn world_options_key(&mut self, event: &KeyEvent) {
         if event.state != winit::event::ElementState::Pressed {
             return;
@@ -1073,19 +1080,15 @@ impl Game<'_> {
             let (b, w) = (*before, *wanted);
             server.call(move |g| g.apply_world_options(&b, &w));
             if w.lan != b.lan || (w.lan && w.port != b.port) {
-                match (w.lan, self.lan_port()) {
-                    (true, Some(port)) => self.system_message(Text::translate(
+                let message = match (w.lan, self.lan_port()) {
+                    (true, Some(port)) => Text::translate(
                         "menu.multiplayerOptions.publish.started.lan",
                         &[Text::literal(port.to_string())],
-                    )),
-                    (true, None) => {
-                        self.system_message(Text::translate("commands.publish.failed", &[]));
-                    }
-                    (false, _) => self.system_message(Text::translate(
-                        "menu.multiplayerOptions.publish.stopped",
-                        &[],
-                    )),
-                }
+                    ),
+                    (true, None) => Text::translate("commands.publish.failed", &[]),
+                    (false, _) => Text::translate("menu.multiplayerOptions.publish.stopped", &[]),
+                };
+                self.send_publish_message(message);
             }
             return;
         }
@@ -1122,7 +1125,7 @@ impl Game<'_> {
                     force_game_mode: wanted.force,
                 });
                 if opened.is_err() {
-                    self.system_message(Text::translate("commands.publish.failed", &[]));
+                    self.send_publish_message(Text::translate("commands.publish.failed", &[]));
                 }
             }
         } else if settings_changed {

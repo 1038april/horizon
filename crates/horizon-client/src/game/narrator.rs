@@ -114,6 +114,41 @@ pub(super) fn cycle_status(settings: &mut Settings) -> bool {
 }
 
 impl Game<'_> {
+    /// Whether this `Game` is the window's: a server thread's `Game` shares
+    /// the process (and its narrator) but has no `Minecraft` to narrate for.
+    fn narrates(&self) -> bool {
+        self.options.execution_role.is_client()
+    }
+    /// `GameNarrator.saySystemNow(message)`: cuts off what is being said.
+    pub(super) fn say_system_now(&self, message: &Text) {
+        if self.narrates() {
+            horizon_narrator::say_system_now(&message.plain());
+        }
+    }
+    /// `GameNarrator.saySystemQueued(message)`.
+    pub(super) fn say_system_queued(&self, message: &Text) {
+        if self.narrates() {
+            horizon_narrator::say_system_queued(&message.plain());
+        }
+    }
+    /// `GameNarrator.saySystemChatQueued(message)`.
+    pub(super) fn say_system_chat_queued(&self, message: &Text) {
+        if self.narrates() {
+            horizon_narrator::say_system_chat_queued(&message.plain());
+        }
+    }
+    /// `GameNarrator.sayChatQueued(message)`, its text already made.
+    pub(super) fn say_chat_queued(&self, message: &str) {
+        if self.narrates() {
+            horizon_narrator::say_chat_queued(message);
+        }
+    }
+    /// `GameNarrator.clear()`: what is being said and queued stops.
+    pub(super) fn clear_narrator(&self) {
+        if self.narrates() {
+            horizon_narrator::clear();
+        }
+    }
     /// The narrator option changed, on the options screen or by its hotkey.
     pub(super) fn narrator_status_changed(&mut self) {
         update_status(self.settings.narrator(), &mut self.narrator_toast);
