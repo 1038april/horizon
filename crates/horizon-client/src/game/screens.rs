@@ -29,7 +29,8 @@ impl Screen {
             | Self::Creative
             | Self::Inventory
             | Self::Dead
-            | Self::CommandBlock => false,
+            | Self::CommandBlock
+            | Self::QuickActions => false,
             // WinScreen.extractBackground: the poem fills the screen with the End portal, the
             // credits alone blur. Game::menu_blur knows which one rolls.
             Self::Win => false,
@@ -498,6 +499,7 @@ mod tests {
             Screen::Inventory,
             Screen::Dead,
             Screen::CommandBlock,
+            Screen::QuickActions,
             Screen::Win,
         ] {
             assert!(!screen.blurs_background(true));
