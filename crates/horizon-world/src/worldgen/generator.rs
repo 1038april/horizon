@@ -831,6 +831,8 @@ struct Pipeline<R: RandomSource> {
     pub(super) structures: Option<super::generator_structures::StructureState>,
     /// The noise settings' `spawn_target` points.
     spawn_target: Vec<SpawnTargetPoint>,
+    /// The chunks an older version generated, which new chunks blend with.
+    old_world: std::sync::OnceLock<Arc<dyn super::blending::OldWorld>>,
     spawn_position: std::sync::OnceLock<[i32; 2]>,
 }
 const CACHE_LIMIT: usize = 16384;
@@ -1055,6 +1057,7 @@ where
             decoration: None,
             structures: None,
             spawn_target,
+            old_world: std::sync::OnceLock::new(),
             spawn_position: std::sync::OnceLock::new(),
         };
         pipeline.decoration = pipeline
@@ -1080,6 +1083,13 @@ where
             self.settings.sea_level,
         )
     }
+    /// `Blender.of(region)` for the chunk at `pos`.
+    fn blender_at(&self, pos: ChunkPos) -> Arc<super::blending::Blender> {
+        Arc::new(match self.old_world.get() {
+            Some(world) => super::blending::Blender::of(world.as_ref(), pos),
+            None => super::blending::Blender::empty(),
+        })
+    }
     fn biome_chunk(
         &self,
         worker: &mut WorkerState,
@@ -1098,6 +1108,14 @@ where
     ) -> Result<Option<Arc<BiomeChunk<BiomeId>>>, GeneratorError> {
         if let Some(chunk) = self.biome_cache.lock().unwrap().get(&(pos.x, pos.z)) {
             return Ok(Some(chunk.clone()));
+        }
+        // An old chunk keeps the biomes it was saved with.
+        if let Some(old) = self
+            .old_world
+            .get()
+            .and_then(|world| world.old_biomes(pos.x, pos.z))
+        {
+            return Ok(Some(old));
         }
         let work = self.biome_work.at((pos.x, pos.z));
         let _work = if wait {
@@ -1131,11 +1149,18 @@ where
             )
             .map_err(stage("biomes"))?;
         let ids = &self.data.biome_ids;
+        let blender = self.blender_at(pos);
         // Names point into the source's parameter list: neighbouring quarts
         // mostly resolve to the same entry, so skip the map lookup for it.
         let mut last: Option<(*const str, BiomeId)> = None;
         chunk
             .fill(min, min + height - 1, |quart| -> Result<BiomeId, String> {
+                // `Blender.getBiomeResolver`: an old chunk's biome near it.
+                if !blender.is_empty()
+                    && let Some(old) = blender.blend_biome(quart[0], quart[1], quart[2])
+                {
+                    return Ok(old);
+                }
                 let name = resolver
                     .sample_prepared(context, volume.as_ref(), quart)
                     .map_err(|e| e.to_string())?;
@@ -1329,25 +1354,44 @@ where
             }
             None => (Vec::new(), Starts::default()),
         };
-        if let Some(beard) = self
-            .structures
-            .as_ref()
-            .and_then(|s| s.beardifier(&references, pos))
-        {
-            *context = std::mem::take(context).with_world_fields(
-                horizon_core::density::WorldFields::default().with_field(
-                    horizon_core::density::WorldField::Beardifier,
-                    Arc::new(beard),
-                ),
-            );
-        }
-        worker.timings.structures += lap(&mut clock);
         let volume = DensityVolume::new(
             [16, height, 16],
             [pos.x.wrapping_shl(4), min, pos.z.wrapping_shl(4)],
             [1; 3],
         )
         .map_err(stage("noise"))?;
+        let blender = self.blender_at(pos);
+        let beard = self
+            .structures
+            .as_ref()
+            .and_then(|s| s.beardifier(&references, pos));
+        if beard.is_some() || !blender.is_empty() {
+            let mut fields = horizon_core::density::WorldFields::default();
+            if let Some(beard) = beard {
+                fields = fields.with_field(
+                    horizon_core::density::WorldField::Beardifier,
+                    Arc::new(beard),
+                );
+            }
+            if !blender.is_empty() {
+                let buffer = Arc::new(blender.output_buffer(volume));
+                for (field, offset) in [
+                    (horizon_core::density::WorldField::BlendAlpha, false),
+                    (horizon_core::density::WorldField::BlendOffset, true),
+                ] {
+                    fields = fields.with_field(
+                        field,
+                        Arc::new(super::blending::BlendFieldSampler {
+                            buffer: buffer.clone(),
+                            offset,
+                        }),
+                    );
+                }
+                fields = fields.with_blender(blender.clone());
+            }
+            *context = std::mem::take(context).with_world_fields(fields);
+        }
+        worker.timings.structures += lap(&mut clock);
         worker.timings.noise += lap(&mut clock);
         let mut aquifer: Box<dyn TerrainAquifer> = match &self.aquifer {
             Some(samplers) => Box::new(
@@ -1441,7 +1485,7 @@ where
                 },
                 aquifer.as_mut(),
                 &data.carving_blocks,
-                |_| true,
+                |[x, y, z]| blender.carving_filter(x, y, z).unwrap_or(true),
             )
             .map_err(stage("carvers"))?;
         }
@@ -2072,6 +2116,8 @@ trait SeededPipeline: Send + Sync {
         from: [i32; 3],
         radius: i32,
     ) -> Option<(String, [i32; 3])>;
+    /// The chunks an older version generated, for `Blender.of`.
+    fn set_old_world(&self, world: Arc<dyn super::blending::OldWorld>);
     fn find_closest_biome(
         &self,
         worker: &mut WorkerState,
@@ -2228,6 +2274,9 @@ where
             from,
             radius,
         )
+    }
+    fn set_old_world(&self, world: Arc<dyn super::blending::OldWorld>) {
+        let _ = self.old_world.set(world);
     }
     fn find_closest_biome(
         &self,
@@ -2809,6 +2858,11 @@ pub struct OverworldGenerator {
     noise_clamped: Option<(NoiseSettings, NoiseSettings)>,
 }
 impl OverworldGenerator {
+    /// The chunks an older version generated, which new chunks blend with
+    /// (`Blender.of`); set once, before chunks are generated.
+    pub fn set_old_world(&self, world: Arc<dyn super::blending::OldWorld>) {
+        self.pipeline.set_old_world(world);
+    }
     /// The `minecraft:overworld` dimension of the `minecraft:normal` world preset.
     pub fn new(data: Arc<GeneratorData>, seed: i64) -> Result<Self, GeneratorError> {
         Self::for_dimension(data, seed, "minecraft:normal", "minecraft:overworld")
