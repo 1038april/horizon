@@ -9,9 +9,11 @@ use horizon_client::{
     items::ItemStack,
     mesher::Vertex,
     mobs::{Part, anim::Poses, riders},
+    motion::{BubbleColumn, bubble_column_at},
 };
 use horizon_core::{
     geometry::{Aabb, Vec3},
+    position::BlockPos,
     random::RandomSource,
 };
 use std::{collections::HashMap, f32::consts::PI, sync::Arc};
@@ -616,32 +618,42 @@ impl Game<'_> {
         let status = self.boat_status(&mut probe);
         self.boats[i].status = status;
     }
-    /// `BubbleColumnBlock.entityInside`: the bubble columns boat `i` touches.
-    pub(super) fn boat_bubble_columns(
-        &self,
-        i: usize,
-    ) -> Vec<horizon_client::motion::BubbleColumnTouch> {
-        horizon_client::motion::bubble_columns_touching(
-            &self.world,
-            self.pack.assets.registry,
-            self.res.facts(),
-            self.collision,
-            self.boats[i].bounds(),
-        )
+    /// `BubbleColumnBlock.entityInside`: the bubble columns boat `i` touches
+    /// (its box deflated by 1e-5 as `Entity.checkInsideBlocks` does), in x, y,
+    /// z order.
+    pub(super) fn boat_bubble_columns(&self, i: usize) -> Vec<BubbleColumn> {
+        let b = self.boats[i].bounds().deflate(Vec3::new(
+            f64::from(1.0e-5f32),
+            f64::from(1.0e-5f32),
+            f64::from(1.0e-5f32),
+        ));
+        let (lo, hi) = (b.min_position(), b.max_position());
+        let mut columns = Vec::new();
+        for x in lo.x.floor() as i32..=(hi.x.ceil() as i32 - 1) {
+            for y in lo.y.floor() as i32..=(hi.y.ceil() as i32 - 1) {
+                for z in lo.z.floor() as i32..=(hi.z.ceil() as i32 - 1) {
+                    if let Some(column) = bubble_column_at(
+                        &self.world,
+                        self.pack.assets.registry,
+                        self.res.facts(),
+                        self.collision,
+                        BlockPos::new(x, y, z),
+                    ) {
+                        columns.push(column);
+                    }
+                }
+            }
+        }
+        columns
     }
     /// `Entity.handleOnInsideBubbleColumn`: a column under more water lifts
     /// boat `i` up to 0.7 or drags it down to -0.3 (`AbstractBoat` does not
-    /// override `onInsideBubbleColumn`).
-    pub(super) fn boat_inside_bubble_column(&mut self, i: usize, drag_down: bool) {
+    /// override `onInsideBubbleColumn`); `BubbleColumn::push` below the surface.
+    pub(super) fn boat_inside_bubble_column(&mut self, i: usize, column: BubbleColumn) {
         if !self.boat_can_simulate_movement(self.boats[i].id) {
             return;
         }
-        let v = &mut self.boats[i].velocity;
-        v.y = if drag_down {
-            (-0.3_f64).max(v.y - 0.03)
-        } else {
-            0.7_f64.min(v.y + 0.06)
-        };
+        column.push(&mut self.boats[i].velocity);
     }
     /// `AbstractBoat.onAboveBubbleColumn`: whether the splash comes up, one
     /// time in a hundred for a boat that is not under water.
@@ -767,11 +779,11 @@ impl Game<'_> {
         let touches = self.boat_bubble_columns(i);
         // AbstractBoat.tick calls applyEffectsFromBlocks twice.
         for _ in 0..2 {
-            for touch in &touches {
-                if touch.above {
-                    self.boat_above_bubble_column(i, touch.drag_down);
+            for &column in &touches {
+                if column.surface {
+                    self.boat_above_bubble_column(i, column.drag);
                 } else {
-                    self.boat_inside_bubble_column(i, touch.drag_down);
+                    self.boat_inside_bubble_column(i, column);
                 }
             }
         }
@@ -838,9 +850,10 @@ impl Game<'_> {
             self.dismount(i);
             return Ok(());
         }
-        let mut b = self.boats[i].clone();
+        // The boat steers with the input `LocalPlayer.rideTick` latched on the
+        // previous tick; this tick's keys are latched after it ticked.
+        let mut b = self.tick_boat(self.boats[i].clone(), true);
         b.input = [keys.left, keys.right, keys.forward, keys.backward];
-        let b = self.tick_boat(b, true);
         // positionRider: the seat, turned with the boat; clampRotation to 105 degrees.
         self.yaw += b.delta_rotation;
         let delta = (self.yaw - b.yaw + 180.0).rem_euclid(360.0) - 180.0;
