@@ -1634,28 +1634,34 @@ pub fn ai_step(
     if !w.nether && !m.extra.flag2 && m.alive() {
         m.extra.counter2 += 1;
         if m.extra.counter2 > CONVERSION {
-            let (kind, sound) = match m.species() {
-                Species::Hoglin => ("minecraft:zoglin", "entity.hoglin.converted_to_zombified"),
+            // `Hoglin.finishConversion` is `ConversionParams.single(this, true,
+            // false)`, `AbstractPiglin.finishConversion` `(this, true, true)`;
+            // both leave the new mob nauseous (the game adds it).
+            let (kind, sound, params) = match m.species() {
+                Species::Hoglin => (
+                    "minecraft:zoglin",
+                    "entity.hoglin.converted_to_zombified",
+                    super::conversion::Params {
+                        keep_equipment: true,
+                        preserve_can_pick_up_loot: false,
+                    },
+                ),
                 Species::PiglinBrute => (
                     "minecraft:zombified_piglin",
                     "entity.piglin_brute.converted_to_zombified",
+                    super::conversion::Params::KEEP_ALL,
                 ),
                 _ => (
                     "minecraft:zombified_piglin",
                     "entity.piglin.converted_to_zombified",
+                    super::conversion::Params::KEEP_ALL,
                 ),
             };
             events.push(MobEvent::Sound(sound, m.center(), 1.0, 1.0));
-            events.push(MobEvent::SpawnKind {
-                kind: kind.into(),
-                at: [m.position.x, m.position.y, m.position.z],
-                setup: super::SpawnSetup {
-                    baby: m.is_baby(),
-                    yaw: m.yaw,
-                    persistent: m.persistent,
-                    nausea: true,
-                    ..Default::default()
-                },
+            events.push(MobEvent::Convert {
+                from: Box::new(m.clone()),
+                kind,
+                params,
             });
             m.removed = true;
         }
