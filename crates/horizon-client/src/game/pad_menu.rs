@@ -23,6 +23,7 @@ use horizon_client::{
     hud::{HudBatch, rgba},
     options_ui::{Event, Page},
     osk::{self, Keyboard},
+    screen_narrator::InputType,
     widgets::{self, Kind, Target},
 };
 use std::time::Instant;
@@ -556,6 +557,20 @@ impl Game<'_> {
         if !self.pad.menu.held[0] {
             self.pad_pointer_to(event_loop, target.center());
         }
+        // The screen's narration hears it as an arrow key moving the focus.
+        self.narration.set_input(InputType::KeyboardArrow);
+        self.narration.keyboard_action();
+    }
+
+    /// The controller's focus ring in focus mode, for the screen's narration:
+    /// the focused widget.
+    pub(super) fn pad_focus_rect(&self) -> Option<[f32; 4]> {
+        let focus = self
+            .pad
+            .menu
+            .focus
+            .filter(|_| self.pad_in_menu() && self.pad_focus_mode());
+        focus.map(|t| t.rect)
     }
 
     /// A bumper: the next or previous tab, wrapping (creative keeps its own

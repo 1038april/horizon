@@ -2170,6 +2170,8 @@ struct Game<'a> {
     tutorial_toasts: Vec<tutorial::HintToast>,
     /// The `SystemToastId.NARRATOR_TOGGLE` toast, wherever the player is.
     narrator_toast: Option<horizon_client::toasts::SystemToast>,
+    /// The open screen's narration (`Screen`'s narration state and timing).
+    narration: horizon_client::screen_narrator::ScreenNarrator,
     /// Where the options screen returns: true = title, false = pause menu.
     options_from_title: bool,
     dragging: bool,
@@ -7663,6 +7665,9 @@ impl Game<'_> {
             // PauseScreen(false): only its title, at the top.
             Screen::Paused => {
                 let title = self.translate("menu.paused", "Game Paused");
+                horizon_client::widgets::begin_screen(|| {
+                    horizon_client::widgets::ScreenInfo::new("paused", title.clone())
+                });
                 let tw = HudBatch::text_width(&self.gui.atlas, &title);
                 batch.text(
                     &self.gui.atlas,
@@ -14877,6 +14882,8 @@ impl ApplicationHandler for Game<'_> {
         ) {
             self.last_input = Instant::now();
         }
+        // The screen's narration hears of the input before the screen takes it.
+        narrator::narrate_input(&mut self.narration, &event, self.cursor);
         // FileFixerProgressScreen: Cancel is the only way out (`shouldCloseOnEsc`
         // is false), so it takes the pointer and Escape does nothing.
         if let Some(loader) = &self.world_loader
@@ -16244,6 +16251,7 @@ impl<'a> Game<'a> {
             tutorial,
             tutorial_toasts: Vec::new(),
             narrator_toast: None,
+            narration: Default::default(),
             options_from_title: false,
             dragging: false,
             avatar: Default::default(),
@@ -17973,6 +17981,7 @@ impl Loading {
         };
         let mut batch = HudBatch::new(size);
         self.draw_menu(&mut batch);
+        self.menu.frame_drawn((batch.width, batch.height));
         let mut frame = loading_frame(&batch);
         frame.yaw = self.panorama_rotation.update(
             self.started.elapsed().as_secs_f32(),

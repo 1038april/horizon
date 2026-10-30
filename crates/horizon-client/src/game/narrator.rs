@@ -6,12 +6,14 @@ use super::{Game, Screen};
 use horizon_client::{
     clipboard,
     hud::{HudAtlas, HudBatch},
+    screen_narrator::{InputType, ScreenNarrator},
     settings::Settings,
     text::Text,
     toasts::SystemToast,
 };
 use horizon_narrator::{Status, screen::Trigger};
-use winit::event::{ElementState, KeyEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::keyboard::{KeyCode, PhysicalKey};
 
 /// `Minecraft`'s constructor: `new GameNarrator`, then
 /// `narrator.checkStatus(options.narrator().get() != OFF)`.
@@ -105,6 +107,45 @@ pub(super) fn is_hotkey(
         && hotkey_option
 }
 
+/// What the open screen's narration hears of the window's input, before the
+/// screen takes it: `MouseHandler.onButton` (`setLastInputType(MOUSE)`,
+/// `afterMouseAction` on a press), `onScroll`, `handleAccumulatedMovement`
+/// (`afterMouseMove`), and `KeyboardHandler.keyPress` (Tab and the arrows
+/// set the input type; a press is `afterKeyboardAction`). The window's own
+/// shortcuts (fullscreen, screenshots, debug keys) never get here.
+pub(super) fn narrate_input(
+    narration: &mut ScreenNarrator,
+    event: &WindowEvent,
+    cursor: (f32, f32),
+) {
+    match event {
+        WindowEvent::KeyboardInput { event, .. } => {
+            match event.physical_key {
+                PhysicalKey::Code(KeyCode::Tab) => narration.set_input(InputType::KeyboardTab),
+                PhysicalKey::Code(
+                    KeyCode::ArrowUp
+                    | KeyCode::ArrowDown
+                    | KeyCode::ArrowLeft
+                    | KeyCode::ArrowRight,
+                ) => narration.set_input(InputType::KeyboardArrow),
+                _ => {}
+            }
+            if event.state == ElementState::Pressed {
+                narration.keyboard_action();
+            }
+        }
+        WindowEvent::MouseInput { state, button, .. } => {
+            narration.set_input(InputType::Mouse);
+            if *state == ElementState::Pressed {
+                narration.mouse_pressed(cursor, *button == MouseButton::Left);
+            }
+        }
+        WindowEvent::MouseWheel { .. } => narration.mouse_action(),
+        WindowEvent::CursorMoved { .. } => narration.mouse_moved(),
+        _ => {}
+    }
+}
+
 /// The hotkey's step: `options.narrator().set(byId(getId() + 1))`. Whether
 /// the narrator was off before (`wasDisabled`).
 pub(super) fn cycle_status(settings: &mut Settings) -> bool {
@@ -182,8 +223,20 @@ impl Game<'_> {
     /// on the open screen, if any: a screen's narration is scheduled 2 s
     /// after the narrator came on (`NARRATE_DELAY_NARRATOR_ENABLED`) and its
     /// narrator button shows the new value. Horizon's narrator buttons read
-    /// the option each frame; screen narration hooks in here.
-    pub(super) fn on_narrator_status_changed(&mut self, _was_disabled: bool, _trigger: Trigger) {}
+    /// the option each frame.
+    pub(super) fn on_narrator_status_changed(&mut self, was_disabled: bool, trigger: Trigger) {
+        self.narration.status_changed(was_disabled, trigger);
+    }
+    /// The open screen's narration, once a turn after the frame's widgets
+    /// were read: `handleDelayedNarration` and a new screen's narration.
+    pub(super) fn narrate_screen(&mut self) {
+        if !self.narrates() {
+            return;
+        }
+        let pad_focus = self.pad_focus_rect();
+        let gui = self.gui_size();
+        self.narration.frame(gui, self.cursor, pad_focus);
+    }
     /// `hasNoEditboxFocused`'s opposite: the open screen's focus is an
     /// `EditBox` that `canConsumeInput`. The chat, command block, anvil
     /// name, world options' port and rule boxes, a dialog's text input, a
