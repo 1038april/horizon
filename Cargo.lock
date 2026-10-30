@@ -1299,6 +1299,7 @@ dependencies = [
 name = "horizon-narrator"
 version = "0.1.0"
 dependencies = [
+ "libloading",
  "log",
  "windows 0.62.2",
 ]

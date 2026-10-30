@@ -4,6 +4,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(any(test, target_os = "linux"))]
+mod linux_split;
 #[cfg(target_os = "macos")]
 mod mac;
 #[cfg(windows)]
