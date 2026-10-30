@@ -4948,9 +4948,19 @@ impl Game<'_> {
         // The server sends no passenger's position: they sit where their
         // vehicles are now.
         self.position_riders();
+        // Entity.getFluidInteractionBox asks the vehicle: a boat afloat shelters
+        // its passenger's eyes (AbstractBoat.modifyPassengerFluidInteractionBox).
+        let boat = self
+            .riding
+            .and_then(|id| self.boats.iter().find(|b| b.id == id))
+            .map(|b| horizon_client::motion::RiddenBoat {
+                under_water: b.under_water(),
+                max_y: b.bounds().max_position().y,
+            });
         let Some(player) = self.player.as_mut() else {
             return Ok(());
         };
+        player.fluids.boat = boat;
         if !riding {
             self.previous_position = player.position;
         }
