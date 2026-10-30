@@ -384,6 +384,13 @@ impl VanillaTerrain {
     ) -> Option<(String, [i32; 3])> {
         self.generator.worker().locate(names, from, radius)
     }
+    /// `NoiseBasedChunkGenerator.addDebugScreenInfo`: F3's `Density` line at
+    /// the feet.
+    pub fn density_debug_line(&self, feet: [i32; 3]) -> Option<String> {
+        let mut worker = self.query.lock().unwrap_or_else(|e| e.into_inner());
+        let worker = worker.get_or_insert_with(|| self.generator.worker());
+        worker.debug_density_line(feet)
+    }
     /// `/locate biome`: `BiomeSource.findClosestBiome3d`.
     pub fn find_closest_biome(
         &self,

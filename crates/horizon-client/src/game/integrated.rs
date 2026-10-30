@@ -56,6 +56,11 @@ struct Flags {
     entity_distance: AtomicU32,
     /// `MinecraftServer.isCurrentlySaving`: the server is autosaving.
     saving: AtomicBool,
+    /// The generators of the levels the server has run, by dimension: what
+    /// F3's chunk generation entry asks `ServerChunkCache.getGenerator`.
+    terrain: Mutex<
+        std::collections::HashMap<&'static str, Arc<horizon_client::vanillagen::VanillaTerrain>>,
+    >,
 }
 
 /// Work the window hands its server thread (`MinecraftServer.execute`).
@@ -70,6 +75,13 @@ pub(super) struct Integrated {
     pub world_name: String,
 }
 impl Integrated {
+    /// The generator of the server's level in `dimension`, once it has run.
+    pub fn terrain(
+        &self,
+        dimension: &str,
+    ) -> Option<Arc<horizon_client::vanillagen::VanillaTerrain>> {
+        self.flags.terrain.lock().ok()?.get(dimension).cloned()
+    }
     pub fn smoothed_tick_ms(&self) -> f32 {
         f32::from_bits(self.flags.smoothed_tick_ms.load(Ordering::Relaxed))
     }
@@ -428,6 +440,11 @@ impl Game<'_> {
                     self.debug_charts.smoothed_tick_ms.to_bits(),
                     Ordering::Relaxed,
                 );
+                if let (Some(terrain), Ok(mut terrains)) =
+                    (self.end.locator(), flags.terrain.lock())
+                {
+                    terrains.insert(self.dim.id(), terrain);
+                }
             }
             self.apply_publish();
             self.wait_for_next_server_tick(&mut next, paused);
