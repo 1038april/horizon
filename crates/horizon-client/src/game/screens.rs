@@ -624,7 +624,7 @@ mod tests {
     #[test]
     fn pause_menu_uses_disconnect_for_servers_and_keeps_world_options() {
         for (remote, label) in [(false, "menu.returnToMenu"), (true, "menu.disconnect")] {
-            let buttons = pause_buttons(427.0, 240.0, remote, false);
+            let buttons = pause_buttons(427.0, 240.0, remote, false, 0);
             let quit = buttons.iter().find(|b| b.4 == 2).unwrap();
             assert_eq!(quit.3, label);
             assert!(quit.5);
@@ -634,8 +634,8 @@ mod tests {
 
     #[test]
     fn server_links_adds_a_full_width_row_above_options() {
-        let with = pause_buttons(427.0, 240.0, true, true);
-        let without = pause_buttons(427.0, 240.0, true, false);
+        let with = pause_buttons(427.0, 240.0, true, true, 0);
+        let without = pause_buttons(427.0, 240.0, true, false, 0);
         let links = with.iter().find(|b| b.4 == 11).unwrap();
         assert_eq!(links.2, 204.0);
         assert_eq!(links.3, "menu.server_links");
