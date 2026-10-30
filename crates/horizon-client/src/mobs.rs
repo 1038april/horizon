@@ -1153,6 +1153,12 @@ pub enum MobEvent {
         mob: u32,
         at: [f64; 3],
     },
+    /// `Mob.burnUndead` in daylight on a mob wearing something in its
+    /// `sunProtectionSlot`: the item loses up to 1 durability (the game knows
+    /// the item data) instead of the mob catching fire.
+    SunProtectionWear {
+        mob: u32,
+    },
     /// `Level.broadcastEntityEvent` for a mob: guests run its
     /// `handleEntityEvent`.
     EntityEvent {

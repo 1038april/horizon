@@ -395,6 +395,67 @@ impl Game<'_> {
         }
         Some(id)
     }
+    /// `Mob.burnUndead` for a mob in daylight with an item on its sun
+    /// protection slot (the head, or the body for a zombie horse or
+    /// nautilus): `hurtAndBreak(random.nextInt(2))` on a damageable item, and
+    /// when it breaks the slot empties and `onEquippedItemBroken` broadcasts
+    /// the break event.
+    fn wear_sun_protection(&mut self, id: u32) {
+        use horizon_world::player_inventory::EquipmentSlot;
+        let Some(m) = self.mobs.iter().find(|m| m.id == id) else {
+            return;
+        };
+        let body = horizon_client::mobs::drops::head_is_body(m.species());
+        let slot = if body {
+            EquipmentSlot::Body
+        } else {
+            EquipmentSlot::Head
+        };
+        let Some(mut stack) = m.item_by_slot(slot) else {
+            return;
+        };
+        if !horizon_client::stations::is_damageable(self.res.items(), &stack) {
+            return;
+        }
+        let at = [m.position.x, m.position.y, m.position.z];
+        let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
+            return;
+        };
+        let amount = m.random.next_int_bound(2).unwrap_or(0) as u32;
+        if amount == 0 {
+            return;
+        }
+        let loss = self.durability_loss(&stack, amount);
+        if loss == 0 {
+            return;
+        }
+        let max = self
+            .res
+            .items()
+            .get(&stack.item)
+            .map_or(0, |i| i.max_damage);
+        stack.damage += loss;
+        let broke = stack.damage >= max;
+        let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
+            return;
+        };
+        match (body, broke) {
+            (true, false) => m.extra.body_damage = stack.damage as i32,
+            (true, true) => {
+                m.extra.head = None;
+                m.extra.body_damage = 0;
+            }
+            (false, false) => m.extra.armor[0] = Some(stack),
+            (false, true) => {
+                m.extra.head = None;
+                m.extra.armor[0] = None;
+            }
+        }
+        if broke {
+            // LivingEntity.entityEventForEquipmentBreak: head 49, body 65.
+            self.lan_entity_event(id as i32, if body { 65 } else { 49 }, at);
+        }
+    }
     /// What a converted mob's callback does to it: the spawn finalization of
     /// a conversion, then persistence.
     fn finalize_converted(&mut self, id: u32) {
@@ -1413,6 +1474,7 @@ impl Game<'_> {
                         .map_or([0.0; 3], |m| [m.velocity.x, m.velocity.y, m.velocity.z]);
                     self.drown_particles(at, v);
                 }
+                MobEvent::SunProtectionWear { mob } => self.wear_sun_protection(mob),
                 MobEvent::EntityEvent { mob, event, at } => {
                     self.lan_entity_event(mob as i32, event, at)
                 }
