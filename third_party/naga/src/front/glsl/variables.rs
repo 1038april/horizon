@@ -250,10 +250,16 @@ impl Frontend {
         meta: Span,
     ) -> Result<Handle<Expression>> {
         let (ty, is_pointer) = match *ctx.resolve_type(expression, meta)? {
-            TypeInner::Pointer { base, .. } => (&ctx.module.types[base].inner, true),
-            ref ty => (ty, false),
+            TypeInner::Pointer { base, .. } => (ctx.module.types[base].inner.clone(), true),
+            // A matrix column through a pointer (`m[1].x`).
+            TypeInner::ValuePointer {
+                size: Some(size),
+                scalar,
+                ..
+            } => (TypeInner::Vector { size, scalar }, true),
+            ref ty => (ty.clone(), false),
         };
-        match *ty {
+        match ty {
             TypeInner::Struct { ref members, .. } => {
                 let index = members
                     .iter()
