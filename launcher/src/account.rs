@@ -11,6 +11,8 @@
 //!
 //! The Azure app (client ID) is Horizon's own and is configuration: `HORIZON_MSA_CLIENT_ID` at
 //! build time, or at run time to override it. Without one, sign-in says it is not configured.
+pub mod session;
+
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -467,6 +469,8 @@ fn profile(ep: &Endpoints, token: &str) -> Result<Option<Account>, String> {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Secrets {
     refresh_token: String,
+    #[serde(default)]
+    sign_in_required: bool,
     minecraft_token: String,
     minecraft_expires_at: u64,
     #[serde(default)]
@@ -500,6 +504,7 @@ impl Secrets {
     fn new(refresh_token: String, mc: Minecraft) -> Self {
         Self {
             refresh_token,
+            sign_in_required: false,
             minecraft_token: mc.token,
             minecraft_expires_at: mc.expires_at,
             xuid: mc.xuid,
@@ -521,17 +526,37 @@ enum Check {
 /// Asks whether `account` owns the game, with a Minecraft token renewed through the refresh token
 /// first when it has less than an hour left. The secrets come back renewed whatever the answer.
 fn check(ep: &Endpoints, client_id: Option<&str>, account: &Account, secrets: Secrets) -> Check {
-    let mut secrets = secrets;
-    if secrets.minecraft_expires_at <= now() + RENEW_BEFORE {
+    check_with(ep, client_id, account, secrets, false)
+}
+
+fn check_with(
+    ep: &Endpoints,
+    client_id: Option<&str>,
+    account: &Account,
+    mut secrets: Secrets,
+    force: bool,
+) -> Check {
+    if secrets.sign_in_required {
+        return Check::NoAnswer(SIGN_IN_AGAIN.into(), secrets);
+    }
+    if force || secrets.minecraft_expires_at <= now() + RENEW_BEFORE {
         let renewed = client_id
             .ok_or_else(|| NOT_CONFIGURED.to_string())
-            .and_then(|id| refresh_ms(ep, id, &secrets.refresh_token))
-            .and_then(|ms| Ok((minecraft_login(ep, &ms.access)?, ms.refresh)));
-        match renewed {
-            Ok((mc, refresh)) => {
+            .and_then(|id| refresh_ms(ep, id, &secrets.refresh_token));
+        let ms = match renewed {
+            Ok(ms) => ms,
+            Err(e) => {
+                secrets.sign_in_required = e == SIGN_IN_AGAIN;
+                return Check::NoAnswer(e, secrets);
+            }
+        };
+        // Microsoft can rotate its refresh credential even if a later service fails.
+        secrets.refresh_token = ms.refresh;
+        match minecraft_login(ep, &ms.access) {
+            Ok(mc) => {
                 secrets = Secrets {
                     owns: secrets.owns,
-                    ..Secrets::new(refresh, mc)
+                    ..Secrets::new(secrets.refresh_token, mc)
                 }
             }
             Err(e) => return Check::NoAnswer(e, secrets),
@@ -544,7 +569,13 @@ fn check(ep: &Endpoints, client_id: Option<&str>, account: &Account, secrets: Se
             owns: false,
             ..secrets
         }),
-        Ok(Some(p)) if p.uuid != account.uuid => Check::NoAnswer(OTHER_PROFILE.into(), secrets),
+        Ok(Some(p)) if p.uuid != account.uuid => Check::NoAnswer(
+            OTHER_PROFILE.into(),
+            Secrets {
+                sign_in_required: true,
+                ..secrets
+            },
+        ),
         Ok(Some(p)) => Check::Owns(
             p,
             Secrets {
@@ -564,6 +595,10 @@ pub trait SecretStore: Send + Sync {
     fn delete(&self, key: &str) -> Result<(), String>;
     /// False for memory: secrets are gone when the launcher closes.
     fn persistent(&self) -> bool;
+    /// A shared lock for read/renew/write operations; memory stores need only the process lock.
+    fn lock_file(&self) -> Option<PathBuf> {
+        None
+    }
 }
 
 #[derive(Default)]
@@ -657,6 +692,9 @@ impl SecretStore for SystemStore {
     }
     fn persistent(&self) -> bool {
         true
+    }
+    fn lock_file(&self) -> Option<PathBuf> {
+        Some(crate::backend::data_dir().join("account-session.lock"))
     }
 }
 
@@ -759,6 +797,9 @@ impl SecretStore for SystemStore {
     }
     fn persistent(&self) -> bool {
         true
+    }
+    fn lock_file(&self) -> Option<PathBuf> {
+        Some(crate::backend::data_dir().join("account-session.lock"))
     }
 }
 
@@ -895,6 +936,7 @@ impl Accounts {
         account: Account,
         secrets: &Secrets,
     ) -> Result<(), String> {
+        let _operation = session::lock(store)?;
         store.set(
             &account.uuid,
             &serde_json::to_string(secrets).map_err(|e| e.to_string())?,
@@ -1030,6 +1072,7 @@ impl Accounts {
     /// Sign out: the secrets leave the keychain, the account the list. Offline names stay, but
     /// play only once an account that owns the game is back.
     pub fn remove(&mut self, store: &dyn SecretStore, uuid: &str) -> Result<(), String> {
+        let _operation = session::lock(store)?;
         store.delete(uuid)?;
         self.accounts.retain(|a| a.uuid != uuid);
         if self.selected.as_deref() == Some(uuid) {
@@ -1093,6 +1136,7 @@ pub fn launch(
             break;
         }
         let plays = Some(&account.uuid) == selected.as_ref();
+        let operation = session::lock(store);
         let Some(secrets) = secrets_in(store, &account.uuid) else {
             if plays {
                 pass.offline = Some(format!(
@@ -1103,7 +1147,11 @@ pub fn launch(
             continue;
         };
         let before = serde_json::to_string(&secrets).ok();
-        let (said, secrets) = match check(ep, client_id, &account, secrets) {
+        let checked = match &operation {
+            Ok(_) => check(ep, client_id, &account, secrets),
+            Err(e) => Check::NoAnswer(e.clone(), secrets),
+        };
+        let (said, secrets) = match checked {
             Check::Owns(renewed, secrets) => {
                 accounts.update(renewed.clone());
                 if plays {

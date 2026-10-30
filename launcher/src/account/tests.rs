@@ -309,6 +309,7 @@ fn notch() -> Account {
 fn secrets(token: &str, owns: bool) -> Secrets {
     Secrets {
         refresh_token: "ms-refresh-1".into(),
+        sign_in_required: false,
         minecraft_token: token.into(),
         minecraft_expires_at: now() + 7200,
         xuid: None,
@@ -634,6 +635,7 @@ fn accounts_keep_secrets_in_the_store_only() {
     };
     let secrets = Secrets {
         refresh_token: "r".into(),
+        sign_in_required: false,
         minecraft_token: "mc-secret".into(),
         minecraft_expires_at: 1,
         xuid: None,
@@ -698,6 +700,7 @@ fn session_files_are_private_and_complete() {
     };
     let secrets = Secrets {
         refresh_token: "r".into(),
+        sign_in_required: false,
         minecraft_token: "mc-token".into(),
         minecraft_expires_at: 1,
         xuid: Some("25".into()),
@@ -827,4 +830,158 @@ fn the_java_edition_plays_as_an_owner_even_offline() {
         java_player_with(&offline(), Some("test-client"), &store, &mut accounts).unwrap_err(),
         NoOwner.to_string()
     );
+}
+
+#[test]
+fn manual_refresh_renews_a_fresh_token_without_selecting_another_account() {
+    let store = MemoryStore::default();
+    let accounts = signed_in(&store, &secrets("original-minecraft", true));
+    let (m, ep) = mock(|_| {});
+    let status = session::refresh_with(&ep, Some("test-client"), &store, &notch());
+    assert_eq!(status.state, session::State::Ready);
+    let saved = kept(&store);
+    assert_eq!(saved.refresh_token, "ms-refresh-2");
+    assert_eq!(saved.minecraft_token, "mc-token");
+    assert_eq!(accounts.selected.as_deref(), Some(UUID));
+    assert_eq!(
+        m.lock()
+            .unwrap()
+            .log
+            .iter()
+            .filter(|(_, path, _)| path == "/ms/token")
+            .count(),
+        1
+    );
+    let public = serde_json::to_string(&status).unwrap();
+    for secret in ["ms-refresh-2", "mc-token", "original-minecraft"] {
+        assert!(!public.contains(secret));
+    }
+}
+
+#[test]
+fn revoked_refresh_is_remembered_until_a_successful_sign_in() {
+    let store = MemoryStore::default();
+    let mut accounts = signed_in(
+        &store,
+        &Secrets {
+            refresh_token: "revoked".into(),
+            ..secrets("old-minecraft", true)
+        },
+    );
+    let (m, ep) = mock(|_| {});
+    let status = session::refresh_with(&ep, Some("test-client"), &store, &notch());
+    assert_eq!(status.state, session::State::SignInRequired);
+    let requests = m.lock().unwrap().log.len();
+    let _ = session::refresh_with(&ep, Some("test-client"), &store, &notch());
+    let pass = launch(&ep, Some("test-client"), &store, &mut accounts).unwrap();
+    assert!(pass.session.is_none());
+    assert_eq!(pass.offline.as_deref(), Some(SIGN_IN_AGAIN));
+    assert_eq!(m.lock().unwrap().log.len(), requests);
+    assert_eq!(
+        session::status(&store, UUID).state,
+        session::State::SignInRequired
+    );
+    accounts
+        .add(&store, notch(), &secrets("new-minecraft", true))
+        .unwrap();
+    assert_eq!(session::status(&store, UUID).state, session::State::Ready);
+}
+
+#[test]
+fn a_connection_failure_is_retryable_and_keeps_the_saved_sign_in() {
+    let store = MemoryStore::default();
+    let _accounts = signed_in(&store, &secrets("still-usable", true));
+    let before = store.get(UUID).unwrap();
+    let status = session::refresh_with(&offline(), Some("test-client"), &store, &notch());
+    assert_eq!(status.state, session::State::Retry);
+    assert_eq!(store.get(UUID).unwrap(), before);
+    assert!(!kept(&store).sign_in_required);
+}
+
+#[test]
+fn a_rotated_microsoft_credential_survives_a_later_service_failure() {
+    let store = MemoryStore::default();
+    let _accounts = signed_in(&store, &secrets("old-minecraft", true));
+    let (_, ep) = mock(|m| m.xerr = Some(2148916238));
+    let status = session::refresh_with(&ep, Some("test-client"), &store, &notch());
+    assert_eq!(status.state, session::State::Retry);
+    assert_eq!(kept(&store).refresh_token, "ms-refresh-2");
+    assert_eq!(kept(&store).minecraft_token, "old-minecraft");
+}
+
+#[test]
+fn expiry_is_refreshable_and_a_missing_credential_needs_sign_in() {
+    let store = MemoryStore::default();
+    assert_eq!(
+        session::status(&store, UUID).state,
+        session::State::SignInRequired
+    );
+    let mut accounts = signed_in(
+        &store,
+        &Secrets {
+            minecraft_expires_at: 0,
+            ..secrets("expired", true)
+        },
+    );
+    assert_eq!(
+        session::status(&store, UUID).state,
+        session::State::NeedsRefresh
+    );
+    let (_, ep) = mock(|_| {});
+    assert!(launch(&ep, Some("test-client"), &store, &mut accounts)
+        .unwrap()
+        .session
+        .is_some());
+    assert_eq!(session::status(&store, UUID).state, session::State::Ready);
+}
+
+#[test]
+fn refresh_serializes_with_sign_out_and_cannot_restore_a_deleted_credential() {
+    let store = Arc::new(MemoryStore::default());
+    let mut accounts = signed_in(&store, &secrets("old-minecraft", true));
+    let (_, ep) = mock(|_| {});
+    let refresh_store = store.clone();
+    let refresh = std::thread::spawn(move || {
+        session::refresh_with(&ep, Some("test-client"), &*refresh_store, &notch())
+    });
+    accounts.remove(&*store, UUID).unwrap();
+    let _ = refresh.join().unwrap();
+    assert!(store.get(UUID).unwrap().is_none());
+}
+
+#[test]
+fn a_damaged_saved_sign_in_is_not_overwritten_or_exposed() {
+    let store = MemoryStore::default();
+    store.set(UUID, "damaged-secret-contents").unwrap();
+    let status = session::refresh_with(&offline(), Some("test-client"), &store, &notch());
+    assert_eq!(status.state, session::State::SignInRequired);
+    assert_eq!(
+        store.get(UUID).unwrap().as_deref(),
+        Some("damaged-secret-contents")
+    );
+    assert!(!serde_json::to_string(&status)
+        .unwrap()
+        .contains("damaged-secret-contents"));
+}
+
+#[test]
+fn an_unreadable_keychain_is_retryable_without_any_write() {
+    struct Locked;
+    impl SecretStore for Locked {
+        fn get(&self, _: &str) -> Result<Option<String>, String> {
+            Err("locked-keychain-details".into())
+        }
+        fn set(&self, _: &str, _: &str) -> Result<(), String> {
+            panic!("must not overwrite an unreadable credential")
+        }
+        fn delete(&self, _: &str) -> Result<(), String> {
+            panic!("must not delete an unreadable credential")
+        }
+        fn persistent(&self) -> bool {
+            false
+        }
+    }
+    let status = session::refresh_with(&offline(), Some("test-client"), &Locked, &notch());
+    assert_eq!(status.state, session::State::Retry);
+    assert!(!status.message.contains("locked-keychain-details"));
 }
