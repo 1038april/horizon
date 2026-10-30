@@ -1533,6 +1533,20 @@ impl OptionsUi {
     pub fn page(&self) -> Page {
         *self.stack.last().unwrap_or(&Page::Main)
     }
+    /// Whether the screen's focus is a search box that takes the keys (an
+    /// `EditBox` that `canConsumeInput`): the language list's, the settings
+    /// search, or the pack screen's.
+    pub fn typing(&self) -> bool {
+        self.resource_error.is_none()
+            && match self.page() {
+                Page::Language => true,
+                Page::Packs => self
+                    .pack_screen
+                    .as_ref()
+                    .is_some_and(|p| p.search_focused()),
+                _ => self.settings_search_active(),
+            }
+    }
     /// Jump straight to a page (control socket / tests).
     pub fn show(&mut self, page: Page) {
         if page != Page::Main {

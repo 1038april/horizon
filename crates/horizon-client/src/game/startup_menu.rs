@@ -477,6 +477,45 @@ impl Loading {
         }
     }
 
+    /// `Game::narrator_hotkey` on the startup menu's screens.
+    fn menu_narrator_hotkey(&mut self, event: &KeyEvent) {
+        let letter = clipboard::shortcut_letter(&event.logical_key, event.physical_key);
+        if letter != Some('b') {
+            return;
+        }
+        let menu = &mut self.menu;
+        let control_with_quirk = if cfg!(target_os = "macos") {
+            menu.modifiers.super_key()
+        } else {
+            menu.modifiers.control_key()
+        };
+        let edit_box_focused = if menu.options_open {
+            menu.options.typing()
+        } else if menu.win.is_some() || menu.pending.is_some() {
+            false
+        } else {
+            menu.title
+                .as_mut()
+                .is_some_and(|t| t.has_caret_field() || t.focused_field().is_some())
+        };
+        let hotkey = super::narrator::is_hotkey(
+            event.state == ElementState::Pressed,
+            control_with_quirk,
+            letter,
+            edit_box_focused,
+            horizon_narrator::is_active(),
+            self.settings.file.bool("narratorHotkey"),
+        );
+        if !hotkey {
+            return;
+        }
+        super::narrator::cycle_status(&mut self.settings);
+        super::narrator::update_status(self.settings.narrator(), &mut self.menu.narrator_toast);
+        self.save_menu_settings();
+        // The screens' own narration (Game::on_narrator_status_changed)
+        // starts once the game has them.
+    }
+
     fn menu_options_click(&mut self, drag: bool, right: bool) {
         let size = self.menu_size();
         let batch = HudBatch::new(size);
@@ -536,6 +575,9 @@ impl Loading {
             } else {
                 self.menu.physical_keys.remove(&key);
             }
+        }
+        if let WindowEvent::KeyboardInput { event, .. } = &event {
+            self.menu_narrator_hotkey(event);
         }
         match event {
             WindowEvent::CloseRequested => {

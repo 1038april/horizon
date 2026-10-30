@@ -2,14 +2,16 @@
 //! opened with the client, closed with it, and kept in step with the options
 //! it reads (`Options.narrator`, `getFinalSoundSourceVolume(VOICE)`); and its
 //! `NARRATOR_TOGGLE` toast.
-use super::Game;
+use super::{Game, Screen};
 use horizon_client::{
+    clipboard,
     hud::{HudAtlas, HudBatch},
     settings::Settings,
     text::Text,
     toasts::SystemToast,
 };
-use horizon_narrator::Status;
+use horizon_narrator::{Status, screen::Trigger};
+use winit::event::{ElementState, KeyEvent};
 
 /// `Minecraft`'s constructor: `new GameNarrator`, then
 /// `narrator.checkStatus(options.narrator().get() != OFF)`.
@@ -82,10 +84,93 @@ pub(super) fn draw_toast(
     sound
 }
 
+/// `KeyboardHandler.keyPress`'s narrator hotkey: a press or repeat of B
+/// (`shortcutKey() == 98`, the layout's letter) with the edit modifier
+/// (`hasControlDownWithQuirk`: Cmd on macOS, Ctrl elsewhere), unless the
+/// screen's focus is an edit box that takes the keys, while the narrator is
+/// there and the Narrator Hotkey option is on.
+pub(super) fn is_hotkey(
+    pressed: bool,
+    control_with_quirk: bool,
+    letter: Option<char>,
+    edit_box_focused: bool,
+    active: bool,
+    hotkey_option: bool,
+) -> bool {
+    pressed
+        && !edit_box_focused
+        && control_with_quirk
+        && letter == Some('b')
+        && active
+        && hotkey_option
+}
+
+/// The hotkey's step: `options.narrator().set(byId(getId() + 1))`. Whether
+/// the narrator was off before (`wasDisabled`).
+pub(super) fn cycle_status(settings: &mut Settings) -> bool {
+    let was = settings.narrator();
+    settings.set_narrator(was.next());
+    was == Status::Off
+}
+
 impl Game<'_> {
     /// The narrator option changed, on the options screen or by its hotkey.
     pub(super) fn narrator_status_changed(&mut self) {
         update_status(self.settings.narrator(), &mut self.narrator_toast);
+    }
+    /// The narrator hotkey on a key press or repeat, before the screen or
+    /// the game takes the key (it doesn't consume it): the next status,
+    /// announced with its toast, saved, then the screen hears of it.
+    pub(super) fn narrator_hotkey(&mut self, event: &KeyEvent) {
+        let letter = clipboard::shortcut_letter(&event.logical_key, event.physical_key);
+        if letter != Some('b') {
+            return;
+        }
+        let hotkey = is_hotkey(
+            event.state == ElementState::Pressed,
+            self.has_control_down_with_quirk(),
+            letter,
+            self.edit_box_focused(),
+            horizon_narrator::is_active(),
+            self.settings.file.bool("narratorHotkey"),
+        );
+        if !hotkey {
+            return;
+        }
+        let was_disabled = cycle_status(&mut self.settings);
+        // OptionInstance.set runs the option's onValueUpdate.
+        self.narrator_status_changed();
+        self.settings.save(&Self::options_path());
+        self.on_narrator_status_changed(was_disabled, Trigger::Keyboard);
+    }
+    /// Where vanilla calls `screen.updateNarratorStatus(wasDisabled, trigger)`
+    /// on the open screen, if any: a screen's narration is scheduled 2 s
+    /// after the narrator came on (`NARRATE_DELAY_NARRATOR_ENABLED`) and its
+    /// narrator button shows the new value. Horizon's narrator buttons read
+    /// the option each frame; screen narration hooks in here.
+    pub(super) fn on_narrator_status_changed(&mut self, _was_disabled: bool, _trigger: Trigger) {}
+    /// `hasNoEditboxFocused`'s opposite: the open screen's focus is an
+    /// `EditBox` that `canConsumeInput`. The chat, command block, anvil
+    /// name, world options' port and rule boxes, a dialog's text input, a
+    /// focused options search and the title screens' fields count; a sign, a
+    /// book (no `EditBox`), the recipe book (its component has the focus) and
+    /// the creative search (focused as a widget, not as the screen's focus)
+    /// do not.
+    fn edit_box_focused(&mut self) -> bool {
+        if self.dialog_open() {
+            return self.dialog_typing();
+        }
+        match self.screen {
+            Screen::Chat if self.title.is_none() => true,
+            Screen::Options => self.ui.options.typing(),
+            Screen::WorldOptions => self.world_options_typing(),
+            Screen::CommandBlock => true,
+            Screen::Inventory => self.station_typing() || self.mod_browser_typing(),
+            _ => self
+                .title
+                .as_mut()
+                .is_some_and(|t| t.has_caret_field() || t.focused_field().is_some()),
+        }
     }
     /// The narrator toast over whatever is on screen, the title's own toast
     /// keeping the first slot.
@@ -117,6 +202,35 @@ pub(super) fn stop() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_hotkey_needs_the_modifier_b_no_edit_box_the_narrator_and_its_option() {
+        assert!(is_hotkey(true, true, Some('b'), false, true, true));
+        for (pressed, control, letter, edit_box, active, option) in [
+            (false, true, Some('b'), false, true, true),
+            (true, false, Some('b'), false, true, true),
+            (true, true, Some('n'), false, true, true),
+            (true, true, Some('b'), true, true, true),
+            (true, true, Some('b'), false, false, true),
+            (true, true, Some('b'), false, true, false),
+        ] {
+            assert!(!is_hotkey(
+                pressed, control, letter, edit_box, active, option
+            ));
+        }
+    }
+
+    #[test]
+    fn the_hotkey_steps_through_the_statuses_and_wraps() {
+        let mut s = Settings::default();
+        assert!(cycle_status(&mut s), "Off was disabled");
+        assert_eq!(s.narrator(), Status::All);
+        assert!(!cycle_status(&mut s));
+        assert!(!cycle_status(&mut s));
+        assert_eq!(s.narrator(), Status::System);
+        assert!(!cycle_status(&mut s));
+        assert_eq!(s.narrator(), Status::Off);
+    }
 
     /// `SystemToast.addOrUpdate`: one narrator toast, reset where it is.
     #[test]
