@@ -3924,11 +3924,7 @@ impl Launcher {
             Load::Loading => return page.child(centered(tr("Loading releases…"), &t)),
             Load::Failed(e) => {
                 return page.child(
-                    centered(
-                        &trf("Couldn't load releases. {error}", &[("error", &e)]),
-                        &t,
-                    )
-                    .child(
+                    centered(&trf("Couldn't load releases. {error}", &[("error", e)]), &t).child(
                         button("retry", "Try again", Kind::Secondary, &t).on_click(cx.listener(
                             |this, _: &ClickEvent, _, cx| {
                                 this.fetch_releases();
@@ -4182,7 +4178,7 @@ impl Launcher {
             Load::Failed(e) => {
                 return page.child(
                     centered(
-                        &trf("Couldn't load patch notes. {error}", &[("error", &e)]),
+                        &trf("Couldn't load patch notes. {error}", &[("error", e)]),
                         &t,
                     )
                     .child(
