@@ -14,7 +14,7 @@ impl Game<'_> {
         else {
             return Vec::new();
         };
-        layer_textures(&self.res.stations().banners, &b.layers)
+        layer_textures(&self.stations().banners, &b.layers)
     }
     /// The banner at `pos` as a map marker source (`MapBanner.fromWorld`).
     pub(super) fn map_banner_at(&self, pos: [i32; 3]) -> Option<MapBanner> {
