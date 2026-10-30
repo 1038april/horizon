@@ -49,6 +49,31 @@ pub(super) fn forget_sync_data() {
     *SYNC.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
+impl Game<'_> {
+    /// The commands' `minecraft:dialog` ids as the clients get them in the
+    /// configuration phase (`SyncData`, the world's packs' dialogs among
+    /// them): `/dialog show` parses an id against these and sends its index.
+    pub(super) fn sync_dialog_ids(&mut self) {
+        let sync = match sync_data(&self.options.resources, &self.pack_files()) {
+            Ok(sync) => sync,
+            Err(e) => {
+                log::warn!("Horizon: dialogs not synchronized: {e}");
+                return;
+            }
+        };
+        let Some(names) = sync.dynamic.registries.get("minecraft:dialog") else {
+            return;
+        };
+        let ids = names.iter().map(|(name, _)| name.clone()).collect();
+        self.ui
+            .registries
+            .by_registry
+            .entry("minecraft:dialog".to_owned())
+            .or_default()
+            .ids = ids;
+    }
+}
+
 /// The settings of the open world (WorldOptionsScreen's multiplayer section).
 #[derive(Clone, Copy, Debug)]
 pub struct LanSettings {

@@ -51,10 +51,18 @@ pub const SYNCHRONIZED: &[&str] = &[
 /// KnownPack.vanilla("core") for this version.
 pub const CORE_PACK: (&str, &str, &str) = ("minecraft", "core", horizon_protocol::GAME_VERSION);
 
+/// Synchronized registries a world's data packs add entries to (or replace
+/// them in). The others stay the game's own: Horizon's gameplay reads them
+/// from the prepared resources only.
+const PACK_REGISTRIES: &[&str] = &["minecraft:dialog"];
+
 /// A data-driven registry: entry names in network order and their JSON.
 struct Entries {
     names: Vec<String>,
     json: Vec<Value>,
+    /// The entry comes from a world's data pack, which no client knows, so
+    /// its data is always sent.
+    from_pack: Vec<bool>,
 }
 
 pub struct SyncData {
@@ -89,6 +97,40 @@ fn walk(dir: &Path, prefix: &str, out: &mut BTreeMap<String, Value>) {
             out.insert(format!("{prefix}{stem}"), value);
         }
     }
+}
+
+/// A synchronized registry's entries from the world's data packs (`<dir>/`
+/// files, the top pack's for each id) over the game's own, in
+/// `ResourceManagerRegistryLoadTask`'s order: by `Identifier`, which compares
+/// the path first, then the namespace. Each entry is ((namespace, path),
+/// JSON, from a pack).
+fn pack_entries(
+    dir: &str,
+    overlay: &horizon_world::loot::PackOverlay,
+    entries: &mut Vec<((String, String), Value, bool)>,
+) {
+    for (id, files) in overlay.kind(dir) {
+        let Some((ns, path)) = id.split_once(':') else {
+            continue;
+        };
+        let top = horizon_world::loot::PackOverlay::top(files);
+        let value = match serde_json::from_slice::<Value>(top) {
+            Ok(value) => value,
+            Err(e) => {
+                log::warn!("Horizon: data pack {dir} {id} is not read: {e}");
+                continue;
+            }
+        };
+        let key = (ns.to_owned(), path.to_owned());
+        match entries.iter_mut().find(|(k, ..)| *k == key) {
+            Some(entry) => {
+                entry.1 = value;
+                entry.2 = true;
+            }
+            None => entries.push((key, value, true)),
+        }
+    }
+    entries.sort_by(|((a_ns, a), ..), ((b_ns, b), ..)| a.cmp(b).then_with(|| a_ns.cmp(b_ns)));
 }
 
 /// A JSON value as the NBT that vanilla's NbtOps would produce from the codec
@@ -138,15 +180,28 @@ impl SyncData {
             let path = key.trim_start_matches("minecraft:");
             let mut found = BTreeMap::new();
             walk(&root.join(path), "", &mut found);
-            let (names, json): (Vec<_>, Vec<_>) = found
+            let mut entries: Vec<_> = found
                 .into_iter()
-                .map(|(n, v)| (format!("minecraft:{n}"), v))
-                .unzip();
+                .map(|(p, v)| (("minecraft".to_owned(), p), v, false))
+                .collect();
+            if PACK_REGISTRIES.contains(key) {
+                pack_entries(path, overlay, &mut entries);
+            }
+            let mut e = Entries {
+                names: Vec::new(),
+                json: Vec::new(),
+                from_pack: Vec::new(),
+            };
+            for ((ns, p), v, from_pack) in entries {
+                e.names.push(format!("{ns}:{p}"));
+                e.json.push(v);
+                e.from_pack.push(from_pack);
+            }
             dynamic.registries.insert(
                 (*key).to_owned(),
-                names.iter().map(|n| (n.clone(), None)).collect(),
+                e.names.iter().map(|n| (n.clone(), None)).collect(),
             );
-            registries.push(((*key).to_owned(), Entries { names, json }));
+            registries.push(((*key).to_owned(), e));
         }
         let tags = Self::load_tags(&root, &builtin, &dynamic);
         let content_identity = if resources.join(crate::content_identity::MARKER).exists() {
@@ -193,9 +248,10 @@ impl SyncData {
                     .names
                     .iter()
                     .zip(&e.json)
-                    .map(|(name, json)| RegistryEntry {
+                    .zip(&e.from_pack)
+                    .map(|((name, json), &from_pack)| RegistryEntry {
                         id: name.clone(),
-                        data: if known_pack {
+                        data: if known_pack && !from_pack {
                             None
                         } else {
                             Some(json_to_nbt(json))
@@ -303,6 +359,52 @@ impl SyncData {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pack_dialogs_join_the_registry_in_identifier_order() {
+        let vanilla = |p: &str| (("minecraft".to_owned(), p.to_owned()), Value::Null, false);
+        let mut entries = vec![vanilla("custom_options"), vanilla("quick_actions")];
+        let files = [
+            (
+                "dialog/blazeandcave:config/change_points_task".to_owned(),
+                vec![br#"{"type":"minecraft:notice"}"#.to_vec()],
+            ),
+            // A lower pack's file, then the top one's: the top one is read.
+            (
+                "dialog/minecraft:quick_actions".to_owned(),
+                vec![
+                    b"{}".to_vec(),
+                    br#"{"type":"minecraft:multi_action"}"#.to_vec(),
+                ],
+            ),
+            ("dialog/broken:bad".to_owned(), vec![b"{".to_vec()]),
+            ("recipe/blazeandcave:other".to_owned(), vec![b"{}".to_vec()]),
+        ];
+        let overlay = horizon_world::loot::PackOverlay { files: &files };
+        pack_entries("dialog", &overlay, &mut entries);
+        let got: Vec<_> = entries
+            .iter()
+            .map(|((ns, p), v, from_pack)| (format!("{ns}:{p}"), v["type"].clone(), *from_pack))
+            .collect();
+        // Identifier.compareTo: "config/..." sorts before "custom_options"
+        // by path, though "blazeandcave" is not "minecraft".
+        assert_eq!(
+            got,
+            [
+                (
+                    "blazeandcave:config/change_points_task".to_owned(),
+                    Value::from("minecraft:notice"),
+                    true
+                ),
+                ("minecraft:custom_options".to_owned(), Value::Null, false),
+                (
+                    "minecraft:quick_actions".to_owned(),
+                    Value::from("minecraft:multi_action"),
+                    true
+                ),
+            ]
+        );
+    }
 
     #[test]
     fn json_becomes_nbt() {
