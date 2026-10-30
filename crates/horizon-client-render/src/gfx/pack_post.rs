@@ -2479,11 +2479,14 @@ impl PackPost {
         let Some((mut pass, mut geometry)) = self.hand.take() else {
             return;
         };
+        // The hand draws through `gbufferModelView`, which holds the nausea spin the world
+        // turns with; the hand doesn't (as vanilla's), so its projection takes the spin out.
+        let unspin = frame.bob * frame.spin.inverse() * frame.bob.inverse();
         let projection = super::pack_hand::projection(
             frame.hand_fov_degrees,
             size[0] as f32 / size[1].max(1) as f32,
             frame.depth_far,
-        );
+        ) * unspin;
         geometry.prepare(device, queue, frame.hand, projection);
         if geometry.quads > 0 {
             let group = self.bind(device, queue, encoder, &mut pass, size);

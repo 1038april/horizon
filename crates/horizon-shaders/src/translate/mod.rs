@@ -1421,6 +1421,25 @@ mod tests {
     }
 
     #[test]
+    fn buffer_blocks_bind_at_their_binding() {
+        let csh = "#version 430\nlayout(local_size_x = 1) in;\n\
+                   layout(std430, binding = 2) readonly restrict buffer Lights { uint count; vec4 data[]; } lights;\n\
+                   layout(std430, binding = 5) buffer Counts { uint n[]; };\n\
+                   void main() { n[0] = 1u; }\n";
+        let pack = Pack::from_zip_bytes("P.zip", zip(&[("shaders/deferred_a.csh", csh)])).unwrap();
+        let c = translate_compute(&preprocess(&pack, "deferred_a.csh", &Macros::standard()))
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(c.interface.buffers, [2, 5]);
+        let missing = "#version 430\nlayout(local_size_x = 1) in;\nlayout(std430) buffer B { uint n; };\nvoid main() {}\n";
+        let pack =
+            Pack::from_zip_bytes("P.zip", zip(&[("shaders/deferred_a.csh", missing)])).unwrap();
+        let errors = translate_compute(&preprocess(&pack, "deferred_a.csh", &Macros::standard()))
+            .err()
+            .unwrap();
+        assert!(errors[0].message.contains("needs a binding"), "{errors:?}");
+    }
+
+    #[test]
     fn compute_programs_translate() {
         let csh = "#version 430\nlayout(local_size_x = 64) in;\nconst ivec3 workGroups = ivec3(2, 1, 1);\n\
                    layout(rgba16f) writeonly uniform image2D colorimg4;\nuniform sampler2D colortex4;\n\

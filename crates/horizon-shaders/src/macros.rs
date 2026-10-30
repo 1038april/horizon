@@ -330,6 +330,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn iris_features_are_defined_or_noted() {
+        let properties = crate::Properties::parse(
+            "iris.features.optional = COMPUTE_SHADERS NOT_A_FEATURE\n\
+             iris.features.required = SSBO NOT_A_FEATURE\n",
+            &Macros::standard(),
+        );
+        let mut m = Macros::standard();
+        let notes = m.define_features(&properties);
+        assert!(m.is_defined("IRIS_FEATURE_COMPUTE_SHADERS"));
+        assert!(!m.is_defined("IRIS_FEATURE_NOT_A_FEATURE"));
+        assert_eq!(
+            notes,
+            ["the pack requires `NOT_A_FEATURE`, which is not supported yet"]
+        );
+    }
+
+    #[test]
     fn versions_follow_the_documented_rule() {
         assert_eq!(mc_version("1.21"), 12100);
         assert_eq!(mc_version("1.21.0"), 12100);

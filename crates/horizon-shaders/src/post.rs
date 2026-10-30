@@ -1019,6 +1019,43 @@ mod tests {
                        gl_FragData[0] = texture2D(colortex0, uv);\n}\n";
 
     #[test]
+    fn buffer_objects_and_images_parse() {
+        assert_eq!(BufferObject::parse("4096"), Some(BufferObject::Bytes(4096)));
+        assert_eq!(
+            BufferObject::parse("64 false 1.0 1.0"),
+            Some(BufferObject::Bytes(64))
+        );
+        assert_eq!(
+            BufferObject::parse("16 true 0.5 0.25"),
+            Some(BufferObject::PerPixel {
+                bytes: 16,
+                scale: [0.5, 0.25]
+            })
+        );
+        assert_eq!(BufferObject::parse("16 true 0.5"), None);
+        assert_eq!(BufferObject::parse("many"), None);
+        let voxels = CustomImage::parse(
+            "voxels",
+            "voxelSampler RED_INTEGER R32UI UNSIGNED_INT true false 64 32 16",
+        )
+        .unwrap();
+        assert_eq!(voxels.sampler.as_deref(), Some("voxelSampler"));
+        assert_eq!(voxels.size, ImageSize::Absolute([64, 32, 16]));
+        assert!(voxels.clear);
+        let half =
+            CustomImage::parse("half", "none RGBA RGBA16F HALF_FLOAT false true 0.5 0.5").unwrap();
+        assert_eq!(
+            (half.sampler, half.size),
+            (None, ImageSize::Relative([0.5, 0.5]))
+        );
+        assert!(!half.clear);
+        assert!(
+            CustomImage::parse("bad", "none RGBA RGBA17Q HALF_FLOAT false true 0.5 0.5").is_none()
+        );
+        assert!(CustomImage::parse("short", "none RGBA RGBA16F HALF_FLOAT false").is_none());
+    }
+
+    #[test]
     fn buffer_sizes_are_bounded() {
         let relative = BufferSize::parse("0.5 0.25").unwrap();
         assert_eq!(relative.resolve([1920, 1080]), [960, 270]);
