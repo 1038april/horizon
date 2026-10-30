@@ -392,6 +392,27 @@ pub fn slider(
     active: bool,
     dragging: bool,
 ) {
+    slider_ext(
+        batch, atlas, x, y, w, label, value, hover, false, false, active, dragging,
+    );
+}
+
+/// `AbstractSliderButton.extractWidgetRenderState`: track, 8px handle at `value` (0..1),
+/// with support for keyboard focus and `canChangeValue`.
+pub fn slider_ext(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    x: f32,
+    y: f32,
+    w: f32,
+    label: &Text,
+    value: f32,
+    hover: bool,
+    focused: bool,
+    can_change_value: bool,
+    active: bool,
+    dragging: bool,
+) {
     let kind = crate::widgets::Kind::Slider {
         value,
         track: [x + 4.0, w - 8.0],
@@ -402,8 +423,17 @@ pub fn slider(
         // A controller's D-pad can focus it (Horizon's controller support).
         crate::widgets::target_as([x, y, w, 20.0], kind);
     }
-    let (track, handle) = slider_sprites(hover, active, dragging);
+    let track = if dragging || (active && focused && !can_change_value) {
+        "gui/sprites/widget/slider_highlighted"
+    } else {
+        "gui/sprites/widget/slider"
+    };
     nine_slice(batch, atlas, track, x, y, w, 20.0, u32::MAX);
+    let handle = if active && (hover || can_change_value || dragging) {
+        "gui/sprites/widget/slider_handle_highlighted"
+    } else {
+        "gui/sprites/widget/slider_handle"
+    };
     nine_slice(
         batch,
         atlas,

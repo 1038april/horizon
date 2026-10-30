@@ -1111,6 +1111,47 @@ struct Widget {
     /// Scrolls with the list (clipped to the list area).
     list: bool,
 }
+
+/// The keyboard-focused UI target on an options page.
+#[derive(Clone, Debug, PartialEq)]
+enum FocusId {
+    Search,
+    Slider(Opt),
+    Cycle(Opt),
+    Act(Act),
+    Lang(String),
+    Index(usize),
+}
+
+fn focus_id(i: usize, wd: &Widget) -> FocusId {
+    match &wd.kind {
+        WKind::Slider { opt, .. } => FocusId::Slider(*opt),
+        WKind::Button {
+            act: Act::Cycle(opt),
+            ..
+        } => FocusId::Cycle(*opt),
+        WKind::Button { act, .. } if *act != Act::None => FocusId::Act(act.clone()),
+        WKind::LanguageRow { code, .. } => FocusId::Lang(code.clone()),
+        _ => FocusId::Index(i),
+    }
+}
+
+fn matches_focus(id: &FocusId, i: usize, wd: &Widget) -> bool {
+    match (id, &wd.kind) {
+        (FocusId::Slider(a), WKind::Slider { opt, .. }) => a == opt,
+        (
+            FocusId::Cycle(a),
+            WKind::Button {
+                act: Act::Cycle(opt),
+                ..
+            },
+        ) => a == opt,
+        (FocusId::Act(a), WKind::Button { act, .. }) => a == act,
+        (FocusId::Lang(a), WKind::LanguageRow { code, .. }) => a == code,
+        (FocusId::Index(idx), _) => *idx == i,
+        _ => false,
+    }
+}
 /// What the game must do after an interaction.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
@@ -1213,6 +1254,14 @@ pub struct OptionsUi {
     pub graphics: crate::graphics_ui::GraphicsUi,
     /// The AI Agent page's status lines (set by the game while it shows).
     pub agent_status: Vec<String>,
+    /// Keyboard focus: the interactive target currently focused.
+    focus: Option<FocusId>,
+    /// Whether a focused slider is in value-editing mode (`AbstractSliderButton.canChangeValue`).
+    pub(crate) can_change_value: bool,
+    /// The current GUI size (w, h).
+    pub size: (f32, f32),
+    /// The current window framebuffer dimensions [w, h].
+    pub framebuffer: [i32; 2],
 }
 impl Default for OptionsUi {
     fn default() -> Self {
@@ -1246,6 +1295,10 @@ impl Default for OptionsUi {
             center_language: false,
             graphics: Default::default(),
             agent_status: Vec::new(),
+            focus: None,
+            can_change_value: false,
+            size: (427.0, 240.0),
+            framebuffer: [1280, 720],
         }
     }
 }
@@ -1377,10 +1430,152 @@ impl OptionsUi {
             self.packs(atlas, size).changed = p.changed;
         }
     }
+    /// Steps a slider option forward or backward (by its discrete step size if
+    /// discrete, or by 1 pixel along its track if continuous).
+    pub fn step_slider_option(
+        &mut self,
+        s: &mut Settings,
+        opt: Opt,
+        forward: bool,
+        width: f32,
+    ) -> Vec<Event> {
+        let volume = |s: &Settings| match opt {
+            Opt::Volume(0) => Some(s.master_volume),
+            Opt::Volume(i) => Some(s.volumes[i]),
+            _ => None,
+        };
+        let before_vol = volume(s);
+        let track_w = (width - 8.0).max(1.0);
+        let delta = 1.0 / track_w;
+        let step = if forward { delta } else { -delta };
+
+        match opt {
+            Opt::Fov => s.fov = (s.fov + if forward { 1.0 } else { -1.0 }).clamp(30.0, 110.0),
+            Opt::RenderDistance => {
+                s.render_distance = (s.render_distance + if forward { 1 } else { -1 })
+                    .clamp(2, crate::options_file::MAX_RENDER_DISTANCE);
+            }
+            Opt::SimulationDistance => {
+                s.simulation_distance =
+                    (s.simulation_distance + if forward { 1 } else { -1 }).clamp(5, 32);
+            }
+            Opt::MaxFps => {
+                s.max_fps =
+                    (s.max_fps as i32 + if forward { 10 } else { -10 }).clamp(10, 260) as u32;
+            }
+            Opt::CloudRange => {
+                s.cloud_range = (s.cloud_range + if forward { 1 } else { -1 }).clamp(2, 128);
+            }
+            Opt::EntityDistance => {
+                s.entity_distance =
+                    (s.entity_distance + if forward { 0.25 } else { -0.25 }).clamp(0.5, 5.0);
+            }
+            Opt::BiomeBlend => {
+                s.biome_blend = (s.biome_blend + if forward { 1 } else { -1 }).clamp(0, 7);
+            }
+            Opt::Preset => {
+                let next = (preset_index(&s.graphics_preset) as i32 + if forward { 1 } else { -1 })
+                    .clamp(0, 3) as usize;
+                s.graphics_preset = PRESETS[next].into();
+                apply_preset(s);
+            }
+            Opt::Mipmaps => {
+                s.mipmap_levels = (s.mipmap_levels + if forward { 1 } else { -1 }).clamp(0, 4);
+            }
+            Opt::WeatherRadius => {
+                s.weather_radius = (s.weather_radius + if forward { 1 } else { -1 }).clamp(3, 10);
+            }
+            Opt::ChunkFade => {
+                s.chunk_fade = (s.chunk_fade + if forward { 0.05 } else { -0.05 }).clamp(0.0, 2.0);
+            }
+            Opt::MenuBlur => {
+                s.menu_blur = (s.menu_blur + if forward { 1 } else { -1 }).clamp(0, 10);
+            }
+            Opt::NotificationDisplayTime => {
+                s.notification_display_time = (s.notification_display_time
+                    + if forward { 0.1 } else { -0.1 })
+                .clamp(0.5, 10.0);
+            }
+            Opt::SprintWindow => {
+                s.sprint_window = (s.sprint_window + if forward { 1 } else { -1 }).clamp(0, 10);
+            }
+            Opt::PadMoveDeadzone => {
+                s.controller.move_deadzone = (s.controller.move_deadzone
+                    + if forward { 0.01 } else { -0.01 })
+                .clamp(0.0, 0.5);
+            }
+            Opt::PadLookDeadzone => {
+                s.controller.look_deadzone = (s.controller.look_deadzone
+                    + if forward { 0.01 } else { -0.01 })
+                .clamp(0.0, 0.5);
+            }
+            Opt::Sensitivity => s.sensitivity = (s.sensitivity + step).clamp(0.0, 1.0),
+            Opt::WheelSensitivity => {
+                s.mouse_wheel_sensitivity =
+                    (s.mouse_wheel_sensitivity + step * 9.99).clamp(0.01, 10.0);
+            }
+            Opt::Volume(0) => s.master_volume = (s.master_volume + step).clamp(0.0, 1.0),
+            Opt::Volume(i) => s.volumes[i] = (s.volumes[i] + step).clamp(0.0, 1.0),
+            Opt::Gamma => s.gamma = (s.gamma + step).clamp(0.0, 1.0),
+            Opt::ChatOpacity => s.chat_opacity = (s.chat_opacity + step).clamp(0.0, 1.0),
+            Opt::TextBackgroundOpacity => {
+                s.text_background_opacity = (s.text_background_opacity + step).clamp(0.0, 1.0);
+            }
+            Opt::ChatScale => s.chat_scale = (s.chat_scale + step).clamp(0.0, 1.0),
+            Opt::ChatWidth => s.chat_width = (s.chat_width + step).clamp(0.0, 1.0),
+            Opt::ChatHeightFocused => {
+                s.chat_height_focused = (s.chat_height_focused + step).clamp(0.0, 1.0);
+            }
+            Opt::ChatHeightUnfocused => {
+                s.chat_height_unfocused = (s.chat_height_unfocused + step).clamp(0.0, 1.0);
+            }
+            Opt::ChatLineSpacing => {
+                s.chat_line_spacing = (s.chat_line_spacing + step).clamp(0.0, 1.0);
+            }
+            Opt::PadLookSensitivity => {
+                s.controller.look_sensitivity =
+                    (s.controller.look_sensitivity + step).clamp(0.0, 1.0);
+            }
+            Opt::FovEffects | Opt::DarknessPulsing => {
+                let cur = s.file.double(opt.file_key().unwrap()).sqrt() as f32;
+                let new_v = (cur + step).clamp(0.0, 1.0);
+                s.file.set(
+                    opt.file_key().unwrap(),
+                    crate::options_file::V::Double(f64::from(new_v).powi(2)),
+                );
+            }
+            Opt::DistortionEffects
+            | Opt::DamageTilt
+            | Opt::PanoramaSpeed
+            | Opt::GlintSpeed
+            | Opt::GlintStrength => {
+                let cur = s.file.double(opt.file_key().unwrap()) as f32;
+                let new_v = (cur + step).clamp(0.0, 1.0);
+                s.file.set(
+                    opt.file_key().unwrap(),
+                    crate::options_file::V::Double(f64::from(new_v)),
+                );
+            }
+            _ => {}
+        }
+        if opt.affects_preset() {
+            s.graphics_preset = "custom".into();
+        }
+        self.slider_value = None;
+        let mut events = vec![Event::Changed, Event::SliderDrag];
+        if let (Opt::Volume(source), Some(after)) = (opt, volume(s))
+            && before_vol != Some(after)
+        {
+            events.push(Event::Volume(source, after));
+        }
+        events
+    }
     /// Open a page whose Done/Escape returns directly to the calling screen.
     pub fn open_at(&mut self, in_world: bool, page: Page) {
         self.stack.clear();
         self.data_pack_dir = None;
+        self.focus = None;
+        self.can_change_value = false;
         self.push(page);
         self.in_world = in_world;
         self.selected_key = None;
@@ -1389,6 +1584,8 @@ impl OptionsUi {
         self.stack.push(page);
         self.scroll = 0.0;
         self.scrollbar_drag_y = None;
+        self.focus = None;
+        self.can_change_value = false;
         if matches!(page, Page::Video | Page::Controls | Page::KeyBinds) {
             self.settings_search.set_value("");
             self.settings_search.focused = false;
@@ -2440,6 +2637,7 @@ impl OptionsUi {
             return;
         }
         let (widgets, top, bottom, content) = self.layout(s, w, h);
+        self.size = (w, h);
         let in_world = self.in_world;
         ui::menu_background(batch, atlas, 0.0, 0.0, w, h, in_world);
         let list = bottom > top;
@@ -2448,13 +2646,18 @@ impl OptionsUi {
         }
         let visible = |wd: &Widget| !wd.list || (wd.y < bottom && wd.y + wd.h > top);
         let mut tooltip = None;
-        for wd in &widgets {
+        for (wd_idx, wd) in widgets.iter().enumerate() {
             if !visible(wd) {
                 continue;
             }
+            let is_focused = self
+                .focus
+                .as_ref()
+                .is_some_and(|fid| matches_focus(fid, wd_idx, wd));
             let start = batch.vertices.len();
-            let hover = ui::hovered(cursor, wd.x, wd.y, wd.w, wd.h)
-                && (!wd.list || cursor.1 >= top && cursor.1 < bottom);
+            let hover = (ui::hovered(cursor, wd.x, wd.y, wd.w, wd.h)
+                && (!wd.list || cursor.1 >= top && cursor.1 < bottom))
+                || is_focused;
             if hover {
                 if let WKind::Button {
                     act: Act::Extra(item),
@@ -2541,7 +2744,7 @@ impl OptionsUi {
                 WKind::Slider { label, value, opt } => {
                     let dragging = self.dragging == Some(*opt);
                     let shown = self.slider_shown(*opt, *value);
-                    ui::slider(
+                    ui::slider_ext(
                         batch,
                         atlas,
                         wd.x,
@@ -2550,6 +2753,8 @@ impl OptionsUi {
                         label,
                         shown,
                         hover || dragging,
+                        is_focused,
+                        self.can_change_value && is_focused,
                         true,
                         dragging,
                     );
@@ -2586,7 +2791,7 @@ impl OptionsUi {
                         crate::widgets::Kind::Row,
                     );
                     crate::widgets::target_as(rect, crate::widgets::Kind::Row);
-                    if *selected {
+                    if *selected || is_focused {
                         batch.fill(atlas, wd.x, wd.y, wd.w, wd.h, u32::MAX);
                         batch.fill(
                             atlas,
@@ -2619,6 +2824,9 @@ impl OptionsUi {
         }
         if self.page() == Page::Language {
             let mut search = self.language_search.clone();
+            if self.focus == Some(FocusId::Search) {
+                search.focused = true;
+            }
             search.draw(batch, atlas, None);
             if search.value.is_empty() && !search.focused {
                 batch.text_styled(
@@ -2634,6 +2842,9 @@ impl OptionsUi {
         }
         if matches!(self.page(), Page::Video | Page::Controls | Page::KeyBinds) {
             let mut search = self.settings_search.clone();
+            if self.focus == Some(FocusId::Search) {
+                search.focused = true;
+            }
             search.draw(batch, atlas, None);
             if search.value.is_empty() && !search.focused {
                 batch.text_styled(
@@ -2731,14 +2942,29 @@ impl OptionsUi {
             return events;
         }
         let (widgets, top, bottom, content) = self.layout(s, size.0, size.1);
+        self.size = size;
+        self.framebuffer = framebuffer;
         let mut events = Vec::new();
         if !drag && matches!(self.page(), Page::Video | Page::Controls | Page::KeyBinds) {
             let search = &mut self.settings_search;
             search.focused = ui::hovered((x, y), search.x, search.y, search.width, search.height);
             if search.focused {
+                self.focus = Some(FocusId::Search);
+                self.can_change_value = false;
                 search.click(atlas, x, false, false);
                 self.scroll = 0.0;
                 events.push(Event::ButtonClick);
+                return events;
+            }
+        }
+        if !drag && self.page() == Page::Language {
+            let search = &mut self.language_search;
+            search.focused = ui::hovered((x, y), search.x, search.y, search.width, search.height);
+            if search.focused {
+                self.focus = Some(FocusId::Search);
+                self.can_change_value = false;
+                search.click(atlas, x, false, false);
+                self.scroll = 0.0;
                 return events;
             }
         }
@@ -2795,17 +3021,19 @@ impl OptionsUi {
             self.scrollbar_drag_y = Some(y);
             return events;
         }
-        for wd in widgets {
+        for (wd_idx, wd) in widgets.into_iter().enumerate() {
             if !ui::hovered((x, y), wd.x, wd.y, wd.w, wd.h) {
                 continue;
             }
             if wd.list && (y < top || y >= bottom) {
                 continue;
             }
+            self.focus = Some(focus_id(wd_idx, &wd));
             match wd.kind {
                 WKind::Button {
                     active: true, act, ..
                 } => {
+                    self.can_change_value = false;
                     events.push(Event::ButtonClick);
                     match act {
                         Act::Push(p) => {
@@ -2877,12 +3105,14 @@ impl OptionsUi {
                     }
                 }
                 WKind::Slider { opt, .. } => {
+                    self.can_change_value = true;
                     self.dragging = Some(opt);
                     let v = ui::slider_value(wd.x, wd.w, x);
                     self.slider_value = Some((opt, v, Instant::now()));
                     drag_slider(opt, s, v, &mut events);
                 }
                 WKind::LanguageRow { code, .. } => {
+                    self.can_change_value = false;
                     if self.language_choice.as_deref() == Some(code.as_str()) {
                         events.extend(self.back(s));
                     } else {
@@ -2956,7 +3186,8 @@ impl OptionsUi {
         events
     }
     /// The mouse wheel at the cursor. Over a cycle button it takes the step
-    /// (`CycleButton.mouseScrolled`: up goes back) and the list stays put.
+    /// (`CycleButton.mouseScrolled`: up goes back) and the list stays put;
+    /// over a slider it nudges the slider up or down.
     pub fn wheel(
         &mut self,
         s: &mut Settings,
@@ -2965,6 +3196,8 @@ impl OptionsUi {
         framebuffer: [i32; 2],
         amount: f32,
     ) -> Vec<Event> {
+        self.size = size;
+        self.framebuffer = framebuffer;
         let plain = self.resource_error.is_none()
             && Self::graphics_level(self.page()).is_none()
             && !(self.pack_screen.is_some() && self.stack.last() == Some(&Page::Packs));
@@ -2981,12 +3214,23 @@ impl OptionsUi {
             } if ui::hovered(cursor, wd.x, wd.y, wd.w, wd.h)
                 && !(wd.list && (cursor.1 < top || cursor.1 >= bottom)) =>
             {
-                Some(*opt)
+                Some((false, *opt, wd.w))
+            }
+            WKind::Slider { opt, .. }
+                if ui::hovered(cursor, wd.x, wd.y, wd.w, wd.h)
+                    && !(wd.list && (cursor.1 < top || cursor.1 >= bottom)) =>
+            {
+                Some((true, *opt, wd.w))
             }
             _ => None,
         });
         match hovered {
-            Some(opt) if amount != 0.0 => self.cycle_option(s, opt, amount > 0.0, framebuffer),
+            Some((false, opt, _)) if amount != 0.0 => {
+                self.cycle_option(s, opt, amount > 0.0, framebuffer)
+            }
+            Some((true, opt, w)) if amount != 0.0 => {
+                self.step_slider_option(s, opt, amount > 0.0, w)
+            }
             Some(_) => Vec::new(),
             None => {
                 self.scroll_at(s, size, cursor, amount);
@@ -3077,6 +3321,8 @@ impl OptionsUi {
         self.slider_value = None;
         self.selected_key = None;
         self.selected_pad_action = None;
+        self.focus = None;
+        self.can_change_value = false;
         match page {
             Page::Language => {
                 if let Some(code) = self.language_choice.take()
@@ -3198,6 +3444,18 @@ impl OptionsUi {
         key: winit::keyboard::KeyCode,
         text: Option<&str>,
     ) -> Vec<Event> {
+        self.key_modifiers(s, atlas, key, text, false)
+    }
+
+    /// Keys while the options are open, including Shift modifier state.
+    pub fn key_modifiers(
+        &mut self,
+        s: &mut Settings,
+        atlas: &HudAtlas,
+        key: winit::keyboard::KeyCode,
+        text: Option<&str>,
+        shift: bool,
+    ) -> Vec<Event> {
         use winit::keyboard::KeyCode as K;
         if self.resource_error.is_some() {
             if matches!(key, K::Escape | K::Enter | K::NumpadEnter) {
@@ -3240,11 +3498,44 @@ impl OptionsUi {
             };
             return self.bind_key(s, value);
         }
+
+        // If a focused slider is in value-change mode, Escape cancels value-change mode
+        // before leaving the screen.
+        if self.can_change_value && key == K::Escape {
+            self.can_change_value = false;
+            return Vec::new();
+        }
         if key == K::Escape {
+            if self.focus == Some(FocusId::Search) {
+                self.focus = None;
+                self.settings_search.focused = false;
+                self.language_search.focused = false;
+                return Vec::new();
+            }
             return self.back(s);
         }
-        if self.page() == Page::Language {
-            if !self.language_search.key(key, false, false)
+
+        // Search field text entry when search box is focused
+        if self.focus == Some(FocusId::Search) {
+            if key != K::Tab && key != K::ArrowDown {
+                let search = if self.page() == Page::Language {
+                    &mut self.language_search
+                } else {
+                    &mut self.settings_search
+                };
+                if !search.key(key, false, shift)
+                    && let Some(t) = text
+                {
+                    let typed: String = t.chars().filter(|c| !c.is_control()).collect();
+                    if !typed.is_empty() {
+                        search.insert_text(&typed);
+                    }
+                }
+                self.scroll = 0.0;
+                return Vec::new();
+            }
+        } else if self.page() == Page::Language && self.focus.is_none() {
+            if !self.language_search.key(key, false, shift)
                 && let Some(t) = text
             {
                 let typed: String = t.chars().filter(|c| !c.is_control()).collect();
@@ -3253,8 +3544,8 @@ impl OptionsUi {
                 }
             }
             self.scroll = 0.0;
-        } else if self.settings_search_active() {
-            if !self.settings_search.key(key, false, false)
+        } else if self.settings_search_active() && self.focus.is_none() {
+            if !self.settings_search.key(key, false, shift)
                 && let Some(t) = text
             {
                 let typed: String = t.chars().filter(|c| !c.is_control()).collect();
@@ -3263,6 +3554,258 @@ impl OptionsUi {
                 }
             }
             self.scroll = 0.0;
+        }
+
+        // Gather focusables on the current page
+        let (widgets, top, bottom, content) = self.layout(s, self.size.0, self.size.1);
+        let has_search = (self.page() == Page::Language) || self.settings_search_active();
+        let mut focusables: Vec<(FocusId, [f32; 4], bool)> = Vec::new();
+        if has_search {
+            let search = if self.page() == Page::Language {
+                &self.language_search
+            } else {
+                &self.settings_search
+            };
+            focusables.push((
+                FocusId::Search,
+                [search.x, search.y, search.width, search.height],
+                false,
+            ));
+        }
+        for (i, wd) in widgets.iter().enumerate() {
+            match wd.kind {
+                WKind::Button { active: true, .. }
+                | WKind::Slider { .. }
+                | WKind::LanguageRow { .. } => {
+                    focusables.push((focus_id(i, wd), [wd.x, wd.y, wd.w, wd.h], wd.list));
+                }
+                _ => {}
+            }
+        }
+        if focusables.is_empty() {
+            return Vec::new();
+        }
+
+        // 1. Tab / Shift+Tab navigation
+        if key == K::Tab {
+            let at = self
+                .focus
+                .as_ref()
+                .and_then(|fid| focusables.iter().position(|(id, ..)| id == fid));
+            let next_idx = match at {
+                None => {
+                    if shift {
+                        focusables.len() - 1
+                    } else {
+                        0
+                    }
+                }
+                Some(p) => {
+                    if shift {
+                        (p + focusables.len() - 1) % focusables.len()
+                    } else {
+                        (p + 1) % focusables.len()
+                    }
+                }
+            };
+            let (next_id, rect, in_list) = &focusables[next_idx];
+            self.focus = Some(next_id.clone());
+            self.can_change_value = matches!(next_id, FocusId::Slider(_));
+            if *in_list {
+                if rect[1] < top {
+                    self.scroll -= (top - rect[1]) + 4.0;
+                } else if rect[1] + rect[3] > bottom {
+                    self.scroll += (rect[1] + rect[3] - bottom) + 4.0;
+                }
+                self.clamp_scroll(top, bottom, content);
+            }
+            return Vec::new();
+        }
+
+        // 2. Left / Right Arrow keys
+        if matches!(key, K::ArrowLeft | K::ArrowRight) {
+            let forward = key == K::ArrowRight;
+            // If focused on a slider and in can_change_value mode: adjust the slider value!
+            if let Some(FocusId::Slider(opt)) = self.focus
+                && self.can_change_value
+            {
+                let width = widgets
+                    .iter()
+                    .find(|wd| matches!(wd.kind, WKind::Slider { opt: o, .. } if o == opt))
+                    .map_or(150.0, |wd| wd.w);
+                return self.step_slider_option(s, opt, forward, width);
+            }
+            // Otherwise, navigate horizontally using 2D focus stepping
+            if let Some(fid) = &self.focus {
+                if let Some(cur_pos) = focusables.iter().position(|(id, ..)| id == fid) {
+                    let from = focusables[cur_pos].1;
+                    let rects: Vec<[f32; 4]> = focusables.iter().map(|f| f.1).collect();
+                    let dir = if forward {
+                        gamepad::Button::DPadRight
+                    } else {
+                        gamepad::Button::DPadLeft
+                    };
+                    if let Some(next_idx) = gamepad::focus_step_rect(from, dir, &rects) {
+                        let (next_id, rect, in_list) = &focusables[next_idx];
+                        self.focus = Some(next_id.clone());
+                        self.can_change_value = false;
+                        if *in_list {
+                            if rect[1] < top {
+                                self.scroll -= (top - rect[1]) + 4.0;
+                            } else if rect[1] + rect[3] > bottom {
+                                self.scroll += (rect[1] + rect[3] - bottom) + 4.0;
+                            }
+                            self.clamp_scroll(top, bottom, content);
+                        }
+                    }
+                }
+            } else {
+                self.focus = Some(focusables[0].0.clone());
+                self.can_change_value = false;
+            }
+            return Vec::new();
+        }
+
+        // 3. Up / Down Arrow keys
+        if matches!(key, K::ArrowUp | K::ArrowDown) {
+            let down = key == K::ArrowDown;
+            if let Some(fid) = &self.focus {
+                if let Some(cur_pos) = focusables.iter().position(|(id, ..)| id == fid) {
+                    let from = focusables[cur_pos].1;
+                    let rects: Vec<[f32; 4]> = focusables.iter().map(|f| f.1).collect();
+                    let dir = if down {
+                        gamepad::Button::DPadDown
+                    } else {
+                        gamepad::Button::DPadUp
+                    };
+                    let step = gamepad::focus_step_strict(from, dir, &rects)
+                        .or_else(|| gamepad::focus_step_vague(from, dir, &rects));
+                    if let Some(next_idx) = step {
+                        let (next_id, rect, in_list) = &focusables[next_idx];
+                        self.focus = Some(next_id.clone());
+                        self.can_change_value = false;
+                        if *in_list {
+                            if rect[1] < top {
+                                self.scroll -= (top - rect[1]) + 4.0;
+                            } else if rect[1] + rect[3] > bottom {
+                                self.scroll += (rect[1] + rect[3] - bottom) + 4.0;
+                            }
+                            self.clamp_scroll(top, bottom, content);
+                        }
+                    } else {
+                        // Off the edge of visible rows: scroll the list
+                        self.scroll += if down { 18.0 } else { -18.0 };
+                        self.clamp_scroll(top, bottom, content);
+                    }
+                }
+            } else {
+                self.focus = Some(focusables[0].0.clone());
+                self.can_change_value = false;
+            }
+            return Vec::new();
+        }
+
+        // 4. Enter / Space selection keys
+        if matches!(key, K::Enter | K::NumpadEnter | K::Space) {
+            match &self.focus {
+                Some(FocusId::Slider(_)) => {
+                    self.can_change_value = !self.can_change_value;
+                    return Vec::new();
+                }
+                Some(FocusId::Cycle(opt)) => {
+                    return self.cycle_option(s, *opt, shift, self.framebuffer);
+                }
+                Some(FocusId::Act(act)) => {
+                    let mut events = vec![Event::ButtonClick];
+                    let act = act.clone();
+                    match act {
+                        Act::Push(p) => {
+                            self.focus = None;
+                            self.can_change_value = false;
+                            if p == Page::ShaderPacks {
+                                events.push(Event::ListShaderPacks);
+                            }
+                            self.push(p);
+                        }
+                        Act::Done => {
+                            self.focus = None;
+                            self.can_change_value = false;
+                            events.extend(self.back(s));
+                        }
+                        Act::Cycle(opt) => {
+                            events.extend(self.cycle_option(s, opt, shift, self.framebuffer));
+                        }
+                        Act::Extra(item) => {
+                            if let Some(name) = item.key_name() {
+                                self.selected_key = Some(name);
+                            } else {
+                                item.cycle(&mut s.extras, shift);
+                                events.push(Event::Changed);
+                            }
+                        }
+                        Act::Key(name) => self.selected_key = Some(name),
+                        Act::ResetKey(name) => {
+                            s.keys.set(name, KeyBinds::default_of(name));
+                            events.push(Event::Changed);
+                        }
+                        Act::ResetKeys => {
+                            s.keys.reset_all();
+                            events.push(Event::Changed);
+                        }
+                        Act::PadKey(action) => self.selected_pad_action = Some(action),
+                        Act::ResetPadKey(action) => {
+                            s.controller
+                                .bind(action, gamepad::PadSettings::default_of(action));
+                            events.push(Event::Changed);
+                        }
+                        Act::ResetPadKeys => {
+                            s.controller.reset_bindings();
+                            events.push(Event::Changed);
+                        }
+                        Act::ToggleMod(i) => {
+                            s.mods.toggle(i);
+                            events.push(Event::Changed);
+                        }
+                        Act::ModSettings(i) => {
+                            self.focus = None;
+                            self.can_change_value = false;
+                            self.push(Page::NativeMod(i));
+                            events.push(Event::NativeSettings(i));
+                        }
+                        Act::NativeKey(i, k) => {
+                            self.selected_key = Some(NATIVE_KEY);
+                            self.selected_native_key = Some((i, k));
+                        }
+                        Act::NativeButton(i, b) => events.push(Event::NativeButton(i, b)),
+                        Act::OpenModFolder => events.push(Event::OpenModFolder),
+                        Act::PickShaderPack(i) => {
+                            if let Some(pack) = s.shader_packs.get(i) {
+                                s.horizon.shader_pack = if s.horizon.shader_pack == pack.file {
+                                    String::new()
+                                } else {
+                                    pack.file.clone()
+                                };
+                                events.push(Event::ShaderPack);
+                            }
+                        }
+                        Act::OpenShaderPackFolder => events.push(Event::OpenShaderPackFolder),
+                        Act::Credits => events.push(Event::Credits),
+                        Act::CopyAgentDetails => events.push(Event::CopyAgentDetails),
+                        Act::None => {}
+                    }
+                    return events;
+                }
+                Some(FocusId::Lang(code)) => {
+                    let mut events = vec![Event::ButtonClick];
+                    if self.language_choice.as_deref() == Some(code.as_str()) {
+                        events.extend(self.back(s));
+                    } else {
+                        self.language_choice = Some(code.clone());
+                    }
+                    return events;
+                }
+                _ => {}
+            }
         }
         Vec::new()
     }
@@ -4819,5 +5362,122 @@ mod tests {
             Opt::SoundDevice.cycle(&mut s, true, [854, 480]);
         }
         assert_eq!(s.sound_device, "");
+    }
+
+    #[test]
+    fn slider_keyboard_navigation_and_selection_toggle_parity() {
+        use winit::keyboard::KeyCode;
+        let atlas = atlas();
+        let mut s = Settings::default();
+        let mut ui = OptionsUi::default();
+        ui.show(Page::Main);
+        s.fov = 70.0;
+
+        // 1. Tab focuses the first interactive widget: FOV slider
+        ui.key(&mut s, &atlas, KeyCode::Tab, None);
+        assert_eq!(ui.focus, Some(FocusId::Slider(Opt::Fov)));
+        assert!(
+            ui.can_change_value,
+            "Tab onto slider enables can_change_value (Vanilla behavior)"
+        );
+
+        // 2. Right Arrow steps FOV up to 71
+        let events = ui.key(&mut s, &atlas, KeyCode::ArrowRight, None);
+        assert_eq!(s.fov, 71.0);
+        assert!(events.contains(&Event::Changed));
+
+        // 3. Left Arrow steps FOV down back to 70, then 69
+        ui.key(&mut s, &atlas, KeyCode::ArrowLeft, None);
+        assert_eq!(s.fov, 70.0);
+        ui.key(&mut s, &atlas, KeyCode::ArrowLeft, None);
+        assert_eq!(s.fov, 69.0);
+
+        // 4. Space / Enter toggles can_change_value to false
+        ui.key(&mut s, &atlas, KeyCode::Space, None);
+        assert!(
+            !ui.can_change_value,
+            "Space toggles can_change_value to false"
+        );
+
+        // 5. With can_change_value false, Left/Right arrow keys navigate focus instead of changing value!
+        ui.key(&mut s, &atlas, KeyCode::ArrowRight, None);
+        assert_eq!(
+            s.fov, 69.0,
+            "FOV must not change when can_change_value is false"
+        );
+        assert_ne!(
+            ui.focus,
+            Some(FocusId::Slider(Opt::Fov)),
+            "Focus moved to next widget horizontally"
+        );
+
+        // 6. Navigate back to FOV slider with Left Arrow
+        ui.key(&mut s, &atlas, KeyCode::ArrowLeft, None);
+        assert_eq!(ui.focus, Some(FocusId::Slider(Opt::Fov)));
+        assert!(
+            !ui.can_change_value,
+            "Arrow navigation onto slider keeps can_change_value false"
+        );
+
+        // 7. Space toggles can_change_value back to true
+        ui.key(&mut s, &atlas, KeyCode::Enter, None);
+        assert!(ui.can_change_value);
+        ui.key(&mut s, &atlas, KeyCode::ArrowRight, None);
+        assert_eq!(s.fov, 70.0);
+
+        // 8. Escape while in can_change_value mode cancels value editing without closing screen
+        ui.key(&mut s, &atlas, KeyCode::Escape, None);
+        assert!(!ui.can_change_value);
+        assert_eq!(
+            ui.page(),
+            Page::Main,
+            "Screen must not close on first Escape from value edit"
+        );
+
+        // 9. Second Escape closes screen back to previous
+        let events = ui.key(&mut s, &atlas, KeyCode::Escape, None);
+        assert!(events.contains(&Event::Changed) || ui.stack.is_empty());
+    }
+
+    #[test]
+    fn slider_mouse_wheel_steps_value() {
+        let mut s = Settings::default();
+        let mut ui = OptionsUi::default();
+        ui.show(Page::Main);
+        s.fov = 70.0;
+        let size: (f32, f32) = (427.0, 240.0);
+        let cx = (size.0 / 2.0_f32).floor();
+
+        // Cursor over FOV slider (cx - 154.0, 29.0, 150.0, 20.0)
+        let cursor = (cx - 100.0, 35.0);
+        // Scroll up (+1.0) increases FOV
+        ui.wheel(&mut s, size, cursor, [854, 480], 1.0);
+        assert_eq!(s.fov, 71.0);
+        // Scroll down (-1.0) decreases FOV
+        ui.wheel(&mut s, size, cursor, [854, 480], -1.0);
+        assert_eq!(s.fov, 70.0);
+
+        // Sound page: Master Volume slider
+        ui.show(Page::Sound);
+        s.master_volume = 0.5;
+        let (widgets, _, _, _) = ui.layout(&s, size.0, size.1);
+        let master = widgets
+            .iter()
+            .find(|w| {
+                matches!(
+                    w.kind,
+                    WKind::Slider {
+                        opt: Opt::Volume(0),
+                        ..
+                    }
+                )
+            })
+            .unwrap();
+        let cursor = (master.x + 10.0, master.y + 10.0);
+
+        // Scroll up on volume slider increases volume and emits Event::Volume
+        let events = ui.wheel(&mut s, size, cursor, [854, 480], 1.0);
+        assert!(s.master_volume > 0.5);
+        assert!(events.iter().any(|e| matches!(e, Event::Volume(0, _))));
     }
 }

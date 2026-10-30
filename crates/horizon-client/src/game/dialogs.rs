@@ -583,6 +583,7 @@ impl Game<'_> {
                     input,
                     rect: [x, y, w, h],
                 } if ui::hovered(cursor, x, y, w, h) => {
+                    open.focus = Some(input);
                     open.dragging = Some(input);
                     if let Some(v) = open.values.get_mut(input) {
                         *v = InputValue::Slider(ui::slider_value(x, w, cursor.0));
@@ -661,13 +662,25 @@ impl Game<'_> {
                         Part::Cycle {
                             input,
                             rect: [x, y, w, h],
-                        } if ui::hovered(cursor, x, y, w, h) => Some(input),
+                        } if ui::hovered(cursor, x, y, w, h) => Some((input, false)),
+                        Part::Slider {
+                            input,
+                            rect: [x, y, w, h],
+                        } if ui::hovered(cursor, x, y, w, h) => Some((input, true)),
                         _ => None,
                     });
-                if let Some(input) = hovered {
-                    // CycleButton.mouseScrolled: up goes back.
-                    cycle(open, input, if delta > 0.0 { -1 } else { 1 });
-                    return;
+                if let Some((input, is_slider)) = hovered {
+                    if is_slider {
+                        if let Some(InputValue::Slider(val)) = open.values.get_mut(input) {
+                            let step = if delta > 0.0 { 0.01 } else { -0.01 };
+                            *val = (*val + step).clamp(0.0, 1.0);
+                        }
+                        return;
+                    } else {
+                        // CycleButton.mouseScrolled: up goes back.
+                        cycle(open, input, if delta > 0.0 { -1 } else { 1 });
+                        return;
+                    }
                 }
             }
             open.scroll.wheel(delta, 10.0, ay, ay + ah, layout.content);
@@ -760,6 +773,18 @@ impl Game<'_> {
                 };
                 open.focus = Some(texts[next]);
             }
+            return Ok(());
+        }
+        if let Some(focus) = open.focus
+            && let Some(InputValue::Slider(val)) = open.values.get_mut(focus)
+            && matches!(key, KeyCode::ArrowLeft | KeyCode::ArrowRight)
+        {
+            let step = if key == KeyCode::ArrowRight {
+                0.01
+            } else {
+                -0.01
+            };
+            *val = (*val + step).clamp(0.0, 1.0);
             return Ok(());
         }
         let Some(Some(edit)) = open.focus.and_then(|f| open.fields.get_mut(f)) else {

@@ -167,8 +167,15 @@ impl Game<'_> {
         self.handle_option_events(events)
     }
     pub(super) fn options_key(&mut self, key: KeyCode, text: Option<&str>) -> Result<()> {
+        let size = self.gui_size();
+        let shift = self.has_shift_down();
+        let framebuffer = self.renderer.as_ref().map_or([1280, 720], |r| {
+            [r.config.width as i32, r.config.height as i32]
+        });
+        self.ui.options.size = size;
+        self.ui.options.framebuffer = framebuffer;
         let mut ui = std::mem::take(&mut self.ui.options);
-        let events = ui.key(&mut self.settings, &self.gui.atlas, key, text);
+        let events = ui.key_modifiers(&mut self.settings, &self.gui.atlas, key, text, shift);
         self.ui.options = ui;
         self.handle_option_events(events)
     }
