@@ -309,7 +309,9 @@ impl FrameUniforms {
         let whole = |p: glam::DVec3| p.floor();
         let int = |p: glam::DVec3| Value::i(&whole(p).as_ivec3().to_array());
         let fract = |p: glam::DVec3| Value::f(&(p - whole(p)).as_vec3().to_array());
-        let (yaw, pitch) = (frame.yaw.to_radians(), frame.pitch.to_radians());
+        // The player's, not the camera's: in a third-person view the camera is behind (or in
+        // front of, turned around) the eye the pack lights from.
+        let [yaw, pitch] = frame.eye_rotation.map(f32::to_radians);
         let look = Vec3::new(
             -yaw.sin() * pitch.cos(),
             -pitch.sin(),
@@ -364,8 +366,8 @@ impl FrameUniforms {
                 "previousCameraPositionInt" => int(previous_exact),
                 "previousCameraPositionFract" => fract(previous_exact),
                 // The camera is the eye in first person.
-                "eyePosition" => v3(camera),
-                "relativeEyePosition" => v3(Vec3::ZERO),
+                "eyePosition" => v3(frame.eye.as_vec3()),
+                "relativeEyePosition" => v3((frame.eye - frame.camera).as_vec3()),
                 "playerLookVector" | "playerBodyVector" => v3(look),
                 "eyeAltitude" => Value::f(&[frame.camera.y as f32]),
                 "upPosition" => v3(to_view(Vec3::new(0.0, 100.0, 0.0))),

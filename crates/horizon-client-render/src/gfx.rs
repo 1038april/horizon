@@ -280,6 +280,10 @@ pub struct Frame<'a> {
     pub yaw: f32,
     pub pitch: f32,
     pub fov_degrees: f32,
+    /// The camera entity's eye and view rotation (yaw, pitch): the camera's own except in a
+    /// third-person view.
+    pub eye: DVec3,
+    pub eye_rotation: [f32; 2],
     /// The `GameRenderer.bobHurt`/`bobView` pose multiplied into the
     /// projection (`crate::camera::bob_matrix`).
     pub bob: Mat4,

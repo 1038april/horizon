@@ -38,6 +38,12 @@ pub(super) fn rewrite(pp: &Preprocessed) -> Option<Preprocessed> {
     let tokens = lex(&pp.code);
     let next = |i: usize| (i + 1..tokens.len()).find(|&j| significant(tokens[j]));
     let prev = |i: usize| (0..i).rev().find(|&j| significant(tokens[j]));
+    // `[N]` at `open`: its size's text and the token after `]`.
+    let bracket = |open: usize| -> Option<(String, Option<usize>)> {
+        let close = (open..tokens.len()).find(|&j| tokens[j] == "]")?;
+        let size: String = tokens[open + 1..close].concat();
+        Some((size.trim().to_owned(), next(close)))
+    };
     // The variables an atomic function takes a component of.
     let mut used = Vec::new();
     for (i, &t) in tokens.iter().enumerate() {
@@ -66,20 +72,18 @@ pub(super) fn rewrite(pp: &Preprocessed) -> Option<Preprocessed> {
         };
         let mut j = next(ty);
         let mut array = None;
-        if j.is_some_and(|j| tokens[j] == "[") {
-            let n = j.and_then(next);
-            array = n.map(|n| tokens[n].to_owned());
-            j = n.and_then(next).and_then(next);
+        if let Some((size, after)) = j.filter(|&j| tokens[j] == "[").and_then(bracket) {
+            array = Some(size);
+            j = after;
         }
         let Some(name_at) = j.filter(|&j| is_ident(tokens[j])) else {
             continue;
         };
         let name = tokens[name_at];
         let mut end = next(name_at);
-        if end.is_some_and(|e| tokens[e] == "[") {
-            let n = end.and_then(next);
-            array = n.map(|n| tokens[n].to_owned());
-            end = n.and_then(next).and_then(next);
+        if let Some((size, after)) = end.filter(|&e| tokens[e] == "[").and_then(bracket) {
+            array = Some(size);
+            end = after;
         }
         let Some(end) = end.filter(|&e| tokens[e] == ";") else {
             continue;
@@ -195,9 +199,39 @@ pub(super) fn rewrite(pp: &Preprocessed) -> Option<Preprocessed> {
         let assigned = |at: Option<usize>| {
             at.is_some_and(|j| tokens[j] == "=" && next(j).is_none_or(|k| tokens[k] != "="))
         };
+        // `name op= value;`: the operator's tokens and the `=`.
+        let compound = after.and_then(|op| {
+            let first = tokens[op];
+            let second = next(op)?;
+            match (first, tokens[second]) {
+                ("+" | "-" | "*" | "/" | "%" | "&" | "|" | "^", "=") => {
+                    Some((first.to_owned(), second))
+                }
+                ("<" | ">", t) if t == first => {
+                    let eq = next(second).filter(|&k| tokens[k] == "=")?;
+                    Some((format!("{first}{first}"), eq))
+                }
+                _ => None,
+            }
+        });
         let replacement;
         let mut end = last;
-        if follows(".") || (s.array.is_none() && follows("[")) {
+        if let Some((op, eq)) = compound {
+            // `name op= value;` → `hz_set_name(hz_get_name() op (value));`
+            let semi = (eq..tokens.len()).find(|&j| tokens[j] == ";").unwrap_or(eq);
+            let args = if getter_args.is_empty() {
+                String::new()
+            } else {
+                format!("{getter_args}, ")
+            };
+            out[i] = format!("hz_set_{name}({args}hz_get_{name}({getter_args}) {op} (");
+            for t in &mut out[i + 1..=eq] {
+                *t = t.chars().filter(|&c| c == '\n').collect();
+            }
+            out[semi] = "));".into();
+            i = eq + 1;
+            continue;
+        } else if follows(".") || (s.array.is_none() && follows("[")) {
             let at = after.and_then(next).unwrap();
             if follows("[") {
                 // `name[c]`: an element already.
@@ -245,4 +279,67 @@ pub(super) fn rewrite(pp: &Preprocessed) -> Option<Preprocessed> {
         comments: pp.comments.clone(),
         diagnostics: pp.diagnostics.clone(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rewritten(code: &str) -> String {
+        let pp = Preprocessed {
+            code: code.to_owned(),
+            lines: Vec::new(),
+            files: Vec::new(),
+            version: None,
+            extensions: Vec::new(),
+            comments: Vec::new(),
+            diagnostics: Vec::new(),
+        };
+        let out = rewrite(&pp).expect("rewritten").code;
+        assert_eq!(out.lines().count(), code.lines().count(), "{out}");
+        out
+    }
+
+    #[test]
+    fn components_whole_vectors_and_compound_assignments() {
+        let out = rewritten(
+            "shared ivec4 sums;\nvoid f(ivec4 v) {\n atomicAdd(sums.y, 1);\n ivec4 a = sums;\n \
+             sums = v;\n sums += v;\n sums <<= 1;\n int z = sums.z;\n ivec2 xy = sums.xy;\n}\n",
+        );
+        assert!(out.contains("shared int sums_hz[4];"));
+        assert!(out.contains("atomicAdd(sums_hz[1], 1);"));
+        assert!(out.contains("ivec4 a = hz_get_sums();"));
+        assert!(out.contains("hz_set_sums( v);"));
+        assert!(out.contains("hz_set_sums(hz_get_sums() + ( v));"));
+        assert!(out.contains("hz_set_sums(hz_get_sums() << ( 1));"));
+        assert!(out.contains("int z = sums_hz[2];"));
+        assert!(out.contains("ivec2 xy = hz_get_sums().xy;"));
+    }
+
+    #[test]
+    fn arrays_of_vectors_with_any_size() {
+        let out = rewritten(
+            "#define N 4\nshared uvec2 lights[N * 2];\nvoid f(int k) {\n atomicMax(lights[k + 1].x, 3u);\n \
+             lights[k] += uvec2(1u);\n uvec2 l = lights[k];\n}\n",
+        );
+        assert!(out.contains("shared uint lights_hz[N * 2][2];"), "{out}");
+        assert!(out.contains("atomicMax(lights_hz[k + 1][0], 3u);"));
+        assert!(out.contains("hz_set_lights(k, hz_get_lights(k) + ( uvec2(1u)));"));
+        assert!(out.contains("uvec2 l = hz_get_lights(k);"));
+    }
+
+    #[test]
+    fn untouched_without_atomics_on_a_component() {
+        let pp = |code: &str| Preprocessed {
+            code: code.to_owned(),
+            lines: Vec::new(),
+            files: Vec::new(),
+            version: None,
+            extensions: Vec::new(),
+            comments: Vec::new(),
+            diagnostics: Vec::new(),
+        };
+        assert!(rewrite(&pp("shared ivec4 v;\nvoid f() { v.x = 1; }\n")).is_none());
+        assert!(rewrite(&pp("shared int n;\nvoid f() { atomicAdd(n, 1); }\n")).is_none());
+    }
 }

@@ -1443,6 +1443,18 @@ mod tests {
     }
 
     #[test]
+    fn atomics_on_shared_vector_components_compile() {
+        let csh = "#version 430\nlayout(local_size_x = 4) in;\nshared ivec4 sums;\nshared uvec2 lights[8];\n\
+                   layout(r32i) uniform iimage2D colorimg5;\nvoid main() {\n    \
+                   if (gl_LocalInvocationIndex == 0u) sums = ivec4(0);\n    barrier();\n    \
+                   atomicAdd(sums.y, 1);\n    atomicMax(lights[gl_LocalInvocationIndex].x, 2u);\n    \
+                   sums += ivec4(1);\n    barrier();\n    imageStore(colorimg5, ivec2(0), ivec4(sums.y + int(lights[1].x)));\n}\n";
+        let pack = Pack::from_zip_bytes("P.zip", zip(&[("shaders/deferred_a.csh", csh)])).unwrap();
+        translate_compute(&preprocess(&pack, "deferred_a.csh", &Macros::standard()))
+            .unwrap_or_else(|e| panic!("{e:?}"));
+    }
+
+    #[test]
     fn compute_programs_translate() {
         let csh = "#version 430\nlayout(local_size_x = 64) in;\nconst ivec3 workGroups = ivec3(2, 1, 1);\n\
                    layout(rgba16f) writeonly uniform image2D colorimg4;\nuniform sampler2D colortex4;\n\
