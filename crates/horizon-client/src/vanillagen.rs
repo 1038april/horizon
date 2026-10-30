@@ -441,7 +441,14 @@ impl VanillaTerrain {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        if let Err(e) = serde_json::to_vec(&list).map(|b| std::fs::write(path, b)) {
+        // Written beside the file and renamed over it: a crash half way must
+        // not leave truncated JSON, which loads as no references at all.
+        let tmp = path.with_extension("json.tmp");
+        let saved = serde_json::to_vec(&list)
+            .map_err(std::io::Error::from)
+            .and_then(|b| std::fs::write(&tmp, b))
+            .and_then(|()| std::fs::rename(&tmp, path));
+        if let Err(e) = saved {
             log::warn!("Horizon: could not save {}: {e}", path.display());
         }
     }
