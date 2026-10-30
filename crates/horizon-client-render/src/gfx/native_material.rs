@@ -66,7 +66,7 @@ fn horizon_material_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color
 fn horizon_material_color(in: HorizonMaterialOut, translucent: bool) -> vec4<f32> {
     let albedo = horizon_terrain_sprite(in.uv, in.layer & 0x7fffu);
     return material(MaterialInput(albedo, in.tint, in.light, in.lightmap, in.position, in.uv,
-        translucent)).color;
+        translucent, in.clip.xy / frame.resolution)).color;
 }
 @fragment fn horizon_material_fs_solid(in: HorizonMaterialOut) -> @location(0) vec4<f32> {
     let color = horizon_material_color(in, false);
@@ -297,7 +297,9 @@ mod tests {
             fn apply_fog(c: vec4<f32>) -> vec4<f32> { return c * gain; }\n\
             fn material(input: MaterialInput) -> Surface {\n    \
                 let lit = input.albedo * input.tint * vec4(input.lightmap, 1.0);\n    \
-                return Surface(apply_fog(sprite(lit)));\n}\n";
+                let t = vec2<i32>(input.screen * frame.resolution);\n    \
+                let behind = textureLoad(opaque_color, t, 0) * textureLoad(opaque_depth, t, 0);\n    \
+                return Surface(apply_fog(sprite(lit)) + behind * 0.0);\n}\n";
         let stage = stage(own);
         let module = module(&stage).unwrap();
         let info = naga::valid::Validator::new(
