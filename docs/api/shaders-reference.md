@@ -137,6 +137,12 @@ The frame, as `frame` in every stage. Positions and directions are in world axes
 | `dimension` | `i32` | 388 | 0 the Overworld, -1 the Nether, 1 the End, 2 any other dimension. |
 | `frame_index` | `u32` | 392 | Frames drawn since the pack was loaded (wraps). |
 | `hide_gui` | `u32` | 396 | 1 while F1 hides the HUD, else 0. |
+| `previous_view_projection` | `mat4x4<f32>` | 400 | Last frame's camera-relative world to clip space (its `projection * view`); a point at camera-relative `p` now was at `p + camera_motion` relative to last frame's camera. This frame's on the first frame. |
+| `camera_motion` | `vec3<f32>` | 464 | How far the camera moved since last frame, in blocks. |
+| `delta_time` | `f32` | 476 | Seconds since last frame (0 on the first). |
+| `eye_light_smooth` | `vec2<f32>` | 480 | `eye_light` eased with a half-life of 2 seconds: it follows the light levels' steps without stepping itself (for exposure and indoor fog). |
+| `in_water` | `f32` | 488 | 1 while the camera is in water (`eye_in` 1), eased with a half-life of a quarter second in and out. |
+| `in_lava` | `f32` | 492 | The same for lava (`eye_in` 2). |
 
 ## Options
 

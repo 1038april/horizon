@@ -43,6 +43,11 @@ pub struct NativeFrame {
     /// The world's colour before translucent terrain (`opaque_color`, binding 11), copied
     /// with it; 1×1 while the world draws straight to the window.
     pub opaque_color: wgpu::Texture,
+    /// Last frame's view-projection, camera and time (`write`).
+    last: Option<([[f32; 4]; 4], glam::DVec3, std::time::Instant)>,
+    /// The eased eye light (block, sky) and being in water and lava (`write`); NaN until the
+    /// first frame sets them.
+    eye: [f32; 4],
     start: std::time::Instant,
     frames: u32,
 }
@@ -123,6 +128,8 @@ impl NativeFrame {
             group,
             opaque_depth,
             opaque_color,
+            last: None,
+            eye: [f32::NAN; 4],
             start: std::time::Instant::now(),
             frames: 0,
         }
@@ -197,7 +204,38 @@ impl NativeFrame {
     /// Writes this frame's inputs, for a world of `size`.
     pub fn write(&mut self, queue: &wgpu::Queue, frame: &Frame, size: [u32; 2]) {
         let seconds = self.start.elapsed().as_secs_f32() % 3600.0;
-        let inputs = frame_inputs(frame, size, seconds, self.frames);
+        let mut inputs = frame_inputs(frame, size, seconds, self.frames);
+        let view_proj = (Mat4::from_cols_array_2d(&inputs.projection)
+            * Mat4::from_cols_array_2d(&inputs.view))
+        .to_cols_array_2d();
+        let now = std::time::Instant::now();
+        inputs.previous_view_projection = view_proj;
+        if let Some((previous, camera, time)) = self.last {
+            inputs.previous_view_projection = previous;
+            inputs.camera_motion = (frame.camera - camera).as_vec3().to_array();
+            inputs.delta_time = (now - time).as_secs_f32();
+        }
+        self.last = Some((view_proj, frame.camera, now));
+        // The eye's light and medium eased by half-lives in seconds, from where they are at
+        // first.
+        let targets = [
+            (inputs.eye_light[0], 2.0),
+            (inputs.eye_light[1], 2.0),
+            (f32::from(u8::from(inputs.eye_in == 1)), 0.25),
+            (f32::from(u8::from(inputs.eye_in == 2)), 0.25),
+        ];
+        let dt = inputs.delta_time;
+        for (value, (target, half_life)) in self.eye.iter_mut().zip(targets) {
+            *value = if value.is_nan() {
+                target
+            } else {
+                target + (*value - target) * 0.5f32.powf(dt / half_life)
+            };
+        }
+        let [block, sky, water, lava] = self.eye;
+        inputs.eye_light_smooth = [block, sky];
+        inputs.in_water = water;
+        inputs.in_lava = lava;
         self.frames = self.frames.wrapping_add(1);
         queue.write_buffer(&self.buffer, 0, bytemuck::bytes_of(&inputs));
     }
@@ -527,6 +565,13 @@ pub fn frame_inputs(frame: &Frame, size: [u32; 2], seconds: f32, index: u32) -> 
         },
         frame_index: index,
         hide_gui: u32::from(pack.hide_gui),
+        // Filled by `NativeFrame::write`, which remembers the frames before.
+        previous_view_projection: m(Mat4::IDENTITY),
+        camera_motion: [0.0; 3],
+        delta_time: 0.0,
+        eye_light_smooth: [level(pack.eye_light[0]), level(pack.eye_light[1])],
+        in_water: f32::from(u8::from(pack.eye_in as u32 == 1)),
+        in_lava: f32::from(u8::from(pack.eye_in as u32 == 2)),
     }
 }
 

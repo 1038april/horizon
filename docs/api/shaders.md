@@ -96,6 +96,9 @@ stages.
 
 ## Changelog
 
+- 2026-10-30: API 0.1 (additions): `Frame.previous_view_projection`, `camera_motion` and
+  `delta_time` for temporal passes (reprojection, motion blur); `eye_light_smooth`, `in_water`
+  and `in_lava`, eased so exposure and underwater fog fade instead of stepping.
 - 2026-10-30: API 0.1 (additions): the material stage's `MaterialInput.screen` and its
   `opaque_depth` and `opaque_color`, the world as it was before translucent terrain drew, so
   water and glass can see what lies behind them (depth under water, refraction).
