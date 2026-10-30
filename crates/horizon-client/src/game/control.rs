@@ -36,6 +36,7 @@ const HELP: &[&str] = &[
     "chat-log [N]                   the newest N chat messages (default 10)",
     "options [PAGE]                 open the options (video sound controls keybinds mouse chat accessibility language font packs mods graphics graphics-advanced graphics-hdr)",
     "stats [reset]                  frame-time summary since the last reset",
+    "narration                      the narrator's status and the last messages it was asked to say",
     "bench SECONDS                  reset stats, wait, then reply with the summary",
     "fly X1 Y1 Z1 X2 Y2 Z2 SECONDS [PITCH [raw]]  fly the camera along a line at constant speed, then reply with the frame summary (raw: every frame time too)",
     "open WORLD [SEED] [creative]   open or create a world from the title screen",
@@ -718,6 +719,15 @@ impl Game<'_> {
                     .remote_chat(n)
                     .unwrap_or_else(|| self.ui.chat.recent_lines(n));
                 Ok(Some(json!({ "chat": lines })))
+            }
+            "narration" => {
+                // NarratorStatus's options.txt names: off, all, chat, system.
+                let status = horizon_narrator::status().key().rsplit('.').next();
+                Ok(Some(json!({
+                    "status": status,
+                    "active": horizon_narrator::is_active(),
+                    "recent": horizon_narrator::recent(),
+                })))
             }
             "stats" => {
                 let summary = self.frame_stats.summary();
