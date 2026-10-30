@@ -1197,7 +1197,8 @@ fn build_pass(
     while targets.last().is_some_and(Option::is_none) {
         targets.pop();
     }
-    // A program that only writes images draws into a sink that keeps nothing.
+    // A program that only writes images draws into a sink that keeps nothing; one drawing
+    // geometry has the depth buffer, and draws with no colour target at all.
     let sink = !final_pass && writes.is_empty() && !program.interface.images.is_empty();
     if sink && geometry.is_none() {
         targets = vec![Some(wgpu::ColorTargetState {
@@ -1205,7 +1206,7 @@ fn build_pass(
             blend: None,
             write_mask: wgpu::ColorWrites::empty(),
         })];
-    } else if !final_pass && writes.is_empty() {
+    } else if !final_pass && writes.is_empty() && !sink {
         notes.push(format!("{}: writes no buffer; skipped", p.name));
         return None;
     }
