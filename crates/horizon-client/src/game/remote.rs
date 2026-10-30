@@ -4851,6 +4851,10 @@ impl Game<'_> {
         self.border.tick();
         self.player_border();
         self.tick_remote_entities(running);
+        // Breeze.tick's block dust: drawn by each client for the breezes it sees.
+        if running {
+            self.tick_breeze_effects();
+        }
         self.tick_remote_guardian_eyes(running);
         // ClientLevel.tickBlockEntities: chest lids, shulker boxes, bells,
         // and the moving pistons a block event's client-side moveBlocks made
