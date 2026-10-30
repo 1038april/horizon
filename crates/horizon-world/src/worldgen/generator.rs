@@ -1793,6 +1793,12 @@ impl<R: RandomSource> super::structure::start::StartContext for StructureQueries
 where
     R::Positional: Clone + Send + Sync,
 {
+    fn is_old_chunk(&self, chunk: ChunkPos) -> bool {
+        self.pipeline
+            .old_world
+            .get()
+            .is_some_and(|world| world.is_old_chunk_around(chunk, 0))
+    }
     fn seed(&self) -> i64 {
         self.pipeline.seed
     }

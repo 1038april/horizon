@@ -93,8 +93,8 @@ Blender.blendDensity	port	crates/horizon-world/src/worldgen/blending.rs::Blender
 Blender.getBlendingDataValue	inline	crates/horizon-world/src/worldgen/blending.rs::Blender::blending_value	
 Blender.getBiomeResolver	inline	crates/horizon-world/src/worldgen/blending.rs::Blender::blend_biome	the generator asks `blend_biome` before its own biome source
 Blender.blendBiome	port	crates/horizon-world/src/worldgen/blending.rs::Blender::blend_biome	
-Blender.generateBorderTicks	missing		the leaves and fluids of the old/new chunk border are not marked for post-processing yet
-Blender.generateBorderTick	missing		part of generateBorderTicks
+Blender.generateBorderTicks	skip:other		does something only for a chunk that has blending data and is being generated again (retrogen); Horizon never regenerates an old chunk
+Blender.generateBorderTick	skip:other		does something only for a chunk that has blending data and is being generated again (retrogen); Horizon never regenerates an old chunk
 Blender.createAroundOldChunksCarvingMaskFilter	inline	crates/horizon-world/src/worldgen/blending.rs::OldChunkDistance::around	the carving filter is `Blender::carving_filter`
 Blender.makeOldChunkDistanceGetter	inline	crates/horizon-world/src/worldgen/blending.rs::OldChunkDistance::distance	
 Blender.makeOffsetOldChunkDistanceGetter	inline	crates/horizon-world/src/worldgen/blending.rs::OldChunkDistance::around	

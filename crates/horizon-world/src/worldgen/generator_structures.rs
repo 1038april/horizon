@@ -291,6 +291,9 @@ impl StructureState {
         if let Some(found) = self.starts.get((chunk.x, chunk.z)) {
             return found;
         }
+        if context.is_old_chunk(chunk) {
+            return Starts::default();
+        }
         // Ring searches enlist other workers and wait for them: never hold a
         // chunk-work lock while helping, even when this chunk has no starts.
         let rings = self.rings_for(context, chunk);

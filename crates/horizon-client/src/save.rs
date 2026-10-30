@@ -4165,6 +4165,23 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
     fn decorates(&self) -> bool {
         self.inner.decorates()
     }
+    fn decorates_beside_final(&self) -> bool {
+        self.inner.decorates_beside_final()
+    }
+    fn proto_beside_final(
+        &self,
+        worker: &mut G::Worker,
+        snapshot: &Chunk,
+    ) -> Option<crate::streaming::Proto> {
+        self.inner.proto_beside_final(worker, snapshot)
+    }
+    fn final_writes(
+        &self,
+        snapshot: &Chunk,
+        proto: &crate::streaming::Proto,
+    ) -> Vec<([i32; 3], u32)> {
+        self.inner.final_writes(snapshot, proto)
+    }
     fn decorate(&self, worker: &mut G::Worker, region: &mut [crate::streaming::Proto; 9]) {
         self.inner.decorate(worker, region);
     }

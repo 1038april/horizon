@@ -35,9 +35,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--filter', help='regex over the case labels')
     parser.add_argument('--limit', type=int, default=6, help='block differences shown per chunk')
+    parser.add_argument('--phase', choices=['terrain', 'full'], default='terrain',
+                        help='full: with the features, trees and the rest spilling into the old chunks')
     args = parser.parse_args()
     import re
-    os.environ['HORIZON_PHASE'] = 'terrain'
+    os.environ['HORIZON_PHASE'] = args.phase
     oracle = base.Oracle()
     binary = base.rust_binary()
     names = base.state_names()
@@ -48,7 +50,7 @@ def main():
         if args.filter and not re.search(args.filter, label):
             continue
         os.environ['HORIZON_OLD_CHUNKS'] = f'{old_seed}:{old}'
-        tag = f'blending-{seed}-{old_seed}-{old.replace(",", "_")}'
+        tag = f'blending-{args.phase}-{seed}-{old_seed}-{old.replace(",", "_")}'
         vanilla_path, rust_path = base.build_dir() / f'vanilla-{tag}.txt', base.build_dir() / f'rust-{tag}.txt'
         with ThreadPoolExecutor(2) as pool:
             rust_run = pool.submit(base.run_rust, binary, rust_path, seed, 'overworld', [rect])

@@ -389,6 +389,12 @@ pub fn main() -> Result<(), Error> {
                 .collect(),
         };
         for (x, z) in order {
+            // An old chunk is not decorated, only written into.
+            if old_rect.is_some_and(|[ox0, oz0, ox1, oz1]| {
+                (ox0..=ox1).contains(&x) && (oz0..=oz1).contains(&z)
+            }) {
+                continue;
+            }
             let mut region = Vec::with_capacity(9);
             for dz in -1..=1 {
                 for dx in -1..=1 {

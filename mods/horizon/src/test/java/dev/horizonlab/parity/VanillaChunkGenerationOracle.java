@@ -466,6 +466,7 @@ public final class VanillaChunkGenerationOracle {
             for (int[] at : order) {
                 if (phase.equals("terrain")) break;
                 int x = at[0], z = at[1];
+                if (oldChunks.contains(ChunkPos.pack(x, z))) continue; // an old chunk is not decorated, only written into
                 var chunk = chunkAt.apply(x, z);
                 var region = regionFor.apply(ChunkStatus.FEATURES, chunk);
                 generator.applyBiomeDecoration(region, chunk, OracleLevel.structures.forWorldGenRegion(region));

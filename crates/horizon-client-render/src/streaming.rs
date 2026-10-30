@@ -70,6 +70,23 @@ pub trait ChunkGenerator: Send + Sync + 'static {
     }
     /// Decorate `region[4]`; the region is row-major (dz, dx) around it.
     fn decorate(&self, _worker: &mut Self::Worker, _region: &mut [Proto; 9]) {}
+    /// Whether a chunk next to final ones (loaded from the save, as the
+    /// chunks of a world an older version made) is decorated, its features
+    /// spilling into them (`proto_beside_final`, `final_writes`), as vanilla's
+    /// are; otherwise it is left undecorated.
+    fn decorates_beside_final(&self) -> bool {
+        false
+    }
+    /// The proto chunk of a final chunk, for a decoration region to hold: its
+    /// blocks are `snapshot`'s.
+    fn proto_beside_final(&self, _worker: &mut Self::Worker, _snapshot: &Chunk) -> Option<Proto> {
+        None
+    }
+    /// What decoration wrote into the proto chunk of a final chunk: the blocks
+    /// that differ from `snapshot`, as `([x, y, z], state)`.
+    fn final_writes(&self, _snapshot: &Chunk, _proto: &Proto) -> Vec<([i32; 3], u32)> {
+        Vec::new()
+    }
     fn finish(&self, proto: Proto) -> Chunk;
     /// Whether `proto` has been decorated (a saved one can come back decorated).
     fn is_decorated(&self, _proto: &Proto) -> bool {
@@ -170,7 +187,10 @@ struct MeshSettings {
 }
 enum Job {
     Generate(i32, i32),
-    Decorate(i32, i32, Box<[Proto; 9]>),
+    /// A region to decorate, with the final chunks in it (region index and
+    /// the chunk as it is): their slots hold nothing until the worker makes
+    /// their proto chunks.
+    Decorate(i32, i32, Box<[Proto; 9]>, Vec<(usize, Chunk)>),
     Finish(Proto),
     Light(i32, i32, Box<Region>, u64, bool),
     Mesh(i32, i32, i32, Box<Region>, u64, MeshSettings),
@@ -185,7 +205,9 @@ pub enum Done {
     Generated(Chunk),
     /// A proto chunk, and whether it was decorated (loaded so from the save).
     Proto(i32, i32, Proto, bool),
-    Decorated(i32, i32, Box<[Proto; 9]>),
+    /// A decorated region, the region indices of its final chunks and what
+    /// decoration wrote into them.
+    Decorated(i32, i32, Box<[Proto; 9]>, Vec<usize>, Vec<([i32; 3], u32)>),
     Lit(i32, i32, Vec<crate::chunk::Light>, u64),
     Meshed(i32, i32, i32, SectionMesh, u64),
     Saved(Vec<((i32, i32), Proto)>),
@@ -303,6 +325,8 @@ pub struct Streaming {
     queue_basis: (((i32, i32), bool, Option<Band>), Vec<((i32, i32), i32)>),
     finishing: FxHashSet<(i32, i32)>,
     decorates: bool,
+    /// `ChunkGenerator::decorates_beside_final`.
+    saves_beside_final: bool,
     lighting: FxHashMap<(i32, i32), u64>,
     meshing: FxHashMap<(i32, i32, i32), u64>,
     /// Chunks whose light is current.
@@ -598,9 +622,25 @@ impl Streaming {
                                         Done::Proto(x, z, proto, decorated)
                                     }
                                 },
-                                Job::Decorate(x, z, mut region) => {
+                                Job::Decorate(x, z, mut region, finals) => {
+                                    // The final chunks' proto chunks, made here: a
+                                    // generated proto chunk holding their blocks.
+                                    for (i, snapshot) in &finals {
+                                        if let Some(proto) =
+                                            generator.proto_beside_final(&mut worker, snapshot)
+                                        {
+                                            region[*i] = proto;
+                                        }
+                                    }
                                     generator.decorate(&mut worker, &mut region);
-                                    Done::Decorated(x, z, region)
+                                    let mut writes = Vec::new();
+                                    for (i, snapshot) in &finals {
+                                        writes
+                                            .extend(generator.final_writes(snapshot, &region[*i]));
+                                        region[*i] = Box::new(());
+                                    }
+                                    let finals = finals.into_iter().map(|(i, _)| i).collect();
+                                    Done::Decorated(x, z, region, finals, writes)
                                 }
                                 Job::Finish(proto) => Done::Generated(generator.finish(proto)),
                                 Job::Save(protos) => {
@@ -672,6 +712,7 @@ impl Streaming {
             queue_basis: Default::default(),
             finishing: Default::default(),
             decorates: generator.decorates(),
+            saves_beside_final: generator.decorates_beside_final(),
             lighting: Default::default(),
             meshing: Default::default(),
             lit: Default::default(),
@@ -818,15 +859,31 @@ impl Streaming {
         let mut queue = self.shared.queue.lock().unwrap();
         rank_again(&mut queue, |x, z| self.distance(x, z));
     }
-    fn receive_decorated(&mut self, x: i32, z: i32, region: [Proto; 9]) {
+    fn receive_decorated(
+        &mut self,
+        x: i32,
+        z: i32,
+        region: [Proto; 9],
+        finals: Vec<usize>,
+        writes: Vec<([i32; 3], u32)>,
+        world: &mut World,
+    ) {
         self.generation_scan.exhausted = false;
         self.decorating -= 1;
         self.decorated.insert((x, z));
         for (i, proto) in region.into_iter().enumerate() {
+            // A final chunk keeps its own chunk: only what decoration wrote
+            // into it goes there.
+            if finals.contains(&i) {
+                continue;
+            }
             let key = (x + (i % 3) as i32 - 1, z + (i / 3) as i32 - 1);
             self.light_views.remove(&key);
             self.protos.insert(key, Some(proto));
             self.written.insert(key);
+        }
+        for ([bx, by, bz], state) in writes {
+            let _ = world.set(bx, by, bz, horizon_world::registry::BlockStateId(state));
         }
     }
     /// Saved proto chunks come back; those now out of range are dropped by
@@ -1048,7 +1105,9 @@ impl Streaming {
                         }
                     }
                 }
-                Done::Decorated(x, z, region) => self.receive_decorated(x, z, *region),
+                Done::Decorated(x, z, region, finals, writes) => {
+                    self.receive_decorated(x, z, *region, finals, writes, world)
+                }
                 Done::Generated(chunk) => self.receive_generated(chunk, world),
                 Done::Saved(protos) => self.receive_saved(protos),
                 Done::Lit(x, z, sections, seq) => {
@@ -1283,22 +1342,33 @@ impl Streaming {
                 }
                 let keys: Vec<(i32, i32)> =
                     (0..9).map(|i| (x + (i % 3) - 1, z + (i / 3) - 1)).collect();
-                // A final neighbour cannot receive writes: skip decoration. Only
-                // worlds saved before proto chunks were saved get here (their
+                // A final neighbour cannot be generated again: a generator that
+                // can decorates beside it (a chunk of an older world), writing
+                // into it as vanilla's features do; the others skip decoration
+                // (worlds saved before proto chunks were saved get here: their
                 // final chunks' neighbours are generated again).
-                if keys.iter().any(|k| world.chunks.contains_key(k)) {
+                let finals: Vec<(usize, Chunk)> = keys
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, k)| Some((i, (**world.chunks.get(k)?).clone())))
+                    .collect();
+                if !finals.is_empty() && !self.saves_beside_final {
                     self.decorated.insert((x, z));
                     continue;
                 }
-                if !keys
-                    .iter()
-                    .all(|k| matches!(self.protos.get(k), Some(Some(_))))
-                {
+                if !keys.iter().enumerate().all(|(i, k)| {
+                    finals.iter().any(|(f, _)| *f == i)
+                        || matches!(self.protos.get(k), Some(Some(_)))
+                }) {
                     continue;
                 }
                 let region: Vec<Proto> = keys
                     .iter()
-                    .map(|k| {
+                    .enumerate()
+                    .map(|(i, k)| {
+                        if finals.iter().any(|(f, _)| *f == i) {
+                            return Box::new(()) as Proto;
+                        }
                         self.light_views.remove(k);
                         self.protos
                             .insert(*k, None)
@@ -1311,7 +1381,7 @@ impl Streaming {
                     Err(_) => continue,
                 };
                 self.decorating += 1;
-                self.submit(Some((x, z)), 1, Job::Decorate(x, z, region));
+                self.submit(Some((x, z)), 1, Job::Decorate(x, z, region, finals));
             }
         }
         self.schedule_generation(world, workers);
@@ -1553,7 +1623,9 @@ impl Streaming {
         while self.decorating > 0 || !self.finishing.is_empty() || self.saving > 0 {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
             match self.shared.done.recv_timeout(left) {
-                Some(Done::Decorated(x, z, region)) => self.receive_decorated(x, z, *region),
+                Some(Done::Decorated(x, z, region, finals, writes)) => {
+                    self.receive_decorated(x, z, *region, finals, writes, world)
+                }
                 Some(Done::Generated(chunk)) => self.receive_generated(chunk, world),
                 Some(Done::Saved(protos)) => self.receive_saved(protos),
                 Some(other) => self.deferred.push(other),
@@ -1581,7 +1653,9 @@ impl Streaming {
         let started = std::time::Instant::now();
         while let Some(done) = self.shared.done.try_recv() {
             match done {
-                Done::Decorated(x, z, region) => self.receive_decorated(x, z, *region),
+                Done::Decorated(x, z, region, finals, writes) => {
+                    self.receive_decorated(x, z, *region, finals, writes, world)
+                }
                 Done::Generated(chunk) => self.receive_generated(chunk, world),
                 Done::Saved(protos) => self.receive_saved(protos),
                 other => self.deferred.push(other),

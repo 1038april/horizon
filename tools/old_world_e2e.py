@@ -89,6 +89,14 @@ def main():
             g.raw('open', 'Dst')
             g('wait_ready', seconds=400)
             g('command', command='gamemode spectator')
+            # The chunk strip next to the old chunks is decorated like any other: it has trees.
+            logs = 0
+            for z0 in range(-32, 32, 16):  # a request holds at most 32768 blocks
+                counts = g.raw('blocks', 0, 60, z0, 15, 187, z0 + 15).get('counts', {})
+                logs += sum(n for block, n in counts.items() if block.endswith('_log'))
+            print(label, 'logs in the new chunk strip at the border:', logs)
+            if label == 'blended':
+                assert logs > 0, 'no tree grew in the chunk strip beside the old chunks'
             for shot, x, y, z, yaw, pitch in SHOTS:
                 g('command', command=f'tp @s {x} {y} {z} {yaw} {pitch}')
                 g.wait(500)
