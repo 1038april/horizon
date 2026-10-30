@@ -1101,30 +1101,16 @@ impl Game<'_> {
     /// A biome id or `#tag` matched against a biome name.
     pub(super) fn biome_matches(&self, wanted: &str, biome: &str) -> bool {
         match wanted.strip_prefix('#') {
-            Some(tag) => self.biome_tag_has(tag, biome, 0),
+            Some(tag) => self.biome_tag_has(tag, biome),
             None => wanted == biome,
         }
     }
-    fn biome_tag_has(&self, tag: &str, biome: &str, depth: u32) -> bool {
-        if depth > 8 {
-            return false;
-        }
-        let (ns, path) = tag.split_once(':').unwrap_or(("minecraft", tag));
-        let file = self
-            .options
-            .resources
-            .join(format!("data/{ns}/tags/worldgen/biome/{path}.json"));
-        let Ok(bytes) = std::fs::read(file) else {
-            return self.res.mob_data().biome_has(tag, biome);
-        };
-        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
-        v["values"].as_array().is_some_and(|a| {
-            a.iter()
-                .filter_map(|e| e.as_str())
-                .any(|e| match e.strip_prefix('#') {
-                    Some(inner) => self.biome_tag_has(inner, biome, depth + 1),
-                    None => e == biome,
-                })
-        })
+    /// `#tag`: the biome tags the game's files and the world's packs define,
+    /// nested tags expanded; an unknown tag falls back to the game's built-in
+    /// table.
+    fn biome_tag_has(&self, tag: &str, biome: &str) -> bool {
+        let entries = self.tag_entries("worldgen/biome", tag);
+        entries.iter().any(|id| id == biome)
+            || (entries.is_empty() && self.res.mob_data().biome_has(tag, biome))
     }
 }
