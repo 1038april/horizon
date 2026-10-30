@@ -302,7 +302,7 @@ pub fn rows(level: Level) -> Vec<Row> {
             h(
                 H::ShadowCache,
                 Saves,
-                "Reuses the shader pack shadow map when sun, view and world are unchanged. Off by default.",
+                "Reuses the pack shadow map when sun, view and world match. Off by default.",
             ),
             h(
                 H::Workers,
