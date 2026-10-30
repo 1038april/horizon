@@ -155,6 +155,27 @@ impl SessionLock {
         file.flush()?;
         Ok(Self(file))
     }
+    /// `DirectoryLock.isLocked`: another copy holds the world's `session.lock`.
+    /// A world without the file is not locked; one whose file may not be opened
+    /// is.
+    pub fn is_locked(world: &Path) -> bool {
+        let file = match fs::OpenOptions::new()
+            .write(true)
+            .open(world.join("session.lock"))
+        {
+            Ok(file) => file,
+            Err(e) => return e.kind() == std::io::ErrorKind::PermissionDenied,
+        };
+        match file.try_lock() {
+            Err(fs::TryLockError::WouldBlock) => true,
+            Err(_) => false,
+            // Take the probe's own lock back at once, as `SessionLock` does on drop.
+            Ok(()) => {
+                let _ = file.unlock();
+                false
+            }
+        }
+    }
 }
 /// Bring a world last saved by an older game version to the current format, as
 /// 26.3 does when it opens one: the file fixes and level.dat first
@@ -459,6 +480,17 @@ pub fn encode_block_entity(
     block: &str,
 ) -> Tag {
     use crate::containers::BlockEntity;
+    if let BlockEntity::Mod(m) = e {
+        let mut map = m.nbt.clone();
+        map.insert("id".into(), string(&m.id));
+        if m.items.iter().any(Option::is_some) {
+            map.insert("Items".into(), encode_items(&m.items));
+        }
+        for (key, v) in [("x", p.0), ("y", p.1), ("z", p.2)] {
+            map.insert(key.into(), Tag::Int(v));
+        }
+        return Tag::Compound(map);
+    }
     let components = match e {
         BlockEntity::Banner(b) => b.components.clone(),
         _ => Compound::new(),
@@ -599,7 +631,8 @@ pub fn encode_block_entity(
                 entries.push(("item", item_to_nbt(item)));
             }
         }
-        BlockEntity::DaylightDetector => {}
+        // Encoded above.
+        BlockEntity::DaylightDetector | BlockEntity::Mod(_) => {}
         // PotentSulfurBlockEntity.saveAdditional.
         BlockEntity::PotentSulfur(sulfur) => {
             entries.push(("countdown", Tag::Int(sulfur.waiting_countdown)))
@@ -667,11 +700,46 @@ pub fn decode_end_gateway(tag: &Tag) -> crate::containers::EndGateway {
         exact_teleport: number(tag.get("ExactTeleport")).unwrap_or(0) != 0,
     }
 }
+/// A mod's block entity: its compound without `id` and the position, and
+/// its `Items` as slots (`ContainerHelper.loadAllItems`; the game sizes them
+/// to the block's container when it uses them). `Items` that are not an item
+/// list saved exactly so stay the mod's own.
+fn decode_mod_block_entity(id: String, tag: &Tag) -> Option<crate::containers::ModBlockEntity> {
+    let Tag::Compound(map) = tag else {
+        return None;
+    };
+    let mut nbt = map.clone();
+    for key in ["id", "x", "y", "z"] {
+        nbt.remove(&key.into());
+    }
+    // `Slot` is a byte: 256 slots at most.
+    let mut items = decode_items(nbt.get(&"Items".into()), 256);
+    if nbt.get(&"Items".into()) == Some(&encode_items(&items)) {
+        nbt.remove(&"Items".into());
+        while items.last().is_some_and(Option::is_none) {
+            items.pop();
+        }
+    } else {
+        items.clear();
+    }
+    Some(crate::containers::ModBlockEntity {
+        id,
+        nbt,
+        items,
+        data: Vec::new(),
+    })
+}
 pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::containers::BlockEntity)> {
     use crate::containers::BlockEntity;
     let int = |k: &str| number(tag.get(k)).map(|v| v as i32);
     let id = text(tag.get("id"))?;
     let pos = (int("x")?, int("y")?, int("z")?);
+    if id.contains(':') && !id.starts_with("minecraft:") {
+        return Some((
+            pos,
+            BlockEntity::Mod(Box::new(decode_mod_block_entity(id, tag)?)),
+        ));
+    }
     if id == "minecraft:end_gateway" {
         return Some((pos, BlockEntity::EndGateway(decode_end_gateway(tag))));
     }
@@ -845,7 +913,8 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
         | BlockEntity::CreakingHeart(_)
         | BlockEntity::EndGateway(_)
         | BlockEntity::Skull(_)
-        | BlockEntity::DaylightDetector => {}
+        | BlockEntity::DaylightDetector
+        | BlockEntity::Mod(_) => {}
         BlockEntity::Spawner(s) => **s = crate::mobs::spawner::Spawner::load(tag),
         BlockEntity::TrialSpawner(s) => **s = crate::mobs::trial_spawner::TrialSpawner::load(tag),
         BlockEntity::Vault(v) => **v = crate::vault::Vault::load(tag),
@@ -1173,6 +1242,9 @@ pub fn encode_with(
     let mut block_entities: Vec<Tag> = chunk
         .block_entities
         .iter()
+        // A mod block entity a native mod is ticking right now
+        // (`tick_mod_block_entity`): its data is out of the world.
+        .filter(|(_, e)| !matches!(e, crate::containers::BlockEntity::Mod(m) if m.id.is_empty()))
         .map(|(p, e)| {
             let block = block_name(p);
             let mut current = encode_block_entity(*p, e, &block);
@@ -1666,7 +1738,47 @@ pub fn load_light(tag: &Tag, chunk: &mut Chunk, sky_light: bool) {
     chunk.light_loaded = true;
 }
 
-type RegionCache = Mutex<HashMap<(i32, i32), Option<Arc<Mutex<RegionFile>>>>>;
+type RegionCache = Mutex<RegionFiles>;
+/// `RegionFileStorage.MAX_CACHE_SIZE`: the region files of a folder kept
+/// open. Each holds a file descriptor: kept for every region ever visited,
+/// a server whose players travel runs out of them (`Too many open files`).
+const MAX_OPEN_REGIONS: usize = 256;
+/// A folder's region files, and the ones known to be missing, by region,
+/// with when each was last asked for.
+#[derive(Default)]
+struct RegionFiles {
+    regions: HashMap<(i32, i32), (Option<Arc<Mutex<RegionFile>>>, u64)>,
+    clock: u64,
+}
+impl RegionFiles {
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.regions.is_empty()
+    }
+    /// The open region files.
+    #[cfg(test)]
+    fn open(&self) -> usize {
+        self.regions.values().filter(|(r, _)| r.is_some()).count()
+    }
+    /// Close the least recently used regions until there is room for one
+    /// more, as `RegionFileStorage.getRegionFile` does. A region a reader or
+    /// the writer still holds stays: closing it under them would let a
+    /// second handle read a header older than its sectors.
+    fn make_room(&mut self) {
+        while self.regions.len() >= MAX_OPEN_REGIONS {
+            let oldest = self
+                .regions
+                .iter()
+                .filter(|(_, (r, _))| r.as_ref().is_none_or(|r| Arc::strong_count(r) == 1))
+                .min_by_key(|(_, (_, used))| *used)
+                .map(|(key, _)| *key);
+            let Some(key) = oldest else {
+                return;
+            };
+            self.regions.remove(&key);
+        }
+    }
+}
 /// The region file at `path` through the cache, which readers and the writer
 /// share, so a read never sees a header older than the sectors it points to.
 /// `create` makes a missing file (for a write); otherwise a missing file is
@@ -1677,13 +1789,16 @@ fn cached_region(
     path: &Path,
     create: bool,
 ) -> Result<Option<Arc<Mutex<RegionFile>>>> {
-    let mut regions = cache.lock().map_err(|_| "region cache poisoned")?;
-    if let Some(Some(region)) = regions.get(&key) {
-        return Ok(Some(region.clone()));
+    let mut cache = cache.lock().map_err(|_| "region cache poisoned")?;
+    cache.clock += 1;
+    let now = cache.clock;
+    if let Some((cached, used)) = cache.regions.get_mut(&key)
+        && (cached.is_some() || !create)
+    {
+        *used = now;
+        return Ok(cached.clone());
     }
-    if !create && regions.contains_key(&key) {
-        return Ok(None);
-    }
+    cache.make_room();
     if create && let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -1699,7 +1814,7 @@ fn cached_region(
         Err(_) if !create => None,
         Err(e) => return Err(e.into()),
     };
-    regions.insert(key, region.clone());
+    cache.regions.insert(key, (region.clone(), now));
     Ok(region)
 }
 /// Write `records` into the region files of `folder` in place, as vanilla's
@@ -2374,12 +2489,58 @@ impl Drop for SaveDir {
 }
 
 pub fn read_dat(path: &Path) -> Option<Tag> {
-    let bytes = fs::read(path).ok()?;
+    try_read_dat(path).ok()
+}
+/// `read_dat`, with why the file did not read.
+fn try_read_dat(path: &Path) -> std::result::Result<Tag, DatIssue> {
+    let bytes = fs::read(path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => DatIssue::Missing,
+        _ => DatIssue::Unreadable(e.to_string()),
+    })?;
     let raw = match Compression::Gzip.decode(&bytes, Limits::saved().max_bytes) {
         Ok(raw) => raw,
         Err(_) => bytes,
     };
-    Some(nbt::read_named(&raw, Limits::saved()).ok()?.0.tag)
+    nbt::read_named(&raw, Limits::saved())
+        .map(|(named, _)| named.tag)
+        .map_err(|e| DatIssue::Unreadable(e.to_string()))
+}
+/// What `LevelStorageAccess.collectIssues` finds wrong with a level.dat.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DatIssue {
+    /// No such file (`FileNotFoundException`).
+    Missing,
+    /// It exists but does not read as a level: why.
+    Unreadable(String),
+}
+/// `LevelStorageAccess.collectIssues`: why level.dat (level.dat_old with
+/// `old`) can't be read as the world's level data, `None` when it can.
+pub fn level_dat_issue(dir: &Path, old: bool) -> Option<DatIssue> {
+    let file = if old { "level.dat_old" } else { "level.dat" };
+    match try_read_dat(&dir.join(file)) {
+        Ok(root) if matches!(root.get("Data"), Some(Tag::Compound(_))) => None,
+        Ok(_) => Some(DatIssue::Unreadable("Invalid root tag".into())),
+        Err(issue) => Some(issue),
+    }
+}
+/// `LevelStorageAccess.restoreLevelDataFromOld` (`Util.safeReplaceOrMoveFile`):
+/// level.dat moves aside to `level.dat_corrupted_<time>` and level.dat_old
+/// takes its place. Whether it worked. Vanilla passes `noRollback` and reports
+/// success even when level.dat_old could not be moved in; here the broken
+/// level.dat goes back and the failure is reported.
+pub fn restore_level_data_from_old(dir: &Path) -> bool {
+    let (current, latest) = (dir.join("level.dat"), dir.join("level.dat_old"));
+    let backup = dir.join(format!("level.dat_corrupted_{}", backup_stamp()));
+    if current.exists() && fs::rename(&current, &backup).is_err() {
+        return false;
+    }
+    if fs::rename(&latest, &current).is_err() {
+        if backup.exists() {
+            let _ = fs::rename(&backup, &current);
+        }
+        return false;
+    }
+    true
 }
 /// `FileNameDateFormatter`: the time in the names of backed-up unreadable files.
 fn backup_stamp() -> String {
@@ -2935,6 +3096,9 @@ pub struct Level {
     pub food_tick_timer: i32,
     /// Abilities.flying: whether creative/spectator flight is active.
     pub flying: bool,
+    /// The vehicle the player rides, by UUID (`ServerPlayer.saveParentVehicle`'s
+    /// "RootVehicle"), so the ride comes back on the next login.
+    pub root_vehicle: Option<[i32; 4]>,
     /// The player compound as loaded, for fields Horizon does not model
     /// (ender chest, effects, abilities, recipe book, attributes, ...).
     pub player_extra: Option<Tag>,
@@ -2983,7 +3147,14 @@ impl Level {
         }
     }
     pub fn read(dir: &Path) -> Option<Self> {
-        let root = read_level_dat(dir)?;
+        Self::read_root(dir, read_level_dat(dir)?)
+    }
+    /// `read` from level.dat alone, without the level.dat_old fallback: what
+    /// `LevelStorageSource.readLevelSummary` reads for the world list.
+    pub fn read_summary(dir: &Path) -> Option<Self> {
+        Self::read_root(dir, read_dat(&dir.join("level.dat"))?)
+    }
+    fn read_root(dir: &Path, root: Tag) -> Option<Self> {
         let data = root.get("Data")?;
         let n = |t: Option<&Tag>| number(t).unwrap_or(0);
         let mut level = Self {
@@ -3217,6 +3388,12 @@ impl Level {
                 .collect(),
             _ => Vec::new(),
         };
+        // ServerPlayer.saveParentVehicle: the vehicle the player rides, by
+        // UUID. Horizon keeps the vehicle in the world, so the file names it
+        // instead of holding a second copy of it.
+        self.root_vehicle = p
+            .get("RootVehicle")
+            .and_then(|r| uuid_from_tag(r.get("Attach")));
     }
     /// The player compound: the loaded one with Horizon's state written over it.
     pub fn player_tag(&self) -> Tag {
@@ -3424,6 +3601,18 @@ impl Level {
             ] {
                 map.entry(key.into()).or_insert(value);
             }
+        }
+        // ServerPlayer.saveParentVehicle: the vehicle the player rides, by
+        // UUID. Horizon keeps the vehicle in the world, so the file names it
+        // instead of holding a second copy of it.
+        if let Some(vehicle) = self.root_vehicle
+            && p.get("RootVehicle").is_none()
+        {
+            put(
+                &mut p,
+                "RootVehicle",
+                Tag::compound([("Attach", uuid_tag(vehicle))]),
+            );
         }
         p
     }
@@ -4102,6 +4291,12 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
     }
     fn light_view(&self, proto: &crate::streaming::Proto) -> Option<Chunk> {
         self.inner.light_view(proto)
+    }
+    fn non_air_sections(
+        &self,
+        proto: &crate::streaming::Proto,
+    ) -> Option<crate::section_mask::SectionMask> {
+        self.inner.non_air_sections(proto)
     }
     fn save_protos(&self, protos: &[&crate::streaming::Proto]) {
         self.save
@@ -4835,6 +5030,61 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
     #[test]
+    fn region_files_kept_open_stay_under_vanillas_cache_size() {
+        let open_fds = || std::fs::read_dir("/dev/fd").map_or(0, |d| d.count());
+        let dir = std::env::temp_dir().join(format!("horizon-save-fds-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let save = super::SaveDir::new(dir.clone(), LevelShape::OVERWORLD);
+        let before = open_fds();
+        let held = super::cached_region(
+            &save.regions,
+            (0, 0),
+            &save.region_path("region", 0, 0),
+            true,
+        )
+        .unwrap()
+        .unwrap();
+        for x in 1..=600 {
+            super::cached_region(
+                &save.regions,
+                (x, 0),
+                &save.region_path("region", x, 0),
+                true,
+            )
+            .unwrap()
+            .unwrap();
+        }
+        // Other tests open files at the same time: a margin, far below 600.
+        let grown = open_fds().saturating_sub(before);
+        assert!(
+            grown <= super::MAX_OPEN_REGIONS + 32,
+            "{grown} descriptors more"
+        );
+        let cache = save.regions.lock().unwrap();
+        assert!(
+            cache.open() <= super::MAX_OPEN_REGIONS,
+            "{} open",
+            cache.open()
+        );
+        // The one still held is never closed under its holder.
+        assert!(Arc::ptr_eq(
+            &cache.regions[&(0, 0)].0.clone().unwrap(),
+            &held
+        ));
+        drop(cache);
+        // What was written to regions since closed reads back from the disk.
+        let entity = |x: i32| Tag::compound([("x", Tag::Int(x))]);
+        save.save_entities_later((0..300).map(|i| ((i * 32, 0), vec![entity(i)])).collect())
+            .unwrap();
+        save.flush().unwrap();
+        assert!(save.entity_regions.lock().unwrap().open() <= super::MAX_OPEN_REGIONS);
+        for i in [0, 1, 150, 299] {
+            assert_eq!(save.load_entities(i * 32, 0), vec![entity(i)]);
+        }
+        drop(held);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
     fn write_completion_polls_without_waiting_and_keeps_latest_snapshot() {
         let dir = std::env::temp_dir().join(format!("horizon-save-poll-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -4987,6 +5237,61 @@ mod tests {
             panic!("not a spawner");
         };
         assert_eq!(again.update_tag(), spawner.update_tag());
+    }
+    #[test]
+    fn mod_block_entity_round_trips() {
+        let saved = horizon_world::nbt::parse_snbt(
+            r#"{id:"gtmod:macerator",x:5,y:-60,z:12,energy:1200L,progress:7,Items:[{Slot:0b,id:"minecraft:iron_ore",count:3}]}"#,
+        )
+        .unwrap()
+        .0;
+        let (pos, back) = decode_block_entity(&saved).expect("mod block entity");
+        assert_eq!(pos, (5, -60, 12));
+        let crate::containers::BlockEntity::Mod(m) = &back else {
+            panic!("not a mod's");
+        };
+        assert_eq!(m.id, "gtmod:macerator");
+        // The mod sees its own fields only.
+        for key in ["id", "x", "y", "z"] {
+            assert!(!m.nbt.contains_key(&key.into()), "{key}");
+        }
+        assert_eq!(m.nbt.get(&"energy".into()), Some(&Tag::Long(1200)));
+        // `Items` are its slots, not the mod's compound.
+        assert!(!m.nbt.contains_key(&"Items".into()));
+        assert_eq!(m.items.len(), 1);
+        assert_eq!(m.items[0].as_ref().map(|s| s.count), Some(3));
+        assert_eq!(encode_block_entity(pos, &back, "gtmod:macerator"), saved);
+        // `Items` that are not an item list stay the mod's, as saved.
+        for items in [
+            r#"Items:{energy:5}"#,
+            r#"Items:[1,2,3]"#,
+            r#"Items:[{Slot:0b,id:"minecraft:air",count:1}]"#,
+            r#"Items:[{Slot:0b,id:"minecraft:stone",count:1,note:"mine"}]"#,
+        ] {
+            let saved = horizon_world::nbt::parse_snbt(&format!(
+                r#"{{id:"gtmod:cable",x:0,y:0,z:0,{items}}}"#
+            ))
+            .unwrap()
+            .0;
+            let (pos, back) = decode_block_entity(&saved).expect("mod block entity");
+            let crate::containers::BlockEntity::Mod(m) = &back else {
+                panic!("not a mod's");
+            };
+            assert!(m.items.is_empty(), "{items}");
+            assert_eq!(
+                encode_block_entity(pos, &back, "gtmod:cable"),
+                saved,
+                "{items}"
+            );
+        }
+        // Vanilla's types are never a mod's, modelled or not.
+        let ender = horizon_world::nbt::parse_snbt(r#"{id:"minecraft:ender_chest",x:0,y:0,z:0}"#)
+            .unwrap()
+            .0;
+        assert!(!matches!(
+            decode_block_entity(&ender),
+            Some((_, crate::containers::BlockEntity::Mod(_)))
+        ));
     }
     #[test]
     fn banner_block_entity_round_trips() {
@@ -5562,6 +5867,31 @@ mod tests {
             .and_then(|a| number(a.get("flying")))
             .unwrap_or(0);
         assert_eq!(flying_survival, 0);
+    }
+
+    #[test]
+    fn unconsumed_root_vehicle_keeps_the_complete_vanilla_tree() {
+        let entity = Tag::compound([
+            ("id", Tag::String("minecraft:horse".into())),
+            ("UUID", uuid_tag([5, 6, 7, 8])),
+            (
+                "Passengers",
+                Tag::List(vec![Tag::compound([
+                    ("id", Tag::String("minecraft:pig".into())),
+                    ("UUID", uuid_tag([1, 2, 3, 4])),
+                ])]),
+            ),
+        ]);
+        let vehicle = Tag::compound([("Attach", uuid_tag([1, 2, 3, 4])), ("Entity", entity)]);
+        let raw = Tag::compound([("RootVehicle", vehicle.clone())]);
+        let mut level = Level::default();
+        level.read_player(&raw);
+        level.player_extra = Some(raw);
+        assert_eq!(level.root_vehicle, Some([1, 2, 3, 4]));
+        assert_eq!(level.player_tag().get("RootVehicle"), Some(&vehicle));
+        // Even saving before the vehicle is restored must not destroy it.
+        level.root_vehicle = None;
+        assert_eq!(level.player_tag().get("RootVehicle"), Some(&vehicle));
     }
 
     /// `RecipesUsed` is what a furnace owes in experience, so a save that drops it pays the
