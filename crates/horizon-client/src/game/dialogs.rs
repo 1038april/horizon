@@ -133,6 +133,8 @@ impl Game<'_> {
             dragging: None,
         });
         self.dialogs.waiting = None;
+        self.keys.clear();
+        self.physical_keys.clear();
         self.capture(false);
     }
 
