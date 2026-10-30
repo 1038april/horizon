@@ -2654,6 +2654,7 @@ impl Game<'_> {
             });
             if found.is_none() {
                 // TeleportTransition.missingRespawnBlock.
+                host.hub.missing_respawn_block(conn);
                 self.world_spawn_trip(conn);
             }
             host.hub.teleport(i, Some(at));

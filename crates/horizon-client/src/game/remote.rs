@@ -3503,6 +3503,12 @@ impl Game<'_> {
                 }
             }
             C::GameEvent(p) => match p.event {
+                // NO_RESPAWN_BLOCK_AVAILABLE: ClientPacketListener.handleGameEvent
+                // sends the player this system message.
+                0 => self.system_message(horizon_client::text::Text::translate(
+                    "block.minecraft.spawn.not_valid",
+                    &[],
+                )),
                 // LEVEL_CHUNKS_LOAD_START: the server has begun sending the level.
                 13 => {
                     if let Some(r) = self.remote.as_mut() {
