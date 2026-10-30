@@ -356,6 +356,29 @@ pub(super) fn preload_server_loot(resources: &std::path::Path) {
 
 /// The worldgen entries of the world's enabled data packs, logging what
 /// the generator leaves out of them.
+/// The game's biomes with the world's enabled packs over them, from the same
+/// pack list its worldgen is built from (`WorldgenOverrides` keeps only the
+/// biomes this table knows).
+pub(super) fn packed_biomes(
+    world_root: &std::path::Path,
+    base: &Arc<horizon_client::biome::Biomes>,
+) -> Arc<horizon_client::biome::Biomes> {
+    let packs = horizon_client::datapack::discover(world_root);
+    let enabled = horizon_client::datapack::enabled_ids(world_root, &packs);
+    let enabled: Vec<_> = enabled
+        .iter()
+        .filter_map(|id| packs.iter().find(|p| &p.id == id))
+        .collect();
+    let (overrides, _) = horizon_client::datapack::worldgen_overrides(&enabled, |_| true);
+    let packed: Vec<(String, serde_json::Value)> = overrides
+        .entries("biomes")
+        .filter_map(|(id, json)| Some((id.to_owned(), serde_json::from_str(json).ok()?)))
+        .collect();
+    if packed.is_empty() {
+        return base.clone();
+    }
+    Arc::new(base.with_packs(packed.iter().map(|(i, v)| (i.as_str(), v))))
+}
 fn world_worldgen_overrides(
     world_root: &std::path::Path,
     biomes: &horizon_client::biome::Biomes,
@@ -428,29 +451,9 @@ pub(super) fn make_streaming(
         horizon_client::save::dimension_dir(world_root, dim.id()),
         shape,
     ));
-    // The world's data packs over the game's biomes (`RegistryDataLoader`
-    // layering): the generator names the ids and the client draws them, so
-    // both resolve through this table.
-    let biomes = {
-        let files = super::functions::content_overlay(world_root, &options.resources, false);
-        let overlay = horizon_world::loot::PackOverlay { files: &files };
-        let packed: Vec<(String, serde_json::Value)> = overlay
-            .kind("worldgen/biome")
-            .filter_map(|(id, files)| {
-                let v =
-                    serde_json::from_slice(horizon_world::loot::PackOverlay::top(files)).ok()?;
-                Some((id.to_owned(), v))
-            })
-            .collect();
-        if packed.is_empty() {
-            res.biomes().clone()
-        } else {
-            Arc::new(
-                res.biomes()
-                    .with_packs(packed.iter().map(|(id, v)| (id.as_str(), v))),
-            )
-        }
-    };
+    // The world's packs over the game's biomes (`RegistryDataLoader`
+    // layering): the generator names the ids and the client draws them.
+    let biomes = packed_biomes(world_root, res.biomes());
     let mut locator = None;
     let flat = (dim == Dim::Overworld)
         .then(|| horizon_client::save::world_gen_settings(world_root))
@@ -491,8 +494,8 @@ pub(super) fn make_streaming(
         let structures =
             horizon_client::save::WorldGen::read(world_root).is_none_or(|w| w.structures);
         let preset = horizon_client::save::WorldGen::preset(world_root);
-        let overrides = world_worldgen_overrides(world_root, res.biomes());
-        let inner = Arc::new(VanillaTerrain::for_world_with(&options.resources.join("worldgen"), &overrides, pack.assets.registry, res.biomes(), seed, preset, dim.id(), structures).map_err(|e| {
+        let overrides = world_worldgen_overrides(world_root, &biomes);
+        let inner = Arc::new(VanillaTerrain::for_world_with(&options.resources.join("worldgen"), &overrides, pack.assets.registry, &biomes, seed, preset, dim.id(), structures).map_err(|e| {
                 if overrides.is_empty() {
                     format!("{e}\nPrepare the worldgen bundle with the launcher, or: horizon-prepare --prepare")
                 } else {

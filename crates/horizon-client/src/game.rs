@@ -16228,26 +16228,10 @@ impl Game<'_> {
         }
     }
     /// The world's packs' content files, none without packs.
-    /// The game's biomes with the world's packs over them, `None` when the
-    /// world has no biome files of its own.
+    /// The biome table the world plays with, `None` before a world opens.
     fn packed_biomes(&self) -> Option<Arc<Biomes>> {
-        let files = functions::content_overlay(&self.world_root, &self.options.resources, false);
-        let overlay = horizon_world::loot::PackOverlay { files: &files };
-        let packed: Vec<(String, serde_json::Value)> = overlay
-            .kind("worldgen/biome")
-            .filter_map(|(id, files)| {
-                let v =
-                    serde_json::from_slice(horizon_world::loot::PackOverlay::top(files)).ok()?;
-                Some((id.to_owned(), v))
-            })
-            .collect();
-        (!packed.is_empty()).then(|| {
-            Arc::new(
-                self.res
-                    .biomes()
-                    .with_packs(packed.iter().map(|(i, v)| (i.as_str(), v))),
-            )
-        })
+        let table = world_loading::packed_biomes(&self.world_root, self.res.biomes());
+        (!Arc::ptr_eq(&table, self.res.biomes())).then_some(table)
     }
     fn pack_files(&self) -> horizon_world::loot::PackOverlay<'_> {
         pack_files(&self.world_tables)
