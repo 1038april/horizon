@@ -320,7 +320,8 @@ mod tests {
                 let lit = input.albedo * input.tint * vec4(input.lightmap, 1.0);\n    \
                 let t = vec2<i32>(input.screen * frame.resolution);\n    \
                 let behind = textureLoad(opaque_color, t, 0) * textureLoad(opaque_depth, t, 0);\n    \
-                let kind = f32(input.face + input.fluid) * input.emission;\n    \
+                let mirrored = textureSampleLevel(reflection, reflection_sampler, input.screen, 0.0);\n    \
+                let kind = f32(input.face + input.fluid) * input.emission * mirrored.a;\n    \
                 let frame_of = vec4(cross(input.normal, input.tangent.xyz) * input.tangent.w, kind);\n    \
                 return Surface(apply_fog(sprite(lit)) + (behind + frame_of) * 0.0);\n}\n";
         let stage = stage(own);

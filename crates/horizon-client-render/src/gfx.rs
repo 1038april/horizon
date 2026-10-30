@@ -199,6 +199,13 @@ struct Globals {
     sunrise_fan: [[f32; 4]; 2 * sunrise_fan::TRIANGLES],
 }
 pub type SectionKey = (i32, i32, i32);
+/// The water mirror's targets: the world as a camera mirrored about the water plane sees
+/// it, at half the world's resolution (the material stage's `reflection`).
+struct MirrorTarget {
+    size: [u32; 2],
+    color: wgpu::TextureView,
+    depth: wgpu::TextureView,
+}
 struct SectionGpu {
     /// Arena page and first vertex in it: solid quads, then translucent ones.
     page: u32,
@@ -239,6 +246,10 @@ pub struct Frame<'a> {
     /// `Camera.depthFar`: the far plane (`crate::camera::depth_far`).
     pub depth_far: f32,
     pub underwater: bool,
+    /// The y of the horizontal water plane around the camera, in world blocks, while one
+    /// of Horizon's own packs reads the water mirror (`Game::water_plane`,
+    /// `Renderer::wants_water_plane`).
+    pub water_plane: Option<f32>,
     /// Skip sections the camera cannot see through open faces (vanilla's
     /// occlusion graph; off in spectator-like views inside blocks).
     pub cave_culling: bool,
@@ -428,6 +439,12 @@ pub struct Renderer {
     /// (`crosshair_globals`).
     crosshair_group: wgpu::BindGroup,
     crosshair_globals: wgpu::Buffer,
+    /// The water mirror: its solid terrain pipeline, its camera's globals and their group,
+    /// and its targets once drawn.
+    solid_mirror: wgpu::RenderPipeline,
+    mirror_globals: wgpu::Buffer,
+    mirror_group: wgpu::BindGroup,
+    mirror: Option<MirrorTarget>,
     entity_pipeline: wgpu::RenderPipeline,
     hdr_mark_pipeline: wgpu::RenderPipeline,
     weather: weather::Weather,
@@ -1405,6 +1422,19 @@ impl Renderer {
             true,
             None,
         );
+        // The water mirror's camera sees the world from the other side of the plane, which
+        // flips the winding: its solid terrain culls the front.
+        let solid_mirror = pipeline(
+            "Terrain solid (mirrored)",
+            "vs_terrain",
+            "fs_solid_mirror",
+            &terrain_buffers,
+            tri,
+            Some(wgpu::Face::Front),
+            true,
+            true,
+            None,
+        );
         let translucent = pipeline(
             "Terrain translucent",
             "vs_terrain",
@@ -1497,6 +1527,12 @@ impl Renderer {
         });
         let crosshair_globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Debug crosshair globals"),
+            size: std::mem::size_of::<Globals>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mirror_globals = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Water mirror globals"),
             size: std::mem::size_of::<Globals>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -1616,6 +1652,16 @@ impl Renderer {
             "Debug crosshair resources",
             &bindings,
             &crosshair_globals,
+            &sprite_views,
+            &sprite_sampler,
+            &lightmap_view,
+            &lightmap_sampler,
+        );
+        let mirror_group = terrain_group(
+            &device,
+            "Water mirror resources",
+            &bindings,
+            &mirror_globals,
             &sprite_views,
             &sprite_sampler,
             &lightmap_view,
@@ -2533,7 +2579,7 @@ impl Renderer {
                 &device,
                 &bindings,
                 arena.page_vertices(),
-                |layout, label, fragment, blend| {
+                |layout, label, fragment, blend, cull| {
                     pipeline_in(
                         layout,
                         label,
@@ -2541,7 +2587,7 @@ impl Renderer {
                         fragment,
                         &buffers,
                         tri,
-                        Some(wgpu::Face::Back),
+                        cull,
                         true,
                         true,
                         blend,
@@ -2653,6 +2699,10 @@ impl Renderer {
             debug_line_capacity: 4096,
             crosshair_group,
             crosshair_globals,
+            solid_mirror,
+            mirror_globals,
+            mirror_group,
+            mirror: None,
             entity_pipeline,
             hdr_mark_pipeline,
             weather,
@@ -2957,6 +3007,11 @@ impl Renderer {
         }
         self.flat_on = on;
         Ok(())
+    }
+    /// Whether one of Horizon's own packs reads the water mirror, which needs the frame's
+    /// `water_plane`.
+    pub fn wants_water_plane(&self) -> bool {
+        self.native.as_ref().is_some_and(|n| n.frame.reflects)
     }
     /// Whether solid quads facing away from the eye are left out.
     pub fn section_sides(&self) -> bool {
@@ -3937,9 +3992,21 @@ impl Renderer {
         };
         let camera = frame.camera;
         let camera_section = camera_section(camera);
+        // The water mirror draws the same lists: they take in what its camera sees too
+        // (above the screen's top, the far shore, the trees against the sky).
+        let mirror_plane = frame
+            .water_plane
+            .filter(|_| !frame.title && self.wants_water_plane());
+        let mirror = mirror_plane.map(|plane| Frustum {
+            planes: frustum(mirror_view_projection(
+                cull_proj,
+                plane - frame.camera.y as f32,
+            )),
+        });
         // Solid quads facing away from the eye are left out: the bob moves
-        // the eye off `camera`, so it is found from the projection.
-        let eye = projection_center(cull_proj).filter(|_| self.sides_on);
+        // the eye off `camera`, so it is found from the projection. The mirror's eye
+        // sees the faces the camera does not (the undersides), so none are with it.
+        let eye = projection_center(cull_proj).filter(|_| self.sides_on && mirror.is_none());
         let culling = !frame.title && frame.cave_culling;
         if culling {
             crate::spans::time("occlusion", || {
@@ -3954,7 +4021,7 @@ impl Renderer {
             self.sections.visible(
                 camera,
                 (frame.detail_distance / 16.0) as i32,
-                &view,
+                &Frusta(view, mirror),
                 |k| !culling || reachable.contains(k),
                 |x, z| !cutout.is_empty() && cutout.contains(&(x, z)),
                 &mut visible,
@@ -4059,6 +4126,8 @@ impl Renderer {
                     && !frame.title
                     && !pack_terrain
                     && self.multi_draw
+                    // Occlusion is found from the camera, not the mirror's eye.
+                    && mirror.is_none()
                     && visible.len() >= c.min_sections
             })
             .and_then(|cull| cull.begin(&self.device).then_some(cull));
@@ -4780,6 +4849,122 @@ impl Renderer {
             });
             pass.set_bind_group(0, &self.group, &[]);
             sky.draw(&mut pass, &native.frame);
+        }
+        // The water mirror, for one of Horizon's own packs that reads it: the world as a
+        // camera mirrored about the water plane sees it, into a half-resolution target the
+        // material stage samples as `reflection`.
+        let mut reflection = None;
+        if let Some(plane) = mirror_plane {
+            let world = self
+                .world_post
+                .size()
+                .filter(|_| scaled.is_some())
+                .unwrap_or([self.config.width, self.config.height]);
+            let size = native_post::reflection_size(world);
+            if self.mirror.as_ref().is_none_or(|m| m.size != size) {
+                let target = |label: &'static str, format, usage| {
+                    self.device
+                        .create_texture(&wgpu::TextureDescriptor {
+                            label: Some(label),
+                            size: wgpu::Extent3d {
+                                width: size[0],
+                                height: size[1],
+                                depth_or_array_layers: 1,
+                            },
+                            mip_level_count: 1,
+                            sample_count: 1,
+                            dimension: wgpu::TextureDimension::D2,
+                            format,
+                            usage,
+                            view_formats: &[],
+                        })
+                        .create_view(&Default::default())
+                };
+                self.mirror = Some(MirrorTarget {
+                    size,
+                    color: target(
+                        "Water mirror",
+                        self.config.format.remove_srgb_suffix(),
+                        wgpu::TextureUsages::RENDER_ATTACHMENT
+                            | wgpu::TextureUsages::TEXTURE_BINDING,
+                    ),
+                    depth: target(
+                        "Water mirror depth",
+                        wgpu::TextureFormat::Depth32Float,
+                        wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    ),
+                });
+            }
+            if let Some(mirror) = &self.mirror {
+                // Mirrored about y = `plane` (camera-relative): the matrix F flips y and
+                // moves it to 2 * plane. The sky reads `inverse_view`, mirrored the same way.
+                let plane = plane - frame.camera.y as f32;
+                let mut inverse_view = globals.inverse_view;
+                let up = inverse_view[1];
+                inverse_view[1] = up.map(|v| -v);
+                inverse_view[3] = std::array::from_fn(|i| inverse_view[3][i] + 2.0 * plane * up[i]);
+                // fog_ends.w: the plane, below which fs_solid_mirror cuts the world away
+                // (only entity.wgsl reads the glint strength there, and no entity draws here).
+                let mut fog_ends = globals.fog_ends;
+                fog_ends[3] = plane;
+                let mirror_globals = Globals {
+                    view_proj: mirror_view_projection(view_proj, plane).to_cols_array_2d(),
+                    inverse_view,
+                    fog_ends,
+                    ..globals
+                };
+                self.uploads.buffer(
+                    &mut encoder,
+                    &self.mirror_globals,
+                    0,
+                    bytemuck::bytes_of(&mirror_globals),
+                );
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Water mirror"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &mirror.color,
+                        resolve_target: None,
+                        depth_slice: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(clear),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &mirror.depth,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(0.0),
+                            store: wgpu::StoreOp::Discard,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    ..Default::default()
+                });
+                pass.set_bind_group(0, &self.mirror_group, &[]);
+                if sky_visible && frame.skybox {
+                    pass.set_pipeline(&self.sky);
+                    pass.draw(0..3, 0..1);
+                }
+                // The solid terrain: occlusion culling is off with a mirror, so every draw
+                // is phase 1's.
+                if flat_frame && let Some(flat) = &self.flat {
+                    pass.set_pipeline(&flat.solid_mirror);
+                    let vertices = |p| self.arena.buffer(p);
+                    flat.draw(&mut pass, &flat.calls[..flat.solid_calls], vertices);
+                } else {
+                    pass.set_pipeline(&self.solid_mirror);
+                    pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.set_vertex_buffer(1, self.instances.slice(..));
+                    self.draw_sections(&mut pass, &self.indirect, 0, 0, solid_draws);
+                }
+                drop(pass);
+                reflection = Some(mirror.color.clone());
+            }
+        }
+        if let Some(native) = &mut self.native {
+            native
+                .frame
+                .set_reflection(&self.device, reflection.as_ref());
         }
         // The material stage's copies of the world before translucent terrain, the size of
         // this frame's targets.
@@ -5757,6 +5942,31 @@ pub(crate) fn square_downscale(pixels: &[u8], width: u32, height: u32, size: [u3
     }
     out
 }
+/// The union of two frusta (the camera's and its water mirror's), for `Resident::visible`.
+#[derive(Clone, Copy, Debug)]
+pub struct Frusta(pub Frustum, pub Option<Frustum>);
+/// What `Resident::visible` culls with: a frustum or a union of them.
+pub trait Cull {
+    fn intersects(&self, min: Vec3, max: Vec3) -> bool;
+    fn contains(&self, min: Vec3, max: Vec3) -> bool;
+}
+impl Cull for Frustum {
+    fn intersects(&self, min: Vec3, max: Vec3) -> bool {
+        Frustum::intersects(self, min, max)
+    }
+    fn contains(&self, min: Vec3, max: Vec3) -> bool {
+        Frustum::contains(self, min, max)
+    }
+}
+impl Cull for Frusta {
+    fn intersects(&self, min: Vec3, max: Vec3) -> bool {
+        self.0.intersects(min, max) || self.1.is_some_and(|f| f.intersects(min, max))
+    }
+    /// Entirely inside one of them is entirely inside the union.
+    fn contains(&self, min: Vec3, max: Vec3) -> bool {
+        self.0.contains(min, max) || self.1.is_some_and(|f| f.contains(min, max))
+    }
+}
 /// Camera-relative clip planes (`Frustum`).
 #[derive(Clone, Copy, Debug)]
 pub struct Frustum {
@@ -5805,6 +6015,17 @@ fn world_projection(fov_degrees: f32, aspect: f32, far: f32) -> Mat4 {
     Mat4::perspective_rh(fov_degrees.to_radians(), aspect, far, 0.05)
 }
 
+/// `view_proj` mirrored about the horizontal plane at the camera-relative height `plane`:
+/// with F the mirror (y flips and moves to 2 * plane), `view_proj * F` negates column 1
+/// and moves column 3 by 2 * plane times column 1.
+fn mirror_view_projection(view_proj: Mat4, plane: f32) -> Mat4 {
+    let mut m = view_proj.to_cols_array_2d();
+    let col1 = m[1];
+    m[1] = col1.map(|v| -v);
+    m[3] = std::array::from_fn(|i| m[3][i] + 2.0 * plane * col1[i]);
+    Mat4::from_cols_array_2d(&m)
+}
+
 /// Where a perspective `view_proj` sees from, in its own (camera-relative)
 /// space: the point whose clip x, y and w are all 0. `None` for a
 /// projection without one (orthographic).
@@ -5848,6 +6069,20 @@ fn frustum(m: Mat4) -> [Vec4; 6] {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_mirror_sees_each_point_where_its_reflection_is() {
+        use glam::{Mat4, Vec3, Vec4};
+        let view_proj = super::world_projection(70.0, 1.5, 512.0)
+            * Mat4::look_to_rh(Vec3::ZERO, Vec3::new(0.3, -0.4, -1.0), Vec3::Y);
+        let plane = -3.25;
+        let mirror = super::mirror_view_projection(view_proj, plane);
+        for p in [Vec3::new(1.0, 2.0, -9.0), Vec3::new(-4.0, -1.5, -20.0)] {
+            let reflected = Vec3::new(p.x, 2.0 * plane - p.y, p.z);
+            let a = mirror * Vec4::from((p, 1.0));
+            let b = view_proj * Vec4::from((reflected, 1.0));
+            assert!((a - b).abs().max_element() < 1e-4, "{a} {b}");
+        }
+    }
     #[test]
     fn drawable_size_skips_minimized_and_oversized_windows() {
         use super::drawable_size;

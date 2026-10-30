@@ -71,6 +71,8 @@ Resources (bind group 3):
 | Binding | Declaration | Meaning |
 | --- | --- | --- |
 | 0 | `var<uniform> frame: Frame` | The frame (`Frame`). |
+| 1 | `var reflection: texture_2d<f32>` | The water mirror: the world as a camera mirrored about the horizontal water plane around the camera (`frame.water_plane`) sees it, at half resolution, mapped like the world's picture, so water samples it at `input.screen`. Sky and solid terrain, cut away below the plane. Drawn only for a pack whose material reads it, while `frame.has_reflection` is 1; else a 1×1 blank. |
+| 2 | `var reflection_sampler: sampler` | Bilinear filtering, clamped to the edges. |
 | 6 | `var opaque_depth: texture_depth_2d` | The world's depth before translucent terrain (reversed, like `scene_depth`), for the translucent pass: `textureLoad(opaque_depth, vec2<i32>(input.screen * frame.resolution), 0)` is what lies behind water or glass. Stale while solid terrain draws. |
 | 11 | `var opaque_color: texture_2d<f32>` | The world's picture before translucent terrain (sky, solid terrain, entities), the size of `opaque_depth`, for the translucent pass: what a surface refracts. Read it with `textureLoad`. Stale while solid terrain draws; black when the world draws straight to the window (a pack without `[[post]]` passes, at full resolution). |
 
@@ -149,6 +151,9 @@ The frame, as `frame` in every stage. Positions and directions are in world axes
 | `eye_light_smooth` | `vec2<f32>` | 480 | `eye_light` eased with a half-life of 2 seconds: it follows the light levels' steps without stepping itself (for exposure and indoor fog). |
 | `in_water` | `f32` | 488 | 1 while the camera is in water (`eye_in` 1), eased with a half-life of a quarter second in and out. |
 | `in_lava` | `f32` | 492 | The same for lava (`eye_in` 2). |
+| `water_plane` | `f32` | 496 | The y of the horizontal water plane `reflection` mirrors the world about, in world blocks, while `has_reflection` is 1. |
+| `has_reflection` | `u32` | 500 | 1 while the material stage's `reflection` holds this frame's water mirror, else 0. |
+| `reflection_resolution` | `vec2<f32>` | 504 | The size of `reflection`, in pixels: half the world's picture. |
 
 ## Options
 

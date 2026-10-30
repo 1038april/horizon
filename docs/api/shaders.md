@@ -96,6 +96,10 @@ stages.
 
 ## Changelog
 
+- 2026-10-30: API 0.1 (additions): the material stage's `reflection` and
+  `reflection_sampler`, the world mirrored about the water plane around the camera, drawn
+  only for a pack whose material reads it; `Frame.water_plane`, `has_reflection` and
+  `reflection_resolution`.
 - 2026-10-30: API 0.1 (additions): `MaterialInput.face`, `fluid`, `emission`, `normal` and
   `tangent`: which fluid and face a point is on, how strongly its block shines, and the
   surface's frame for normal maps and lighting.

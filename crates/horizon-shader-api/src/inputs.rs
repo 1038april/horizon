@@ -159,6 +159,13 @@ uniform! {
         in_water: f32,
         /// The same for lava (`eye_in` 2).
         in_lava: f32,
+        /// The y of the horizontal water plane `reflection` mirrors the world about, in world
+        /// blocks, while `has_reflection` is 1.
+        water_plane: f32,
+        /// 1 while the material stage's `reflection` holds this frame's water mirror, else 0.
+        has_reflection: u32,
+        /// The size of `reflection`, in pixels: half the world's picture.
+        reflection_resolution: [f32; 2],
     }
 }
 
@@ -229,9 +236,9 @@ mod tests {
     #[test]
     fn frame_fields_carry_their_docs() {
         let wgsl = Frame::WGSL;
-        assert_eq!(wgsl.fields.len(), 34);
+        assert_eq!(wgsl.fields.len(), 37);
         assert!(wgsl.fields.iter().all(|f| !f.doc.trim().is_empty()));
-        assert_eq!(std::mem::size_of::<Frame>(), 5 * 64 + 11 * 16);
+        assert_eq!(std::mem::size_of::<Frame>(), 5 * 64 + 12 * 16);
         assert!(
             wgsl.wgsl()
                 .contains("    camera_position: vec3<f32>,\n    time: f32,\n")

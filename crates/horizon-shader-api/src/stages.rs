@@ -76,8 +76,20 @@ const POST_RESOURCES: [Resource; 7] = [
 
 /// The material stage's resources: the frame, and the world as it was before translucent
 /// terrain drew (for water and glass to see what lies behind them).
-const MATERIAL_RESOURCES: [Resource; 3] = [
+const MATERIAL_RESOURCES: [Resource; 5] = [
     FRAME,
+    Resource {
+        binding: 1,
+        name: "reflection",
+        ty: "var reflection: texture_2d<f32>",
+        doc: "The water mirror: the world as a camera mirrored about the horizontal water plane around the camera (`frame.water_plane`) sees it, at half resolution, mapped like the world's picture, so water samples it at `input.screen`. Sky and solid terrain, cut away below the plane. Drawn only for a pack whose material reads it, while `frame.has_reflection` is 1; else a 1×1 blank.",
+    },
+    Resource {
+        binding: 2,
+        name: "reflection_sampler",
+        ty: "var reflection_sampler: sampler",
+        doc: "Bilinear filtering, clamped to the edges.",
+    },
     Resource {
         binding: 6,
         name: "opaque_depth",

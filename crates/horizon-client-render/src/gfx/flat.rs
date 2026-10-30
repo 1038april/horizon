@@ -63,6 +63,8 @@ pub struct Call {
 
 pub struct Flat {
     pub solid: wgpu::RenderPipeline,
+    /// The solid draws as the water mirror's camera draws them (`fs_solid_mirror`).
+    pub solid_mirror: wgpu::RenderPipeline,
     pub translucent: wgpu::RenderPipeline,
     flatten: wgpu::ComputePipeline,
     compute_layout: wgpu::BindGroupLayout,
@@ -248,7 +250,7 @@ fn plan(
 }
 
 impl Flat {
-    /// `pipeline(layout, label, vertex entry, fragment entry, blend)` builds a
+    /// `pipeline(layout, label, fragment entry, blend, cull)` builds a
     /// terrain pipeline as the per-section ones, without the origin buffer.
     pub fn new(
         device: &wgpu::Device,
@@ -259,6 +261,7 @@ impl Flat {
             &str,
             &str,
             Option<wgpu::BlendState>,
+            Option<wgpu::Face>,
         ) -> wgpu::RenderPipeline,
     ) -> Self {
         let vertex = wgpu::ShaderStages::VERTEX;
@@ -312,13 +315,23 @@ impl Flat {
         let flatten = compute_pipeline(&compute_layout, "flatten");
         let flatten_seen = compute_pipeline(&seen_layout, "flatten_seen");
         let storage_usage = wgpu::BufferUsages::STORAGE;
+        let back = Some(wgpu::Face::Back);
         Self {
-            solid: pipeline(&layout, "Terrain solid (flat)", "fs_solid", None),
+            solid: pipeline(&layout, "Terrain solid (flat)", "fs_solid", None, back),
+            // The mirror flips the winding: its solid terrain culls the front.
+            solid_mirror: pipeline(
+                &layout,
+                "Terrain solid mirrored (flat)",
+                "fs_solid_mirror",
+                None,
+                Some(wgpu::Face::Front),
+            ),
             translucent: pipeline(
                 &layout,
                 "Terrain translucent (flat)",
                 "fs_translucent",
                 Some(wgpu::BlendState::ALPHA_BLENDING),
+                back,
             ),
             flatten,
             compute_layout,

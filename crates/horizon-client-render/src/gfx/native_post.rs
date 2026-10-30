@@ -47,6 +47,14 @@ pub struct NativeFrame {
     /// The world's colour before translucent terrain (`opaque_color`, binding 11), copied
     /// with it; 1×1 while the world draws straight to the window.
     pub opaque_color: wgpu::Texture,
+    /// The material stage's `reflection` (binding 1): this frame's water mirror, else
+    /// `blank`; and its sampler (binding 2).
+    reflection: wgpu::TextureView,
+    blank: wgpu::TextureView,
+    reflection_sampler: wgpu::Sampler,
+    /// Whether the pack's material reads `reflection` (`NativePack::new`): else no mirror
+    /// is drawn and `has_reflection` stays 0.
+    pub reflects: bool,
     /// Last frame's view-projection, camera and time (`write`).
     last: Option<([[f32; 4]; 4], glam::DVec3, std::time::Instant)>,
     /// The eased eye light (block, sky) and being in water and lava (`write`); NaN until the
@@ -107,6 +115,11 @@ fn frame_entry(visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
+/// The size of the water mirror for a world of `size`: half of it.
+pub fn reflection_size(size: [u32; 2]) -> [u32; 2] {
+    size.map(|s| s.div_ceil(2).max(1))
+}
+
 impl NativeFrame {
     pub fn new(device: &wgpu::Device) -> Self {
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -119,19 +132,45 @@ impl NativeFrame {
             label: Some("Native shader pack frame"),
             entries: &[
                 frame_entry(wgpu::ShaderStages::VERTEX_FRAGMENT),
+                texture_entry(1, wgpu::TextureSampleType::Float { filterable: true }),
+                sampler_entry(2),
                 texture_entry(6, wgpu::TextureSampleType::Depth),
                 texture_entry(11, wgpu::TextureSampleType::Float { filterable: false }),
             ],
         });
         let opaque_depth = depth_copy(device, [1, 1]);
         let opaque_color = color_copy(device, [1, 1], wgpu::TextureFormat::Rgba8Unorm);
-        let group = Self::group(device, &layout, &buffer, &opaque_depth, &opaque_color);
+        let blank = copy_target(
+            device,
+            "Native shader pack reflection blank",
+            [1, 1],
+            wgpu::TextureFormat::Rgba8Unorm,
+        )
+        .create_view(&Default::default());
+        let reflection_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Native shader pack reflection sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let group = Self::group(
+            device,
+            &layout,
+            &buffer,
+            (&blank, &reflection_sampler),
+            &opaque_depth,
+            &opaque_color,
+        );
         Self {
             buffer,
             layout,
             group,
             opaque_depth,
             opaque_color,
+            reflection: blank.clone(),
+            blank,
+            reflection_sampler,
+            reflects: false,
             last: None,
             eye: [f32::NAN; 4],
             start: std::time::Instant::now(),
@@ -143,6 +182,7 @@ impl NativeFrame {
         device: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,
         buffer: &wgpu::Buffer,
+        (reflection, sampler): (&wgpu::TextureView, &wgpu::Sampler),
         opaque_depth: &wgpu::Texture,
         opaque_color: &wgpu::Texture,
     ) -> wgpu::BindGroup {
@@ -153,6 +193,14 @@ impl NativeFrame {
                 wgpu::BindGroupEntry {
                     binding: 0,
                     resource: buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(reflection),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(sampler),
                 },
                 wgpu::BindGroupEntry {
                     binding: 6,
@@ -196,10 +244,25 @@ impl NativeFrame {
         if !depth_fits {
             self.opaque_depth = depth_copy(device, size);
         }
+        self.regroup(device);
+    }
+
+    /// Binds `view` as this frame's `reflection` (`None`: the blank). The mirror is drawn
+    /// before the stages read it.
+    pub fn set_reflection(&mut self, device: &wgpu::Device, view: Option<&wgpu::TextureView>) {
+        let view = view.unwrap_or(&self.blank);
+        if *view != self.reflection {
+            self.reflection = view.clone();
+            self.regroup(device);
+        }
+    }
+
+    fn regroup(&mut self, device: &wgpu::Device) {
         self.group = Self::group(
             device,
             &self.layout,
             &self.buffer,
+            (&self.reflection, &self.reflection_sampler),
             &self.opaque_depth,
             &self.opaque_color,
         );
@@ -209,6 +272,9 @@ impl NativeFrame {
     pub fn write(&mut self, queue: &wgpu::Queue, frame: &Frame, size: [u32; 2]) {
         let seconds = self.start.elapsed().as_secs_f32() % 3600.0;
         let mut inputs = frame_inputs(frame, size, seconds, self.frames);
+        if !self.reflects {
+            inputs.has_reflection = 0;
+        }
         let view_proj = (Mat4::from_cols_array_2d(&inputs.projection)
             * Mat4::from_cols_array_2d(&inputs.view))
         .to_cols_array_2d();
@@ -621,6 +687,9 @@ pub fn frame_inputs(frame: &Frame, size: [u32; 2], seconds: f32, index: u32) -> 
         eye_light_smooth: [level(pack.eye_light[0]), level(pack.eye_light[1])],
         in_water: f32::from(u8::from(pack.eye_in as u32 == 1)),
         in_lava: f32::from(u8::from(pack.eye_in as u32 == 2)),
+        water_plane: frame.water_plane.unwrap_or(0.0),
+        has_reflection: u32::from(frame.water_plane.is_some()),
+        reflection_resolution: reflection_size(size).map(|s| s as f32),
     }
 }
 
