@@ -111,6 +111,12 @@ fn sprite_tags_name_sprites_with_one_wildcard() {
         m.sprite_tags(sprites.iter().rev().copied()),
         [(1, 1), (2, 1), (4, 2), (5, 2)]
     );
+    // Two names on one layer (identical stills share it) give one entry, tags merged.
+    let shared = [
+        ("minecraft:block/glass", 7),
+        ("minecraft:block/packed_ice", 7),
+    ];
+    assert_eq!(m.sprite_tags(shared), [(7, 3)]);
 }
 
 #[test]

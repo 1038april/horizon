@@ -284,20 +284,21 @@ impl Manifest {
         &self,
         sprites: impl IntoIterator<Item = (&'a str, u32)>,
     ) -> Vec<(u32, u32)> {
-        let mut out: Vec<(u32, u32)> = sprites
-            .into_iter()
-            .filter_map(|(name, layer)| {
-                let bits = self
-                    .tags
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, t)| t.matches(name))
-                    .fold(0, |bits, (i, _)| bits | 1 << i);
-                (bits != 0).then_some((layer, bits))
-            })
-            .collect();
-        out.sort_unstable();
-        out
+        // Identical stills share one layer under several names: their tags are or-ed
+        // together, so each layer is one case of the shader's `switch`.
+        let mut layers = std::collections::BTreeMap::<u32, u32>::new();
+        for (name, layer) in sprites {
+            let bits = self
+                .tags
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.matches(name))
+                .fold(0, |bits, (i, _)| bits | 1 << i);
+            if bits != 0 {
+                *layers.entry(layer).or_default() |= bits;
+            }
+        }
+        layers.into_iter().collect()
     }
 
     /// Every WGSL file the manifest names, shared files first, each once.

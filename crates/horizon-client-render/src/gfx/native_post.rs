@@ -440,6 +440,7 @@ pub fn frame_inputs(frame: &Frame, size: [u32; 2], seconds: f32, index: u32) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use horizon_shader_api::{MANIFEST, Pack, check};
 
     #[test]
     fn wetness_rises_slower_than_it_dries() {
@@ -447,7 +448,6 @@ mod tests {
         assert_eq!(wetness(1.0, 0.0, 10.0), 0.5);
         assert_eq!(wetness(0.25, 0.25, 5.0), 0.25);
     }
-    use horizon_shader_api::{MANIFEST, Pack, check};
 
     fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
