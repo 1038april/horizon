@@ -1069,10 +1069,11 @@ fn complete_reports(versions: &Path, tag: &str) -> bool {
 
 /// What a prepared version may lack that the launcher adds without preparing again, each copied
 /// from the player's own Minecraft asset store as `horizon-prepare <kind>` does: what the
-/// player misses without it, whether the resources lack it, and the copy.
+/// player misses without it, its kind (`horizon_prepare::missing_extras`, the same check as
+/// `horizon-prepare --check`), and the copy.
 type Completion = (
     &'static str,
-    fn(&Path) -> bool,
+    &'static str,
     fn(&Path, Option<&Path>, horizon_prepare::Log) -> Result<PathBuf, String>,
 );
 
@@ -1080,53 +1081,17 @@ const COMPLETIONS: [Completion; 5] = [
     // Preparers before #1538 left the built-in packs out.
     (
         "Programmer Art and High Contrast",
-        lacks_packs,
+        "packs",
         horizon_prepare::packs,
     ),
     // A preparation that could not read the asset store keeps the client jar's 1x1 grey
     // placeholders, its English alone, and no sounds (#1867: Prism Launcher installs prepared
     // since 0.2.48).
-    (
-        "The title panorama",
-        lacks_panorama,
-        horizon_prepare::panorama,
-    ),
-    ("The Unifont glyphs", lacks_unifont, horizon_prepare::fonts),
-    ("The languages", lacks_languages, horizon_prepare::languages),
-    (
-        "The sounds",
-        |resources| !sounds_in(resources),
-        horizon_prepare::sounds,
-    ),
+    ("The title panorama", "panorama", horizon_prepare::panorama),
+    ("The Unifont glyphs", "fonts", horizon_prepare::fonts),
+    ("The languages", "languages", horizon_prepare::languages),
+    ("The sounds", "sounds", horizon_prepare::sounds),
 ];
-
-fn lacks_unifont(resources: &Path) -> bool {
-    !resources
-        .join("assets/minecraft/font/unifont.zip")
-        .is_file()
-}
-
-/// Whether the language list is missing: `pack.mcmeta` only the asset index holds, while the
-/// client jar's `lang` folder holds `en_us.json` and `deprecated.json`, so counting its files
-/// never tells.
-fn lacks_languages(resources: &Path) -> bool {
-    !resources.join("assets/pack.mcmeta").is_file()
-}
-
-fn lacks_packs(resources: &Path) -> bool {
-    horizon_prepare::BUILT_IN_PACKS
-        .iter()
-        .any(|pack| !resources.join("assets").join(pack).is_file())
-}
-
-/// Whether the first panorama face is missing or the client jar's 1x1 placeholder (a PNG's
-/// width is the big-endian word at byte 16, in the IHDR chunk).
-fn lacks_panorama(resources: &Path) -> bool {
-    let face = resources.join("assets/minecraft/textures/gui/title/background/panorama_0.png");
-    fs::read(face).map_or(true, |png| {
-        png.get(16..20).is_none_or(|width| width == [0, 0, 0, 1])
-    })
-}
 
 /// Adds what a prepared version lacks of `COMPLETIONS`: a new version reuses the resources of the
 /// one before (`reuse_prepared`), which may come from a preparer that left them out. Without them
@@ -1154,9 +1119,10 @@ fn complete_assets_in(
         if !resources.join(RESOURCES_MANIFEST).exists() {
             return Vec::new();
         }
+        let missing = horizon_prepare::missing_extras(&resources);
         COMPLETIONS
             .iter()
-            .filter(|(_, lacks, _)| lacks(&resources))
+            .filter(|(_, kind, _)| missing.iter().any(|(m, _)| m == kind))
             .collect()
     };
     if lacking().is_empty() {

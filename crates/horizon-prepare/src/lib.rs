@@ -21,7 +21,7 @@ mod sounds;
 mod survival;
 mod worker;
 
-pub use check::{check, STAMP};
+pub use check::{check, missing_extras, STAMP};
 pub use files::clone_or_copy;
 pub use sounds::{add_assets, fonts, languages, packs, panorama, sounds, BUILT_IN_PACKS};
 
@@ -149,6 +149,36 @@ fn write(path: &Path, data: &[u8]) -> Result<(), String> {
 
 fn mkdir(path: &Path) -> Result<(), String> {
     fs::create_dir_all(path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The lock file each preparation holds in the folders it writes (`LOCK`).
+pub const LOCK: &str = ".horizon-prepare.lock";
+
+/// One preparation at a time per folder: two launchers or instances preparing into one `--output`,
+/// or sharing `root`'s `.local`, would interleave their writes. A second one waits, saying so;
+/// the lock goes with the returned file, so with the process too.
+pub(crate) fn hold_lock(dir: &Path, log: Log) -> Result<fs::File, String> {
+    mkdir(dir)?;
+    let path = dir.join(LOCK);
+    let error = |e: std::io::Error| format!("{}: {e}", path.display());
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(error)?;
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(fs::TryLockError::WouldBlock) => {
+            log(&format!(
+                "Waiting for another horizon-prepare to finish with {}",
+                dir.display()
+            ));
+            file.lock().map_err(error)?;
+        }
+        Err(fs::TryLockError::Error(e)) => return Err(error(e)),
+    }
+    Ok(file)
 }
 
 pub(crate) fn read_json(path: &Path) -> Result<Value, String> {
@@ -417,7 +447,9 @@ impl Run<'_> {
             format!("dev.horizonlab.parity.{main}"),
         ];
         all.extend_from_slice(args);
-        self.jdk.java(&all, None, log)
+        // Vanilla's code in the exporters logs relative to the working directory (logs/): keep
+        // that in the scratch, not where the preparer was started.
+        self.jdk.java(&all, Some(&self.local), log)
     }
 
     /// Runs each exporter from the verified shared bundle, with output in
@@ -480,6 +512,8 @@ fn prepare_impl(
         &artifacts::game_files(options.minecraft_dir.as_deref(), &lock.version).runtimes,
     ));
     let jdk = java::find_runtime(lock.java_major, &homes)?;
+    // The import and the exporters' scratch files.
+    let _local_lock = hold_lock(&root.join(".local"), log)?;
     let reused = if options.import {
         artifacts::reuse_verified(root, log)?
     } else {
@@ -509,7 +543,7 @@ fn prepare_impl(
         }
         None => resources_dir(root, &lock.version, None),
     };
-    mkdir(&resources)?;
+    let _resources_lock = hold_lock(&resources, log)?;
     let manifest_path = resources.join("horizon-resources.json");
     let oracle = root.join(PARITY).join("VanillaHeightmapOracle.java");
     let origin = Value::Object(vec![
@@ -553,6 +587,8 @@ fn prepare_impl(
     if compile_only {
         return Ok(run.bundle()?.to_path_buf());
     }
+    // Not current until this preparation finishes: --check says so meanwhile, and after a failure.
+    check::remove_stamp(&resources)?;
     steps(&run, &lock, &oracle, options.minecraft_dir.as_deref())?;
     check::write_stamp(&resources)?;
     progress(1.0);

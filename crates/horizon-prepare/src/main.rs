@@ -35,7 +35,10 @@ Usage: horizon-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [-
   --output PATH         Where the resources go (default: <root>/.local/horizon-client/<version>);
                         the exporters' scratch files stay in <root>/.local
   --check               Exit 0 when the resources are complete and current for this preparer,
-                        else 1, printing what each gap needs; runs no Java and reads no game files
+                        else 1: each gap on stdout with what it needs, or an error: line on
+                        stderr when it can't check. Runs no Java and reads no game files; it tests
+                        which files are there and their versions, not their contents (on doubt,
+                        prepare again)
   --complete            Also copy the sounds, then fail unless --check would pass: one command
                         for resources the game plays with nothing missing
   --progress json       One JSON object a line on stdout: {\"message\": ...} for each log line,
