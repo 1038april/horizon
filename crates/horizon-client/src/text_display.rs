@@ -194,7 +194,7 @@ pub fn display_data(tag: &Tag, all: bool) -> Vec<(u8, i32, Value)> {
         let value = int(key).unwrap_or(default).clamp(low, high);
         set(id, serializer::INT, Value::Int(value), Value::Int(default));
     }
-    // `Transformation.CODEC`: all four parts, else the identity.
+    // `Transformation.EXTENDED_CODEC` (four parts or MATRIX4F), else `Transformation.IDENTITY`.
     let t = tag.get("transformation").and_then(transformation);
     let (translation, left, scale, right) = t.unwrap_or((
         defaults.translation,

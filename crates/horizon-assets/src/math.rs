@@ -539,10 +539,10 @@ mod tests {
         assert_eq!(
             parts(scaled),
             [
-                vec![0x3f80_0000, 0xc000_0000, 0x3e80_0000],
-                vec![0, 0, 0, 0x3f80_0000],
-                vec![0x4000_0000, 0x4040_0000, 0x3f00_0000],
-                vec![0x8000_0000, 0x8000_0000, 0x8000_0000, 0x3f80_0000],
+                vec![0x3f80_0000u32, 0xc000_0000, 0x3e80_0000],
+                vec![0u32, 0, 0, 0x3f80_0000],
+                vec![0x4000_0000u32, 0x4040_0000, 0x3f00_0000],
+                vec![0x8000_0000u32, 0x8000_0000, 0x8000_0000, 0x3f80_0000],
             ]
         );
         let quarter_turn = [
@@ -551,10 +551,10 @@ mod tests {
         assert_eq!(
             parts(quarter_turn),
             [
-                vec![0x3f00_0000, 0, 0],
-                vec![0, 0, 0x3f35_04f3, 0x3f35_04f3],
-                vec![0x3f7f_ffff, 0x3f7f_ffff, 0x3f80_0000],
-                vec![0x8000_0000, 0x8000_0000, 0x8000_0000, 0x3f80_0000],
+                vec![0x3f00_0000u32, 0, 0],
+                vec![0u32, 0, 0x3f35_04f3, 0x3f35_04f3],
+                vec![0x3f7f_ffffu32, 0x3f7f_ffff, 0x3f80_0000],
+                vec![0x8000_0000u32, 0x8000_0000, 0x8000_0000, 0x3f80_0000],
             ]
         );
         let sheared = [
@@ -563,10 +563,10 @@ mod tests {
         assert_eq!(
             parts(sheared),
             [
-                vec![0, 0, 0x3fc0_0000],
-                vec![0x3c03_7010, 0x3d38_d722, 0x3ea8_ef95, 0x3f71_60d9],
-                vec![0x3f23_2630, 0x3ec6_bdde, 0x3f81_5b1f],
-                vec![0xbcc5_7e11, 0xbda8_1e36, 0xbee2_916d, 0x3f64_860a],
+                vec![0u32, 0, 0x3fc0_0000],
+                vec![0x3c03_7010u32, 0x3d38_d722, 0x3ea8_ef95, 0x3f71_60d9],
+                vec![0x3f23_2630u32, 0x3ec6_bdde, 0x3f81_5b1f],
+                vec![0xbcc5_7e11u32, 0xbda8_1e36, 0xbee2_916d, 0x3f64_860a],
             ]
         );
     }
