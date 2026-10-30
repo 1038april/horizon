@@ -6670,6 +6670,11 @@ impl Game<'_> {
         if self.cooldowns.is_on_cooldown(&group) {
             return false;
         }
+        // Item.use: Equippable.swapWithEquipmentSlot runs on this client too, so
+        // the armor slot and the hand change at once (the server confirms).
+        if info.equip_slot.is_some() && self.with_hand(hand, |g| g.equip_from_hand(&held)) {
+            return true;
+        }
         // `ItemStack.use` runs on this client too: a bucket's own ray and its
         // pick/empty contents decide whether the click succeeds (a failed
         // fill or pickup leaves the hand alone), and the blocks it sets are
