@@ -889,6 +889,7 @@ impl Audio {
         engine.loaded = self.backend.live;
         Self {
             _stream: None,
+            device_name: self.device_name.clone(),
             engine,
             backend: MixerBackend {
                 mixer: self.backend.mixer.clone(),
