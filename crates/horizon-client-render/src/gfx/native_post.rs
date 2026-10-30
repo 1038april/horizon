@@ -24,6 +24,10 @@ pub struct NativePost {
     nearest: wgpu::Sampler,
     /// Two targets of the world's size, written in turn (none with a single pass).
     targets: Option<([u32; 2], [wgpu::TextureView; 2])>,
+    /// Last frame's input to the last pass (`history`, binding 8), made with the targets,
+    /// and a black 1×1 in its place before then.
+    history: Option<wgpu::Texture>,
+    history_blank: wgpu::Texture,
     /// One bind group per pass, for these world views.
     groups: Option<(WorldViews, Vec<wgpu::BindGroup>)>,
     /// The screen's colour format, the world target's too.
@@ -300,6 +304,7 @@ impl NativePost {
                 texture_entry(3, float),
                 sampler_entry(4),
                 sampler_entry(5),
+                texture_entry(8, float),
             ],
         });
         let mut groups: [Option<&wgpu::BindGroupLayout>; GROUP as usize + 1] = Default::default();
@@ -367,6 +372,8 @@ impl NativePost {
             linear: sampler("Native shader pack linear", wgpu::FilterMode::Linear),
             nearest: sampler("Native shader pack nearest", wgpu::FilterMode::Nearest),
             targets: None,
+            history: None,
+            history_blank: history_target(device, "Native shader pack history blank", [1, 1]),
             groups: None,
             format,
         })
@@ -397,8 +404,10 @@ impl NativePost {
                         sample_count: 1,
                         dimension: wgpu::TextureDimension::D2,
                         format: INTERMEDIATE,
+                        // COPY_SRC: the last pass's input is kept as next frame's `history`.
                         usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                            | wgpu::TextureUsages::TEXTURE_BINDING,
+                            | wgpu::TextureUsages::TEXTURE_BINDING
+                            | wgpu::TextureUsages::COPY_SRC,
                         view_formats: &[],
                     })
                     .create_view(&Default::default())
@@ -410,6 +419,7 @@ impl NativePost {
                     target("Native shader pack B"),
                 ],
             ));
+            self.history = Some(history_target(device, "Native shader pack history", size));
             self.groups = None;
         }
         if self
@@ -419,6 +429,11 @@ impl NativePost {
         {
             return;
         }
+        let history = self
+            .history
+            .as_ref()
+            .unwrap_or(&self.history_blank)
+            .create_view(&Default::default());
         let groups = (0..self.passes.len())
             .map(|i| {
                 // Pass i reads what pass i - 1 wrote: target (i - 1) % 2, the world for the first.
@@ -453,6 +468,10 @@ impl NativePost {
                         wgpu::BindGroupEntry {
                             binding: 5,
                             resource: wgpu::BindingResource::Sampler(&self.nearest),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 8,
+                            resource: wgpu::BindingResource::TextureView(&history),
                         },
                     ],
                 })
@@ -503,7 +522,37 @@ impl NativePost {
             pass.set_bind_group(GROUP, group, &[]);
             pass.draw(0..3, 0..1);
         }
+        // The last pass's input becomes next frame's `history`, once that pass has read this
+        // frame's.
+        let count = self.passes.len();
+        if count > 1
+            && let (Some(history), Some((_, targets))) = (&self.history, &self.targets)
+        {
+            encoder.copy_texture_to_texture(
+                targets[(count - 2) % 2].texture().as_image_copy(),
+                history.as_image_copy(),
+                history.size(),
+            );
+        }
     }
+}
+
+/// A target of `size` the post stage's `history` is copied into.
+fn history_target(device: &wgpu::Device, label: &str, size: [u32; 2]) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width: size[0].max(1),
+            height: size[1].max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: INTERMEDIATE,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    })
 }
 
 /// The frame as packs read it (docs/api/shaders-reference.md), from the renderer's `Frame`.
@@ -706,6 +755,95 @@ mod tests {
         assert!(
             near(pixel[0], 204) && near(pixel[1], 102) && near(pixel[2], 51) && near(pixel[3], 128),
             "{pixel:?}"
+        );
+    }
+
+    /// `history` is black on the first frame, then what the pass before the last wrote the
+    /// frame before.
+    #[test]
+    fn the_last_pass_reads_last_frames_input_as_history() {
+        let Some((device, queue)) = device() else {
+            return;
+        };
+        let manifest = "schema = 1
+id = \"t\"
+name = \"T\"
+version = \"1\"
+api = \"0.1\"
+            [[post]]
+file = \"a.wgsl\"
+[[post]]
+file = \"b.wgsl\"
+";
+        let a = "fn post(input: PostInput) -> vec4<f32> { return vec4<f32>(input.color.rgb * 0.5, 1.0); }
+";
+        let b = "fn post(input: PostInput) -> vec4<f32> { return textureLoad(history, vec2<i32>(input.pixel), 0); }
+";
+        let files = [(MANIFEST, manifest), ("a.wgsl", a), ("b.wgsl", b)]
+            .map(|(n, t)| (n.to_owned(), t.as_bytes().to_vec()))
+            .into();
+        let report = check(&Pack::from_files(files).unwrap()).unwrap();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let frame = NativeFrame::new(&device);
+        let mut post = NativePost::new(&device, report.stages, &[], format, &frame).unwrap();
+        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+        let color = texture(&device, format, usage).create_view(&Default::default());
+        let depth = texture(&device, wgpu::TextureFormat::Depth32Float, usage)
+            .create_view(&Default::default());
+        let screen = texture(
+            &device,
+            format,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        );
+        let view = screen.create_view(&Default::default());
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT * 4),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut frame_pixel = || {
+            let mut encoder = device.create_command_encoder(&Default::default());
+            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &color,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            post.run(&device, &mut encoder, (&color, &depth), &view, [4, 4], None);
+            encoder.copy_texture_to_buffer(
+                screen.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &buffer,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT),
+                        rows_per_image: Some(4),
+                    },
+                },
+                screen.size(),
+            );
+            queue.submit([encoder.finish()]);
+            buffer
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, |r| r.unwrap());
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            let pixel = buffer.slice(..).get_mapped_range().unwrap()[..4].to_vec();
+            buffer.unmap();
+            pixel
+        };
+        assert_eq!(frame_pixel()[..3], [0, 0, 0], "black on the first frame");
+        let second = frame_pixel();
+        assert!(
+            second[..3].iter().all(|&v| v.abs_diff(128) <= 1),
+            "{second:?}"
         );
     }
 }

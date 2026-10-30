@@ -34,7 +34,7 @@ const FRAME: Resource = Resource {
     doc: "The frame (`Frame`).",
 };
 
-const POST_RESOURCES: [Resource; 6] = [
+const POST_RESOURCES: [Resource; 7] = [
     FRAME,
     Resource {
         binding: 1,
@@ -65,6 +65,12 @@ const POST_RESOURCES: [Resource; 6] = [
         name: "nearest_sampler",
         ty: "var nearest_sampler: sampler",
         doc: "Nearest texel, clamped to the edges.",
+    },
+    Resource {
+        binding: 8,
+        name: "history",
+        ty: "var history: texture_2d<f32>",
+        doc: "Last frame's input to the last pass (what the pass before it wrote), for temporal passes (TAA, denoising): put such a pass second to last and it reads its own previous output; reproject with `frame.previous_view_projection`. Black on the first frame and with a single pass.",
     },
 ];
 
