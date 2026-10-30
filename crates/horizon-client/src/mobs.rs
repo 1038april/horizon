@@ -1421,6 +1421,15 @@ pub enum MobEvent {
         count: u32,
         at: [f64; 3],
     },
+    /// `Goat.dropHorn`: a horn from goat `mob` (`Goat.createHorn` picks the
+    /// instrument from its UUID), thrown with `motion` as
+    /// `new ItemEntity(.., deltaX, deltaY, deltaZ)`.
+    DropGoatHorn {
+        mob: u32,
+        screaming: bool,
+        at: [f64; 3],
+        motion: [f64; 3],
+    },
     /// `Mob.dropFromGiftLootTable`: a gift loot table's items dropped at `at`.
     DropGift {
         table: &'static str,
