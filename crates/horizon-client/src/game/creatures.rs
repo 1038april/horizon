@@ -456,8 +456,8 @@ impl Game<'_> {
             self.lan_entity_event(id as i32, if body { 65 } else { 49 }, at);
         }
     }
-    /// What a converted mob's callback does to it: the spawn finalization of
-    /// a conversion, then persistence.
+    /// What a converted frog gets once its tadpole has grown up: the spawn
+    /// finalization of a conversion, then persistence.
     fn finalize_converted(&mut self, id: u32) {
         let Some(at) = self.mobs.iter().find(|m| m.id == id).map(|m| m.position) else {
             return;
