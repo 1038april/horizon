@@ -360,12 +360,12 @@ impl SignatureCache {
             None => (-1, Some(signature.to_vec())),
         }
     }
-    /// MessageSignature.Packed.unpack: the full signature, or the one the
-    /// cache holds at the index (None when it holds none there).
-    pub fn unpack(&self, id: i32, full: Option<&[u8]>) -> Option<Signature> {
-        match full {
-            Some(bytes) => signature(bytes),
-            None => usize::try_from(id)
+    /// `MessageSignature.Packed.unpack`: a full signature as it is, an
+    /// index as the cache holds it; `None` for an empty or unknown slot.
+    pub fn unpack(&self, packed: &(i32, Option<Vec<u8>>)) -> Option<Signature> {
+        match packed {
+            (_, Some(full)) => signature(full),
+            (id, None) => usize::try_from(*id)
                 .ok()
                 .and_then(|i| self.entries.get(i).copied().flatten()),
         }
@@ -609,6 +609,20 @@ mod tests {
     }
 
     #[test]
+    fn packed_signatures_resolve_against_the_cache() {
+        let mut c = SignatureCache::default();
+        assert_eq!(c.unpack(&(-1, Some(sig(4).to_vec()))), Some(sig(4)));
+        assert_eq!(c.unpack(&(0, None)), None, "an empty slot");
+        c.push(&[sig(1)], Some(&sig(2)));
+        assert_eq!(c.unpack(&(0, None)), Some(sig(2)));
+        assert_eq!(c.unpack(&(1, None)), Some(sig(1)));
+        assert_eq!(c.unpack(&(2, None)), None);
+        assert_eq!(c.unpack(&(128, None)), None, "past the cache");
+        // What the server packs, the client unpacks to the same signature.
+        assert_eq!(c.unpack(&c.pack(&sig(1))), Some(sig(1)));
+    }
+
+    #[test]
     fn cache_moves_recent_signatures_first() {
         let mut c = SignatureCache::default();
         assert_eq!(c.pack(&sig(1)), (-1, Some(sig(1).to_vec())));
@@ -622,11 +636,6 @@ mod tests {
             [c.pack(&sig(3)).0, c.pack(&sig(2)).0, c.pack(&sig(1)).0],
             [0, 1, 2]
         );
-        assert_eq!(c.unpack(1, None), Some(sig(2)));
-        assert_eq!(c.unpack(3, None), None, "an empty slot");
-        assert_eq!(c.unpack(500, None), None);
-        assert_eq!(c.unpack(-1, Some(&sig(9))), Some(sig(9)));
-        assert_eq!(c.unpack(-1, Some(&[0; 10])), None);
     }
 
     use crate::rsa::tests::{CHAT_KEY_PKCS8, TEST_D, TEST_SPKI, hex};
