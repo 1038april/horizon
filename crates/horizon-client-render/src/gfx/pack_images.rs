@@ -150,7 +150,9 @@ pub(super) fn resize_images(
                 | wgpu::TextureUsages::COPY_SRC
                 | atomic,
         ));
-        image.copy = image.copied.then(|| make(wgpu::TextureUsages::COPY_DST));
+        image.copy = image
+            .copied
+            .then(|| make(wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::STORAGE_BINDING));
         image.made_for = size;
     }
     made

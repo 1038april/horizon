@@ -28,6 +28,8 @@ pub(super) struct ImageDecl {
     pub(super) format: String,
     /// `readonly`, `writeonly` or empty (both).
     pub(super) access: String,
+    /// Declared `coherent` or `volatile`: invocations of a dispatch share it as it changes.
+    pub(super) coherent: bool,
 }
 
 pub(super) struct Stage<'p> {
@@ -378,6 +380,7 @@ impl<'p> Stage<'p> {
         let mut location = None;
         let mut format = None;
         let mut access = "";
+        let mut coherent = false;
         let mut interpolation = String::new();
         while let Some(&i) = words.get(k) {
             let w = self.tokens[i];
@@ -405,6 +408,7 @@ impl<'p> Stage<'p> {
             } else if matches!(w, "readonly" | "writeonly") {
                 access = w;
             } else if QUALIFIERS.contains(&w) || matches!(w, "coherent" | "volatile" | "restrict") {
+                coherent |= matches!(w, "coherent" | "volatile");
                 if matches!(
                     w,
                     "flat" | "smooth" | "noperspective" | "centroid" | "sample"
@@ -465,6 +469,7 @@ impl<'p> Stage<'p> {
                         ty: ty.clone(),
                         format: format.to_owned(),
                         access: access.to_owned(),
+                        coherent,
                     }),
                     None => self
                         .errors
