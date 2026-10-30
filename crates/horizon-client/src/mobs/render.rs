@@ -1933,6 +1933,17 @@ fn hand_base(
             0.078_125,
         ));
     }
+    if m.species() == Species::CopperGolem {
+        // `CopperGolemModel.translateToHand`: a still golem holds the item
+        // across the arm, a working one scaled down in front of it.
+        if m.extra.variant3 == super::copper_golem::IDLE {
+            t *= glam::Mat4::from_rotation_y((if left { 90.0f32 } else { -90.0 }).to_radians())
+                * glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, 0.125));
+        } else {
+            t *= glam::Mat4::from_scale(glam::Vec3::splat(0.55))
+                * glam::Mat4::from_translation(glam::Vec3::new(-0.125, 0.3125, -0.1875));
+        }
+    }
     let (ox, oy, oz) = if m.is_baby() {
         (0.0, 1.0, -4.5)
     } else {
