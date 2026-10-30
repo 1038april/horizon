@@ -314,6 +314,7 @@ impl Loading {
             renderer.set_present_mode(self.settings.vsync, self.settings.horizon.present_mode);
         }
         horizon_client::hud::GUI_SCALE.store(self.settings.gui_scale, Ordering::Relaxed);
+        super::narrator::sync(&self.settings);
         if let Some(gui) = &mut self.gui {
             gui.atlas.font.uniform = self.settings.force_unicode;
             gui.atlas.font.japanese = self.settings.japanese_glyphs;

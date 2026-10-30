@@ -437,6 +437,7 @@ impl Game<'_> {
         let mut volumes = s.volumes;
         volumes[0] = 1.0;
         horizon_client::settings::set_source_volumes(volumes);
+        super::narrator::sync(s);
         let chat = s.chat_options();
         let rescale = {
             let o = &self.ui.chat.options;

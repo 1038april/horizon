@@ -169,6 +169,7 @@ mod mounts;
 mod moving_pistons;
 mod music;
 mod names;
+mod narrator;
 mod native_hooks;
 mod native_lifecycle;
 mod native_menus;
@@ -17753,6 +17754,7 @@ fn leave_fullscreen_after(
 
 fn run_event_loop(mut game: Game<'_>) -> Result<()> {
     let result = EventLoop::new()?.run_app(&mut game);
+    narrator::stop();
     leave_fullscreen_after(&result, &mut game.settings);
     result?;
     horizon_client::discord_presence::stop();
@@ -18181,6 +18183,7 @@ fn run_loading(
     };
     let mut app = App::Loading(Box::new(loading));
     let result = EventLoop::new()?.run_app(&mut app);
+    narrator::stop();
     match &mut app {
         App::Ready(game) => leave_fullscreen_after(&result, &mut game.settings),
         App::Loading(loading) => leave_fullscreen_after(&result, &mut loading.settings),
@@ -18254,6 +18257,10 @@ pub fn run() -> Result<()> {
         }
     }
     let early_settings = Settings::load(&std::env::current_dir()?.join("options.txt"));
+    // Minecraft's constructor opens the narrator; a server has none.
+    if options.execution_role.is_client() {
+        narrator::start(&early_settings);
+    }
     // "Playing Horizon" on Discord: never for a server; an automated run only talks to a test's fake Discord.
     if options.dedicated.is_none() {
         let automated = options.benchmark.is_some()
