@@ -243,3 +243,38 @@ pub(super) fn refresh_account(
     })();
     result.unwrap_or_else(|e| Status::failed(&e))
 }
+
+/// Renew `who` for a game already running (a server refused its session, or a splitscreen
+/// player joins one) and hand it over as at launch: a fresh read-once file in `dir`. No file
+/// unless the renewal left the account ready; the status then says why (sign in again, retry).
+pub fn renew_for_game(dir: &Path, who: &str) -> Result<PathBuf, Status> {
+    let account = Accounts::load()
+        .find(who)
+        .cloned()
+        .ok_or_else(|| Status::from_secrets(None))?;
+    renew_for_game_with(
+        &Endpoints::live(),
+        client_id().as_deref(),
+        store(),
+        &account,
+        dir,
+    )
+}
+
+pub(super) fn renew_for_game_with(
+    ep: &Endpoints,
+    client_id: Option<&str>,
+    store: &dyn SecretStore,
+    account: &Account,
+    dir: &Path,
+) -> Result<PathBuf, Status> {
+    let status = refresh_account(ep, client_id, store, account, &|_| {});
+    if status.state != State::Ready {
+        return Err(status);
+    }
+    let _operation = lock(store).map_err(|e| Status::failed(&e))?;
+    let secrets = read(store, &account.uuid)
+        .map_err(|e| Status::failed(&e))?
+        .ok_or_else(|| Status::from_secrets(None))?;
+    write_session_file(dir, account, &secrets).map_err(|e| Status::failed(&e))
+}

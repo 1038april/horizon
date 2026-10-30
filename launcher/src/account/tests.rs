@@ -859,6 +859,33 @@ fn manual_refresh_renews_a_fresh_token_without_selecting_another_account() {
 }
 
 #[test]
+fn a_running_game_gets_a_renewed_session_only_when_ready() {
+    let store = MemoryStore::default();
+    signed_in(&store, &secrets("old-minecraft", true));
+    let (_, ep) = mock(|_| {});
+    let dir = std::env::temp_dir().join(format!("horizon-launcher-renew-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let file =
+        session::renew_for_game_with(&ep, Some("test-client"), &store, &notch(), &dir).unwrap();
+    let handed: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(handed["uuid"], UUID);
+    assert_eq!(handed["access_token"], "mc-token");
+    // A refused refresh hands over nothing and says to sign in again.
+    signed_in(
+        &store,
+        &Secrets {
+            refresh_token: "revoked".into(),
+            ..secrets("old-minecraft", true)
+        },
+    );
+    let refused =
+        session::renew_for_game_with(&ep, Some("test-client"), &store, &notch(), &dir).unwrap_err();
+    assert_eq!(refused.state, session::State::SignInRequired);
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn revoked_refresh_is_remembered_until_a_successful_sign_in() {
     let store = MemoryStore::default();
     let mut accounts = signed_in(

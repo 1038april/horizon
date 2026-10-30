@@ -2040,6 +2040,10 @@ pub fn client_command(tag: &str) -> Command {
     let _ = fs::create_dir_all(&home);
     let mut cmd = Command::new(client_program(tag));
     cmd.current_dir(home).arg("--resources").arg(resources(tag));
+    // How the game asks for a renewed session (`account session`) while it runs.
+    if let Ok(exe) = std::env::current_exe() {
+        cmd.env("HORIZON_LAUNCHER_EXE", exe);
+    }
     // PipeWire remembers volume and mute per application name. The game's own name is
     // "PipeWire ALSA [horizon-client]", shared with development and test runs, where
     // muting it once left every later game silent: played from here it is "Horizon".

@@ -103,9 +103,17 @@ enum AccountCmd {
     List,
     /// Sign in with a Microsoft account in your browser (device code). Play needs one that owns
     /// Minecraft: Java Edition
-    SignIn,
+    SignIn {
+        /// Sign this account (name or UUID) in again: another Microsoft account is refused and
+        /// who plays stays the same
+        #[arg(long = "for")]
+        target: Option<String>,
+    },
     /// Renew an account's session now, even when its access token is still fresh
     Refresh { who: String },
+    /// Renew an account's session for a game already running: prints the read-once session file
+    /// it hands over (`--json`: {"session_file"} or {"authentication"} when it can't)
+    Session { who: String },
     /// Sign out: the account's tokens leave the keychain
     SignOut {
         /// Its name or UUID
@@ -1676,7 +1684,47 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
                 return Err(status.message);
             }
         }
-        AccountCmd::SignIn => {
+        AccountCmd::Session { who } => {
+            let dir = backend::game_home().join("sessions");
+            match (account::session::renew_for_game(&dir, &who), as_json) {
+                (Ok(file), true) => json(serde_json::json!({ "session_file": file })),
+                (Ok(file), false) => println!("{}", file.display()),
+                (Err(status), true) => json(serde_json::json!({ "authentication": status })),
+                (Err(status), false) => return Err(status.message),
+            }
+        }
+        AccountCmd::SignIn { target: Some(who) } => {
+            let a = find(&accounts, &who)?;
+            let sign_in = account::SignIn::start_for(a.clone());
+            let mut shown = false;
+            let signed_in = loop {
+                match sign_in.state() {
+                    account::SignInState::Code(code) if !shown => {
+                        shown = true;
+                        if as_json {
+                            json(serde_json::json!({
+                                "link": code.verification_uri,
+                                "code": code.user_code,
+                            }));
+                        } else {
+                            eprintln!(
+                                "To sign {} in again, open {} in a browser and enter the code {}",
+                                a.name, code.verification_uri, code.user_code
+                            );
+                        }
+                    }
+                    account::SignInState::Done(result) => break result?,
+                    _ => {}
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            };
+            if as_json {
+                json(serde_json::json!({ "signed_in": signed_in.uuid }));
+            } else {
+                println!("Signed in as {} again.", signed_in.name);
+            }
+        }
+        AccountCmd::SignIn { target: None } => {
             let client_id = account::client_id().ok_or(account::NOT_CONFIGURED)?;
             let ep = account::Endpoints::live();
             let code = account::device_code(&ep, &client_id)?;

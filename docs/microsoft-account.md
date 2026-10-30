@@ -150,10 +150,15 @@ session. Inspection, refresh and sign-out run off the window's drawing thread. C
 operations are serialized in-process and between launchers using the same launcher data folder.
 
 The reusable `account::session` API has no GPUI dependency. Keychain reads and browser sign-in
-remain owned by the launcher. A future in-game flow can request these operations through a
-local launcher bridge, then obtain a new read-once session file. Renewing in the launcher does
-not update the token already held by a running game; in-game token replacement and that bridge
-are not implemented here.
+remain owned by the launcher. A running game asks it for a renewed session through the CLI:
+the launcher passes its own path to the game as `HORIZON_LAUNCHER_EXE`, and
+`account session NAME_OR_UUID --json` renews that account and returns a new read-once session
+file (`{"session_file"}`), or the public status (`{"authentication"}`) when the account needs a
+browser sign-in or a retry. `account sign-in --for NAME_OR_UUID` is the targeted sign-in below,
+from the command line: it prints the link and code, refuses another Microsoft account, and
+leaves who plays unchanged. `account session` is not an MCP tool: its file holds a token, and
+only the game reads it. Renewing in the launcher does not change the token a running game
+already holds until the game asks.
 
 ### Profile heads, progress, and targeted re-sign-in
 
