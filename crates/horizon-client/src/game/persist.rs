@@ -393,12 +393,17 @@ impl Game<'_> {
                     }
                     k if super::minecarts::CartKind::from_id(k).is_some() => {
                         let kind = super::minecarts::CartKind::from_id(k).unwrap();
+                        let mut tag = tag;
+                        let riders = self.take_mob_passengers(&mut tag);
                         let id = self.next_entity + 1;
                         if let Some(mut c) = super::minecarts::Minecart::from_nbt(&tag, id, kind) {
                             self.roll_cart_loot(&mut c, &tag);
                             self.next_entity = id;
                             self.remember(id, uuid, tag);
                             self.carts.push(c);
+                            for rider in riders {
+                                self.load_mob(rider, Some(id));
+                            }
                         }
                     }
                     "minecraft:ominous_item_spawner" => self.load_ominous_item_spawner(tag),
@@ -885,10 +890,9 @@ impl Game<'_> {
         let mobs: Vec<usize> = (0..self.mobs.len())
             .filter(|&i| {
                 self.mob_root(i) == i
-                    && self.mobs[i]
-                        .extra
-                        .mount
-                        .is_none_or(|v| self.boats.iter().all(|b| b.id != v))
+                    && self.mobs[i].extra.mount.is_none_or(|v| {
+                        self.boats.iter().all(|b| b.id != v) && self.carts.iter().all(|c| c.id != v)
+                    })
                     && keys.contains(&chunk_of(self.mobs[i].position))
                     && self.mobs[i].alive()
             })
@@ -1021,17 +1025,21 @@ impl Game<'_> {
                 out.entry(chunk_of(at)).or_default().push(tag);
             }
         }
-        for c in &self.carts {
-            if keys.contains(&chunk_of(c.position)) {
-                let uuid = self
-                    .persist
-                    .uuids
-                    .get(&c.id)
-                    .copied()
-                    .unwrap_or_else(random_uuid);
-                let tag = c.to_nbt(uuid, self.persist.raw.get(&c.id));
-                out.entry(chunk_of(c.position)).or_default().push(tag);
-            }
+        let carts: Vec<usize> = (0..self.carts.len())
+            .filter(|&i| keys.contains(&chunk_of(self.carts[i].position)))
+            .collect();
+        for i in carts {
+            let id = self.carts[i].id;
+            let at = self.carts[i].position;
+            let uuid = self
+                .persist
+                .uuids
+                .get(&id)
+                .copied()
+                .unwrap_or_else(random_uuid);
+            let mut tag = self.carts[i].to_nbt(uuid, self.persist.raw.get(&id));
+            self.put_mob_passengers(&mut tag, id);
+            out.entry(chunk_of(at)).or_default().push(tag);
         }
         for a in &self.armor_stands {
             if keys.contains(&chunk_of(a.position)) {

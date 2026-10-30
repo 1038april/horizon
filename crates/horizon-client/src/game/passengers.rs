@@ -39,6 +39,7 @@ impl Game<'_> {
             }
         }
         let boats: std::collections::HashSet<u32> = self.boats.iter().map(|b| b.id).collect();
+        let carts: std::collections::HashSet<u32> = self.carts.iter().map(|c| c.id).collect();
         let index: HashMap<u32, usize> = self
             .mobs
             .iter()
@@ -53,6 +54,7 @@ impl Game<'_> {
             let valid = self.mobs[i].alive()
                 && !self.mobs[i].removed
                 && (boats.contains(&v)
+                    || carts.contains(&v)
                     || index
                         .get(&v)
                         .is_some_and(|&j| self.mobs[j].alive() && !self.mobs[j].removed));
@@ -74,6 +76,7 @@ impl Game<'_> {
     /// no passenger's position.
     pub(super) fn position_riders(&mut self) {
         self.seat_boat_mobs();
+        self.seat_cart_mobs();
         let index: HashMap<u32, usize> = self
             .mobs
             .iter()

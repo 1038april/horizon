@@ -11,8 +11,9 @@ use horizon_client::{
     containers::BlockEntity,
     items::{ItemStack, Items},
     mesher::Vertex,
-    mobs::{Part, anim::Poses},
+    mobs::{Part, Species, Who, anim::Poses, riders},
     particles::{ParticleOptions, ParticleType},
+    scoreboard::pushable_by,
     sound_engine::{CartSound, SoundEngine, SoundInstance, Sounds},
 };
 use horizon_core::{
@@ -124,10 +125,30 @@ fn push_along(push: Vec3, movement: Vec3) -> Vec3 {
         push
     }
 }
+/// AbstractMinecart passenger attachment Y (EntityAttachments).
+const PASSENGER_Y: f64 = 0.1875;
 /// The minecart's passenger attachment minus Player.DEFAULT_VEHICLE_ATTACHMENT.
-pub(super) const SEAT: f64 = 0.1875 - 0.6;
+pub(super) const SEAT: f64 = PASSENGER_Y - 0.6;
 /// The placeholder container key under which an open cart's items live.
 pub(super) const CART_KEY_Y: i32 = horizon_client::lan::menu::VEHICLE_KEY_Y;
+
+/// `OldMinecartBehavior.pushAndPickupEntities`: living entities the cart
+/// offers `startRiding` instead of `Entity.push`. Players click to board;
+/// iron golems always push; a cart that already has a rider is `isVehicle`.
+fn pickup_instead_of_push(species: Species, is_passenger: bool, cart_is_vehicle: bool) -> bool {
+    !cart_is_vehicle && !is_passenger && species != Species::IronGolem
+}
+
+/// `Entity.canRide` for a cart: the boarding cooldown, and a warden never rides.
+fn can_ride_cart(species: Species, boarding_cooldown: i32) -> bool {
+    boarding_cooldown <= 0 && species != Species::Warden
+}
+
+/// `Entity.positionRider` on an `AbstractMinecart`: passenger attachment less
+/// the rider's own vehicle attachment.
+fn cart_seat(cart: Vec3, rider_offset: f64) -> Vec3 {
+    Vec3::new(cart.x, cart.y + PASSENGER_Y - rider_offset, cart.z)
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Shape {
@@ -673,6 +694,9 @@ impl Game<'_> {
         let at = [c.position.x, c.position.y, c.position.z];
         // The cart is the explosion's source: it is gone before the blast
         // looks for entities, so it can't hit itself.
+        if let Some(i) = self.carts.iter().position(|x| x.id == c.id) {
+            self.eject_cart_mobs(i);
+        }
         self.carts.retain(|x| x.id != c.id);
         // ExplosionInteraction.TNT: the tnt_explosion_drop_decay rule.
         let interaction = self.destroy_type("tnt_explosion_drop_decay");
@@ -787,6 +811,106 @@ impl Game<'_> {
             self.carts[j].velocity = nt;
             self.carts[i].velocity = no;
         }
+        self.pickup_from_cart(i);
+    }
+    /// `OldMinecartBehavior.pushAndPickupEntities` for living entities in cart
+    /// `i`'s box (0.2 wider on each side): an eligible mob boards an empty
+    /// cart (`startRiding`); others get `Entity.push`.
+    fn pickup_from_cart(&mut self, i: usize) {
+        let reach = f64::from(0.2f32);
+        let id = self.carts[i].id;
+        let pos = self.carts[i].position;
+        let hitbox = self.carts[i].bounds().inflate(Vec3::new(reach, 0.0, reach));
+        let mut occupied = self.riding == Some(id)
+            || self.ridden_by_guest(id)
+            || self.mobs.iter().any(|m| m.extra.mount == Some(id));
+        let teams = self.mob_teams();
+        let candidates: Vec<usize> = (0..self.mobs.len())
+            .filter(|&j| {
+                let m = &self.mobs[j];
+                if m.removed || !m.pushable() || m.extra.mount == Some(id) {
+                    return false;
+                }
+                if !hitbox.intersects(m.bounds()) {
+                    return false;
+                }
+                pushable_by(None, teams.of(Who::Mob(m.id)), true)
+            })
+            .collect();
+        drop(teams);
+        for j in candidates {
+            let species = self.mobs[j].species();
+            let player = &*self.mobs[j].kind.id == "minecraft:player";
+            let cooldown = self.mobs[j].extra.boarding_cooldown;
+            let passenger = self.mobs[j].extra.mount.is_some();
+            if pickup_instead_of_push(species, passenger, occupied) && !player {
+                if can_ride_cart(species, cooldown) {
+                    let mob = self.mobs[j].id;
+                    {
+                        let m = &mut self.mobs[j];
+                        m.extra.mount = Some(id);
+                        m.extra.passenger = true;
+                        m.ai.nav.stop();
+                        m.needs_sync = true;
+                    }
+                    occupied = true;
+                    self.break_leash(mob, true, false);
+                }
+                continue;
+            }
+            let other = self.mobs[j].position;
+            let Some(v) = super::boat_passengers::push_impulse(pos, other) else {
+                continue;
+            };
+            if !occupied {
+                self.carts[i].velocity = self.carts[i].velocity.subtract(v);
+            }
+            let m = &mut self.mobs[j];
+            if m.pushable() {
+                m.velocity = m.velocity.add_vector(v);
+                m.needs_sync = true;
+            }
+        }
+    }
+    /// `positionRider` for the mobs in minecarts: each sits on the cart's
+    /// passenger attachment, less its own vehicle attachment.
+    pub(super) fn seat_cart_mobs(&mut self) {
+        for i in 0..self.carts.len() {
+            let id = self.carts[i].id;
+            let (pos, prev) = (self.carts[i].position, self.carts[i].previous);
+            let seats: Vec<(usize, f64)> = self
+                .mobs
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| m.extra.mount == Some(id))
+                .map(|(j, m)| (j, riders::vehicle_attachment(m)))
+                .collect();
+            for (j, offset) in seats {
+                let m = &mut self.mobs[j];
+                m.position = cart_seat(pos, offset);
+                m.previous = cart_seat(prev, offset);
+                m.velocity = Vec3::ZERO;
+                m.fall_distance = 0.0;
+                m.on_ground = false;
+                m.extra.passenger = true;
+                m.ai.nav.stop();
+            }
+        }
+    }
+    /// `ejectPassengers` for the mobs in cart `i`.
+    pub(super) fn eject_cart_mobs(&mut self, i: usize) {
+        let (id, y) = (self.carts[i].id, self.carts[i].position.y);
+        let js: Vec<usize> = (0..self.mobs.len())
+            .filter(|&j| self.mobs[j].extra.mount == Some(id))
+            .collect();
+        for j in js {
+            let at = {
+                let m = &self.mobs[j];
+                Vec3::new(m.position.x, m.position.y.max(y), m.position.z)
+            };
+            riders::stop_riding(&mut self.mobs[j], Some(at));
+            self.mobs[j].previous = at;
+        }
     }
     /// Every cart but the ridden one (which ticks with its rider).
     pub(super) fn tick_carts(&mut self) {
@@ -820,6 +944,7 @@ impl Game<'_> {
                 self.carts[i] = c;
                 self.push_from_cart(i);
             } else {
+                self.eject_cart_mobs(i);
                 self.carts.remove(i);
             }
         }
@@ -924,6 +1049,7 @@ impl Game<'_> {
             self.carts[i] = c;
             self.push_from_cart(i);
         } else {
+            self.eject_cart_mobs(i);
             self.carts.remove(i);
             self.riding = None;
         }
@@ -1203,6 +1329,7 @@ impl Game<'_> {
             return;
         }
         if burning && self.carts[i].kind == CartKind::Tnt {
+            self.eject_cart_mobs(i);
             let c = self.carts.remove(i);
             self.explode_cart(&c, arrow_velocity.length_squared());
             return;
@@ -1213,14 +1340,22 @@ impl Game<'_> {
     /// once for creative players); TNT minecarts prime instead when moving
     /// or hurt by fire or an explosion (`damageSourceIgnitesTnt`).
     pub(super) fn hurt_cart(&mut self, i: usize, damage: f32, creative: bool, fire: bool) {
-        let c = &mut self.carts[i];
-        c.hurt_dir = -c.hurt_dir;
-        c.hurt_time = 10;
-        c.damage += damage * 10.0;
-        let destroyed = creative || c.damage > 40.0;
+        let destroyed = {
+            let c = &mut self.carts[i];
+            c.hurt_dir = -c.hurt_dir;
+            c.hurt_time = 10;
+            c.damage += damage * 10.0;
+            creative || c.damage > 40.0
+        };
         if destroyed {
+            let speed = self.carts[i].velocity.x * self.carts[i].velocity.x
+                + self.carts[i].velocity.z * self.carts[i].velocity.z;
+            let tnt_prime =
+                self.carts[i].kind == CartKind::Tnt && (fire || speed >= f64::from(0.01f32));
+            if !tnt_prime {
+                self.eject_cart_mobs(i);
+            }
             let mut c = self.carts.remove(i);
-            let speed = c.velocity.x * c.velocity.x + c.velocity.z * c.velocity.z;
             if c.kind == CartKind::Tnt && (fire || speed >= f64::from(0.01f32)) {
                 // MinecartTNT.destroy: prime instead of breaking.
                 if c.fuse < 0 {
@@ -1633,6 +1768,26 @@ mod tests {
         assert_eq!(display_offset(CartKind::Tnt), 6.0);
         assert_eq!(display_offset(CartKind::CommandBlock), 6.0);
         assert_eq!(display_offset(CartKind::Rideable), 6.0);
+    }
+
+    #[test]
+    fn a_cow_boards_an_empty_cart_and_an_iron_golem_does_not() {
+        assert!(pickup_instead_of_push(Species::Cow, false, false));
+        assert!(can_ride_cart(Species::Cow, 0));
+        assert!(!pickup_instead_of_push(Species::IronGolem, false, false));
+        assert!(!pickup_instead_of_push(Species::Cow, false, true));
+        assert!(!pickup_instead_of_push(Species::Cow, true, false));
+        assert!(!can_ride_cart(Species::Cow, 60));
+        assert!(!can_ride_cart(Species::Warden, 0));
+    }
+
+    #[test]
+    fn a_cart_seat_matches_the_player_offset() {
+        let at = Vec3::new(1.0, 10.0, 2.0);
+        assert!((cart_seat(at, 0.0).y - 10.1875).abs() < 1e-12);
+        assert!((cart_seat(at, 0.6).y - (10.0 + SEAT)).abs() < 1e-12);
+        assert_eq!(cart_seat(at, 0.0).x, 1.0);
+        assert_eq!(cart_seat(at, 0.0).z, 2.0);
     }
 
     #[test]
