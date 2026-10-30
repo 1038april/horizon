@@ -23,6 +23,9 @@ pub struct Cx<'a, 'w> {
 }
 pub trait Goal: std::fmt::Debug {
     fn flags(&self) -> u8;
+    /// A goal that draws its first start delay in its constructor (a schooling fish's
+    /// `FollowFlockLeaderGoal`): the delay again, when the mob's random is seeded afterwards.
+    fn set_start_delay(&mut self, _ticks: i32) {}
     fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool;
     fn can_continue(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         self.can_use(m, cx)
@@ -86,6 +89,14 @@ impl GoalSelector {
             goal: Box::new(goal),
             running: false,
         });
+    }
+    /// `Goal::set_start_delay` of the goal of this name.
+    pub fn set_start_delay(&mut self, name: &str, ticks: i32) {
+        for g in &mut self.goals {
+            if g.goal.name() == name {
+                g.goal.set_start_delay(ticks);
+            }
+        }
     }
     pub fn clear(&mut self) {
         self.goals.clear();
@@ -744,6 +755,43 @@ impl Goal for Float {
         }
     }
 }
+/// `ClimbOnTopOfPowderSnowGoal`: a powder-snow walker standing in powder snow
+/// jumps while the block above is powder snow or has no collision.
+#[derive(Clone, Debug)]
+pub struct ClimbOnTopOfPowderSnow;
+impl Goal for ClimbOnTopOfPowderSnow {
+    goal_clone!();
+    fn flags(&self) -> u8 {
+        JUMP
+    }
+    fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
+        // wasInPowderSnow || isInPowderSnow: the freeze tick has read the
+        // powder snow the mob's box touches before the goals run.
+        if !super::ai::in_powder_snow(m, cx.w)
+            || !cx
+                .w
+                .data
+                .entity_has("minecraft:powder_snow_walkable_mobs", &m.kind.id)
+        {
+            return false;
+        }
+        // Mob.blockPosition().above()
+        let above = [
+            m.position.x.floor() as i32,
+            m.position.y.floor() as i32 + 1,
+            m.position.z.floor() as i32,
+        ];
+        cx.w.block_name(above[0], above[1], above[2]) == "minecraft:powder_snow"
+            || cx.w.collision_bounds(above).is_none()
+    }
+    fn every_tick(&self) -> bool {
+        true
+    }
+    /// `ClimbOnTopOfPowderSnowGoal.tick`: ask the mob to jump.
+    fn tick(&mut self, m: &mut Mob, _: &mut Cx) {
+        m.ai.jump = true;
+    }
+}
 /// PanicGoal: flee to a random position after panic-causing damage (or
 /// towards water while burning).
 #[derive(Clone, Debug)]
@@ -1272,9 +1320,9 @@ impl Goal for MeleeAttack {
         }
         !(t.is_player && t.creative)
     }
-    fn start(&mut self, m: &mut Mob, _: &mut Cx) {
+    fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         let path = m.ai.pending_path.take();
-        m.nav_move_to_path(path, self.speed);
+        m.nav_move_to_path(cx.w, path, self.speed);
         m.ai.aggressive = true;
         self.recalc = 0;
         self.until_attack = 0;
@@ -1921,9 +1969,9 @@ impl Goal for AvoidEntity {
     fn can_continue(&mut self, m: &mut Mob, _: &mut Cx) -> bool {
         !m.ai.nav.is_done()
     }
-    fn start(&mut self, m: &mut Mob, _: &mut Cx) {
+    fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
         let path = m.ai.pending_path.take();
-        m.nav_move_to_path(path, self.walk);
+        m.nav_move_to_path(cx.w, path, self.walk);
     }
     fn tick(&mut self, m: &mut Mob, cx: &mut Cx) {
         let from = match &self.what {
@@ -2159,6 +2207,10 @@ impl Goal for Breed {
             // TurtleBreedGoal.breed: the mother carries an egg, not a baby.
             if m.species() == Species::Turtle {
                 m.extra.flag = true;
+            }
+            // Frog.spawnChildFromBreeding: IS_PREGNANT instead of a baby.
+            if m.species() == Species::Frog {
+                super::frog::set_pregnant(m, true);
             }
             cx.events.push(MobEvent::Breed {
                 parent: m.id,
@@ -2400,6 +2452,7 @@ impl Goal for EatBlock {
                     pos: [x, y - 1, z],
                     name: "minecraft:dirt",
                     effect: true,
+                    flags: horizon_world::level::flags::UPDATE_CLIENTS,
                 });
                 super::ai::ate(m);
             }
