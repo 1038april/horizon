@@ -107,10 +107,12 @@ struct Declaration<'a> {
     commented: bool,
     /// The values in the comment's `[...]`.
     values: Option<Vec<&'a str>>,
+    /// `const bool`: a switch written as a value.
+    boolean: bool,
 }
 
-/// `#define NAME`, `//#define NAME`, `#define NAME VALUE // [A B]` or
-/// `const TYPE NAME = VALUE; // [A B]`.
+/// `#define NAME`, `//#define NAME`, `#define NAME VALUE // [A B]`,
+/// `const TYPE NAME = VALUE; // [A B]` or `const bool NAME = true;`.
 fn declaration(line: &str) -> Option<Declaration<'_>> {
     let body = line.trim_start();
     let (commented, code) = match body.strip_prefix("//") {
@@ -135,28 +137,35 @@ fn declaration(line: &str) -> Option<Declaration<'_>> {
             value: value.map(|v| (v, offset(v))),
             commented,
             values: list(comment),
+            boolean: false,
         });
     }
     if commented {
         return None;
     }
-    // `const float shadowDistance = 128.0; // [64.0 128.0]`
+    // `const float shadowDistance = 128.0; // [64.0 128.0]`, `const bool x = true;`
     let rest = code.strip_prefix("const")?;
-    let (decl, comment) = rest.split_once("//")?;
+    let (decl, comment) = rest.split_once("//").unwrap_or((rest, ""));
     let (left, right) = decl.split_once('=')?;
     let mut words = left.split_whitespace();
-    let (Some(_), Some(name), None) = (words.next(), words.next(), words.next()) else {
+    let (Some(ty), Some(name), None) = (words.next(), words.next(), words.next()) else {
         return None;
     };
     let value = right.trim().strip_suffix(';')?.trim_end();
     if value.is_empty() || value.contains(char::is_whitespace) {
         return None;
     }
+    let boolean = ty == "bool" && matches!(value, "true" | "false");
     Some(Declaration {
         name,
         value: Some((value, offset(value))),
         commented: false,
-        values: Some(list(comment)?),
+        values: if boolean {
+            Some(vec!["false", "true"])
+        } else {
+            Some(list(comment)?)
+        },
+        boolean,
     })
 }
 
@@ -200,12 +209,14 @@ pub fn options(pack: &Pack) -> BTreeMap<String, PackOption> {
                     set.insert(d.name.to_owned());
                 }
                 (Some((value, _)), Some(values)) if !d.commented && !values.is_empty() => {
+                    // A `const bool` is often the pack's own setting rather than the player's:
+                    // it shows where a screen names it, not with `*`.
                     out.entry(d.name.to_owned()).or_insert_with(|| PackOption {
                         name: d.name.to_owned(),
                         default: value.to_owned(),
                         values: values.iter().map(|v| (*v).to_owned()).collect(),
-                        switch: false,
-                        tested: true,
+                        switch: d.boolean,
+                        tested: !d.boolean,
                     });
                 }
                 _ => {}
@@ -412,6 +423,30 @@ mod tests {
         assert_eq!(options["BLOOM"].default, "false");
         assert_eq!(options["LEVEL"].values, ["1", "2", "3"]);
         assert_eq!(options["shadowMapResolution"].default, "2048");
+    }
+
+    #[test]
+    fn const_bools_are_switches_screens_name() {
+        let pack = Pack::from_zip_bytes(
+            "P.zip",
+            zip(&[(
+                "shaders/lib/settings.glsl",
+                "const bool shadowHardwareFiltering = true;\nconst bool generateShadowMipmap = false; // mips\n\
+                 const bool notABool = 1;\n",
+            )]),
+        )
+        .unwrap();
+        let options = options(&pack);
+        let filtering = &options["shadowHardwareFiltering"];
+        assert!(filtering.switch && !filtering.tested);
+        assert_eq!(filtering.default, "true");
+        assert_eq!(options["generateShadowMipmap"].default, "false");
+        assert!(!options.contains_key("notABool"));
+        let chosen = parse_chosen("shadowHardwareFiltering=false\n");
+        assert_eq!(
+            apply("const bool shadowHardwareFiltering = true;\n", &chosen),
+            "const bool shadowHardwareFiltering = false;\n"
+        );
     }
 
     #[test]

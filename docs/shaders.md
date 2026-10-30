@@ -56,7 +56,8 @@ where and the last good version keeps drawing. All three stages run.
 
 A picked pack in the `shaders/` format gets a Shader Options... button at the top of the page: its options on the
 screens and with the names the pack gives them, its profiles, and Reset. A click picks an option's next value, a
-right click the one before; values that differ from the pack's are yellow. Leaving the page saves them to
+right click the one before, and the options the pack lists in `sliders` are sliders; values that differ from the
+pack's are yellow. Leaving the page saves them to
 `shaderpacks/<pack>.txt` (`NAME=value` lines) and loads the pack again with them.
 
 ## A pack
