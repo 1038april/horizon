@@ -113,8 +113,7 @@ impl Game<'_> {
         if self.screen != Screen::Inventory || self.station.is_some() {
             return None;
         }
-        // A mod's screen has no book.
-        if self.mount_active() || self.native_screen_height().is_some() {
+        if self.mount_active() {
             return None;
         }
         match self.container_kind() {
