@@ -1948,10 +1948,24 @@ impl Game<'_> {
                 .take()
                 .expect("the hub is back after the menu events");
         }
-        self.lan_flush_effects(&mut host);
         if !paused {
             self.tick_guests(&mut host);
         }
+        self.lan = Some(host);
+        // A blast from a guest's attack, and a mace's wind burst.
+        self.flush_lan_explosions();
+        let _ = self.flush_wind_bursts();
+        // A sweep attack's reach to the other players from a guest's attack.
+        self.flush_sweeps();
+        // A reeled-in hook pulling a player.
+        self.flush_hook_pulls();
+        // Particles a guest's turn sent (sweep attack, damage indicator, a hook's splashes).
+        self.flush_lan_particles();
+        let mut host = self
+            .lan
+            .take()
+            .expect("the hub is back after the guest flushes");
+        self.lan_flush_effects(&mut host);
         self.lan_living_flags(&mut host);
         self.lan_stuck(&mut host, paused);
         self.tick_server_travel(&mut host);
@@ -1966,15 +1980,6 @@ impl Game<'_> {
         self.flush_native_net(&mut host);
         lan::flush_all(host.hub.guests.iter().map(|g| &g.sender));
         self.lan = Some(host);
-        // A blast from a guest's attack, and a mace's wind burst.
-        self.flush_lan_explosions();
-        let _ = self.flush_wind_bursts();
-        // A sweep attack's reach to the other players from a guest's attack.
-        self.flush_sweeps();
-        // A reeled-in hook pulling a player.
-        self.flush_hook_pulls();
-        // Particles a guest's turn sent (sweep attack, damage indicator, a hook's splashes).
-        self.flush_lan_particles();
         self.flush_native_sounds();
     }
 
@@ -2288,38 +2293,26 @@ impl Game<'_> {
             }
             seen.insert(m.id, (m.hurt_time, dead, swing));
         }
-        // LivingEntity.hurtServer for a player: a hit that restarted the hurt
-        // time and was not blocked by a shield broadcasts the damage event,
-        // so the clients around (and the player's own) flash it red.
-        let host_player = self.player.as_ref().map(|p| {
-            (
-                host.host_entity,
-                [p.position.x, p.position.y, p.position.z],
-                p,
-            )
-        });
-        let guests = host.hub.guests.iter().filter(|g| host.hub.here(g));
-        let players: Vec<_> = host_player
-            .into_iter()
-            .chain(guests.filter_map(|g| g.motion.as_deref().map(|m| (g.entity_id, g.position, m))))
-            .map(|(id, at, p)| {
-                (
-                    id,
-                    at,
-                    p.health.hurt_animation_time,
-                    p.health.dead_or_dying(),
-                    p.hurt_log.last(),
-                )
-            })
-            .collect();
-        for (id, at, hurt, dead, record) in players {
+        // LivingEntity.hurtServer for the in-frame LAN host's player (guests
+        // broadcast directly from HealthEvent::DamageBroadcast): a hit that
+        // restarted the hurt time and was not blocked by a shield broadcasts
+        // the damage event, so the clients around flash it red.
+        if let Some(p) = self.player.as_ref() {
+            let id = host.host_entity;
+            let at = [p.position.x, p.position.y, p.position.z];
+            let hurt = p.health.hurt_animation_time;
+            let dead = p.health.dead_or_dying();
             let old = host
                 .mob_state
                 .get(&self.dim)
                 .and_then(|s| s.get(&(id as u32)));
             if hurt > old.map_or(0, |o| o.0) && !dead {
-                // Starving keeps no record: any type flashes the same.
-                let kind = record.map_or("minecraft:generic", |r| r.source.as_str());
+                let kind = p
+                    .health
+                    .hurt
+                    .last_source
+                    .and_then(|s| self.motion.health.damage.definition(s))
+                    .map_or("minecraft:generic", |d| d.name.as_str());
                 host.hub.damage_event(id, kind, None, None, at);
             }
             seen.insert(id as u32, (hurt, dead, None));
