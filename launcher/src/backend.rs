@@ -2799,6 +2799,9 @@ pub enum Msg {
     Keychain(Option<String>),
     /// Whether an account in the launcher owned the game at its last check (the owner gate).
     Owner(bool),
+    /// Credential-free result from a background account operation.
+    AccountStatus(String, u64, crate::account::session::Status),
+    AccountRemoved(String, u64, Result<bool, String>),
     /// The owner gate's answer for the game about to start: the selected account's session
     /// file (none = offline) and why it plays offline, if it does.
     Session(Result<(Option<PathBuf>, Option<String>), crate::account::NoOwner>),

@@ -61,7 +61,7 @@ use horizon_launcher::native_mods;
 use horizon_launcher::telemetry;
 use scrollbar::Scrollbar;
 use std::borrow::Cow;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Mutex;
@@ -212,6 +212,9 @@ struct Launcher {
     root_focus: FocusHandle,
     /// Microsoft accounts (accounts.json), the sign-in under way and what it last showed.
     accounts: Accounts,
+    auth_status: HashMap<String, account::session::Status>,
+    auth_busy: HashMap<String, u64>,
+    auth_next: u64,
     sign_in: Option<SignIn>,
     sign_in_state: Option<SignInState>,
     /// What to say when the keychain doesn't keep sign-ins ([`account::no_keychain`]).
@@ -441,6 +444,9 @@ impl Launcher {
             internet: internet::Internet::new(),
             root_focus: cx.focus_handle(),
             accounts: Accounts::load(),
+            auth_status: HashMap::new(),
+            auth_busy: HashMap::new(),
+            auth_next: 0,
             sign_in: None,
             sign_in_state: None,
             keychain: None,
@@ -516,6 +522,7 @@ impl Launcher {
                 let _ = tx.send(Msg::Reused(reused));
             }
         });
+        this.load_auth_statuses(true);
         this.fetch_startup_releases();
         this.fetch_links();
         // What the game and the launcher kept, if the player allows it and there is a server.
@@ -529,6 +536,7 @@ impl Launcher {
         // changed the accounts: read them again (small files, once a switch).
         self.offline_name = offline_name();
         self.accounts = Accounts::load();
+        self.load_auth_statuses(false);
         if page != self.page {
             self.page = page;
             self.switches += 1;
@@ -694,6 +702,32 @@ impl Launcher {
                 Msg::Reused(_) => self.installed = backend::installed(),
                 Msg::Keychain(said) => self.keychain = said,
                 Msg::Owner(owns) => self.owner = Some(owns),
+                Msg::AccountStatus(uuid, generation, status) => {
+                    if self.auth_busy.get(&uuid) != Some(&generation) {
+                        continue;
+                    }
+                    self.auth_busy.remove(&uuid);
+                    if self.accounts.find(&uuid).is_some() {
+                        if status.state == account::session::State::Ready {
+                            self.owner = Some(true);
+                        }
+                        self.auth_status.insert(uuid, status);
+                    }
+                }
+                Msg::AccountRemoved(uuid, generation, result) => {
+                    if self.auth_busy.get(&uuid) != Some(&generation) {
+                        continue;
+                    }
+                    self.auth_busy.remove(&uuid);
+                    match result {
+                        Ok(owns) => {
+                            self.accounts = Accounts::load();
+                            self.auth_status.remove(&uuid);
+                            self.owner = Some(owns);
+                        }
+                        Err(e) => self.sign_in_state = Some(SignInState::Done(Err(e))),
+                    }
+                }
                 Msg::Playing(playing) => self.playing = playing,
                 Msg::JavaGame(id, home, cmd) => {
                     self.starting_client = None;
@@ -719,6 +753,7 @@ impl Launcher {
                     }
                 }
                 Msg::Session(session) => {
+                    self.load_auth_statuses(false);
                     if let Some(tag) = self.starting_client.take() {
                         let mut cmd = backend::client_command(&tag);
                         let (file, offline) = match session {
@@ -1012,8 +1047,10 @@ impl Launcher {
             let state = sign_in.state();
             let changed_state = format!("{state:?}") != format!("{:?}", self.sign_in_state);
             if changed_state {
-                if let SignInState::Done(Ok(_)) = state {
+                if let SignInState::Done(Ok(ref account)) = state {
+                    self.auth_busy.remove(&account.uuid);
                     self.accounts = Accounts::load();
+                    self.load_auth_statuses(false);
                     // Sign-in refuses accounts that don't own the game.
                     self.owner = Some(true);
                     self.owner_screen_open = false;
@@ -1260,6 +1297,55 @@ impl Launcher {
             backend::complete_assets(&tag);
             let session = account::session_for_game(&backend::game_home(), offline_without_owner);
             let _ = tx.send(Msg::Session(session));
+        });
+    }
+
+    fn begin_auth_job(&mut self, uuid: &str) -> Option<u64> {
+        if self.auth_busy.contains_key(uuid) {
+            return None;
+        }
+        self.auth_next += 1;
+        self.auth_busy.insert(uuid.into(), self.auth_next);
+        Some(self.auth_next)
+    }
+
+    /// Only workers read the keychain or contact authentication services. Cached public status
+    /// keeps drawing independent of keychain prompts, network timeouts and refresh operations.
+    fn load_auth_statuses(&mut self, renew_due: bool) {
+        for account in self.accounts.accounts.clone() {
+            let Some(generation) = self.begin_auth_job(&account.uuid) else {
+                continue;
+            };
+            let tx = self.tx.clone();
+            std::thread::spawn(move || {
+                let store = account::store();
+                let mut status = account::session::status(store, &account.uuid);
+                if renew_due && status.state == account::session::State::NeedsRefresh {
+                    if let Ok(renewed) = account::session::refresh(&account.uuid) {
+                        status = renewed;
+                    }
+                }
+                let _ = tx.send(Msg::AccountStatus(account.uuid, generation, status));
+            });
+        }
+    }
+
+    fn refresh_account(&mut self, uuid: String) {
+        let Some(generation) = self.begin_auth_job(&uuid) else {
+            return;
+        };
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            if let Ok(status) = account::session::refresh(&uuid) {
+                let _ = tx.send(Msg::AccountStatus(uuid, generation, status));
+            } else {
+                // It may have been removed through the CLI while this window was open.
+                let _ = tx.send(Msg::AccountRemoved(
+                    uuid,
+                    generation,
+                    Ok(Accounts::load().has_owner(account::store())),
+                ));
+            }
         });
     }
 
@@ -3630,22 +3716,55 @@ impl Launcher {
                     ),
                 );
             }
-            actions = actions.child(
-                button(format!("sign-out-{i}"), "Sign out", Kind::Ghost, &t).on_click(cx.listener(
-                    move |this, _: &ClickEvent, _, cx| {
+            let busy = self.auth_busy.contains_key(&uuid);
+            let status = self.auth_status.get(&uuid);
+            let needs_sign_in =
+                status.is_some_and(|s| s.state == account::session::State::SignInRequired);
+            let refresh_id = uuid.clone();
+            let refresh = button(
+                format!("refresh-{i}"),
+                if busy {
+                    "Checking…"
+                } else if needs_sign_in {
+                    "Sign in again"
+                } else {
+                    "Refresh"
+                },
+                Kind::Ghost,
+                &t,
+            );
+            actions = actions.child(if busy {
+                disabled(refresh)
+            } else {
+                refresh.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    if needs_sign_in {
+                        this.start_sign_in();
+                    } else {
+                        this.refresh_account(refresh_id.clone());
+                    }
+                    cx.notify();
+                }))
+            });
+            let sign_out = button(format!("sign-out-{i}"), "Sign out", Kind::Ghost, &t);
+            actions = actions.child(if busy {
+                disabled(sign_out)
+            } else {
+                sign_out.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    let Some(generation) = this.begin_auth_job(&uuid) else {
+                        return;
+                    };
+                    let (tx, uuid) = (this.tx.clone(), uuid.clone());
+                    std::thread::spawn(move || {
                         let mut accounts = Accounts::load();
-                        match accounts
+                        let result = accounts
                             .remove(account::store(), &uuid)
                             .and_then(|()| accounts.save())
-                        {
-                            Ok(()) => this.accounts = accounts,
-                            Err(e) => this.sign_in_state = Some(SignInState::Done(Err(e))),
-                        }
-                        this.owner = Some(this.accounts.has_owner(account::store()));
-                        cx.notify();
-                    },
-                )),
-            );
+                            .map(|()| accounts.has_owner(account::store()));
+                        let _ = tx.send(Msg::AccountRemoved(uuid, generation, result));
+                    });
+                    cx.notify();
+                }))
+            });
             n += 1;
             rows = rows.child(index_row(
                 n,
@@ -3655,8 +3774,21 @@ impl Launcher {
                         .child(tr(if plays {
                             "Microsoft account · plays"
                         } else {
-                            "Microsoft account · signed in"
+                            "Microsoft account"
                         }))
+                        .child(div().child(if busy {
+                            tr("Checking sign-in…").to_owned()
+                        } else {
+                            status.map_or_else(
+                                || tr("Sign-in not checked").into(),
+                                |s| tr(s.label()).into(),
+                            )
+                        }))
+                        .when(!busy, |row| {
+                            row.when_some(status.filter(|s| s.message != s.label()), |row, s| {
+                                row.child(div().child(s.message.clone()))
+                            })
+                        })
                         .into_any_element(),
                 ),
                 Some(actions.into_any_element()),

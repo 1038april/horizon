@@ -196,7 +196,7 @@ impl Session {
                     SignInState::Done(Err(e)) => json!({ "state": "failed", "error": e }),
                 });
                 Ok(serde_json::to_string_pretty(&json!({
-                    "accounts": accounts.accounts.iter().map(|a| json!({ "name": a.name, "uuid": a.uuid })).collect::<Vec<_>>(),
+                    "accounts": accounts.accounts.iter().map(|a| json!({ "name": a.name, "uuid": a.uuid, "authentication": account::session::status(account::store(), &a.uuid) })).collect::<Vec<_>>(),
                     "plays_as": accounts.selected().map(|a| a.name.clone()),
                     "sign_in_configured": account::client_id().is_some(),
                     "keychain": account::store().persistent(),

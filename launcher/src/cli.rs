@@ -104,6 +104,8 @@ enum AccountCmd {
     /// Sign in with a Microsoft account in your browser (device code). Play needs one that owns
     /// Minecraft: Java Edition
     SignIn,
+    /// Renew an account's session now, even when its access token is still fresh
+    Refresh { who: String },
     /// Sign out: the account's tokens leave the keychain
     SignOut {
         /// Its name or UUID
@@ -1625,6 +1627,7 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
                     "accounts": accounts.accounts.iter().map(|a| serde_json::json!({
                         "name": a.name, "uuid": a.uuid,
                         "selected": accounts.selected.as_ref() == Some(&a.uuid),
+                        "authentication": account::session::status(account::store(), &a.uuid),
                     })).collect::<Vec<_>>(),
                     "offline": accounts.offline.iter().map(|n| serde_json::json!({
                         "name": n,
@@ -1645,7 +1648,8 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
                     } else {
                         " "
                     };
-                    println!("{mark} {}  {}", a.name, a.uuid);
+                    let status = account::session::status(account::store(), &a.uuid);
+                    println!("{mark} {}  {}  {}", a.name, a.uuid, status.label());
                 }
                 for n in &accounts.offline {
                     let on = accounts.player() == account::Player::Offline(n.clone());
@@ -1659,6 +1663,17 @@ fn account_command(action: AccountCmd, as_json: bool) -> Result<(), String> {
                 if !accounts.has_owner(account::store()) {
                     println!("{}.", account::NEEDS_OWNER);
                 }
+            }
+        }
+        AccountCmd::Refresh { who } => {
+            let status = account::session::refresh(&who)?;
+            if as_json {
+                json(serde_json::to_value(&status).map_err(|e| e.to_string())?);
+            } else {
+                println!("{}: {}", status.label(), status.message);
+            }
+            if !as_json && status.state != account::session::State::Ready {
+                return Err(status.message);
             }
         }
         AccountCmd::SignIn => {

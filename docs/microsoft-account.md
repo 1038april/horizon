@@ -126,6 +126,35 @@ one is selected. "Sign out" deletes the account's secrets from the keychain.
 - Tokens never appear in logs, errors, `horizon-launcher` CLI output, MCP results or crash reports.
   Requests are logged by endpoint name only.
 
+## Account status and renewal
+
+Settings shows each account's current authentication status. “Ready for online play” means
+its saved access token is not near expiry and its last ownership check succeeded; service
+revocation can only be discovered by a later request. “Needs refresh” means its access token
+has an hour or less left. On launcher startup these due sessions are renewed in the background;
+Play also keeps its existing ownership and renewal checks. Fresh tokens are not renewed on a
+startup status check.
+
+**Refresh** explicitly renews an account even when its access token is fresh. Microsoft
+rejecting the refresh credential marks the account **Sign in again** until a successful browser
+sign-in replaces it. A network outage offers retry rather than discarding the account or
+claiming it requires a full login. Unreadable keychain data is never overwritten by refresh.
+If Microsoft rotates its refresh credential before Xbox/Minecraft fails, the rotated credential
+is still saved so another attempt can recover.
+
+`horizon-launcher account refresh NAME_OR_UUID` exposes the same operation (MCP:
+`account_refresh`). `account list --json` includes public authentication status and token
+expiry, never tokens. `account refresh --json` returns a status object, including when renewal
+needs attention; callers inspect `state` rather than treating transport success as an online
+session. Inspection, refresh and sign-out run off the window's drawing thread. Credential
+operations are serialized in-process and between launchers using the same launcher data folder.
+
+The reusable `account::session` API has no GPUI dependency. Keychain reads and browser sign-in
+remain owned by the launcher. A future in-game flow can request these operations through a
+local launcher bridge, then obtain a new read-once session file. Renewing in the launcher does
+not update the token already held by a running game; in-game token replacement and that bridge
+are not implemented here.
+
 ## Handing the session to the game
 
 Vanilla's launcher passes `--accessToken <token>` on the command line, where every user of the

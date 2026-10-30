@@ -117,6 +117,16 @@ Sign in with a Microsoft account in your browser (device code). Play needs one t
 
 MCP: `account_sign_in`.
 
+## `horizon-launcher account refresh`
+
+Renew an account's session now, even when its access token is still fresh.
+
+    horizon-launcher account refresh <WHO>
+
+- `WHO`
+
+MCP: `account_refresh`.
+
 ## `horizon-launcher account sign-out`
 
 Sign out: the account's tokens leave the keychain.
