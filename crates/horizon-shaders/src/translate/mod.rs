@@ -638,7 +638,14 @@ pub fn translate_compute(compute: &Preprocessed) -> Result<ComputeProgram, Vec<E
         .collect();
     let mut images = bind_images([&c, &c], samplers.len());
     let code = c.rewrite(&samplers, &uniforms);
-    let code = work_group_size(&code);
+    let code = work_group_size(&code).unwrap_or_else(|message| {
+        errors.push(Error {
+            file: compute.files.first().cloned().unwrap_or_default(),
+            line: 0,
+            message,
+        });
+        code
+    });
     let code = ordering::barriers_after_atomics(&code).unwrap_or(code);
     let declared: Vec<(String, bool)> = c
         .images
@@ -728,29 +735,33 @@ pub fn translate_compute(compute: &Preprocessed) -> Result<ComputeProgram, Vec<E
 
 /// `code` with `gl_WorkGroupSize` written as the constant its `layout(local_size_*)` declares:
 /// GLSL defines it so, and naga's HLSL writer has no such built-in.
-fn work_group_size(code: &str) -> String {
+fn work_group_size(code: &str) -> Result<String, String> {
     let tokens = crate::macros::lex(code);
     if !tokens.contains(&"gl_WorkGroupSize") {
-        return code.to_owned();
+        return Ok(code.to_owned());
     }
     let sig: Vec<&str> = tokens
         .iter()
         .copied()
         .filter(|t| scan::significant(t))
         .collect();
-    let size = |axis: &str| {
-        sig.windows(3)
-            .find(|w| w[0] == axis && w[1] == "=")
-            .and_then(|w| w[2].trim_end_matches(['u', 'U']).parse::<u32>().ok())
-            .unwrap_or(1)
+    // A size is one number, the whole of its `local_size_* = N`; 1 when not declared.
+    let size = |axis: &str| match sig.windows(4).find(|w| w[0] == axis && w[1] == "=") {
+        None => Ok(1),
+        Some(w) => w[2]
+            .trim_end_matches(['u', 'U'])
+            .parse::<u32>()
+            .ok()
+            .filter(|_| matches!(w[3], "," | ")"))
+            .ok_or_else(|| format!("`{axis}` is not a number gl_WorkGroupSize can take")),
     };
     let value = format!(
         "uvec3({}u, {}u, {}u)",
-        size("local_size_x"),
-        size("local_size_y"),
-        size("local_size_z")
+        size("local_size_x")?,
+        size("local_size_y")?,
+        size("local_size_z")?
     );
-    tokens
+    Ok(tokens
         .iter()
         .map(|&t| {
             if t == "gl_WorkGroupSize" {
@@ -759,7 +770,7 @@ fn work_group_size(code: &str) -> String {
                 t
             }
         })
-        .collect()
+        .collect())
 }
 
 /// The numbers of a constant's constructor, `const ivec3 name = ivec3(1, 2, 3);` → 1, 2, 3.
@@ -1541,6 +1552,14 @@ mod tests {
             main.expressions
                 .iter()
                 .any(|(_, e)| matches!(e, naga::Expression::Literal(naga::Literal::U32(8))))
+        );
+        assert_eq!(
+            work_group_size("layout(local_size_x = 8 * 2) in;\nuvec3 s = gl_WorkGroupSize;"),
+            Err("`local_size_x` is not a number gl_WorkGroupSize can take".into())
+        );
+        assert!(
+            work_group_size("layout(local_size_x = 16) in;\nuvec3 s = gl_WorkGroupSize;")
+                .is_ok_and(|c| c.contains("uvec3(16u, 1u, 1u)"))
         );
     }
 

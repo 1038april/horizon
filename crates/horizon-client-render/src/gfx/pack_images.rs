@@ -221,7 +221,10 @@ pub(super) fn clear(
         let size = texture.size();
         let texel = u64::from(texture.format().block_copy_size(None).unwrap_or(4));
         let row = (u64::from(size.width) * texel).next_multiple_of(256);
-        let bytes = row * u64::from(size.height) * u64::from(size.depth_or_array_layers);
+        // Zeros for a slice of rows at a time, the whole image taken in slices, so a large
+        // volume doesn't need a buffer of its size.
+        let rows = (ZEROS / row).clamp(1, u64::from(size.height)) as u32;
+        let bytes = row * u64::from(rows);
         if zeros.as_ref().is_none_or(|z| z.size() < bytes) {
             // New buffers start zeroed.
             *zeros = Some(device.create_buffer(&wgpu::BufferDescriptor {
@@ -234,20 +237,37 @@ pub(super) fn clear(
         let Some(buffer) = zeros.as_ref() else {
             continue;
         };
-        encoder.copy_buffer_to_texture(
-            wgpu::TexelCopyBufferInfo {
-                buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(row as u32),
-                    rows_per_image: Some(size.height),
-                },
-            },
-            texture.as_image_copy(),
-            size,
-        );
+        for z in 0..size.depth_or_array_layers {
+            for y in (0..size.height).step_by(rows as usize) {
+                let height = rows.min(size.height - y);
+                encoder.copy_buffer_to_texture(
+                    wgpu::TexelCopyBufferInfo {
+                        buffer,
+                        layout: wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(row as u32),
+                            rows_per_image: Some(height),
+                        },
+                    },
+                    wgpu::TexelCopyTextureInfo {
+                        texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d { x: 0, y, z },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::Extent3d {
+                        width: size.width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+        }
     }
 }
+
+/// The most bytes of zeros kept to clear images without `CLEAR_TEXTURE`.
+const ZEROS: u64 = 4 << 20;
 
 /// The pack's storage buffers, bound in set 4.
 pub(super) struct Buffers {
