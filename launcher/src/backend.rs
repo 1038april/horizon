@@ -3560,17 +3560,17 @@ pub fn {f}("
     #[test]
     fn the_accent_is_violet_unless_picked_and_an_unknown_one_keeps_the_rest() {
         use crate::themes::Accent;
-        assert_eq!(Settings::parse("{}").accent, Accent::Violet);
+        assert_eq!(Settings::parse("{}").accent, Accent::VIOLET);
         let teal =
             Settings::parse(r#"{"accent": "teal", "background": "background-0123456789ab.png"}"#);
         assert_eq!(
             (teal.accent, teal.background.as_deref()),
-            (Accent::Teal, Some("background-0123456789ab.png"))
+            (Accent::TEAL, Some("background-0123456789ab.png"))
         );
         let future = Settings::parse(r#"{"accent": "plaid", "game_args": "--x"}"#);
         assert_eq!(
             (future.accent, future.game_args.as_str()),
-            (Accent::Violet, "--x")
+            (Accent::VIOLET, "--x")
         );
     }
 

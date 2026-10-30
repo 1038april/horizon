@@ -185,6 +185,9 @@ struct Launcher {
     native_confirm: Option<Result<Vec<native_mods::Bundle>, String>>,
     confirm_remove: Option<String>,
     picker_open: bool,
+    /// Where the accent picker's hue strip is on screen (`themes_page.rs`), to map a click to a
+    /// hue.
+    hue_area: std::rc::Rc<std::cell::Cell<Option<Bounds<gpui::Pixels>>>>,
     /// The top bar's quick switch of who plays (`switch_page.rs`).
     account_menu: bool,
     /// Settings > Account's skin panel for an offline name (`skin_page.rs`).
@@ -414,6 +417,7 @@ impl Launcher {
             native_confirm: None,
             confirm_remove: None,
             picker_open: false,
+            hue_area: std::rc::Rc::new(std::cell::Cell::new(None)),
             account_menu: false,
             skin: None,
             background_error: None,
