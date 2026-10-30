@@ -40,9 +40,10 @@ impl Screen {
 }
 
 /// PauseScreen buttons: (x, y, width, label key, action id, active).
-/// `links`: the `minecraft:server_links` dialog's button, which the
-/// `pause_screen_additions` tag (empty in vanilla) falls back to when the
-/// server sent links — a full-width row that pushes the last two rows down.
+/// `links`: the `minecraft:server_links` dialog's button.
+/// `additions_count`: the `minecraft:pause_screen_additions` tag's dialogs.
+/// Both links and additions occupy the same row (y0 + 122), stacking vertically,
+/// pushing Options/World Options and Disconnect down.
 /// https://mcsrc.dev/2/26.3/net/minecraft/client/gui/screens/PauseScreen
 fn pause_buttons(
     w: f32,
@@ -52,21 +53,26 @@ fn pause_buttons(
     additions_count: usize,
 ) -> Vec<(f32, f32, f32, &'static str, u8, bool)> {
     // GridLayout of two 98px columns (padding 4), aligned at (0.5, 0.25).
-    // Additions add rows of 24px each (full width 204px)
-    let additions_h = additions_count as f32 * 24.0;
-    let (grid_w, grid_h) = (212.0, 166.0 + if links { 24.0 } else { 0.0 } + additions_h);
+    // Links and additions add rows of 24px each (full width 204px) at y0 + 122.
+    let extra_rows = (if links { 1 } else { 0 }) + additions_count;
+    let extra_h = extra_rows as f32 * 24.0;
+    let (grid_w, grid_h) = (212.0, 166.0 + extra_h);
     let x0 = ((w - grid_w) * 0.5).floor();
     let y0 = ((h - grid_h) * 0.25).floor();
-    let down = if links { 24.0 } else { 0.0 };
     let mut v = vec![
         (x0 + 4.0, y0 + 50.0, 204.0, "menu.returnToGame", 0, true),
         (x0 + 4.0, y0 + 74.0, 98.0, "gui.advancements", 4, true),
         (x0 + 110.0, y0 + 74.0, 98.0, "gui.stats", 3, true),
     ];
+    // Row 3 (y0 + 122): Server Links and/or pause_screen_additions buttons stack here
     if links {
         // CommonDialogData.computeExternalTitle of Dialogs.SERVER_LINKS.
         v.push((x0 + 4.0, y0 + 122.0, 204.0, "menu.server_links", 11, true));
     }
+    // Additions buttons would be handled separately in draw_pause_menu (they have dynamic labels)
+    // But we need to account for their height in the grid
+    // Options/World Options row gets pushed down by extra_rows * 24
+    let down = extra_h;
     v.extend([
         (x0 + 4.0, y0 + 122.0 + down, 98.0, "menu.options", 1, true),
         (
@@ -97,9 +103,11 @@ fn pause_buttons(
 /// `FRIENDS_ICON` (vanilla's `CommonButtons.friends`) opens Horizon's
 /// Play with Friends; the others stay inactive.
 const FRIENDS_ICON: usize = 2;
-fn pause_icons(w: f32, h: f32, links: bool) -> [(f32, f32, &'static str); 4] {
+fn pause_icons(w: f32, h: f32, links: bool, additions_count: usize) -> [(f32, f32, &'static str); 4] {
     let x0 = ((w - 212.0) * 0.5).floor() + 60.0;
-    let y = ((h - 166.0 - if links { 24.0 } else { 0.0 }) * 0.25).floor() + 98.0;
+    let links_down = if links { 24.0 } else { 0.0 };
+    let additions_h = additions_count as f32 * 24.0;
+    let y = ((h - 166.0 - links_down - additions_h) * 0.25).floor() + 98.0;
     [
         (x0, y, "gui/sprites/pause_menu/bug"),
         (x0 + 24.0, y, "gui/sprites/pause_menu/social_interactions"),
@@ -202,13 +210,14 @@ impl Game<'_> {
                 tooltip = Some(Text::translate("menu.custom_options.tooltip", &[]));
             }
         }
-        // Draw pause screen additions buttons (after standard buttons, before icons)
+        // Draw pause screen additions buttons (row 3: y0 + 122, after server_links)
         let links_down = if links { 24.0 } else { 0.0 };
         let additions_h = additions.len() as f32 * 24.0;
         let (grid_w, grid_h) = (212.0, 166.0 + links_down + additions_h);
         let x0 = ((w - grid_w) * 0.5).floor();
         let y0 = ((h - grid_h) * 0.25).floor();
-        let base_y = y0 + 146.0 + links_down; // Same Y as "return to menu" button
+        // Additions start at row 3 (y0 + 122), after server_links if present
+        let base_y = y0 + 122.0 + links_down;
         for (i, (label, _)) in additions.iter().enumerate() {
             let y = base_y + i as f32 * 24.0;
             let hover = ui::hovered(self.cursor, x0 + 4.0, y, 204.0, 20.0);
@@ -224,7 +233,7 @@ impl Game<'_> {
                 hover,
             );
         }
-        for (i, (x, y, sprite)) in pause_icons(w, h, links).into_iter().enumerate() {
+        for (i, (x, y, sprite)) in pause_icons(w, h, links, additions.len()).into_iter().enumerate() {
             let active = i == FRIENDS_ICON && friends;
             let hover = ui::hovered(self.cursor, x, y, 20.0, 20.0);
             // The icon has no label: name it for controller focus and the
@@ -276,8 +285,8 @@ impl Game<'_> {
             (b.width, b.height)
         };
         let links = !self.server_links().is_empty();
-        let friends = pause_icons(w, h, links)[FRIENDS_ICON];
         let additions = self.pause_screen_additions();
+        let friends = pause_icons(w, h, links, additions.len())[FRIENDS_ICON];
         
         // Check standard pause buttons first
         let standard_hit = pause_buttons(w, h, self.external_server(), links, additions.len())
@@ -292,7 +301,8 @@ impl Game<'_> {
             let (grid_w, grid_h) = (212.0, 166.0 + links_down + additions_h);
             let x0 = ((w - grid_w) * 0.5).floor();
             let y0 = ((h - grid_h) * 0.25).floor();
-            let base_y = y0 + 146.0 + links_down;
+            // Additions start at row 3 (y0 + 122), after server_links if present
+            let base_y = y0 + 122.0 + links_down;
             additions.iter().enumerate().find_map(|(i, (_, dialog_tag))| {
                 let y = base_y + i as f32 * 24.0;
                 if ui::hovered(self.cursor, x0 + 4.0, y, 204.0, 20.0) {
@@ -620,7 +630,7 @@ mod tests {
         assert_eq!(links.3, "menu.server_links");
         assert!(links.5);
         // The icon row sits above it; Options and Disconnect move down 24.
-        let icons = pause_icons(427.0, 240.0, true);
+        let icons = pause_icons(427.0, 240.0, true, 0);
         let y0_icons = ((240.0f32 - 190.0) * 0.25).floor() + 98.0;
         assert_eq!(icons[0].1, y0_icons);
         assert!(links.1 > icons[0].1);
