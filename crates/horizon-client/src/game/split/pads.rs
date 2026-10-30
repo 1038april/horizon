@@ -56,7 +56,7 @@ impl Split<'_> {
         };
         let state = self.pads.state(id);
         if self.fresh.contains(&id) {
-            if state.buttons != 0 {
+            if pressing(&state) {
                 return Default::default();
             }
             self.fresh.retain(|&p| p != id);
@@ -268,6 +268,12 @@ impl Split<'_> {
     }
 }
 
+/// Still holding the press that gave the pad its player: a button, or a trigger off its rest
+/// (gilrs reports a trigger press as a button, but `PadState` keeps it in `triggers`).
+fn pressing(state: &PadState) -> bool {
+    state.buttons != 0 || state.triggers.iter().any(|&t| t > 0.05)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,6 +284,21 @@ mod tests {
             id: seat,
             uuid,
         }
+    }
+
+    #[test]
+    fn the_trigger_that_gave_a_pad_is_held_back_too() {
+        assert!(!pressing(&PadState::default()));
+        let trigger = PadState {
+            triggers: [0.0, 0.8],
+            ..Default::default()
+        };
+        assert!(pressing(&trigger), "a held trigger would attack or use");
+        let button = PadState {
+            buttons: 1,
+            ..Default::default()
+        };
+        assert!(pressing(&button));
     }
 
     #[test]
