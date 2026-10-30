@@ -877,6 +877,36 @@ fn overlaps(a: Aabb, b: Aabb) -> bool {
     );
     a0.x < b1.x && b0.x < a1.x && a0.y < b1.y && b0.y < a1.y && a0.z < b1.z && b0.z < a1.z
 }
+/// What `Equippable.swapWithEquipmentSlot` leaves behind once the held piece is
+/// worn: the new hand (`None` keeps the hand as it is) and the replaced piece
+/// that still has to go through the inventory (`Inventory.add`, else a drop).
+#[derive(Debug, PartialEq)]
+struct ArmorSwap {
+    hand: Option<Option<ItemStack>>,
+    returned: Option<ItemStack>,
+}
+/// A held count of at most one swaps the hand with the slot: the hand becomes
+/// the worn piece (an empty slot leaves the hand as it was, so creative keeps
+/// its item) and survival empties it. A larger stack keeps the rest
+/// (`consumeAndReturn(1)`: creative consumes nothing) and the replaced piece
+/// goes through the inventory.
+fn plan_armor_swap(held: &ItemStack, worn: Option<ItemStack>, creative: bool) -> ArmorSwap {
+    if held.count <= 1 {
+        let hand = (worn.is_some() || !creative).then_some(worn);
+        return ArmorSwap {
+            hand,
+            returned: None,
+        };
+    }
+    let mut rest = held.clone();
+    if !creative {
+        rest.count -= 1;
+    }
+    ArmorSwap {
+        hand: Some(Some(rest)),
+        returned: worn,
+    }
+}
 impl Game<'_> {
     /// `Equippable.swapWithEquipmentSlot`: right-clicking armor swaps it into
     /// its slot (the worn piece comes back to the hand).
@@ -909,25 +939,16 @@ impl Game<'_> {
         self.armor[index] = Some(equipped.clone());
         // Player.setItemSlot: onEquipItem plays the equip sound.
         self.player_equipped(slot, Some(&equipped));
-        let mut held = stack.clone();
-        if stack.count <= 1 {
-            // The worn piece comes back to the hand; an empty slot leaves the
-            // creative hand untouched.
-            if current.is_some() || !self.creative {
-                *self.held_mut() = current;
-            }
-        } else {
-            // Creative keeps the held stack (`stack.copy()`); survival consumes one.
-            if !self.creative {
-                held.count -= 1;
-            }
-            *self.held_mut() = Some(held);
-            if let Some(old) = current
-                && let Some(rest) = self.give(old)
-                && let Some(eye) = self.eye_position()
-            {
-                self.spawn_item(rest, eye, [0.0; 3], 40);
-            }
+        let swap = plan_armor_swap(stack, current, self.creative);
+        if let Some(hand) = swap.hand {
+            *self.held_mut() = hand;
+        }
+        if let Some(old) = swap.returned
+            && let Some(rest) = self.give(old)
+            && let Some(eye) = self.eye_position()
+        {
+            // Inventory full: Player.drop of the replaced piece.
+            self.spawn_item(rest, eye, [0.0; 3], 40);
         }
         self.apply_equipment();
         self.swing_arm();
@@ -1108,5 +1129,59 @@ mod layer_color_tests {
         assert_eq!(layer_color(None, Some(&plain)), 0xFFFF_FFFF);
         // A layer that isn't dyeable stays white even on a dyed stack.
         assert_eq!(layer_color(None, Some(&dyed)), 0xFFFF_FFFF);
+    }
+}
+#[cfg(test)]
+mod armor_swap_tests {
+    use super::*;
+    fn boots(count: u32) -> ItemStack {
+        ItemStack::new("minecraft:diamond_boots", count)
+    }
+    fn old() -> ItemStack {
+        ItemStack::new("minecraft:iron_boots", 1)
+    }
+    /// The replaced piece is in the hand or on its way to the inventory.
+    fn assert_old_kept(swap: &ArmorSwap) {
+        let in_hand = matches!(&swap.hand, Some(Some(h)) if *h == old());
+        assert!(in_hand != (swap.returned == Some(old())));
+    }
+    #[test]
+    fn one_held_piece_swaps_with_the_worn_one_in_both_modes() {
+        for creative in [false, true] {
+            let swap = plan_armor_swap(&boots(1), Some(old()), creative);
+            assert_eq!(swap.hand, Some(Some(old())));
+            assert_eq!(swap.returned, None);
+            assert_old_kept(&swap);
+        }
+    }
+    #[test]
+    fn one_held_piece_into_an_empty_slot() {
+        let survival = plan_armor_swap(&boots(1), None, false);
+        assert_eq!(survival.hand, Some(None));
+        // Creative keeps the item in hand.
+        let creative = plan_armor_swap(&boots(1), None, true);
+        assert_eq!(creative.hand, None);
+        assert_eq!(creative.returned, None);
+    }
+    #[test]
+    fn a_stack_returns_the_worn_piece_through_the_inventory() {
+        let survival = plan_armor_swap(&boots(3), Some(old()), false);
+        assert_eq!(survival.hand, Some(Some(boots(2))));
+        assert_eq!(survival.returned, Some(old()));
+        assert_old_kept(&survival);
+        // Creative consumes nothing but still returns the old piece.
+        let creative = plan_armor_swap(&boots(3), Some(old()), true);
+        assert_eq!(creative.hand, Some(Some(boots(3))));
+        assert_eq!(creative.returned, Some(old()));
+        assert_old_kept(&creative);
+    }
+    #[test]
+    fn a_stack_into_an_empty_slot_returns_nothing() {
+        let survival = plan_armor_swap(&boots(2), None, false);
+        assert_eq!(survival.hand, Some(Some(boots(1))));
+        assert_eq!(survival.returned, None);
+        let creative = plan_armor_swap(&boots(2), None, true);
+        assert_eq!(creative.hand, Some(Some(boots(2))));
+        assert_eq!(creative.returned, None);
     }
 }
