@@ -2991,6 +2991,12 @@ impl Game<'_> {
                 continue;
             }
             let item = &mut items[i];
+            // `addFreshEntity`: an entity added this tick ticks from the next
+            // one (`EntityTickList`), so a drop's `Age` stays 0 for the tick
+            // function that looks for it.
+            if item.ticks == 0 {
+                continue;
+            }
             if !ticking(
                 item.position.x.floor() as i32,
                 item.position.z.floor() as i32,
@@ -5609,6 +5615,16 @@ impl Game<'_> {
         }
         if running {
             self.advance_clock();
+            // `MinecraftServer.tickChildren`: `commandFunctions` runs before
+            // any level ticks, so a tick function that polls for the drop a
+            // block just made still finds it with `Age: 0`
+            // (`EntityTickList.ensureActiveIsNotIterated` gives an entity
+            // added during the iteration its first tick on the next one).
+            // Vanilla's SavedData is loaded long before this point; the lazy
+            // scoreboard/storage read has to be done by then too, or a load
+            // tag writes over what it restores.
+            self.load_scoreboard();
+            self.tick_functions();
         }
         if self.use_delay > 0 {
             self.use_delay -= 1;
@@ -9450,7 +9466,6 @@ impl Game<'_> {
         self.tick_stats();
         self.tick_scoreboard();
         self.load_bossbars();
-        self.tick_functions();
         self.tick_worldborder();
         self.tick_subtitles();
         self.spawn_phantoms();
