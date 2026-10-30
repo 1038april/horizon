@@ -261,5 +261,6 @@
   "Could not read the saved sign-in. Sign in again.": "No se pudo leer el inicio de sesión guardado. Vuelve a iniciar sesión.",
   "Could not read the saved sign-in.": "No se pudo leer el inicio de sesión guardado.",
   "Could not save the renewed sign-in.": "No se pudo guardar el inicio de sesión renovado.",
-  "The renewed sign-in could not be saved in the keychain. Unlock it and retry.": "No se pudo guardar el inicio de sesión renovado en el llavero. Desbloquéalo y vuelve a intentarlo."
+  "The renewed sign-in could not be saved in the keychain. Unlock it and retry.": "No se pudo guardar el inicio de sesión renovado en el llavero. Desbloquéalo y vuelve a intentarlo.",
+  "Another account operation is running. Try again in a moment.": "Hay otra operación de cuenta en curso. Vuelve a intentarlo en un momento."
 }
