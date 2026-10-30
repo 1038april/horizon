@@ -29,9 +29,10 @@ pub const TRANSLUCENT_GLINT_ITEM_OVERLAY: u32 = 33;
 /// drawn like an ordinary entity, pulled toward the camera.
 pub const TEXT_POLYGON_OFFSET_OVERLAY: u32 = 35;
 
-/// The material of a quad by its overlay (`MATERIALS` order).
+/// The material of a quad by its overlay (`MATERIALS` order): the overlay is the layer's low 16
+/// bits, as entity.wgsl reads it; HDR output's tier rides in the high ones.
 fn material(layer: u32) -> usize {
-    match layer {
+    match layer & 0xffff {
         TEXT_POLYGON_OFFSET_OVERLAY => 1,
         11 => 2,
         12 => 3,

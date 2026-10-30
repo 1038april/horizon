@@ -190,7 +190,8 @@ fn flame_geometry(
                 normal: [0; 4],
                 pos: p.to_array(),
                 uv,
-                layer: 0,
+                // HDR output: the flames shine like fire (entity.wgsl fs_hdr_mark).
+                layer: u32::from(horizon_client::mesher::INCANDESCENT) << 16,
                 color: 0xFFFF_FFFF,
                 light: packed,
 
@@ -4648,6 +4649,7 @@ impl Game<'_> {
             } else {
                 Vec::new()
             };
+            let body = out.len();
             horizon_client::mobs::render::render_with(
                 mob,
                 alpha as f32,
@@ -4658,6 +4660,17 @@ impl Game<'_> {
                 &armor,
                 out,
             );
+            // HDR output: mobs that are light shine by their kind, as blocks do (entity.wgsl
+            // fs_hdr_mark); a tier's window lifts only their bright texels.
+            if let Some(tier) = match mob.species() {
+                Species::Blaze => Some(horizon_client::mesher::BRIGHT),
+                Species::MagmaCube | Species::GlowSquid => Some(horizon_client::mesher::LOW),
+                _ => None,
+            } {
+                for v in &mut out[body..] {
+                    v.layer |= u32::from(tier) << 16;
+                }
+            }
             if &*mob.kind.id == "minecraft:player" {
                 // PlayerRenderer's CapeLayer, WingsLayer and SpinAttackEffectLayer.
                 let chest = mob.extra.chest.as_deref();

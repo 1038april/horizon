@@ -349,7 +349,8 @@ impl PackEntities {
             bytes[0..4].copy_from_slice(&(span.stage as i32).to_le_bytes());
             bytes[4..8].copy_from_slice(&entity_id.to_le_bytes());
             bytes[8..12].copy_from_slice(&block_id.to_le_bytes());
-            for (i, c) in entity_color(run[0].layer).iter().enumerate() {
+            // The overlay: the layer's low 16 bits (HDR output's tier rides in the high ones).
+            for (i, c) in entity_color(run[0].layer & 0xffff).iter().enumerate() {
                 bytes[16 + 4 * i..20 + 4 * i].copy_from_slice(&c.to_le_bytes());
             }
             self.uniforms.extend_from_slice(&bytes);
@@ -410,7 +411,7 @@ pub(super) fn quad_indices(device: &wgpu::Device, quads: u32) -> wgpu::Buffer {
 fn plain(run: &[Vertex]) -> bool {
     run.iter()
         .step_by(4)
-        .all(|v| !matches!(v.layer, 2 | 4 | 6 | 9 | 10 | 11 | 12 | 34))
+        .all(|v| !matches!(v.layer & 0xffff, 2 | 4 | 6 | 9 | 10 | 11 | 12 | 34))
 }
 
 /// The programs of entity runs, in the order they draw.

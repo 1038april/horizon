@@ -1233,6 +1233,7 @@ impl Game<'_> {
             let base = glam::Mat4::from_translation(rel.as_vec3())
                 * glam::Mat4::from_scale(glam::Vec3::splat(2.0))
                 * glam::Mat4::from_translation(glam::Vec3::new(0.0, -0.5, 0.0));
+            let start = out.len();
             horizon_client::mobs::render::draw(
                 model,
                 base,
@@ -1243,6 +1244,11 @@ impl Game<'_> {
                 0,
                 out,
             );
+            // HDR output: the crystal shines; its tier's window leaves the dark base alone
+            // (entity.wgsl fs_hdr_mark).
+            for v in &mut out[start..] {
+                v.layer |= u32::from(horizon_client::mesher::BRIGHT) << 16;
+            }
             if let Some(target) = crystal.beam {
                 // The beam from the target's centre up to the bobbing crystal.
                 let from = glam::DVec3::new(

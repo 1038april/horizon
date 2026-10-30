@@ -8550,7 +8550,8 @@ impl Game<'_> {
                         normal: [0; 4],
                         pos: v.to_array(),
                         uv,
-                        layer: 0,
+                        // HDR output: the orbs shine (entity.wgsl fs_hdr_mark).
+                        layer: u32::from(horizon_client::mesher::VERY_BRIGHT) << 16,
                         color,
                         light: packed,
 

@@ -2594,12 +2594,18 @@ impl Game<'_> {
             0,
             &mut eye_quads,
         );
+        // HDR output: the eyes shine like other mobs' glowing eyes, the death rays like
+        // lightning (entity.wgsl fs_hdr_mark, the tier in the overlay's high bits).
         for v in &mut eye_quads {
-            v.layer = 2;
+            v.layer = 2 | u32::from(horizon_client::mesher::BRIGHT) << 16;
         }
         additive.extend(eye_quads);
         if death > 0.0 {
+            let rays = additive.len();
             self.dragon_rays(rays_base, death / 200.0, additive);
+            for v in &mut additive[rays..] {
+                v.layer |= u32::from(horizon_client::mesher::VERY_BRIGHT) << 16;
+            }
         }
         // The healing beam to the nearest crystal.
         if let Some(c) = d.nearest_crystal.and_then(|i| self.crystals.get(i)) {
@@ -2669,7 +2675,8 @@ impl Game<'_> {
                     normal: [0; 4],
                     pos: m.transform_point3(p).to_array(),
                     uv,
-                    layer: 6,
+                    // HDR output: the healing beam shines (entity.wgsl fs_hdr_mark).
+                    layer: 6 | u32::from(horizon_client::mesher::BRIGHT) << 16,
                     color: c,
                     light: wrap_light,
 
