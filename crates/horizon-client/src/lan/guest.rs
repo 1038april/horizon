@@ -151,6 +151,10 @@ pub struct Guest {
     pub moved: bool,
     /// The client finished loading terrain (ServerboundPlayerLoadedPacket).
     pub loaded: bool,
+    /// The client has loaded the world since the last respawn or level change
+    /// (`ServerGamePacketListenerImpl.hasClientLoaded`): the damage-immunity
+    /// term that hides the ticks a respawned player spends at the old spot.
+    pub client_loaded: bool,
     // Chunks.
     pub center: Option<(i32, i32)>,
     pub sent_chunks: crate::fast_hash::FxHashSet<(i32, i32)>,
@@ -324,6 +328,7 @@ impl Guest {
             position_this_tick: false,
             moved: false,
             loaded: false,
+            client_loaded: true,
             center: None,
             sent_chunks: Default::default(),
             chunk_queue: Vec::new(),

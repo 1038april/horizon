@@ -2236,7 +2236,11 @@ impl Hub {
                 S::MovePlayerStatus(p) => {
                     self.move_player(i, None, None, p.flags, ctx, events);
                 }
-                S::PlayerLoaded(_) => self.guests[i].loaded = true,
+                S::PlayerLoaded(_) => {
+                    let g = &mut self.guests[i];
+                    g.loaded = true;
+                    g.client_loaded = true;
+                }
                 // PlayerChunkSender.onChunkBatchReceivedByClient.
                 S::ChunkBatchReceived(p) => {
                     let g = &mut self.guests[i];
@@ -2657,6 +2661,8 @@ impl Hub {
         let g = &mut self.guests[i];
         // PlayerList.respawn: into the level in place (the respawn level).
         g.dimension = self.config.dimension.clone();
+        // The client loads a whole new level before it reports it loaded.
+        g.client_loaded = false;
         // ServerLevel.removePlayerImmediately: the dead player's
         // Entity.setRemoved (KILLED) stops its riding; the new player rides
         // nothing.
@@ -2779,6 +2785,8 @@ impl Hub {
         self.close_container_for(i);
         let g = &mut self.guests[i];
         g.dimension = self.config.dimension.clone();
+        // Not cleared: vanilla resets the client's loaded state on death and respawn only, and
+        // covers a level change with its separate `isChangingDimension` term.
         g.tracker.clear();
         g.sent_chunks.clear();
         g.chunk_queue.clear();
