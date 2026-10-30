@@ -32,7 +32,13 @@ pub(super) fn upload(
     for t in textures {
         let (image, dimension, sample_type, blur, clamp) = match t.source {
             TextureSource::Image(texture) => {
-                let (view, sample_type) = create(device, queue, &texture, features);
+                let (view, sample_type) = match create(device, queue, &texture, features) {
+                    Ok(created) => created,
+                    Err(e) => {
+                        notes.push(format!("texture.{}.{}: {e}", t.stage, t.name));
+                        continue;
+                    }
+                };
                 let dimension = match texture.dim {
                     TextureDim::D1 => wgpu::TextureViewDimension::D1,
                     TextureDim::D2 => wgpu::TextureViewDimension::D2,
@@ -149,7 +155,7 @@ fn create(
     queue: &wgpu::Queue,
     texture: &Texture,
     features: wgpu::Features,
-) -> (wgpu::TextureView, wgpu::TextureSampleType) {
+) -> Result<(wgpu::TextureView, wgpu::TextureSampleType), String> {
     let format = format(texture);
     let bytes: Vec<u8> = match (&texture.texels, format) {
         (Texels::Float(v), f) if f.block_copy_size(None) == Some(texture.components() as u32) => {
@@ -191,6 +197,24 @@ fn create(
         }
     };
     let [width, height, depth] = texture.size;
+    let limits = device.limits();
+    let largest = match texture.dim {
+        TextureDim::D1 => limits.max_texture_dimension_1d,
+        TextureDim::D2 => limits.max_texture_dimension_2d,
+        TextureDim::D3 => limits.max_texture_dimension_3d,
+    };
+    if [width, height, depth].iter().any(|&n| n > largest) {
+        return Err(format!(
+            "{width}x{height}x{depth} is larger than this device's {largest}"
+        ));
+    }
+    let row = width * format.block_copy_size(None).unwrap_or(4);
+    if bytes.len() as u64 != u64::from(row) * u64::from(height) * u64::from(depth) {
+        return Err(format!(
+            "{} bytes of texels for {width}x{height}x{depth}",
+            bytes.len()
+        ));
+    }
     let size = wgpu::Extent3d {
         width,
         height,
@@ -211,7 +235,6 @@ fn create(
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    let row = width * format.block_copy_size(None).unwrap_or(4);
     queue.write_texture(
         tex.as_image_copy(),
         &bytes,
@@ -225,5 +248,5 @@ fn create(
     let sample_type = format
         .sample_type(None, Some(features))
         .unwrap_or(wgpu::TextureSampleType::Float { filterable: false });
-    (tex.create_view(&Default::default()), sample_type)
+    Ok((tex.create_view(&Default::default()), sample_type))
 }
