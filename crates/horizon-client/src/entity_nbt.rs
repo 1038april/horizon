@@ -464,11 +464,27 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
                 );
             }
         }
-        // MushroomCow.addAdditionalSaveData: the Variant codec's name (stew
-        // effects are not modelled).
+        // MushroomCow.addAdditionalSaveData: the Variant codec's name and the
+        // stew effects, written only while it holds any (storeNullable).
         "minecraft:mooshroom" => {
             let kind = if m.extra.variant == 1 { "brown" } else { "red" };
             map.insert("Type".into(), string(kind));
+            match &m.extra.stew_effects {
+                Some(effects) => {
+                    let list = effects.iter().map(|(id, duration)| {
+                        let mut entry = vec![("id", string(id))];
+                        // SuspiciousStewEffects.Entry leaves out the default.
+                        if *duration != 160 {
+                            entry.push(("duration", Tag::Int(*duration)));
+                        }
+                        Tag::compound(entry)
+                    });
+                    map.insert("stew_effects".into(), Tag::List(list.collect()));
+                }
+                None => {
+                    map.remove(&horizon_world::nbt::JavaString::from("stew_effects"));
+                }
+            }
         }
         // Rabbit.addAdditionalSaveData (the legacy id; 99 is the killer bunny).
         "minecraft:rabbit" => {
@@ -1427,9 +1443,20 @@ pub fn mob_from_nbt(tag: &Tag, types: &HashMap<String, Arc<MobType>>, id: u32) -
             }
         }
         // MushroomCow.readAdditionalSaveData: a missing or unknown name is
-        // Variant.DEFAULT, red.
+        // Variant.DEFAULT, red; stew_effects decodes like the component's list.
         crate::mobs::Species::Mooshroom => {
             m.extra.variant = u8::from(text(tag.get("Type")).as_deref() == Some("brown"));
+            if let Some(Tag::List(list)) = tag.get("stew_effects") {
+                m.extra.stew_effects = list
+                    .iter()
+                    .map(|entry| {
+                        Some((
+                            Arc::from(text(entry.get("id"))?.as_str()),
+                            number(entry.get("duration")).unwrap_or(160) as i32,
+                        ))
+                    })
+                    .collect();
+            }
         }
         crate::mobs::Species::Rabbit => {
             // Rabbit.Variant.byId: an unknown id is brown.
@@ -3359,6 +3386,24 @@ mod sheep_nbt_tests {
         let (back, tag) = round_trip(&mooshroom);
         assert_eq!(text(tag.get("Type")).as_deref(), Some("red"));
         assert_eq!(back.extra.variant, 0);
+        // Its stew effects round-trip as the component's bare {id, duration}
+        // entries, and a cleared list is not written at all.
+        mooshroom.extra.variant = 1;
+        mooshroom.extra.stew_effects = Some(vec![(Arc::from("minecraft:night_vision"), 100)]);
+        let (back, tag) = round_trip(&mooshroom);
+        assert_eq!(back.extra.stew_effects, mooshroom.extra.stew_effects);
+        let entry = match tag.get("stew_effects") {
+            Some(Tag::List(list)) => list.first().expect("one effect"),
+            other => panic!("stew_effects: {other:?}"),
+        };
+        assert_eq!(
+            (text(entry.get("id")), number(entry.get("duration"))),
+            (Some("minecraft:night_vision".into()), Some(100))
+        );
+        mooshroom.extra.stew_effects = None;
+        let (back, tag) = round_trip(&mooshroom);
+        assert_eq!(back.extra.stew_effects, None);
+        assert!(tag.get("stew_effects").is_none());
         let mut rabbit = new("minecraft:rabbit");
         rabbit.extra.variant = 4;
         let (back, tag) = round_trip(&rabbit);
