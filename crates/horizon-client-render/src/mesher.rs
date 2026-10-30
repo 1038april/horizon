@@ -158,6 +158,10 @@ pub struct SectionMesh {
     /// each frame by `block_entity_render` like vanilla's per-section
     /// `SectionCompiler.Results.blockEntities`.
     pub block_entities: Vec<([i32; 3], u32)>,
+    /// The vertices' bounds, tracked as quads are emitted. Distant terrain
+    /// uses it to cull tiles without walking their vertices on the frame
+    /// thread; other meshes leave it `None` and are scanned if ever needed.
+    pub bounds: Option<([f32; 3], [f32; 3])>,
 }
 impl Default for SectionMesh {
     fn default() -> Self {
@@ -167,6 +171,7 @@ impl Default for SectionMesh {
             translucent: Vec::new(),
             visibility: ALL_VISIBLE,
             block_entities: Vec::new(),
+            bounds: None,
         }
     }
 }

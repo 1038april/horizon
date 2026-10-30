@@ -96,6 +96,14 @@ struct Bounds {
 
 impl Bounds {
     fn mesh(mesh: &SectionMesh) -> Option<Self> {
+        // Distant terrain meshes carry their bounds from the worker. This
+        // used to walk every vertex of every tile on the frame thread.
+        if let Some((min, max)) = mesh.bounds {
+            return Some(Self {
+                min: min.into(),
+                max: max.into(),
+            });
+        }
         let mut positions = mesh
             .solid
             .iter()

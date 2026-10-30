@@ -1215,6 +1215,7 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2",
+ "smallvec",
  "symphonia",
  "unicode-bidi",
  "ureq",
