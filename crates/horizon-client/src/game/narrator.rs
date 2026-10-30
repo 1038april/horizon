@@ -1,7 +1,7 @@
 //! The narrator (`Minecraft.narrator`, horizon-narrator's `GameNarrator`):
 //! opened with the client, closed with it, and kept in step with the options
 //! it reads (`Options.narrator`, `getFinalSoundSourceVolume(VOICE)`).
-use horizon_client::settings::Settings;
+use horizon_client::{settings::Settings, text::Text};
 use horizon_narrator::Status;
 
 /// `Minecraft`'s constructor: `new GameNarrator`, then
@@ -30,6 +30,17 @@ fn check_status(required_active: bool) {
 pub(super) fn sync(settings: &Settings) {
     horizon_narrator::set_status(settings.narrator());
     horizon_narrator::set_volume(settings.final_volume("voice"));
+}
+
+/// `GameNarrator.updateNarratorStatus`, once the narrator option holds
+/// `status`: what was being said stops and "Narrator : <status>" is said,
+/// whatever the status (Off included).
+pub(super) fn update_status(status: Status) {
+    let announcement = Text::translate("options.narrator", &[])
+        .append(Text::literal(" : "))
+        .append(Text::translate(status.key(), &[]))
+        .plain();
+    horizon_narrator::update_status(status, &announcement);
 }
 
 /// `Minecraft.destroy`: `narrator.destroy()`.

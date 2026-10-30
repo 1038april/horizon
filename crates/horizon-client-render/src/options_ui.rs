@@ -120,9 +120,7 @@ impl Opt {
     pub(crate) fn available(self) -> bool {
         !matches!(
             self,
-            Opt::Narrator
-                | Opt::NarratorHotkey
-                | Opt::ChatDelay
+            Opt::ChatDelay
                 // Stored, but there are no blocked players, signed chat or
                 // chat drafts yet.
                 | Opt::HideMatchedNames
@@ -391,6 +389,10 @@ impl Opt {
                 "options.textureFiltering.rgss",
                 "options.textureFiltering.anisotropic",
             ][s.file.int("textureFiltering").clamp(0, 2) as usize],
+            // InputQuirks.REPLACE_CTRL_KEY_WITH_CMD_KEY: Cmd+B on macOS.
+            Opt::NarratorHotkey if cfg!(target_os = "macos") => {
+                "options.accessibility.narrator_hotkey.mac"
+            }
             _ => self.caption(),
         };
         format!("{key}.tooltip")
@@ -587,7 +589,13 @@ impl Opt {
             } else {
                 "options.accessibility.text_background.everywhere"
             }),
-            Opt::Narrator => tr("options.narrator.off"),
+            // Options.narrator's caption: the status while the narrator is
+            // there, "Not Available" otherwise.
+            Opt::Narrator => tr(if horizon_narrator::is_active() {
+                s.narrator().key()
+            } else {
+                "options.narrator.notavailable"
+            }),
             Opt::ChatDelay => tr("options.chat.delay_none"),
             Opt::HideLightningFlashes => on_off(s.file.bool("hideLightningFlashes")),
             Opt::MonochromeLogo => on_off(s.file.bool("darkMojangStudiosBackground")),
@@ -880,10 +888,16 @@ impl Opt {
             | Opt::AllowServerListing
             | Opt::RealmsNotifications
             | Opt::InGameNotification
-            | Opt::DirectionalAudio => {
+            | Opt::DirectionalAudio
+            | Opt::NarratorHotkey => {
                 let key = self.file_key().unwrap();
                 s.file
                     .set(key, crate::options_file::V::Bool(!s.file.bool(key)));
+            }
+            // OptionInstance.Enum over NarratorStatus.values().
+            Opt::Narrator => {
+                let n = next(s.narrator().id() as u8, 4);
+                s.set_narrator(horizon_narrator::Status::by_id(i32::from(n)));
             }
             Opt::InvertX => s.invert_x = !s.invert_x,
             Opt::InvertY => s.invert_y = !s.invert_y,
@@ -1296,6 +1310,9 @@ pub enum Event {
     Credits,
     /// Copy how an agent connects (the AI Agent page).
     CopyAgentDetails,
+    /// The narrator option changed (after its `Changed`): the option's
+    /// `onValueUpdate`, `GameNarrator.updateNarratorStatus`.
+    Narrator,
 }
 /// `SliderableValueSet.applyValueImmediately`: these apply 600 ms after
 /// the last change (`OptionInstanceSliderButton.delayedApplyAt`).
@@ -1432,7 +1449,9 @@ fn inactive(mut w: Widget) -> Widget {
     w
 }
 fn option_widget(s: &Settings, opt: Opt, x: f32, y: f32, w: f32) -> Widget {
-    if !opt.available() {
+    // OptionsSubScreen.addContents: the narrator button is active only while
+    // the narrator is (`narratorButton.active = narrator.isActive()`).
+    if !opt.available() || opt == Opt::Narrator && !horizon_narrator::is_active() {
         return inactive(button(x, y, w, opt.label(s), Act::Cycle(opt)));
     }
     // VideoSettingsScreen.tick: Max Anisotropy only works with Anisotropic filtering.
@@ -1979,6 +1998,7 @@ impl OptionsUi {
                 Opt::ChatWidth,
                 Opt::ChatHeightFocused,
                 Opt::ChatHeightUnfocused,
+                Opt::Narrator,
                 Opt::AutoSuggestions,
                 Opt::HideMatchedNames,
                 Opt::ReducedDebugInfo,
@@ -3229,6 +3249,9 @@ impl OptionsUi {
             }
         }
         events.push(Event::Changed);
+        if opt == Opt::Narrator {
+            events.push(Event::Narrator);
+        }
         events
     }
     /// The mouse wheel at the cursor. Over a cycle button it takes the step
@@ -3718,6 +3741,60 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn the_narrator_option_cycles_its_four_statuses_and_announces_them() {
+        use horizon_narrator::Status;
+        let mut s = Settings::default();
+        for want in [Status::All, Status::Chat, Status::System, Status::Off] {
+            Opt::Narrator.cycle(&mut s, false, [854, 480]);
+            assert_eq!(s.narrator(), want);
+        }
+        Opt::Narrator.cycle(&mut s, true, [854, 480]);
+        assert_eq!(s.narrator(), Status::System);
+        let mut ui = OptionsUi::default();
+        assert_eq!(
+            ui.cycle_option(&mut s, Opt::Narrator, false, [854, 480]),
+            [Event::Changed, Event::Narrator]
+        );
+        assert_eq!(
+            ui.cycle_option(&mut s, Opt::NarratorHotkey, false, [854, 480]),
+            [Event::Changed]
+        );
+        assert!(!s.file.bool("narratorHotkey"));
+    }
+
+    #[test]
+    fn without_speech_the_narrator_button_is_inactive_and_not_available() {
+        // Tests never open the narrator: text2speech's Narrator.EMPTY.
+        let s = Settings::default();
+        let widget = option_widget(&s, Opt::Narrator, 0.0, 0.0, 150.0);
+        assert!(matches!(widget.kind, WKind::Button { active: false, .. }));
+        assert_eq!(
+            Opt::Narrator.value_text(&s).plain(),
+            tr("options.narrator.notavailable").plain()
+        );
+        let hotkey = option_widget(&s, Opt::NarratorHotkey, 0.0, 0.0, 150.0);
+        assert!(matches!(hotkey.kind, WKind::Button { active: true, .. }));
+    }
+
+    #[test]
+    fn chat_settings_show_the_narrator_where_vanilla_does() {
+        let mut ui = OptionsUi::default();
+        ui.show(Page::Chat);
+        let options: Vec<Opt> = ui
+            .list_rows(&Settings::default())
+            .into_iter()
+            .flat_map(|row| match row {
+                Row::Big(opt) => vec![opt],
+                Row::Pair(a, b) => std::iter::once(a).chain(b).collect(),
+                _ => Vec::new(),
+            })
+            .collect();
+        let at = options.iter().position(|o| *o == Opt::Narrator).unwrap();
+        assert_eq!(options[at - 1], Opt::ChatHeightUnfocused);
+        assert_eq!(options[at + 1], Opt::AutoSuggestions);
     }
 
     #[test]
