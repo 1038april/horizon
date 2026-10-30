@@ -184,7 +184,7 @@ fn main() -> ExitCode {
     let scale = if complete { 0.9 } else { 1.0 };
     let progress = |fraction: f32| {
         if json {
-            print(&format!("{{\"fraction\": {:.3}}}", fraction * scale));
+            print(&fraction_line(fraction * scale));
         }
     };
     let result = match assets.as_deref().and_then(|a| a.to_str()) {
@@ -210,7 +210,7 @@ fn main() -> ExitCode {
         Ok(_) => {
             // A plain preparation reported its 1 already.
             if json && (complete || assets.is_some()) {
-                print("{\"fraction\": 1.000}");
+                print(&fraction_line(1.0));
             }
             ExitCode::SUCCESS
         }
@@ -250,12 +250,17 @@ fn complete_resources(
     ))
 }
 
-/// `{"key": "text"}` on one line.
+/// `{"key": "text"}` on one line: `--progress json`'s `message` and `error` (docs/api/launch.md).
 fn json_line(key: &str, text: &str) -> String {
     let mut out = format!("{{\"{key}\": ");
     horizon_prepare::pyjson::write_string(&mut out, text);
     out.push('}');
     out
+}
+
+/// `--progress json`'s `{"fraction": F}`, F from 0 to 1 with three decimals.
+fn fraction_line(fraction: f32) -> String {
+    format!("{{\"fraction\": {:.3}}}", fraction.clamp(0.0, 1.0))
 }
 
 /// `--check`: each gap on its own line on stdout, exit 1 when there is one.
@@ -274,6 +279,30 @@ fn check_resources(options: &horizon_prepare::Options) -> ExitCode {
         Err(e) => {
             eprintln!("error: {e}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `--progress json`'s three lines as docs/api/launch.md promises them: a launcher parses
+    /// them, so a refactor must not change them silently.
+    #[test]
+    fn progress_json_lines_keep_their_shape() {
+        assert_eq!(
+            json_line("message", "Copying \"sounds\"\nnext"),
+            r#"{"message": "Copying \"sounds\"\nnext"}"#
+        );
+        assert_eq!(
+            json_line("error", "no Java 25"),
+            r#"{"error": "no Java 25"}"#
+        );
+        assert_eq!(fraction_line(0.05), r#"{"fraction": 0.050}"#);
+        assert_eq!(fraction_line(1.0), r#"{"fraction": 1.000}"#);
+        for line in [json_line("message", "tab\there, é"), fraction_line(0.9)] {
+            assert!(horizon_prepare::pyjson::loads(&line).is_ok(), "{line}");
         }
     }
 }

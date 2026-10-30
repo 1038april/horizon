@@ -1383,7 +1383,8 @@ mod tests {
     /// `--progress json` reaches 1 only at the end: `STAGES` counts the stages `steps` opens.
     #[test]
     fn steps_open_every_stage() {
-        let source = include_str!("lib.rs");
+        // A Windows checkout may have CRLF line ends.
+        let source = include_str!("lib.rs").replace("\r\n", "\n");
         let body = &source[source.find("\nfn steps(").unwrap()..];
         let body = &body[..body.find("\n}\n").unwrap()];
         assert_eq!(body.matches("run.stage();").count() as u32, STAGES);
