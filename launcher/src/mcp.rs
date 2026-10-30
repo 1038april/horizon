@@ -191,6 +191,7 @@ impl Session {
                 let accounts = Accounts::load();
                 let sign_in = self.sign_in.as_ref().map(|s| match s.state() {
                     SignInState::Starting => json!({ "state": "starting" }),
+                    SignInState::Working(phase) => json!({ "state": "working", "phase": phase }),
                     SignInState::Code(c) => json!({ "state": "waiting for the player", "link": c.verification_uri, "code": c.user_code }),
                     SignInState::Done(Ok(a)) => json!({ "state": "signed in", "name": a.name }),
                     SignInState::Done(Err(e)) => json!({ "state": "failed", "error": e }),

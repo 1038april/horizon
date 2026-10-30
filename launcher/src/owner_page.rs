@@ -31,10 +31,7 @@ impl Launcher {
 
     /// Closes it; it comes back with the next refused Play.
     fn close_owner_screen(&mut self) {
-        if let Some(s) = self.sign_in.take() {
-            s.cancel();
-        }
-        self.sign_in_state = None;
+        self.cancel_sign_in();
         self.owner_screen_open = false;
         if !self.settings.owner_notice_seen {
             self.settings.owner_notice_seen = true;
@@ -65,6 +62,7 @@ impl Launcher {
         let status = match &self.sign_in_state {
             _ if !configured => Some(div().child(tr(account::NOT_CONFIGURED))),
             Some(SignInState::Starting) => Some(div().child(tr("Asking Microsoft…"))),
+            Some(SignInState::Working(phase)) => Some(div().child(tr(phase.label()))),
             Some(SignInState::Code(code)) => Some(
                 div()
                     .flex()
@@ -124,7 +122,7 @@ impl Launcher {
                             .on_click(move |_, _, cx| cx.open_url(&uri)),
                     )
             }
-            Some(SignInState::Starting) => answers,
+            Some(SignInState::Starting | SignInState::Working(_)) => answers,
             _ if !configured => answers,
             _ => answers.child(
                 button("owner-sign-in", "Sign in", Kind::Primary, &t).on_click(cx.listener(

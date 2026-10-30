@@ -985,3 +985,136 @@ fn an_unreadable_keychain_is_retryable_without_any_write() {
     assert_eq!(status.state, session::State::Retry);
     assert!(!status.message.contains("locked-keychain-details"));
 }
+
+#[test]
+fn targeted_sign_in_rejects_another_identity_without_writing_or_selecting_it() {
+    let store = MemoryStore::default();
+    let mut accounts = signed_in(&store, &secrets("original", true));
+    let before = store.get(UUID).unwrap();
+    let mut wrong = notch();
+    wrong.uuid = "11111111111111111111111111111111".into();
+    wrong.name = "OtherPlayer".into();
+    let err = accept_sign_in(
+        &mut accounts,
+        &store,
+        Some(&notch()),
+        wrong.clone(),
+        &secrets("wrong", true),
+        &|| false,
+        &|_| {},
+    )
+    .unwrap_err();
+    assert!(err.contains("OtherPlayer") && err.contains("Notch"));
+    assert_eq!(store.get(UUID).unwrap(), before);
+    assert!(store.get(&wrong.uuid).unwrap().is_none());
+    assert_eq!(accounts.accounts, vec![notch()]);
+    assert_eq!(accounts.selected.as_deref(), Some(UUID));
+}
+
+#[test]
+fn targeted_sign_in_preserves_the_selected_account_or_offline_name() {
+    let store = MemoryStore::default();
+    let mut accounts = signed_in(&store, &secrets("old", true));
+    let mut other = notch();
+    other.uuid = "11111111111111111111111111111111".into();
+    accounts
+        .add(&store, other.clone(), &secrets("other", true))
+        .unwrap();
+    accept_sign_in(
+        &mut accounts,
+        &store,
+        Some(&notch()),
+        notch(),
+        &secrets("renewed", true),
+        &|| false,
+        &|_| {},
+    )
+    .unwrap();
+    assert_eq!(accounts.selected.as_deref(), Some(other.uuid.as_str()));
+    assert_eq!(kept(&store).minecraft_token, "renewed");
+    accounts.selected = None;
+    accounts.offline_selected = Some("Builder".into());
+    accept_sign_in(
+        &mut accounts,
+        &store,
+        Some(&notch()),
+        notch(),
+        &secrets("renewed-again", true),
+        &|| false,
+        &|_| {},
+    )
+    .unwrap();
+    assert!(accounts.selected.is_none());
+    assert_eq!(accounts.offline_selected.as_deref(), Some("Builder"));
+}
+
+#[test]
+fn cancelled_or_removed_targeted_sign_in_keeps_credentials_unchanged() {
+    let store = MemoryStore::default();
+    let mut accounts = signed_in(&store, &secrets("original", true));
+    let before = store.get(UUID).unwrap();
+    assert!(accept_sign_in(
+        &mut accounts,
+        &store,
+        Some(&notch()),
+        notch(),
+        &secrets("new", true),
+        &|| true,
+        &|_| {}
+    )
+    .is_err());
+    assert_eq!(store.get(UUID).unwrap(), before);
+    accounts.accounts.clear();
+    assert!(accept_sign_in(
+        &mut accounts,
+        &store,
+        Some(&notch()),
+        notch(),
+        &secrets("new", true),
+        &|| false,
+        &|_| {}
+    )
+    .is_err());
+    assert_eq!(store.get(UUID).unwrap(), before);
+}
+
+#[test]
+fn refresh_reports_real_service_steps_in_order() {
+    use session::Phase::*;
+    let store = MemoryStore::default();
+    let _accounts = signed_in(&store, &secrets("old", true));
+    let (_, ep) = mock(|_| {});
+    let phases = std::cell::RefCell::new(Vec::new());
+    let status = session::refresh_account(&ep, Some("test-client"), &store, &notch(), &|phase| {
+        phases.borrow_mut().push(phase)
+    });
+    assert_eq!(status.state, session::State::Ready);
+    assert_eq!(
+        *phases.borrow(),
+        [Queued, Keychain, Microsoft, Xbox, Minecraft, Ownership, Profile, Saving]
+    );
+    let mut accounts = signed_in(&store, &secrets("old", true));
+    let (account, secrets) = finish_sign_in_with_progress(
+        &ep,
+        MsTokens {
+            access: "ms-access-1".into(),
+            refresh: "fresh".into(),
+        },
+        &|phase| phases.borrow_mut().push(phase),
+    )
+    .unwrap();
+    accept_sign_in(
+        &mut accounts,
+        &store,
+        Some(&notch()),
+        account,
+        &secrets,
+        &|| false,
+        &|phase| phases.borrow_mut().push(phase),
+    )
+    .unwrap();
+    assert_eq!(
+        &phases.borrow()[8..],
+        &[Xbox, Minecraft, Ownership, Profile, Saving]
+    );
+}

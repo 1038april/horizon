@@ -2801,6 +2801,8 @@ pub enum Msg {
     Owner(bool),
     /// Credential-free result from a background account operation.
     AccountStatus(String, u64, crate::account::session::Status),
+    AccountProgress(String, u64, crate::account::session::Phase),
+    AccountHead(String, Option<String>, Option<Vec<[u8; 4]>>),
     AccountRemoved(String, u64, Result<bool, String>),
     /// The owner gate's answer for the game about to start: the selected account's session
     /// file (none = offline) and why it plays offline, if it does.

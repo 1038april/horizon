@@ -299,7 +299,12 @@ struct Minecraft {
     xuid: Option<String>,
 }
 
-fn minecraft_login(ep: &Endpoints, ms_access: &str) -> Result<Minecraft, String> {
+fn minecraft_login(
+    ep: &Endpoints,
+    ms_access: &str,
+    progress: &dyn Fn(session::Phase),
+) -> Result<Minecraft, String> {
+    progress(session::Phase::Xbox);
     let (status, xbl) = send(
         request_to("POST", &ep.xbox_user),
         Some(Body::Json(json!({
@@ -336,6 +341,7 @@ fn minecraft_login(ep: &Endpoints, ms_access: &str) -> Result<Minecraft, String>
         return Err("Xbox Live refused the sign-in.".into());
     };
     let xuid = claims.and_then(|c| str_field(c, "xid"));
+    progress(session::Phase::Minecraft);
     let (token, expires_in) = minecraft_token(ep, &format!("XBL3.0 x={uhs};{xsts_token}"))?;
     Ok(Minecraft {
         token,
@@ -492,10 +498,20 @@ impl std::fmt::Debug for Secrets {
 
 /// From Microsoft tokens to a ready account: Xbox, XSTS, Minecraft, ownership, profile.
 pub fn finish_sign_in(ep: &Endpoints, ms: MsTokens) -> Result<(Account, Secrets), String> {
-    let mc = minecraft_login(ep, &ms.access)?;
+    finish_sign_in_with_progress(ep, ms, &|_| {})
+}
+
+pub fn finish_sign_in_with_progress(
+    ep: &Endpoints,
+    ms: MsTokens,
+    progress: &dyn Fn(session::Phase),
+) -> Result<(Account, Secrets), String> {
+    let mc = minecraft_login(ep, &ms.access, progress)?;
+    progress(session::Phase::Ownership);
     if !owns_game(ep, &mc.token)? {
         return Err(DOES_NOT_OWN.into());
     }
+    progress(session::Phase::Profile);
     let account = profile(ep, &mc.token)?.ok_or(NO_PROFILE)?;
     Ok((account, Secrets::new(ms.refresh, mc)))
 }
@@ -526,7 +542,7 @@ enum Check {
 /// Asks whether `account` owns the game, with a Minecraft token renewed through the refresh token
 /// first when it has less than an hour left. The secrets come back renewed whatever the answer.
 fn check(ep: &Endpoints, client_id: Option<&str>, account: &Account, secrets: Secrets) -> Check {
-    check_with(ep, client_id, account, secrets, false)
+    check_with(ep, client_id, account, secrets, false, &|_| {})
 }
 
 fn check_with(
@@ -535,11 +551,13 @@ fn check_with(
     account: &Account,
     mut secrets: Secrets,
     force: bool,
+    progress: &dyn Fn(session::Phase),
 ) -> Check {
     if secrets.sign_in_required {
         return Check::NoAnswer(SIGN_IN_AGAIN.into(), secrets);
     }
     if force || secrets.minecraft_expires_at <= now() + RENEW_BEFORE {
+        progress(session::Phase::Microsoft);
         let renewed = client_id
             .ok_or_else(|| NOT_CONFIGURED.to_string())
             .and_then(|id| refresh_ms(ep, id, &secrets.refresh_token));
@@ -552,7 +570,7 @@ fn check_with(
         };
         // Microsoft can rotate its refresh credential even if a later service fails.
         secrets.refresh_token = ms.refresh;
-        match minecraft_login(ep, &ms.access) {
+        match minecraft_login(ep, &ms.access, progress) {
             Ok(mc) => {
                 secrets = Secrets {
                     owns: secrets.owns,
@@ -563,7 +581,14 @@ fn check_with(
         }
     }
     let token = &secrets.minecraft_token;
-    match owns_game(ep, token).and_then(|owns| Ok(if owns { profile(ep, token)? } else { None })) {
+    progress(session::Phase::Ownership);
+    match owns_game(ep, token).and_then(|owns| {
+        if !owns {
+            return Ok(None);
+        }
+        progress(session::Phase::Profile);
+        profile(ep, token)
+    }) {
         Err(e) => Check::NoAnswer(e, secrets),
         Ok(None) => Check::DoesNot(Secrets {
             owns: false,
@@ -937,6 +962,15 @@ impl Accounts {
         secrets: &Secrets,
     ) -> Result<(), String> {
         let _operation = session::lock(store)?;
+        self.keep_sign_in(store, account, secrets)
+    }
+
+    fn keep_sign_in(
+        &mut self,
+        store: &dyn SecretStore,
+        account: Account,
+        secrets: &Secrets,
+    ) -> Result<(), String> {
         store.set(
             &account.uuid,
             &serde_json::to_string(secrets).map_err(|e| e.to_string())?,
@@ -1251,12 +1285,47 @@ pub fn write_session_file(
     Ok(path)
 }
 
+/// Called under the account-operation lock, after the final profile is known. Rejected or
+/// cancelled sign-ins must not save a credential, add another identity, or change selection.
+fn accept_sign_in(
+    accounts: &mut Accounts,
+    store: &dyn SecretStore,
+    expected: Option<&Account>,
+    account: Account,
+    secrets: &Secrets,
+    cancelled: &dyn Fn() -> bool,
+    progress: &dyn Fn(session::Phase),
+) -> Result<(), String> {
+    if cancelled() {
+        return Err("Sign-in cancelled.".into());
+    }
+    if let Some(expected) = expected {
+        if expected.uuid != account.uuid {
+            return Err(format!(
+                "Signed in as {} instead of {}. Use the Microsoft account for {} and try again.",
+                account.name, expected.name, expected.name
+            ));
+        }
+        if accounts.find(&expected.uuid).is_none() {
+            return Err("That account was signed out while sign-in was in progress. Add it again to continue.".into());
+        }
+    }
+    let selected = accounts.selected.clone();
+    progress(session::Phase::Saving);
+    accounts.keep_sign_in(store, account, secrets)?;
+    if expected.is_some() {
+        accounts.selected = selected;
+    }
+    Ok(())
+}
+
 /// Where a background sign-in is (the window and the MCP server show it).
 #[derive(Clone, Debug, PartialEq)]
 pub enum SignInState {
     Starting,
     /// Waiting for the player at `verification_uri` with `user_code`.
     Code(DeviceCode),
+    Working(session::Phase),
     Done(Result<Account, String>),
 }
 
@@ -1268,6 +1337,15 @@ pub struct SignIn {
 
 impl SignIn {
     pub fn start() -> Self {
+        Self::start_expected(None)
+    }
+
+    /// Restore this exact Minecraft identity without changing who currently plays.
+    pub fn start_for(account: Account) -> Self {
+        Self::start_expected(Some(account))
+    }
+
+    fn start_expected(expected: Option<Account>) -> Self {
         use std::sync::atomic::Ordering;
         let state = std::sync::Arc::new(Mutex::new(SignInState::Starting));
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1282,9 +1360,22 @@ impl SignIn {
                 let ms = wait_for_sign_in(&ep, &client_id, &code, &|| {
                     thread_cancel.load(Ordering::Relaxed)
                 })?;
-                let (account, secrets) = finish_sign_in(&ep, ms)?;
+                let progress = |phase| set(SignInState::Working(phase));
+                let (account, secrets) = finish_sign_in_with_progress(&ep, ms, &progress)?;
+                progress(session::Phase::Queued);
+                let store = store();
+                let _operation = session::lock(store)?;
                 let mut accounts = Accounts::load();
-                accounts.add(store(), account.clone(), &secrets)?;
+                accept_sign_in(
+                    &mut accounts,
+                    store,
+                    expected.as_ref(),
+                    account.clone(),
+                    &secrets,
+                    &|| thread_cancel.load(Ordering::Relaxed),
+                    &progress,
+                )?;
+                progress(session::Phase::Saving);
                 accounts.save()?;
                 Ok(account)
             })();

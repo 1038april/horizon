@@ -4,6 +4,37 @@ use super::*;
 use std::fs::{File, OpenOptions};
 use std::sync::MutexGuard;
 
+/// Public progress only; no account credentials or provider response bodies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Phase {
+    Queued,
+    Keychain,
+    Microsoft,
+    Xbox,
+    Minecraft,
+    Ownership,
+    Profile,
+    Saving,
+    SigningOut,
+}
+
+impl Phase {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Queued => "Waiting for account access…",
+            Self::Keychain => "Reading keychain…",
+            Self::Microsoft => "Renewing Microsoft sign-in…",
+            Self::Xbox => "Signing in to Xbox Live…",
+            Self::Minecraft => "Getting Minecraft session…",
+            Self::Ownership => "Checking Minecraft ownership…",
+            Self::Profile => "Loading Minecraft profile…",
+            Self::Saving => "Saving sign-in…",
+            Self::SigningOut => "Signing out…",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum State {
@@ -120,8 +151,18 @@ fn read(store: &dyn SecretStore, uuid: &str) -> Result<Option<Secrets>, String> 
 /// Inspect local expiry and remembered failures without contacting authentication services.
 /// Call off the UI thread: unlocking the keychain can require user interaction.
 pub fn status(store: &dyn SecretStore, uuid: &str) -> Status {
+    status_with_progress(store, uuid, &|_| {})
+}
+
+pub fn status_with_progress(
+    store: &dyn SecretStore,
+    uuid: &str,
+    progress: &dyn Fn(Phase),
+) -> Status {
     let result = (|| {
+        progress(Phase::Queued);
         let _operation = lock(store)?;
+        progress(Phase::Keychain);
         Ok::<_, String>(Status::from_secrets(read(store, uuid)?.as_ref()))
     })();
     result.unwrap_or_else(|e| Status::failed(&e))
@@ -131,45 +172,67 @@ pub fn status(store: &dyn SecretStore, uuid: &str) -> Status {
 /// the public account list, or return a token. A future IPC handler can call this same API,
 /// then use write_session_file for an explicit game-session handoff.
 pub fn refresh(who: &str) -> Result<Status, String> {
+    refresh_with_progress(who, &|_| {})
+}
+
+pub fn refresh_with_progress(who: &str, progress: &dyn Fn(Phase)) -> Result<Status, String> {
     let account = Accounts::load()
         .find(who)
         .cloned()
         .ok_or("That account isn't signed in.")?;
-    Ok(refresh_with(
+    Ok(refresh_account(
         &Endpoints::live(),
         client_id().as_deref(),
         store(),
         &account,
+        progress,
     ))
 }
 
+#[cfg(test)]
 pub(super) fn refresh_with(
     ep: &Endpoints,
     client_id: Option<&str>,
     store: &dyn SecretStore,
     account: &Account,
 ) -> Status {
+    refresh_account(ep, client_id, store, account, &|_| {})
+}
+
+pub(super) fn refresh_account(
+    ep: &Endpoints,
+    client_id: Option<&str>,
+    store: &dyn SecretStore,
+    account: &Account,
+    progress: &dyn Fn(Phase),
+) -> Status {
     let result = (|| {
+        progress(Phase::Queued);
         let _operation = lock(store)?;
+        progress(Phase::Keychain);
         let Some(secrets) = read(store, &account.uuid)? else {
             return Ok(Status::from_secrets(None));
         };
         let before =
             serde_json::to_string(&secrets).map_err(|_| "Could not read the saved sign-in.")?;
-        let (mut status, secrets) = match check_with(ep, client_id, account, secrets, true) {
-            Check::Owns(_, s) => (Status::from_secrets(Some(&s)), s),
-            Check::DoesNot(s) => (Status::from_secrets(Some(&s)), s),
-            Check::NoAnswer(e, s) => {
-                let mut status = Status::from_secrets(Some(&s));
-                if !s.sign_in_required {
-                    status.state = State::Retry;
+        let (mut status, secrets) =
+            match check_with(ep, client_id, account, secrets, true, progress) {
+                Check::Owns(_, s) => (Status::from_secrets(Some(&s)), s),
+                Check::DoesNot(s) => (Status::from_secrets(Some(&s)), s),
+                Check::NoAnswer(e, s) => {
+                    let mut status = Status::from_secrets(Some(&s));
+                    if !s.sign_in_required {
+                        status.state = State::Retry;
+                    }
+                    status.message = e;
+                    (status, s)
                 }
-                status.message = e;
-                (status, s)
-            }
-        };
+            };
         let after =
             serde_json::to_string(&secrets).map_err(|_| "Could not save the renewed sign-in.")?;
+        if before != after {
+            progress(Phase::Saving);
+        }
         if before != after && store.set(&account.uuid, &after).is_err() {
             status.state = State::Retry;
             status.message =

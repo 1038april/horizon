@@ -155,6 +155,25 @@ local launcher bridge, then obtain a new read-once session file. Renewing in the
 not update the token already held by a running game; in-game token replacement and that bridge
 are not implemented here.
 
+### Profile heads, progress, and targeted re-sign-in
+
+Microsoft accounts show their public Minecraft profile head in Settings, the selected-account
+chip, and the account switcher. Skins are fetched on workers and cached by their texture URL
+under `profile-heads/` in launcher data. Changing the skin invalidates that image; an unavailable
+image uses the UUID's default skin from installed resources, or a neutral placeholder when
+those resources are absent. The cache contains public images, never authentication tokens.
+
+Account operations report the actual stage: waiting for account access, reading the keychain,
+renewing the Microsoft sign-in, Xbox Live, getting a Minecraft session, checking ownership,
+loading the profile, and saving. A browser flow separately says it is waiting for the player.
+Progress is public metadata and does not expose credentials through the UI or MCP.
+
+**Sign in again** on an account row targets that exact Minecraft UUID. The browser instructions
+name the expected player. Signing in to a different account is rejected before storing its
+credentials or adding/selecting that identity. Retry keeps the same target; Cancel leaves the
+saved account alone. Successful re-sign-in restores that account without changing the player
+or offline name currently selected for Play. Adding a new account remains a separate action.
+
 ## Handing the session to the game
 
 Vanilla's launcher passes `--accessToken <token>` on the command line, where every user of the
