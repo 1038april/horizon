@@ -82,6 +82,7 @@ pub mod music;
 pub mod net;
 pub mod nether_portal;
 pub mod offline_name;
+pub mod old_world;
 pub mod osk;
 pub mod patrol;
 pub mod perf_overlay;

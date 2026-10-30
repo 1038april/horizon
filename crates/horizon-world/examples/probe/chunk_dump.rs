@@ -167,8 +167,7 @@ impl OldChunk for OldView<'_> {
     }
     fn is_surface_block(&self, x: i32, y: i32, z: i32) -> bool {
         matches!(
-            self.0
-                .block_name(self.1.x * 16 + x, y, self.1.z * 16 + z),
+            self.0.block_name(self.1.x * 16 + x, y, self.1.z * 16 + z),
             "minecraft:podzol"
                 | "minecraft:gravel"
                 | "minecraft:grass_block"
@@ -185,8 +184,7 @@ impl OldChunk for OldView<'_> {
     fn is_ground(&self, x: i32, y: i32, z: i32) -> bool {
         // A terrain chunk holds air, the two fluids and full solid blocks.
         !matches!(
-            self.0
-                .block_name(self.1.x * 16 + x, y, self.1.z * 16 + z),
+            self.0.block_name(self.1.x * 16 + x, y, self.1.z * 16 + z),
             "minecraft:air"
                 | "minecraft:cave_air"
                 | "minecraft:void_air"
@@ -205,8 +203,14 @@ impl OldWorld for OldChunks {
             .iter()
             .any(|&(x, z)| (x - center.x).abs() <= range && (z - center.z).abs() <= range)
     }
-    fn old_biomes(&self, x: i32, z: i32) -> Option<Arc<horizon_world::worldgen::biome_chunk::BiomeChunk<BiomeId>>> {
-        self.chunks.get(&(x, z)).map(|c| Arc::new(c.biomes().clone()))
+    fn old_biomes(
+        &self,
+        x: i32,
+        z: i32,
+    ) -> Option<Arc<horizon_world::worldgen::biome_chunk::BiomeChunk<BiomeId>>> {
+        self.chunks
+            .get(&(x, z))
+            .map(|c| Arc::new(c.biomes().clone()))
     }
     fn blending(&self, x: i32, z: i32) -> Option<std::sync::Arc<BlendingData>> {
         let chunk = self.chunks.get(&(x, z))?;
@@ -264,12 +268,15 @@ pub fn main() -> Result<(), Error> {
     for warning in data.warnings() {
         eprintln!("data pack worldgen: {warning}");
     }
-    let generator = OverworldGenerator::for_dimension(data.clone(), seed, "minecraft:normal", &dimension)?;
+    let generator =
+        OverworldGenerator::for_dimension(data.clone(), seed, "minecraft:normal", &dimension)?;
     let mut worker = generator.worker();
     let old_spec = std::env::var("HORIZON_OLD_CHUNKS").ok();
     let old_rect = match &old_spec {
         Some(spec) => {
-            let (_, rect) = spec.split_once(':').ok_or("HORIZON_OLD_CHUNKS=SEED:x0,z0,x1,z1")?;
+            let (_, rect) = spec
+                .split_once(':')
+                .ok_or("HORIZON_OLD_CHUNKS=SEED:x0,z0,x1,z1")?;
             let v: Vec<i32> = rect.split(',').map(str::parse).collect::<Result<_, _>>()?;
             Some(<[i32; 4]>::try_from(v).map_err(|_| "old rectangle")?)
         }
@@ -351,7 +358,7 @@ pub fn main() -> Result<(), Error> {
                 data: Default::default(),
             });
             generator.set_old_world(old.clone());
-            for (&key, _) in &old.chunks {
+            for &key in old.chunks.keys() {
                 // Each rectangle starts from scratch: the probe's own copy.
                 let again = old_worker.generate_proto(ChunkPos::new(key.0, key.1))?;
                 chunks.insert(key, again);

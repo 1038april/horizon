@@ -384,6 +384,15 @@ impl VanillaTerrain {
     ) -> Option<(String, [i32; 3])> {
         self.generator.worker().locate(names, from, radius)
     }
+    /// The chunks an older version saved, which new chunks blend with
+    /// (`Blender.of`).
+    pub fn set_old_world(&self, world: Arc<dyn horizon_world::worldgen::blending::OldWorld>) {
+        self.generator.set_old_world(world);
+    }
+    /// The generator's resources, for what reads saved chunks the way it does.
+    pub fn generator_data(&self) -> &Arc<GeneratorData> {
+        self.generator.data()
+    }
     /// `/locate biome`: `BiomeSource.findClosestBiome3d`.
     pub fn find_closest_biome(
         &self,

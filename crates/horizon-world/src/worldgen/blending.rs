@@ -5,7 +5,7 @@
 use super::biome::BiomeId;
 use horizon_core::{
     density::{DensityBlender, DensitySampler, SampleError, SamplerContext},
-    noise::{DensityVolume, NormalNoise, Noise},
+    noise::{DensityVolume, Noise, NormalNoise},
     position::ChunkPos,
     random::XoroshiroRandom,
 };
@@ -237,7 +237,8 @@ impl BlendingData {
         if self.heights[index] == NO_VALUE {
             self.heights[index] = self.height_at_xz(chunk, x, z) as f32;
         }
-        self.densities[index] = Some(self.density_column(chunk, x, z, floor_f32(self.heights[index])));
+        self.densities[index] =
+            Some(self.density_column(chunk, x, z, floor_f32(self.heights[index])));
         self.biomes[index] = Some(self.biome_column(chunk, x, z));
     }
 
@@ -264,7 +265,11 @@ impl BlendingData {
         let mut y = self.max_y() + 1;
         let read1 = |y: &mut i32| {
             *y -= 1;
-            if chunk.is_ground(x, *y, z) { 1.0f32 } else { -1.0f32 }
+            if chunk.is_ground(x, *y, z) {
+                1.0f32
+            } else {
+                -1.0f32
+            }
         };
         let read7 = |y: &mut i32| {
             let mut sum = 0.0f32;
@@ -432,6 +437,7 @@ fn shift_noise() -> &'static dyn Noise {
     })
 }
 
+#[allow(clippy::neg_cmp_op_on_partial_ord)] // vanilla's `!(a > b)`: a NaN passes
 impl Blender {
     /// `Blender.empty`.
     pub fn empty() -> Self {
@@ -606,8 +612,16 @@ impl Blender {
         cell_y: i32,
         cell_z: i32,
     ) -> f32 {
-        match self.height_and_biome.get(ChunkPos::new(chunk_x, chunk_z).pack()) {
-            Some((_, data)) => getter(data, cell_x - (chunk_x << 2), cell_y, cell_z - (chunk_z << 2)),
+        match self
+            .height_and_biome
+            .get(ChunkPos::new(chunk_x, chunk_z).pack())
+        {
+            Some((_, data)) => getter(
+                data,
+                cell_x - (chunk_x << 2),
+                cell_y,
+                cell_z - (chunk_z << 2),
+            ),
             None => NO_VALUE,
         }
     }
@@ -639,9 +653,15 @@ impl Blender {
     pub fn carving_filter(&self, x: i32, y: i32, z: i32) -> Option<bool> {
         let distance = self.carving.as_ref()?;
         let noise = shift_noise();
-        let sx = f64::from(x) + 0.5 + f64::from(noise.get3(f64::from(x), f64::from(y), f64::from(z)) * 4.0f32);
-        let sy = f64::from(y) + 0.5 + f64::from(noise.get3(f64::from(y), f64::from(z), f64::from(x)) * 4.0f32);
-        let sz = f64::from(z) + 0.5 + f64::from(noise.get3(f64::from(z), f64::from(x), f64::from(y)) * 4.0f32);
+        let sx = f64::from(x)
+            + 0.5
+            + f64::from(noise.get3(f64::from(x), f64::from(y), f64::from(z)) * 4.0f32);
+        let sy = f64::from(y)
+            + 0.5
+            + f64::from(noise.get3(f64::from(y), f64::from(z), f64::from(x)) * 4.0f32);
+        let sz = f64::from(z)
+            + 0.5
+            + f64::from(noise.get3(f64::from(z), f64::from(x), f64::from(y)) * 4.0f32);
         Some(distance.distance(sx, sy, sz) < 4.0)
     }
     pub fn has_carving_filter(&self) -> bool {
@@ -853,7 +873,11 @@ impl OutputBuffer {
     pub fn offset(&self, block_x: i32, block_z: i32) -> f32 {
         match self.index(block_x, block_z) {
             Some(i) => self.offsets[i],
-            None => self.blender.blend_offset_and_factor(block_x, block_z).offset,
+            None => {
+                self.blender
+                    .blend_offset_and_factor(block_x, block_z)
+                    .offset
+            }
         }
     }
 }
@@ -890,7 +914,12 @@ impl OldChunkDistance {
         let mut boxes = Vec::new();
         let mut add = |offset: (f64, f64), data: &BlendingData| {
             let radius_y = f64::from(data.height_blocks()) / 2.0;
-            boxes.push((offset.0, offset.1, f64::from(data.min_y()) + radius_y, radius_y));
+            boxes.push((
+                offset.0,
+                offset.1,
+                f64::from(data.min_y()) + radius_y,
+                radius_y,
+            ));
         };
         // `centerBlendingData` first, then the neighbours in `Direction8` order.
         if let Some(data) = world.blending(center.x, center.z) {
@@ -927,10 +956,16 @@ mod tests {
     fn the_column_indices_walk_the_border_of_the_chunk() {
         // `getX`/`getZ` undo `getInsideIndex`/`getOutsideIndex`.
         for x in 0..4 {
-            assert_eq!((index_x(inside_index(x, 0)), index_z(inside_index(x, 0))), (x, 0));
+            assert_eq!(
+                (index_x(inside_index(x, 0)), index_z(inside_index(x, 0))),
+                (x, 0)
+            );
         }
         for z in 0..4 {
-            assert_eq!((index_x(inside_index(0, z)), index_z(inside_index(0, z))), (0, z));
+            assert_eq!(
+                (index_x(inside_index(0, z)), index_z(inside_index(0, z))),
+                (0, z)
+            );
         }
         for i in 0..=4 {
             assert_eq!(
@@ -944,6 +979,22 @@ mod tests {
         }
         assert_eq!(CELL_COLUMN_COUNT, 16);
         assert_eq!(HEIGHT_BLENDING_RANGE_CHUNKS, 7);
+    }
+
+    #[test]
+    fn the_open_map_keeps_every_entry_as_it_grows() {
+        let mut map = OpenMap::default();
+        for i in 0..200i64 {
+            map.insert(
+                ChunkPos::new((i % 17) as i32 - 8, (i / 17) as i32 - 5).pack(),
+                i,
+            );
+        }
+        assert_eq!(map.iter().count(), 200);
+        assert_eq!(map.get(ChunkPos::new(0, 0).pack()), Some(&(8 + 5 * 17)));
+        let mut seen: Vec<i64> = map.iter().copied().collect();
+        seen.sort_unstable();
+        assert_eq!(seen, (0..200).collect::<Vec<_>>());
     }
 
     #[test]

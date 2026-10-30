@@ -201,6 +201,13 @@ pub struct GeneratorData {
     /// Placed-feature decoration by biome source (see `decoration_for`),
     /// most recent last.
     decorations: Mutex<Vec<(String, DecorationSlot)>>,
+    /// What `BlendingData` asks of the blocks of an old chunk, by state.
+    old_chunk_facts: OnceLock<OldChunkFacts>,
+}
+/// `BlendingData.isGround` and `SURFACE_BLOCKS`, by block state id.
+struct OldChunkFacts {
+    ground: Vec<bool>,
+    surface: Vec<bool>,
 }
 type RingCacheEntry = ((i64, String), Arc<OnceLock<super::structure::start::Rings>>);
 /// Generators whose ring positions are kept: the dimensions of a few worlds.
@@ -560,6 +567,7 @@ impl GeneratorData {
             feature_resources,
             ring_cache: Mutex::new(Vec::new()),
             decorations: Mutex::new(Vec::new()),
+            old_chunk_facts: OnceLock::new(),
             bound_block_tags: std::sync::OnceLock::new(),
         }))
     }
@@ -665,6 +673,83 @@ impl GeneratorData {
     }
     pub fn biome_names(&self) -> &[Arc<str>] {
         &self.biome_names
+    }
+    fn old_chunk_facts(&self) -> &OldChunkFacts {
+        self.old_chunk_facts.get_or_init(|| {
+            let members = |tag: &str| -> std::collections::HashSet<&str> {
+                self.block_tags
+                    .get(tag)
+                    .into_iter()
+                    .flatten()
+                    .map(String::as_str)
+                    .collect()
+            };
+            let (leaves, logs) = (members("minecraft:leaves"), members("minecraft:logs"));
+            let collision = self
+                .feature_resources
+                .as_ref()
+                .and_then(|resources| resources.blocks.as_ref())
+                .map(|blocks| &blocks.collision);
+            let surface_names = [
+                "minecraft:podzol",
+                "minecraft:gravel",
+                "minecraft:grass_block",
+                "minecraft:stone",
+                "minecraft:coarse_dirt",
+                "minecraft:sand",
+                "minecraft:red_sand",
+                "minecraft:mycelium",
+                "minecraft:snow_block",
+                "minecraft:terracotta",
+                "minecraft:dirt",
+            ];
+            let (mut ground, mut surface) = (Vec::new(), Vec::new());
+            for index in 0..self.registry.len() {
+                let id = BlockStateId(index as u32);
+                let name = self.registry.state(id).map_or("", |s| s.name.as_str());
+                surface.push(surface_names.contains(&name));
+                // An empty collision shape: air, the liquids (no entity stands
+                // on them), powder snow and the like; and leaves, logs and
+                // huge mushrooms, which `isGround` leaves out.
+                let excluded = self.states.get(id).air
+                    || leaves.contains(name)
+                    || logs.contains(name)
+                    || matches!(
+                        name,
+                        "minecraft:brown_mushroom_block"
+                            | "minecraft:red_mushroom_block"
+                            | "minecraft:water"
+                            | "minecraft:lava"
+                            | "minecraft:powder_snow"
+                    );
+                ground.push(
+                    !excluded
+                        && match collision {
+                            Some(registry) => registry
+                                .collision_block(id)
+                                .map_or(true, |block| !block.empty_shape),
+                            None => self.states.get(id).motion,
+                        },
+                );
+            }
+            OldChunkFacts { ground, surface }
+        })
+    }
+    /// `BlendingData.isGround` of a block state of an old chunk.
+    pub fn is_old_chunk_ground(&self, state: BlockStateId) -> bool {
+        self.old_chunk_facts()
+            .ground
+            .get(state.0 as usize)
+            .copied()
+            .unwrap_or(false)
+    }
+    /// Whether the block state is one of `BlendingData.SURFACE_BLOCKS`.
+    pub fn is_old_chunk_surface(&self, state: BlockStateId) -> bool {
+        self.old_chunk_facts()
+            .surface
+            .get(state.0 as usize)
+            .copied()
+            .unwrap_or(false)
     }
     pub fn biome_name(&self, id: BiomeId) -> &str {
         &self.biome_names[id.0 as usize]
@@ -1085,6 +1170,11 @@ where
     }
     /// `Blender.of(region)` for the chunk at `pos`.
     fn blender_at(&self, pos: ChunkPos) -> Arc<super::blending::Blender> {
+        // `SharedConstants.DEBUG_DISABLE_BLENDING`.
+        static DISABLED: OnceLock<bool> = OnceLock::new();
+        if *DISABLED.get_or_init(|| std::env::var_os("HORIZON_DISABLE_BLENDING").is_some()) {
+            return Arc::new(super::blending::Blender::empty());
+        }
         Arc::new(match self.old_world.get() {
             Some(world) => super::blending::Blender::of(world.as_ref(), pos),
             None => super::blending::Blender::empty(),

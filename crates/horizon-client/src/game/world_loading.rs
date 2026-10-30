@@ -401,6 +401,15 @@ pub(super) fn make_streaming(
         if dim == Dim::Overworld && structures {
             inner.search_rings_behind();
         }
+        // Chunks an older version saved: the new chunks around them blend in.
+        if dim == Dim::Overworld {
+            inner.set_old_world(Arc::new(horizon_client::old_world::SavedOldWorld::new(
+                save.clone(),
+                pack.assets.clone(),
+                res.biomes().clone(),
+                inner.generator_data().clone(),
+            )));
+        }
         locator = Some(inner.clone());
         Streaming::new(
             Arc::new(Persistent {
