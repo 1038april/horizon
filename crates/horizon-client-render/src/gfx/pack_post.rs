@@ -1563,7 +1563,7 @@ impl PackPost {
                 .filter(|_| i < 2)
                 .map_or(formats[i], |f| f[i])
         });
-        let (mut storage, mut copied, mut image_copied) = (0u16, 0u16, 0u64);
+        let (mut storage, mut copied, mut image_copied, mut snapshotted) = (0u16, 0u16, 0u64, 0u64);
         // An image this device can't make: the programs using it are skipped.
         let mut image_defs = std::mem::take(&mut post.images);
         let mut left_out = Vec::new();
@@ -1671,7 +1671,8 @@ impl PackPost {
                     used |= p.reads | p.written | p.flip;
                 }
                 storage |= image_buffers(&p.images);
-                image_copied |= p.image_copies | p.snapshots;
+                image_copied |= p.image_copies;
+                snapshotted |= p.snapshots;
                 copied |= p.copies;
             }
             Some(pass)
@@ -2115,6 +2116,7 @@ impl PackPost {
                 let mut images = images;
                 for (k, image) in images.iter_mut().enumerate() {
                     image.copied = image_copied & 1 << k != 0;
+                    image.snapshotted = snapshotted & 1 << k != 0;
                 }
                 images
             },
@@ -2363,7 +2365,7 @@ impl PackPost {
                     }
                     Image::Custom(k) => self.images[k].view.as_ref().unwrap_or(&self.dummy),
                     Image::ColorBefore(i) => targets.scratch[i].as_ref().unwrap_or(&self.dummy),
-                    Image::CustomBefore(k) => self.images[k].copy.as_ref().unwrap_or(&self.dummy),
+                    Image::CustomBefore(k) => self.images[k].before.as_ref().unwrap_or(&self.dummy),
                 };
                 entries.push(wgpu::BindGroupEntry {
                     binding,
@@ -2402,7 +2404,9 @@ impl PackPost {
             [n(0), n(1), 1]
         });
         let (pipeline, groups) = (pipeline.clone(), groups);
-        pack_images::copy(encoder, &self.images, pass.snapshots);
+        for image in (0..self.images.len()).filter(|k| pass.snapshots & 1 << k != 0) {
+            pack_images::snapshot(encoder, &self.images[image]);
+        }
         let group = self.bind(device, queue, encoder, pass, size);
         let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some(&pass.name),

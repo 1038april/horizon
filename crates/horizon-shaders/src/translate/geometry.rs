@@ -482,7 +482,7 @@ fn writes(name: &str) -> bool {
 }
 
 /// Calls that write images or buffers run for one invocation of a triangle only: as statements,
-/// `if (hz_primary) imageStore(...)`; in an expression the others read the value instead,
+/// `if (!hz_primary) {} else imageStore(...)`; in an expression the others read the value instead,
 /// `(hz_primary ? imageAtomicOr(i, p, v) : imageLoad(i, p).x)`, `(hz_primary ? atomicAdd(m, v) : m)`.
 fn once(text: &mut [String], tokens: &[&str]) {
     for (i, &t) in tokens.iter().enumerate() {
@@ -495,7 +495,8 @@ fn once(text: &mut [String], tokens: &[&str]) {
         }
         let prev = (0..i).rev().find(|&j| significant(tokens[j]));
         if prev.is_none_or(|j| matches!(tokens[j], ";" | "{" | "}" | ")" | "else")) {
-            text[i] = format!("if (hz_primary) {t}");
+            // A whole if/else, so that an `else` after the statement stays the pack's.
+            text[i] = format!("if (!hz_primary) {{}} else {t}");
             continue;
         }
         // The call's arguments, at its top-level commas.
@@ -630,5 +631,19 @@ mod tests {
         assert_eq!(triangles, 2);
         assert_eq!(program.vertex.entry_points.len(), 1);
         assert_eq!(program.fragment.entry_points.len(), 1);
+    }
+
+    #[test]
+    fn writes_run_once_and_keep_their_else() {
+        let code =
+            "if (c) imageStore(a, p, v); else imageStore(b, p, v);\nint n = atomicAdd(m, 1);\n";
+        let tokens = lex(code);
+        let mut text: Vec<String> = tokens.iter().map(|t| t.to_string()).collect();
+        once(&mut text, &tokens);
+        assert_eq!(
+            text.concat(),
+            "if (c) if (!hz_primary) {} else imageStore(a, p, v); else if (!hz_primary) {} else \
+             imageStore(b, p, v);\nint n = (hz_primary ? atomicAdd(m, 1) : (m));\n"
+        );
     }
 }

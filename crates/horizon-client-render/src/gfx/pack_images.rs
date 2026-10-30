@@ -14,6 +14,10 @@ pub(super) struct PackImage {
     /// Last frame's contents, for a pass that samples and stores the image (`copied`).
     pub(super) copy: Option<wgpu::TextureView>,
     pub(super) copied: bool,
+    /// The contents before a compute pass that reads them so (`snapshot`), apart from `copy`,
+    /// which a later pass may still sample.
+    pub(super) before: Option<wgpu::TextureView>,
+    pub(super) snapshotted: bool,
     /// The render size the image was made for (relative images follow it).
     made_for: [u32; 2],
 }
@@ -40,6 +44,8 @@ pub(super) fn images(defs: Vec<CustomImage>) -> Vec<PackImage> {
             view: None,
             copy: None,
             copied: false,
+            before: None,
+            snapshotted: false,
             made_for: [0; 2],
         })
         .collect()
@@ -153,6 +159,9 @@ pub(super) fn resize_images(
         image.copy = image
             .copied
             .then(|| make(wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::STORAGE_BINDING));
+        image.before = image
+            .snapshotted
+            .then(|| make(wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::STORAGE_BINDING));
         image.made_for = size;
     }
     made
@@ -160,6 +169,17 @@ pub(super) fn resize_images(
 
 /// The most images a pack may have.
 pub(super) const IMAGES: usize = 64;
+
+/// Copies `image` as it is before a compute pass whose loads read it so.
+pub(super) fn snapshot(encoder: &mut wgpu::CommandEncoder, image: &PackImage) {
+    if let (Some(view), Some(before)) = (&image.view, &image.before) {
+        encoder.copy_texture_to_texture(
+            view.texture().as_image_copy(),
+            before.texture().as_image_copy(),
+            view.texture().size(),
+        );
+    }
+}
 
 /// Copies the images of `mask` (bit n: image n), which a pass samples and stores, for that pass
 /// to sample.

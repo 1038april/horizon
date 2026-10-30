@@ -49,6 +49,7 @@ pub(super) fn snapshots(code: &str, images: &[(String, bool)]) -> Vec<String> {
             })
             .collect()
     };
+    let repeats = Repeats::of(&tokens);
     images
         .iter()
         .filter(|(_, coherent)| !coherent)
@@ -56,13 +57,144 @@ pub(super) fn snapshots(code: &str, images: &[(String, bool)]) -> Vec<String> {
             let loads = calls(name, &|t| t == "imageLoad");
             let stores = calls(name, &|t| t == "imageStore");
             let atomics = calls(name, &|t| t.starts_with("imageAtomic"));
+            // A load repeated after a store of the same invocation (a loop around both, or a
+            // function holding both run more than once) must see the store.
+            let shared = loads.iter().any(|&l| {
+                let around = repeats.around(l);
+                stores
+                    .iter()
+                    .any(|&s| repeats.around(s).iter().any(|r| around.contains(r)))
+            });
             !loads.is_empty()
                 && !stores.is_empty()
                 && atomics.is_empty()
+                && !shared
                 && loads.iter().max() < stores.iter().min()
         })
         .map(|(name, _)| name.clone())
         .collect()
+}
+
+/// What runs a token more than once: the loops around it, and for a token in a function, the
+/// loops around its calls, or the function itself when it is called more than once.
+struct Repeats {
+    /// Loop bodies as token ranges, with their ids.
+    loops: Vec<(std::ops::Range<usize>, usize)>,
+    /// Function bodies as token ranges, with what repeats each from its calls.
+    functions: Vec<(std::ops::Range<usize>, Vec<usize>)>,
+}
+
+impl Repeats {
+    fn of(tokens: &[&str]) -> Self {
+        let sig: Vec<usize> = (0..tokens.len())
+            .filter(|&i| significant(tokens[i]))
+            .collect();
+        let t = |k: usize| sig.get(k).map_or("", |&i| tokens[i]);
+        // `(` at sig index `k`: its `)`.
+        let close = |k: usize| {
+            let mut depth = 0;
+            (k..sig.len()).find(|&j| {
+                match t(j) {
+                    "(" => depth += 1,
+                    ")" => depth -= 1,
+                    _ => {}
+                }
+                depth == 0
+            })
+        };
+        // A statement starting at sig index `k`: its last sig index.
+        let statement = |k: usize| {
+            if t(k) == "{" {
+                Some(matching(&sig, tokens, k))
+            } else {
+                (k..sig.len()).find(|&j| t(j) == ";")
+            }
+        };
+        let mut loops = Vec::new();
+        for k in 0..sig.len() {
+            let body = match t(k) {
+                "for" | "while" if t(k + 1) == "(" => close(k + 1).map(|c| c + 1),
+                "do" => Some(k + 1),
+                _ => None,
+            };
+            if let Some((from, to)) = body.and_then(|b| Some((b, statement(b)?))) {
+                loops.push((sig[from]..sig[to] + 1, loops.len()));
+            }
+        }
+        let mut bodies = Vec::new();
+        let mut k = 0;
+        while k < sig.len() {
+            if t(k) == "{" && k > 1 && t(k - 1) == ")" {
+                let mut open = k - 1;
+                let mut depth = 0;
+                while open > 0 {
+                    match t(open) {
+                        ")" => depth += 1,
+                        "(" => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    open -= 1;
+                }
+                let end = matching(&sig, tokens, k);
+                if open > 0
+                    && is_ident(t(open - 1))
+                    && !matches!(t(open - 1), "if" | "for" | "while" | "switch")
+                {
+                    bodies.push((t(open - 1), sig[open - 1], sig[k]..sig[end] + 1));
+                    k = end + 1;
+                    continue;
+                }
+            }
+            k += 1;
+        }
+        let mut next_id = loops.len();
+        let functions = bodies
+            .iter()
+            .map(|(name, defined, range)| {
+                let calls: Vec<usize> = (0..sig.len())
+                    .filter(|&j| t(j) == *name && t(j + 1) == "(" && sig[j] != *defined)
+                    .filter(|&j| !range.contains(&sig[j]))
+                    .map(|j| sig[j])
+                    .collect();
+                let mut repeats: Vec<usize> = calls
+                    .iter()
+                    .flat_map(|&c| {
+                        loops
+                            .iter()
+                            .filter(move |(r, _)| r.contains(&c))
+                            .map(|l| l.1)
+                    })
+                    .collect();
+                if calls.len() > 1 {
+                    repeats.push(next_id);
+                    next_id += 1;
+                }
+                (range.clone(), repeats)
+            })
+            .collect();
+        Self { loops, functions }
+    }
+
+    /// What repeats token `i`.
+    fn around(&self, i: usize) -> Vec<usize> {
+        let mut out: Vec<usize> = self
+            .loops
+            .iter()
+            .filter(|(r, _)| r.contains(&i))
+            .map(|l| l.1)
+            .collect();
+        for (r, repeats) in &self.functions {
+            if r.contains(&i) {
+                out.extend(repeats);
+            }
+        }
+        out
+    }
 }
 
 /// `code` with the loads of `images` reading their copies.
@@ -176,7 +308,7 @@ pub(super) fn barriers_after_atomics(code: &str) -> Option<String> {
                     start = k + 1;
                 }
             }
-            ";" if braces == 0 && parens == 0 => {
+            ";" if braces == 0 && parens == 0 && t(k + 1) != "else" => {
                 statements.push((start, k));
                 start = k + 1;
             }
@@ -256,6 +388,23 @@ mod tests {
     }
 
     #[test]
+    fn loads_repeated_after_stores_stay() {
+        let images = [("v".to_owned(), false)];
+        let looped = "void hz_main() { for (int i = 0; i < 4; i++) { vec4 a = imageLoad(v, p); \
+                      imageStore(v, p, a + 1.0); } }";
+        assert!(snapshots(looped, &images).is_empty());
+        let unbraced = "void hz_main() { while (k < 4) step(k++); }\n\
+                        void step(int k) { vec4 a = imageLoad(v, p); imageStore(v, p, a); }";
+        assert!(snapshots(unbraced, &images).is_empty());
+        let twice = "void step() { vec4 a = imageLoad(v, p); imageStore(v, p, a); }\n\
+                     void hz_main() { step(); step(); }";
+        assert!(snapshots(twice, &images).is_empty());
+        let once = "void step() { vec4 a = imageLoad(v, p + o); imageStore(v, p, a); }\n\
+                    void hz_main() { for (int i = 0; i < 2; i++) { o += i; } step(); }";
+        assert_eq!(snapshots(once, &images), ["v"]);
+    }
+
+    #[test]
     fn coherent_and_atomic_images_stay() {
         let code = "void hz_main() { int a = imageLoad(v, c).r; imageStore(v, c, ivec4(a)); \
                     int b = imageLoad(o, c).r; imageStore(o, c, ivec4(b)); imageAtomicAdd(o, c, 1); }";
@@ -278,6 +427,14 @@ mod tests {
         assert_eq!(out.lines().count(), code.lines().count());
         assert!(out.contains("atomicMax(counts[k], 1); } barrier();"));
         assert!(!out.contains("add(x); barrier();"));
+    }
+
+    #[test]
+    fn a_barrier_does_not_split_if_from_else() {
+        let code = "shared int total;\nvoid hz_main() {\n if (x) atomicAdd(total, 1); else y = 1;\n int z = total;\n}";
+        let out = barriers_after_atomics(code).unwrap();
+        assert!(out.contains("else y = 1; barrier();"), "{out}");
+        assert!(!out.contains("1); barrier(); else"), "{out}");
     }
 
     #[test]
