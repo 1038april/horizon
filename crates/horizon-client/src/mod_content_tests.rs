@@ -1462,4 +1462,125 @@ fn shapes_reject_unknown_or_missing_template_values() {
         assert!(e.contains("shapetest:rod"), "{e}");
     }
     fs::remove_dir_all(scratch).unwrap();
+
+/// A connecting block (template `minecraft:chorus_plant`, `connects_to` a
+/// tag) joins itself and its tag's blocks on each side, needs no support, and
+/// leaves vanilla's chorus plant as it was.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn connecting_blocks_join_themselves_and_their_tag() {
+    use horizon_core::position::BlockPos;
+    use horizon_core::random::LegacyRandom;
+    use horizon_world::level::{Behaviours, LevelAccess, Ticks};
+    use std::collections::HashMap;
+
+    let Some(_) = prepared() else {
+        return;
+    };
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-pipe-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let dir = scratch.join("cable");
+    for (name, text) in [
+        (
+            "horizon-mod.toml",
+            "id = \"cable\"\nname = \"Cable\"\nversion = \"0.1.0\"\napi = \"0.2\"\nside = \"both\"\ncapabilities = [\"registries\"]\n",
+        ),
+        (
+            "data/cable/horizon/block/tin_cable.json",
+            r##"{"template": "minecraft:chorus_plant", "connects_to": "#cable:joins"}"##,
+        ),
+        (
+            "data/cable/horizon/block/machine.json",
+            r#"{"template": "minecraft:iron_block"}"#,
+        ),
+        (
+            "data/cable/tags/block/joins.json",
+            r#"{"values": ["cable:machine"]}"#,
+        ),
+    ] {
+        let path = dir.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+    let package = horizon_mods::Package::read(&dir).unwrap();
+    let m = ContentMod {
+        id: "cable".into(),
+        content: Content::read(&dir, &package.manifest).unwrap(),
+    };
+    let relative = Path::new("../../.local/horizon-client/26.3");
+    let root = resource_root(relative, std::slice::from_ref(&m), &scratch.join("cache")).unwrap();
+    let assets = Assets::load(&root).unwrap();
+    let registry = assets.registry;
+    let b = Behaviours::load(registry, &root).unwrap();
+
+    struct Level {
+        blocks: HashMap<BlockPos, BlockStateId>,
+        air: BlockStateId,
+        random: LegacyRandom,
+    }
+    impl LevelAccess for Level {
+        fn block_state(&self, pos: BlockPos) -> BlockStateId {
+            self.blocks.get(&pos).copied().unwrap_or(self.air)
+        }
+        fn set_raw(&mut self, pos: BlockPos, state: BlockStateId) -> Option<BlockStateId> {
+            Some(self.blocks.insert(pos, state).unwrap_or(self.air))
+        }
+        fn is_loaded(&self, _pos: BlockPos) -> bool {
+            true
+        }
+        fn random(&mut self) -> &mut LegacyRandom {
+            &mut self.random
+        }
+        fn game_time(&self) -> i64 {
+            0
+        }
+    }
+    let air = registry.default_state("minecraft:air").unwrap();
+    let mut level = Level {
+        blocks: HashMap::new(),
+        air,
+        random: LegacyRandom::new(1),
+    };
+    let mut ticks = Ticks::new(0);
+    ticks
+        .add_empty_chunk(horizon_core::position::ChunkPos::new(0, 0))
+        .unwrap();
+    let sides = |state: BlockStateId| {
+        let s = registry.state(state).unwrap();
+        ["down", "up", "north", "south", "west", "east"]
+            .into_iter()
+            .filter(|k| s.properties.get(*k).map(String::as_str) == Some("true"))
+            .collect::<Vec<_>>()
+    };
+    let at = |x, y, z| BlockPos::new(x, y, z);
+    let machine = registry.default_state("cable:machine").unwrap();
+    let cable = registry.default_state("cable:tin_cable").unwrap();
+    // A cable beside a machine (in its tag) and a stone joins the machine only,
+    // and floats: no chorus plant support.
+    b.set_block(&mut level, &mut ticks, at(1, 64, 0), machine, 3);
+    b.set_block(
+        &mut level,
+        &mut ticks,
+        at(-1, 64, 0),
+        registry.default_state("minecraft:stone").unwrap(),
+        3,
+    );
+    let placed = b.update_from_neighbour_shapes(&mut level, &mut ticks, at(0, 64, 0), cable);
+    b.set_block(&mut level, &mut ticks, at(0, 64, 0), placed, 3);
+    assert_eq!(sides(level.block_state(at(0, 64, 0))), ["east"]);
+    assert!(b.can_survive(&mut level, &mut ticks, at(0, 64, 0), placed));
+    // A second cable above: both join, through the neighbour's shape update.
+    let above = b.update_from_neighbour_shapes(&mut level, &mut ticks, at(0, 65, 0), cable);
+    b.set_block(&mut level, &mut ticks, at(0, 65, 0), above, 3);
+    assert_eq!(sides(level.block_state(at(0, 65, 0))), ["down"]);
+    assert_eq!(sides(level.block_state(at(0, 64, 0))), ["up", "east"]);
+    // The machine gone: the arm goes too.
+    b.set_block(&mut level, &mut ticks, at(1, 64, 0), air, 3);
+    assert_eq!(sides(level.block_state(at(0, 64, 0))), ["up"]);
+    // Vanilla's chorus plant keeps its own rules: it doesn't join the machine.
+    b.set_block(&mut level, &mut ticks, at(5, 64, 0), machine, 3);
+    let chorus = registry.default_state("minecraft:chorus_plant").unwrap();
+    let chorus = b.update_from_neighbour_shapes(&mut level, &mut ticks, at(4, 64, 0), chorus);
+    assert!(sides(chorus).is_empty());
+    fs::remove_dir_all(&scratch).unwrap();
 }

@@ -817,6 +817,18 @@ impl<'a> Plan<'a> {
                         if !b.decl.item {
                             v.set("item", J::Str("minecraft:air".into()));
                         }
+                        // A connecting block: the chorus plant's PipeBlock
+                        // without its rules, joining the declared tag.
+                        if let Some(tag) = &b.decl.connects_to {
+                            let classes = ["PipeBlock", "Block"].map(|c| J::Str(c.into()));
+                            v.set("class", J::Arr(classes.into()));
+                            let mut fields = v
+                                .get("fields")
+                                .cloned()
+                                .unwrap_or(J::Obj(Default::default()));
+                            fields.set("connectsTo", J::Str(tag.clone()));
+                            v.set("fields", fields);
+                        }
                         blocks.push(v);
                     }
                 }
