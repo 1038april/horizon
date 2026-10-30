@@ -1463,3 +1463,84 @@ fn shapes_reject_unknown_or_missing_template_values() {
     }
     fs::remove_dir_all(scratch).unwrap();
 }
+
+/// A mod's creative tab comes after vanilla's, on page 1 in the first top
+/// slot, with only the items the game has; its new items join the search tab
+/// under their English names.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn creative_tabs_come_on_their_own_page() {
+    let Some(_) = prepared() else {
+        return;
+    };
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-tabs-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let dir = scratch.join("gems");
+    for (name, text) in [
+        (
+            "horizon-mod.toml",
+            "id = \"gems\"\nname = \"Gems\"\nversion = \"0.1.0\"\napi = \"0.2\"\nside = \"both\"\ncapabilities = [\"registries\"]\n",
+        ),
+        (
+            "data/gems/horizon/item/ruby.json",
+            r#"{"template": "minecraft:diamond"}"#,
+        ),
+        (
+            "data/gems/horizon/creative_tab/gems.json",
+            r#"{"title": "Gems", "icon": "gems:ruby", "items": ["gems:ruby", "minecraft:diamond", "gems:missing"]}"#,
+        ),
+        (
+            "assets/gems/lang/en_us.json",
+            r#"{"item.gems.ruby": "Ruby"}"#,
+        ),
+    ] {
+        let path = dir.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+    let package = horizon_mods::Package::read(&dir).unwrap();
+    let m = ContentMod {
+        id: "gems".into(),
+        content: Content::read(&dir, &package.manifest).unwrap(),
+    };
+    let relative = Path::new("../../.local/horizon-client/26.3");
+    let root = resource_root(relative, std::slice::from_ref(&m), &scratch.join("cache")).unwrap();
+    let mut creative = crate::creative::Creative::load(&root).unwrap();
+    assert_eq!(creative.pages(), 2);
+    let i = creative
+        .tabs
+        .iter()
+        .position(|t| t.id == "gems:gems")
+        .unwrap();
+    let tab = &creative.tabs[i];
+    assert_eq!(
+        (tab.page, tab.top, tab.column, tab.title.as_str()),
+        (1, true, 0, "Gems")
+    );
+    let items: Vec<&str> = tab.items.iter().map(|s| &*s.item).collect();
+    assert_eq!(items, ["gems:ruby", "minecraft:diamond"]);
+    assert!(
+        creative
+            .search_items()
+            .iter()
+            .any(|s| &*s.item == "gems:ruby")
+    );
+    // Page 1 shows the mod's tab and the right-hand ones, not vanilla's.
+    creative.set_page(1);
+    assert_eq!(creative.selected, i);
+    let shown: Vec<&str> = creative
+        .tabs
+        .iter()
+        .filter(|t| creative.on_page(t))
+        .map(|t| t.id.as_str())
+        .collect();
+    assert!(
+        shown.contains(&"gems:gems") && shown.contains(&"minecraft:search"),
+        "{shown:?}"
+    );
+    assert!(!shown.contains(&"minecraft:building_blocks"), "{shown:?}");
+    // Selecting a vanilla tab goes back to its page.
+    creative.select(0);
+    assert_eq!(creative.page, 0);
+    fs::remove_dir_all(&scratch).unwrap();
+}
