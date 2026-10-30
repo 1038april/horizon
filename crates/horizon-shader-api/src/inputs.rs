@@ -193,6 +193,11 @@ pub const MATERIAL_INPUT: Struct = Struct {
         uv: "vec2<f32>" = "The texture coordinate inside the block atlas.",
         translucent: "bool" = "Drawn in the translucent pass (water, stained glass, ice).",
         screen: "vec2<f32>" = "Where the point is on the screen, 0..1 from the top left (`opaque_depth` and `opaque_color` at `screen * frame.resolution`).",
+        face: "u32" = "For a fluid, which face of the block the point is on, `Direction` order: 0 down, 1 up, 2 north, 3 south, 4 west, 5 east. 0 elsewhere.",
+        fluid: "u32" = "0 not a fluid, 1 water, 2 lava.",
+        emission: "f32" = "How strongly the block itself shines, 0..1, by its kind of light: a redstone torch or a candle 7/15, a torch or lava 14/15, glowstone 1; 0 for most blocks.",
+        normal: "vec3<f32>" = "The surface's geometric normal, a unit vector in world axes, facing the camera (block faces are flat, so it is exact per face).",
+        tangent: "vec4<f32>" = "The surface's tangent: xyz the unit direction in world axes along which `uv.x` grows, w the sign (1 or -1) that makes `cross(normal, tangent.xyz) * tangent.w` the direction `uv.y` grows along (down the texture). With `normal` it turns a normal map's normals into world axes.",
     },
 };
 

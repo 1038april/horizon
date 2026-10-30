@@ -108,6 +108,40 @@ fn view_position(uv: vec2<f32>, depth: f32) -> vec3<f32> {
 }
 ";
 
+/// What the material entries (the checker's below and the renderer's) share: the
+/// surface's normal and tangent from the derivatives of its position and uv.
+const MATERIAL_HELPERS: &str = "\
+// Block faces are flat: the derivatives of the position give the face's normal, turned
+// toward the camera. Far away they lose precision, so a normal within a few degrees of an
+// axis (every full block face) is that axis exactly: no shimmer on distant faces.
+fn horizon_material_normal(position: vec3<f32>) -> vec3<f32> {
+    let n = normalize(cross(dpdx(position), dpdy(position)));
+    let a = abs(n);
+    let m = max(a.x, max(a.y, a.z));
+    let axis = select(select(vec3(0.0, 0.0, sign(n.z)), vec3(0.0, sign(n.y), 0.0), a.y == m),
+        vec3(sign(n.x), 0.0, 0.0), a.x == m);
+    let flat_n = select(n, axis, m > 0.99);
+    return select(flat_n, -flat_n, dot(flat_n, position) > 0.0);
+}
+// The direction `uv.x` grows along on the surface, and the sign of the one `uv.y` grows
+// along against `cross(normal, tangent)`.
+fn horizon_material_tangent(position: vec3<f32>, uv: vec2<f32>, normal: vec3<f32>) -> vec4<f32> {
+    let dp1 = dpdx(position);
+    let dp2 = dpdy(position);
+    let duv1 = dpdx(uv);
+    let duv2 = dpdy(uv);
+    let dp2perp = cross(dp2, normal);
+    let dp1perp = cross(normal, dp1);
+    let t = dp2perp * duv1.x + dp1perp * duv2.x;
+    let b = dp2perp * duv1.y + dp1perp * duv2.y;
+    if length(t) < 1e-12 {
+        return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+    }
+    let tangent = normalize(t - normal * dot(normal, t));
+    return vec4<f32>(tangent, select(-1.0, 1.0, dot(cross(normal, tangent), b) >= 0.0));
+}
+";
+
 /// The post stage's entry points, as the renderer builds them: a full-screen
 /// triangle, and a fragment that calls the pack's `post` for each pixel.
 const POST_ENTRIES: &str = "\
@@ -140,10 +174,16 @@ struct HorizonMaterialIn {
     @location(4) world: vec3<f32>,
     @location(5) uv: vec2<f32>,
     @location(6) @interpolate(flat) translucent: u32,
+    @location(7) @interpolate(flat) face: u32,
+    @location(8) @interpolate(flat) fluid_quad: u32,
+    @location(9) @interpolate(flat) emission: f32,
 }
 @fragment fn horizon_fs_material(in: HorizonMaterialIn) -> @location(0) vec4<f32> {
+    let fluid = select(0u, select(2u, 1u, in.translucent != 0u), in.fluid_quad != 0u);
+    let normal = horizon_material_normal(in.world);
+    let tangent = horizon_material_tangent(in.world, in.uv, normal);
     let input = MaterialInput(in.albedo, in.tint, in.light, in.lightmap, in.world, in.uv, in.translucent != 0u,
-        in.position.xy / frame.resolution);
+        in.position.xy / frame.resolution, in.face, fluid, in.emission, normal, tangent);
     return material(input).color;
 }
 ";
@@ -224,8 +264,10 @@ impl StageKind {
         for r in self.resources() {
             out += &format!("@group({GROUP}) @binding({}) {};\n", r.binding, r.ty);
         }
-        if self == StageKind::Post {
-            out += POST_HELPERS;
+        match self {
+            StageKind::Post => out += POST_HELPERS,
+            StageKind::Material => out += MATERIAL_HELPERS,
+            StageKind::Sky => {}
         }
         out
     }

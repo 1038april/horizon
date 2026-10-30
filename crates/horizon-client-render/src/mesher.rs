@@ -143,6 +143,14 @@ mod vertex_tests {
         assert_eq!(hdr_tier("ochre_froglight", 15), INCANDESCENT);
         assert_eq!(hdr_tier("sculk_sensor", 1), LOW);
     }
+    #[test]
+    fn fluid_faces_keep_the_colour_and_the_emission() {
+        let lit = super::emitting(super::pack_rgb([0x12, 0x34, 0x56]), super::INCANDESCENT);
+        assert_eq!(super::fluid_face(lit, 0), 0x8D56_3412);
+        assert_eq!(super::fluid_face(lit, 5), 0xDD56_3412);
+        // Another face replaces the first.
+        assert_eq!(super::fluid_face(super::fluid_face(lit, 5), 1), 0x9D56_3412);
+    }
 }
 pub struct SectionMesh {
     pub solid: Vec<TerrainVertex>,
@@ -675,7 +683,8 @@ impl Padded {
 pub const OPAQUE_LAYER: u16 = 1 << 15;
 /// The bits of `TerrainVertex::color`'s alpha byte that hold how brightly its face shines
 /// in HDR output (`gfx/hdr.rs`): 15 minus the tier, so the usual 0xFF means none. The
-/// byte's other four bits stay set.
+/// byte's high nibble carries the fluid face flags (`fluid_face`); the shaders ignore the
+/// vertex alpha, so both travel to the material stage untouched.
 pub const EMISSION_BITS: u32 = 0x0F00_0000;
 /// HDR tiers, by the kind of light rather than its level: a candle's flame is as bright as
 /// a torch's, it only lights less around it. 0 stays as in SDR.
@@ -687,6 +696,17 @@ pub const VERY_BRIGHT: u8 = 4;
 /// `color` marked as shining at `tier` (0 to `VERY_BRIGHT`).
 pub fn emitting(color: u32, tier: u8) -> u32 {
     color & !EMISSION_BITS | u32::from(15 - tier.min(VERY_BRIGHT)) << 24
+}
+/// The high nibble of `TerrainVertex::color`'s alpha byte: 8 plus the face (`Direction`
+/// as usize) on a fluid quad, 0xF on every other. `terrain.wgsl` reads only the low nibble
+/// (the emission), so only the material stage of Horizon's own packs reads it
+/// (`gfx/native_material.rs`); whether the fluid is water or lava follows from the pass
+/// that draws it.
+pub const FLUID_FACE_BITS: u32 = 0xF000_0000;
+/// `color` marked as a fluid quad of face `face` (`Direction` as usize, 0 to 5).
+pub fn fluid_face(color: u32, face: usize) -> u32 {
+    debug_assert!(face < 6);
+    color & !FLUID_FACE_BITS | 0x8000_0000 | (face as u32) << 28
 }
 /// The HDR tier of block `name` (no namespace), which emits light `level`.
 pub fn hdr_tier(name: &str, level: u8) -> u8 {
