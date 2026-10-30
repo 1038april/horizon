@@ -16,7 +16,8 @@ const HELP: &str = "\
 horizon-prepare: prepare Horizon's resources from your own Minecraft Java Edition
 
 Usage: horizon-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [--root PATH] [--output PATH]
-                       [--complete] [--progress json]
+                       [--version-json PATH] [--client-jar PATH] [--libraries-dir PATH] [--assets-dir PATH]
+                       [--java-home PATH] [--complete] [--progress json]
        horizon-prepare --check [--root PATH] [--output PATH]
        horizon-prepare compile-exporters [--root PATH]
        horizon-prepare sounds [--minecraft-dir PATH] [--root PATH] [--output PATH]
@@ -34,13 +35,19 @@ Usage: horizon-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [-
   --client-jar PATH     The pinned client jar, where --minecraft-dir has none
   --libraries-dir PATH  The folder of the client's libraries (Maven layout)
   --assets-dir PATH     The asset store, with indexes/ and objects/
-                        (each of these four replaces what --minecraft-dir would give)
+                        (each of these four replaces what --minecraft-dir would give; an earlier
+                        import beside --root that is still verified is reused instead)
+  --java-home PATH      A Java runtime of the pinned version that your launcher manages, tried
+                        after JAVA_HOME and the PATH, before the official launcher's runtimes
   --root PATH           The Horizon folder to prepare (default: the folder this program is
                         in, else the nearest folder above the current one with research-lock.json)
   --output PATH         Where the resources go (default: <root>/.local/horizon-client/<version>);
                         the exporters' scratch files stay in <root>/.local
   --check               Exit 0 when the resources are complete and current for this preparer,
-                        else 1, printing what each gap needs; runs no Java and reads no game files
+                        else 1: each gap on stdout with what it needs, or an error: line on
+                        stderr when it can't check. Runs no Java and reads no game files; it tests
+                        which files are there and their versions, not their contents (on doubt,
+                        prepare again)
   --complete            Also copy the sounds, then fail unless --check would pass: one command
                         for resources the game plays with nothing missing
   --progress json       One JSON object a line on stdout: {\"message\": ...} for each log line,
@@ -135,6 +142,7 @@ fn main() -> ExitCode {
                 value("--libraries-dir").map(|v| options.inputs.libraries_dir = Some(v))
             }
             "--assets-dir" => value("--assets-dir").map(|v| options.inputs.assets_dir = Some(v)),
+            "--java-home" => value("--java-home").map(|v| options.java_home = Some(v)),
             "--root" => value("--root").map(|v| root = Some(v)),
             "--output" => value("--output").map(|v| options.output = Some(v)),
             "--check" if inline.is_none() => {
@@ -195,7 +203,7 @@ fn main() -> ExitCode {
     let scale = if complete { 0.9 } else { 1.0 };
     let progress = |fraction: f32| {
         if json {
-            print(&format!("{{\"fraction\": {:.3}}}", fraction * scale));
+            print(&fraction_line(fraction * scale));
         }
     };
     let result = match assets.as_deref().and_then(|a| a.to_str()) {
@@ -222,7 +230,7 @@ fn main() -> ExitCode {
         Ok(_) => {
             // A plain preparation reported its 1 already.
             if json && (complete || assets.is_some()) {
-                print("{\"fraction\": 1.000}");
+                print(&fraction_line(1.0));
             }
             ExitCode::SUCCESS
         }
@@ -263,12 +271,17 @@ fn complete_resources(
     ))
 }
 
-/// `{"key": "text"}` on one line.
+/// `{"key": "text"}` on one line: `--progress json`'s `message` and `error` (docs/api/launch.md).
 fn json_line(key: &str, text: &str) -> String {
     let mut out = format!("{{\"{key}\": ");
     horizon_prepare::pyjson::write_string(&mut out, text);
     out.push('}');
     out
+}
+
+/// `--progress json`'s `{"fraction": F}`, F from 0 to 1 with three decimals.
+fn fraction_line(fraction: f32) -> String {
+    format!("{{\"fraction\": {:.3}}}", fraction.clamp(0.0, 1.0))
 }
 
 /// `--check`: each gap on its own line on stdout, exit 1 when there is one.
@@ -287,6 +300,30 @@ fn check_resources(options: &horizon_prepare::Options) -> ExitCode {
         Err(e) => {
             eprintln!("error: {e}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `--progress json`'s three lines as docs/api/launch.md promises them: a launcher parses
+    /// them, so a refactor must not change them silently.
+    #[test]
+    fn progress_json_lines_keep_their_shape() {
+        assert_eq!(
+            json_line("message", "Copying \"sounds\"\nnext"),
+            r#"{"message": "Copying \"sounds\"\nnext"}"#
+        );
+        assert_eq!(
+            json_line("error", "no Java 25"),
+            r#"{"error": "no Java 25"}"#
+        );
+        assert_eq!(fraction_line(0.05), r#"{"fraction": 0.050}"#);
+        assert_eq!(fraction_line(1.0), r#"{"fraction": 1.000}"#);
+        for line in [json_line("message", "tab\there, é"), fraction_line(0.9)] {
+            assert!(horizon_prepare::pyjson::loads(&line).is_ok(), "{line}");
         }
     }
 }

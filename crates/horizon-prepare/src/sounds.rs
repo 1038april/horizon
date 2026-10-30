@@ -234,7 +234,9 @@ pub fn add_assets(
         .iter()
         .find(|(name, ..)| *name == kind)
         .ok_or_else(|| format!("no assets called {kind}"))?;
-    Assets::load(root, output, minecraft, inputs, log)?.copy(*wanted, label, required, log)
+    let mut assets = Assets::load(root, output, minecraft, inputs, log)?;
+    let _lock = crate::hold_lock(&assets.target, log)?;
+    assets.copy(*wanted, label, required, log)
 }
 
 /// A preparation's index and verified destinations. Never persisted: a later invocation
@@ -572,6 +574,48 @@ mod tests {
         // Each entry point copies its own set: the sounds stay where they belong.
         assert!(!target.join("assets/minecraft/sounds.json").exists());
         assert_eq!(*lines.borrow(), ["Language assets ready: 2 files, 0.0 MB"]);
+    }
+
+    /// `--assets-dir` (and `--version-json`) alone name the store: nothing comes from the
+    /// Minecraft folder, which is empty.
+    #[test]
+    fn named_asset_store_serves_the_asset_commands() {
+        let f = Fixture::with_extras(
+            "assets-dir",
+            &[],
+            &[("pack.mcmeta", b"{\"language\": {\"fr_fr\": {}}}")],
+        );
+        let store = f.dir.join("asset store");
+        fs::rename(f.minecraft.join("assets"), &store).unwrap();
+        let version_json = f.dir.join("meta/9.9.json");
+        fs::create_dir_all(version_json.parent().unwrap()).unwrap();
+        fs::rename(f.minecraft.join("versions/9.9/9.9.json"), &version_json).unwrap();
+        let empty = f.dir.join("no minecraft");
+        fs::create_dir_all(&empty).unwrap();
+        // Without --assets-dir the empty folder has no store.
+        let only_json = crate::artifacts::Inputs {
+            version_json: Some(version_json.clone()),
+            ..Default::default()
+        };
+        assert!(add_assets(
+            "languages",
+            &f.root,
+            None,
+            Some(&empty),
+            &only_json,
+            &|_| {}
+        )
+        .is_err());
+        let inputs = crate::artifacts::Inputs {
+            version_json: Some(version_json),
+            assets_dir: Some(store),
+            ..Default::default()
+        };
+        let target =
+            add_assets("languages", &f.root, None, Some(&empty), &inputs, &|_| {}).unwrap();
+        assert!(fs::read(target.join("assets/pack.mcmeta"))
+            .unwrap()
+            .starts_with(b"{\"language\""));
     }
 
     /// #1076: the launcher holds an index Mojang republished under the same id, so its SHA-1

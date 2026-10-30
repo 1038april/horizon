@@ -679,7 +679,6 @@ pub fn import(
     log: Log,
 ) -> Result<(), String> {
     let files = game_files(minecraft, &lock.version).with(inputs);
-    let minecraft = &files.folder;
     let manifest = import_manifest(lock, &files)?;
     let client = import_copy(
         &files.client,
@@ -701,9 +700,10 @@ pub fn import(
         .get("id")
         .and_then(Value::as_str)
         .ok_or("The version JSON has no id")?;
+    // The jar read, which --client-jar may have named outside the Minecraft folder.
     log(&format!(
         "Imported client {id} from {}",
-        minecraft.display()
+        files.client.display()
     ));
     let server = import_server(lock, server_jar)?;
     let (server, server_libraries) = unpack_server(server, &lock.directory, id)?;
