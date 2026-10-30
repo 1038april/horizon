@@ -3085,6 +3085,9 @@ impl PackPost {
         if self.targets.is_none() {
             return;
         }
+        // Images the shadow and shadowcomp programs write start the frame cleared, as every
+        // other program sees them.
+        pack_images::clear(encoder, &self.images);
         self.run_shadow(device, queue, encoder, terrain);
         let Some(targets) = &self.targets else { return };
         let main = |m: u16, i: usize| usize::from(m & 1 << i != 0);
@@ -3147,8 +3150,6 @@ impl PackPost {
                 ..Default::default()
             });
         }
-
-        pack_images::clear(encoder, &self.images);
 
         // The world into colortex0 and depthtex0, flipped to GL's rows, and the clears.
         if self.blit_group.as_ref().is_none_or(|g| g.0 != size) {

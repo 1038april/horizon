@@ -281,7 +281,7 @@ impl BufferObject {
             Self::Bytes(b) => b,
             Self::PerPixel { bytes, scale } => {
                 let [w, h] = [0, 1].map(|k| (render[k] as f32 * scale[k]) as u64);
-                bytes * w * h
+                bytes.saturating_mul(w).saturating_mul(h)
             }
         }
         .max(16)

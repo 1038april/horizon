@@ -154,13 +154,25 @@ impl Buffers {
         if self.group.is_some() && (!relative || self.made_for == size) {
             return;
         }
+        let limits = device.limits();
+        let largest = limits
+            .max_buffer_size
+            .min(limits.max_storage_buffer_binding_size)
+            & !3;
         self.buffers = self
             .objects
-            .values()
-            .map(|o| {
+            .iter()
+            .map(|(binding, o)| {
+                let wanted = o.size(size).next_multiple_of(4);
+                if wanted > largest {
+                    log::warn!(
+                        "shader pack: bufferObject.{binding} wants {wanted} bytes, this device \
+                         binds at most {largest}"
+                    );
+                }
                 device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("Shader pack buffer"),
-                    size: o.size(size).next_multiple_of(4),
+                    size: wanted.min(largest),
                     usage: wgpu::BufferUsages::STORAGE,
                     mapped_at_creation: false,
                 })
