@@ -15,7 +15,7 @@ use horizon_world::{
 };
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 /// A level's saved chunks that an older version generated.
@@ -25,7 +25,7 @@ pub struct SavedOldWorld {
     biomes: Arc<Biomes>,
     data: Arc<GeneratorData>,
     /// The old chunks of each region file (`SaveDir::old_chunk_bits`).
-    regions: Mutex<HashMap<(i32, i32), Arc<[u64; 16]>>>,
+    regions: Mutex<HashMap<(i32, i32), Arc<OnceLock<[u64; 16]>>>>,
     /// Each old chunk's blending data, its border columns calculated.
     blending: Mutex<HashMap<(i32, i32), Option<Arc<BlendingData>>>>,
     kept_biomes: Mutex<HashMap<(i32, i32), Option<Arc<BiomeChunk<BiomeId>>>>>,
@@ -47,21 +47,22 @@ impl SavedOldWorld {
             kept_biomes: Default::default(),
         }
     }
-    fn region_bits(&self, rx: i32, rz: i32) -> Arc<[u64; 16]> {
-        if let Some(bits) = self.regions.lock().unwrap().get(&(rx, rz)) {
-            return bits.clone();
-        }
-        // Scanned outside the lock: a region's chunks take a while to read.
-        let bits = Arc::new(self.save.old_chunk_bits(rx, rz));
-        self.regions
+    /// One scan per region: the workers that ask while it runs wait for it
+    /// (outside the map's lock) instead of each decoding the region's chunks.
+    fn region_bits(&self, rx: i32, rz: i32) -> Arc<OnceLock<[u64; 16]>> {
+        let cell = self
+            .regions
             .lock()
             .unwrap()
             .entry((rx, rz))
-            .or_insert(bits)
-            .clone()
+            .or_default()
+            .clone();
+        cell.get_or_init(|| self.save.old_chunk_bits(rx, rz));
+        cell
     }
     fn is_old(&self, x: i32, z: i32) -> bool {
         let bits = self.region_bits(x >> 5, z >> 5);
+        let bits = bits.get().expect("scanned");
         let index = ((x & 31) + (z & 31) * 32) as usize;
         bits[index / 64] & (1 << (index % 64)) != 0
     }
@@ -133,6 +134,7 @@ impl OldWorld for SavedOldWorld {
         for rx in (center.x - range) >> 5..=(center.x + range) >> 5 {
             for rz in (center.z - range) >> 5..=(center.z + range) >> 5 {
                 let bits = self.region_bits(rx, rz);
+                let bits = bits.get().expect("scanned");
                 if bits.iter().all(|word| *word == 0) {
                     continue;
                 }
