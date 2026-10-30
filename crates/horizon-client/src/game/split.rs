@@ -551,7 +551,7 @@ impl ApplicationHandler for Split<'_> {
             }
             // Alone, the controllers watched for someone joining; P1's own drives P1, its
             // output (rumble, triggers) through the split's reader for P1's turn.
-            let pad_joins = self.route_pads();
+            let pad_joins = self.route_pads(true);
             self.turn(0);
             if let Some(id) = self.p1_pad {
                 self.pads.lend_output(&mut self.host.pad, id);
@@ -565,7 +565,7 @@ impl ApplicationHandler for Split<'_> {
             }
             return;
         }
-        let pad_joins = self.route_pads();
+        let pad_joins = self.route_pads(false);
         self.turn(0);
         self.host.about_to_wait(event_loop);
         let changed = self.drop_out() | self.admit(event_loop, pad_joins);
