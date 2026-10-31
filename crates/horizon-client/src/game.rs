@@ -1855,6 +1855,9 @@ struct Game<'a> {
     rest_loader: Option<WorldRestLoader>,
     pending_entry: Option<PendingWorldEntry>,
     world_loader: Option<world_loading::WorldLoader>,
+    /// `DebugEntryChunkGeneration`'s `lastPos` and `result`: F3's `Density` line is sampled
+    /// again only when the feet block (or the dimension) changes.
+    debug_density: RefCell<debug_keys::DensityCache>,
     pending_pack_reload: bool,
     /// When `resourcepacks/` was last looked at for the open pack screen, and what it held
     /// (`watch_pack_folder`).
@@ -2064,6 +2067,10 @@ struct Game<'a> {
     guardian_sounds: HashSet<u32>,
     dropped: Vec<ItemEntity>,
     next_entity: u32,
+    /// The last entity id the running server tick found before its levels
+    /// ticked: an item with a later one was added this tick and first ticks
+    /// on the next (`EntityTickList`). `u32::MAX` until a tick has run.
+    ticked_entities_through: u32,
     particles: horizon_client::particles::ParticleEngine,
     /// `ItemPickupParticle`s: taken items, orbs and arrows flying to their collector.
     pickups: pickups::Pickups,
@@ -3349,6 +3356,12 @@ impl Game<'_> {
                 continue;
             }
             let item = &mut items[i];
+            // `addFreshEntity`: an entity added this tick ticks from the next
+            // one (`EntityTickList`), so a drop's `Age` stays 0 for the tick
+            // function that looks for it.
+            if merging && item.id > self.ticked_entities_through {
+                continue;
+            }
             if !ticking(
                 item.position.x.floor() as i32,
                 item.position.z.floor() as i32,
@@ -4588,6 +4601,12 @@ impl Game<'_> {
                     state,
                     kind: "candle_smoke",
                 } => self.candle_smoke([pos.x, pos.y, pos.z], state),
+                // The block at `pos` has just replaced `state`: Block.pushEntitiesUp.
+                LevelEvent::BlockEvent {
+                    pos,
+                    state,
+                    kind: "push_entities_up",
+                } => self.push_entities_up(pos, state),
                 LevelEvent::GrowTree { .. }
                 | LevelEvent::PlaceFeature { .. }
                 | LevelEvent::BlockEvent { .. } => {}
@@ -6354,6 +6373,19 @@ impl Game<'_> {
         }
         if running {
             self.advance_clock();
+            // `MinecraftServer.tickChildren`: `commandFunctions` runs before
+            // any level ticks, so a tick function that polls for the drop a
+            // block just made still finds it with `Age: 0`
+            // (`EntityTickList.ensureActiveIsNotIterated` gives an entity
+            // added during the iteration its first tick on the next one).
+            // Vanilla's SavedData is loaded long before this point; the lazy
+            // scoreboard/storage read has to be done by then too, or a load
+            // tag writes over what it restores.
+            self.load_scoreboard();
+            self.tick_functions();
+            // What the functions summoned ticks this tick, as it would in
+            // vanilla; what the levels add from here waits for the next.
+            self.ticked_entities_through = self.next_entity;
         }
         if self.use_delay > 0 {
             self.use_delay -= 1;
@@ -6836,6 +6868,52 @@ impl Game<'_> {
             self.keys.insert(key);
         } else {
             self.keys.remove(&key);
+        }
+    }
+    /// Let a held sneak, sprint or modifier key go when the keyboard reports
+    /// its modifier up. A release does not always reach the mapping: a screen
+    /// reads presses only, and an unfocused window is given no release at all,
+    /// so the latch would keep the player sneaking or sprinting until the key
+    /// is tapped again. The modifier state is what the keyboard itself
+    /// asserts, so it settles the question. A mapping that toggles, or one a
+    /// pad latched, keeps its state: `set_down(false, needs_toggle)` leaves
+    /// those alone, and a toggle the player asked for is meant to outlive the
+    /// key. A mapping rebound away from its modifier is left alone too: the
+    /// modifier says nothing about it.
+    ///
+    /// `physical_keys` and the plain keys go by the same rule, and are the
+    /// worse bug: `Screen.hasShiftDown` and `hasControlDown` read the physical
+    /// state (vanilla's `InputConstants.isKeyDown`), so a Shift no one is
+    /// holding makes every inventory click a shift-click and every throw a
+    /// whole-stack drop. Those do not care what sneak and sprint are bound to.
+    /// A modifier says nothing about which side is down, so one being up means
+    /// both Shifts, or both Controls, are.
+    fn heal_hold_latches(&mut self) {
+        let (shift, control) = (self.modifiers.shift_key(), self.modifiers.control_key());
+        if !shift {
+            for key in [KeyCode::ShiftLeft, KeyCode::ShiftRight] {
+                self.physical_keys.remove(&key);
+                self.keys.remove(&key);
+            }
+        }
+        if !control {
+            for key in [KeyCode::ControlLeft, KeyCode::ControlRight] {
+                self.physical_keys.remove(&key);
+            }
+        }
+        for (slot, mapping, needs_toggle) in [
+            (0, "key.sneak", self.settings.toggle_crouch),
+            (1, "key.sprint", self.settings.toggle_sprint),
+        ] {
+            let held = match horizon_client::keybinds::key_code(self.settings.keys.get(mapping)) {
+                Some(KeyCode::ShiftLeft | KeyCode::ShiftRight) => shift,
+                Some(KeyCode::ControlLeft | KeyCode::ControlRight) => control,
+                _ => continue,
+            };
+            if !held {
+                self.toggles.0[slot].set_down(false, needs_toggle);
+                self.sync_toggle(slot);
+            }
         }
     }
     /// A key event after rebinding, as the default key of its mapping (the
@@ -10387,7 +10465,6 @@ impl Game<'_> {
         self.tick_stats();
         self.tick_scoreboard();
         self.load_bossbars();
-        self.tick_functions();
         self.tick_worldborder();
         self.tick_subtitles();
         self.spawn_phantoms();
@@ -10618,6 +10695,8 @@ impl Game<'_> {
 
     fn finish_open_world(&mut self, prepared: world_loading::PreparedWorld) -> Result<()> {
         self.reset_tutorial();
+        // Another world: its generator, not the last one's Density line.
+        self.debug_density.borrow_mut().clear();
         let world_loading::PreparedWorld {
             save_root,
             shapes,
@@ -11951,6 +12030,7 @@ impl Game<'_> {
             on_ground: false,
             count: 1,
             ticks: 0,
+            health: 5,
         });
         // ServerLevel.addFreshEntity.
         if !self.native_entity_joins(self.next_entity, "minecraft:experience_orb", at, false) {
@@ -14982,7 +15062,22 @@ impl ApplicationHandler for Game<'_> {
                         self.keys.clear();
                         // Latched sneak/sprint live in `toggles`, not in the
                         // physical keys: put them back so a short alt-tab
-                        // (no pause screen) does not drop them.
+                        // (no pause screen) does not drop them. Only a mapping
+                        // whose toggle option is on is latched; a held one has
+                        // no state to keep, and an unfocused window never gets
+                        // its key release, so leaving it down would keep the
+                        // player sneaking or sprinting until the key is tapped.
+                        for (slot, needs_toggle) in [
+                            self.settings.toggle_crouch,
+                            self.settings.toggle_sprint,
+                            self.settings.toggle_attack,
+                            self.settings.toggle_use,
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        {
+                            self.toggles.0[slot].set_down(false, needs_toggle);
+                        }
                         self.sync_toggle(0);
                         self.sync_toggle(1);
                         self.left = false;
@@ -15658,6 +15753,7 @@ impl ApplicationHandler for Game<'_> {
                     }
                     let updated = Instant::now();
                     self.track_toggle_screens();
+                    self.heal_hold_latches();
                     // For the "I'm playing" ping: an atomic, sent on when it changes.
                     horizon_client::heartbeat::set_lan(self.is_published());
                     self.update_discord_presence();
@@ -15992,6 +16088,7 @@ impl<'a> Game<'a> {
             rest_loader: None,
             pending_entry: None,
             world_loader: None,
+            debug_density: RefCell::default(),
             pending_pack_reload: false,
             pack_folder: None,
             pack_reload: None,
@@ -16129,6 +16226,7 @@ impl<'a> Game<'a> {
             guardian_sounds: HashSet::new(),
             dropped: Vec::new(),
             next_entity: 0,
+            ticked_entities_through: u32::MAX,
             particles,
             pickups: Default::default(),
             sign_edit: None,
