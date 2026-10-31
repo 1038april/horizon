@@ -609,6 +609,7 @@ fn fill_noise_inner<B: TerrainBlockStates>(
             .properties
             .heightmap_state(default_block)
             .has_fluid();
+    const MAPS: [HeightmapType; 2] = [HeightmapType::OceanFloorWg, HeightmapType::WorldSurfaceWg];
     for z in 0..sz {
         let world_z = bz.wrapping_add(z as i32);
         for x in 0..sx {
@@ -619,16 +620,13 @@ fn fill_noise_inner<B: TerrainBlockStates>(
             // top-down vertical sweep, once an opaque block updates first-available
             // to world_y + 1, all lower blocks have world_y <= bound and can be
             // skipped entirely.
-            let mut bound_ocean_floor = chunk.heightmaps[HeightmapType::OceanFloorWg as usize]
-                .as_ref()
-                .expect("ensured heightmap")
-                .first_available(x as i32, z as i32)
-                .map(|first| first.wrapping_sub(2));
-            let mut bound_world_surface = chunk.heightmaps[HeightmapType::WorldSurfaceWg as usize]
-                .as_ref()
-                .expect("ensured heightmap")
-                .first_available(x as i32, z as i32)
-                .map(|first| first.wrapping_sub(2));
+            let mut bounds = MAPS.map(|kind| {
+                chunk.heightmaps[kind as usize]
+                    .as_ref()
+                    .expect("ensured heightmap")
+                    .first_available(x as i32, z as i32)
+                    .map(|first| first.wrapping_sub(2))
+            });
             let mut y = sy;
             while y > 0 {
                 y -= 1;
@@ -644,41 +642,16 @@ fn fill_noise_inner<B: TerrainBlockStates>(
                     }
                     aquifer.note_skipped();
                     chunk.fill_solid_run(x as i32, world_y, z as i32, run as i32, default_block)?;
-                    let ocean_floor_covered =
-                        matches!(bound_ocean_floor, Ok(bound) if world_y <= bound);
-                    let world_surface_covered =
-                        matches!(bound_world_surface, Ok(bound) if world_y <= bound);
-                    if !(ocean_floor_covered && world_surface_covered) {
-                        if !ocean_floor_covered {
-                            chunk.update_heightmap(
-                                HeightmapType::OceanFloorWg,
-                                x as i32,
-                                world_y,
-                                z as i32,
-                                default_block,
-                            )?;
-                            bound_ocean_floor = chunk.heightmaps
-                                [HeightmapType::OceanFloorWg as usize]
-                                .as_ref()
-                                .expect("ensured heightmap")
-                                .first_available(x as i32, z as i32)
-                                .map(|first| first.wrapping_sub(2));
+                    for (kind, bound) in MAPS.into_iter().zip(&mut bounds) {
+                        if matches!(bound, Ok(current) if world_y <= *current) {
+                            continue;
                         }
-                        if !world_surface_covered {
-                            chunk.update_heightmap(
-                                HeightmapType::WorldSurfaceWg,
-                                x as i32,
-                                world_y,
-                                z as i32,
-                                default_block,
-                            )?;
-                            bound_world_surface = chunk.heightmaps
-                                [HeightmapType::WorldSurfaceWg as usize]
-                                .as_ref()
-                                .expect("ensured heightmap")
-                                .first_available(x as i32, z as i32)
-                                .map(|first| first.wrapping_sub(2));
-                        }
+                        chunk.update_heightmap(kind, x as i32, world_y, z as i32, default_block)?;
+                        *bound = chunk.heightmaps[kind as usize]
+                            .as_ref()
+                            .expect("ensured heightmap")
+                            .first_available(x as i32, z as i32)
+                            .map(|first| first.wrapping_sub(2));
                     }
                     y -= run - 1;
                     continue;
@@ -705,40 +678,16 @@ fn fill_noise_inner<B: TerrainBlockStates>(
                     continue;
                 }
                 chunk.set_block_raw(x as i32, world_y, z as i32, state)?;
-                let ocean_floor_covered =
-                    matches!(bound_ocean_floor, Ok(bound) if world_y <= bound);
-                let world_surface_covered =
-                    matches!(bound_world_surface, Ok(bound) if world_y <= bound);
-                if !(ocean_floor_covered && world_surface_covered) {
-                    if !ocean_floor_covered {
-                        chunk.update_heightmap(
-                            HeightmapType::OceanFloorWg,
-                            x as i32,
-                            world_y,
-                            z as i32,
-                            state,
-                        )?;
-                        bound_ocean_floor = chunk.heightmaps[HeightmapType::OceanFloorWg as usize]
-                            .as_ref()
-                            .expect("ensured heightmap")
-                            .first_available(x as i32, z as i32)
-                            .map(|first| first.wrapping_sub(2));
+                for (kind, bound) in MAPS.into_iter().zip(&mut bounds) {
+                    if matches!(bound, Ok(current) if world_y <= *current) {
+                        continue;
                     }
-                    if !world_surface_covered {
-                        chunk.update_heightmap(
-                            HeightmapType::WorldSurfaceWg,
-                            x as i32,
-                            world_y,
-                            z as i32,
-                            state,
-                        )?;
-                        bound_world_surface = chunk.heightmaps
-                            [HeightmapType::WorldSurfaceWg as usize]
-                            .as_ref()
-                            .expect("ensured heightmap")
-                            .first_available(x as i32, z as i32)
-                            .map(|first| first.wrapping_sub(2));
-                    }
+                    chunk.update_heightmap(kind, x as i32, world_y, z as i32, state)?;
+                    *bound = chunk.heightmaps[kind as usize]
+                        .as_ref()
+                        .expect("ensured heightmap")
+                        .first_available(x as i32, z as i32)
+                        .map(|first| first.wrapping_sub(2));
                 }
                 if aquifer.should_schedule_fluid_update()
                     && chunk.blocks.properties.heightmap_state(state).has_fluid()
