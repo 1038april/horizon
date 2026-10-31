@@ -661,8 +661,15 @@ impl Game<'_> {
     fn activate_cart(&mut self, c: &mut Minecart, powered: bool) {
         match c.kind {
             CartKind::Rideable if powered => {
+                // Minecart.activateMinecart: ejectPassengers.
                 if self.riding == Some(c.id) {
                     self.riding = None;
+                }
+                let y = c.position.y;
+                for m in self.mobs.iter_mut().filter(|m| m.extra.mount == Some(c.id)) {
+                    let at = Vec3::new(m.position.x, m.position.y.max(y), m.position.z);
+                    riders::stop_riding(m, Some(at));
+                    m.previous = at;
                 }
                 if c.hurt_time == 0 {
                     c.hurt_dir = -c.hurt_dir;
@@ -814,9 +821,14 @@ impl Game<'_> {
         self.pickup_from_cart(i);
     }
     /// `OldMinecartBehavior.pushAndPickupEntities` for living entities in cart
-    /// `i`'s box (0.2 wider on each side): an eligible mob boards an empty
-    /// cart (`startRiding`); others get `Entity.push`.
+    /// `i`'s box (0.2 wider on each side): only a rideable cart moving at
+    /// `horizontalDistanceSqr() >= 0.01` picks up; an eligible mob boards an
+    /// empty cart (`startRiding`); others get `Entity.push`.
     fn pickup_from_cart(&mut self, i: usize) {
+        let v = self.carts[i].velocity;
+        if self.carts[i].kind != CartKind::Rideable || v.x * v.x + v.z * v.z < 0.01 {
+            return;
+        }
         let reach = f64::from(0.2f32);
         let id = self.carts[i].id;
         let pos = self.carts[i].position;
@@ -1189,7 +1201,10 @@ impl Game<'_> {
         let held = self.held().cloned();
         match self.carts[i].kind {
             CartKind::Rideable => {
-                if sneaking || self.riding.is_some() || self.ridden_by_guest(self.carts[i].id) {
+                let id = self.carts[i].id;
+                // isVehicle: a mob already sits in it.
+                let has_mob = self.mobs.iter().any(|m| m.extra.mount == Some(id));
+                if sneaking || self.riding.is_some() || self.ridden_by_guest(id) || has_mob {
                     return false;
                 }
                 self.riding = Some(self.carts[i].id);
