@@ -1263,6 +1263,7 @@ impl Game<'_> {
         self.world.health_rules.fall_damage = self.ui.rules.bool("fall_damage");
         self.world.health_rules.fire_damage = self.ui.rules.bool("fire_damage");
         self.world.health_rules.freeze_damage = self.ui.rules.bool("freeze_damage");
+        horizon_client::mobs::sulfur_cube::set_tnt_explodes(self.ui.rules.bool("tnt_explodes"));
         use horizon_world::food::Difficulty;
         self.world.health_rules.difficulty = match self.ui.difficulty {
             0 => Difficulty::Peaceful,
