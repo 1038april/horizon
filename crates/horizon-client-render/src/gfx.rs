@@ -2769,8 +2769,11 @@ impl Renderer {
                 || std::env::var("HORIZON_FLAT_DRAWS").as_deref() == Ok("1")
             {
                 0
-            } else {
+            } else if flat::for_vanilla(&info) {
                 flat::MIN_SECTIONS
+            } else {
+                // Only a shader pack's terrain and shadow pass draw flat here.
+                usize::MAX
             };
             flat::Flat::new(
                 &device,
