@@ -213,7 +213,12 @@ a face, weak or direct, and `native_is_signal_source` lets redstone wire connect
 block first and answer from the mod's own state. When the output changes, and once the block is placed (a direct signal past a conductor isn't read before), `native_update_signal_neighbors(dimension, pos)` makes the blocks around
 it read it again; it acts on the level in place and is refused for another dimension. Bundles that use them need `"hooks": 38`.
 
-API 39 adds `native_visuals`: a world-frame hook that appends block-rim and
+API 39 adds item behaviour, on the server for every player: `native_hurt_enemy` hears a player's hit land on a mob with the
+held stack, `native_inventory_tick` runs each tick for every stack a player carries (armour and off hand included), and
+`native_carried_stack` reads and changes that stack, and `native_on_equip` hears an equipment slot take a different item. The helpers read the acting player. Bundles
+that use them need `"hooks": 39`.
+
+API 40 adds `native_visuals`: a world-frame hook that appends block-rim and
 colored-light requests. Rims trace the client's existing block outline edges,
 depth-tested against terrain. Lights add camera-local RGB illumination to the
 normal terrain/entity shaders, not gameplay light. Only the first eight rims
@@ -228,7 +233,7 @@ already-loaded terrain sprites. Transparent pixels in an overlay leave its
 base unchanged; opaque pixels are drawn full-bright without changing gameplay
 light or the surrounding rock. The source pack must supply the overlay texture
 under `assets/<namespace>/textures/emissive/`. When no mod requests overlays,
-the terrain shader skips the lookup. Bundles using these hooks need `"hooks": 39`.
+the terrain shader skips the lookup. Bundles using these hooks need `"hooks": 40`.
 
 ## What the launcher does
 
