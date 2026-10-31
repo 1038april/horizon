@@ -535,9 +535,10 @@ pub struct NativeScreen {
 }
 
 /// The open screen, for the screen hooks (`native_screen_render_post`,
-/// `native_screen_mouse_button_pressed_pre`, `..._released_pre`): what it is,
-/// its menu and title, where its container panel is, how many slots its menu
-/// has, and where the mouse and the frame's partial tick are.
+/// `native_screen_mouse_button_pressed_pre`, `..._released_pre`,
+/// `native_screen_mouse_scrolled_pre`): what it is, its menu and title, where
+/// its container panel is, how many slots its menu has, and where the mouse
+/// and the frame's partial tick are.
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub struct NativeScreenView<'a> {
@@ -1164,6 +1165,37 @@ impl Game<'_> {
         canceled: &mut bool,
     ) {
         let _ = (screen, button, modifiers, canceled);
+    }
+    /// The wheel turned over the open screen (`ScreenEvent.MouseScrolled.Pre`,
+    /// vanilla's `Screen.mouseScrolled`): `screen` is the screen it is,
+    /// `screen.mouse` where the pointer is (so there is no position of its
+    /// own), `scroll` the wheel's movement in x and y as the game's own scroll
+    /// handler scales it (a notch is ±1 — its sign only — times the wheel
+    /// sensitivity, and a touchpad's pixels are divided by 30), and
+    /// `modifiers` GLFW's bits (shift 1, control 2, alt 4, super 8). Set
+    /// `canceled` and nothing the screen would scroll moves: not the bundle
+    /// under the pointer, nor a list, slider, scrollbar or map. Nothing else
+    /// reads the wheel while a screen of the game's is open, so no hotbar slot
+    /// changes either.
+    ///
+    /// It fires before the screen scrolls anything, on the window only, and
+    /// only while a screen of the game's is open (Options and the pack list
+    /// opened from the title screen count, with no player and no `menu`). It
+    /// does not fire on the title screen itself, the connect and loading
+    /// screens, nor for a server dialog, the server pack, link and
+    /// code-of-conduct prompts, a book or a sign editor drawn over gameplay,
+    /// nor while a world loads or saves: the scroll there stays the game's
+    /// own. A wheel a gamepad or the keyboard's focus sends is not the mouse
+    /// and fires nothing.
+    /// API @API:screen_mouse_scrolled@.
+    pub(super) fn native_screen_mouse_scrolled_pre(
+        &self,
+        screen: &NativeScreenView<'_>,
+        scroll: [f64; 2],
+        modifiers: u32,
+        canceled: &mut bool,
+    ) {
+        let _ = (screen, scroll, modifiers, canceled);
     }
     /// The open screen as a native mod sees it (`NativeScreenView`): its id,
     /// the open menu's type and title, its slot count, and its panel's
