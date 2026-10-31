@@ -1404,15 +1404,7 @@ fn install(
     fs::create_dir_all(&partial).map_err(|e| e.to_string())?;
     for entry in fs::read_dir(&from).map_err(|e| e.to_string())?.flatten() {
         let name = entry.file_name();
-        if [
-            backend::CLIENT,
-            ".installed",
-            "Horizon.app",
-            "native-mods.json",
-        ]
-        .iter()
-        .any(|n| name == *n)
-        {
+        if !carried_over(&name) {
             continue;
         }
         let to = partial.join(&name);
@@ -1436,6 +1428,21 @@ fn install(
         return Err(e);
     }
     fs::write(dir.join(".installed"), "").map_err(|e| e.to_string())
+}
+
+/// Whether a file of the version a build starts from goes into the new build. The game, its
+/// record, and the mods' post-build data (`native-data/`, which the new build's steps write
+/// again) are the new build's own: a mod turned off leaves none of its data behind.
+fn carried_over(name: &std::ffi::OsStr) -> bool {
+    ![
+        backend::CLIENT,
+        ".installed",
+        "Horizon.app",
+        "native-mods.json",
+        "native-data",
+    ]
+    .iter()
+    .any(|n| name == *n)
 }
 
 /// How many native builds no instance plays stay installed, the newest first: switching a mod
@@ -1483,6 +1490,22 @@ fn stale(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rebuild_leaves_the_old_builds_mod_data_behind() {
+        use std::ffi::OsStr;
+        for own in [
+            backend::CLIENT,
+            ".installed",
+            "native-mods.json",
+            "native-data",
+        ] {
+            assert!(!carried_over(OsStr::new(own)), "{own}");
+        }
+        for kept in ["horizon-ctl", "resources", "LICENSE"] {
+            assert!(carried_over(OsStr::new(kept)), "{kept}");
+        }
+    }
 
     fn dir(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("horizon-native-{name}-{}", std::process::id()));
