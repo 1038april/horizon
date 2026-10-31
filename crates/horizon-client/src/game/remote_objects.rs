@@ -349,7 +349,8 @@ impl Game<'_> {
             b.position = step(b.id, b.position);
         }
         for a in &mut self.armor_stands {
-            a.position = step(a.id, a.position);
+            let id = a.id;
+            a.interpolate(|at| step(id, at));
         }
     }
 

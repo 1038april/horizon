@@ -895,6 +895,9 @@ pub struct ArmorStand {
     pub health: f32,
     pub id: u32,
     pub position: Vec3,
+    /// `Entity.xo`, `yo`, `zo`: the position at the start of the tick, which
+    /// the renderer blends toward `position` by the partial tick.
+    pub previous: Vec3,
     pub velocity: Vec3,
     pub on_ground: bool,
     pub yaw: f32,
@@ -933,12 +936,24 @@ impl ArmorStand {
         [-1.0, 0.0, -1.0],
         [1.0, 0.0, 1.0],
     ];
+    /// Where the renderer draws the stand `alpha` of the way through the tick
+    /// (`EntityRenderer`'s `Mth.lerp(partialTick, xo, x)` and so on).
+    pub fn render_position(&self, alpha: f64) -> Vec3 {
+        self.previous.lerp(self.position, alpha)
+    }
+    /// A server's stand on its client (`ClientLevel.tickNonPassenger`):
+    /// `setOldPosAndRot`, then `step` moves it toward where the server put it.
+    pub fn interpolate(&mut self, step: impl FnOnce(Vec3) -> Vec3) {
+        self.previous = self.position;
+        self.position = step(self.position);
+    }
     pub fn new(id: u32, position: Vec3, yaw: f32) -> Self {
         Self {
             fire_ticks: 0,
             health: 20.0,
             id,
             position,
+            previous: position,
             velocity: Vec3::ZERO,
             on_ground: true,
             yaw,
@@ -1240,6 +1255,29 @@ mod fire_environment_tests {
             assert!(stand.environment_tick(&world, &facts, assets.registry));
         }
         assert_eq!(stand.health, 20.0, "lava does not hurt armor stands");
+    }
+}
+#[cfg(test)]
+mod armor_stand_render_tests {
+    use super::*;
+
+    /// A falling stand is drawn between last tick's position and this one's,
+    /// so it slides down every frame instead of jumping once a tick (#4416).
+    #[test]
+    fn a_falling_stand_is_drawn_between_its_ticks() {
+        let mut stand = ArmorStand::new(1, Vec3::new(0.5, 70.0, 0.5), 0.0);
+        // A new stand has no move behind it.
+        assert_eq!(stand.render_position(0.5), stand.position);
+        let fall = |at: Vec3| Vec3::new(at.x, at.y - 1.0, at.z);
+        stand.interpolate(fall);
+        assert_eq!(stand.render_position(0.0).y, 70.0);
+        assert_eq!(stand.render_position(0.25).y, 69.75);
+        assert_eq!(stand.render_position(1.0).y, 69.0);
+        stand.interpolate(fall);
+        assert_eq!(stand.render_position(0.5).y, 68.5);
+        // Landed: the next tick's step leaves it in place, and so does every frame.
+        stand.interpolate(|at| at);
+        assert_eq!(stand.render_position(0.5).y, 68.0);
     }
 }
 #[cfg(test)]
