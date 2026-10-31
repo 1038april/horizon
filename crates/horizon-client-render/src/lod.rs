@@ -728,6 +728,7 @@ enum Done {
     Mesh {
         key: TileKey,
         version: u64,
+        seq: u64,
         mesh: SectionMesh,
     },
 }
@@ -737,6 +738,7 @@ struct MeshJob {
     snapshot: Arc<Snapshot>,
     key: TileKey,
     version: u64,
+    seq: u64,
     finer: Vec<TileKey>,
     covered: Arc<FxHashSet<(i32, i32)>>,
     bounds: Option<[i32; 4]>,
@@ -829,8 +831,18 @@ pub struct Lod {
     next_version: u64,
     /// Mesh jobs queued or running; the cutout waits for all of them.
     outstanding_meshes: usize,
+    /// Workers in the mesh pool (dispatch coalesces above four each).
+    mesh_workers: usize,
+    /// Sequence of the last dispatched mesh batch.
+    dispatch_seq: u64,
+    /// Jobs still in flight, by batch sequence.
+    in_flight: FxHashMap<u64, usize>,
+    /// The batch a pending cutout must wait for; later batches do not block.
+    cutout_target: Option<u64>,
     /// Tiles whose active replacement mesh has been returned and applied.
     meshed: FxHashSet<TileKey>,
+    /// Active tiles whose current revision has no mesh yet.
+    unmeshed: FxHashSet<TileKey>,
     /// Tiles that left the selection. The renderer may only fade them out
     /// once every active tile overlapping them has its mesh, or a hole opens.
     removed_pending: FxHashSet<TileKey>,
@@ -938,6 +950,7 @@ impl Lod {
                                     .send(Done::Mesh {
                                         key: job.key,
                                         version: job.version,
+                                        seq: job.seq,
                                         mesh,
                                     })
                                     .is_err()
@@ -1110,7 +1123,12 @@ impl Lod {
             mesh_version: FxHashMap::default(),
             next_version: 1,
             outstanding_meshes: 0,
+            mesh_workers: meshing_threads(cores),
+            dispatch_seq: 0,
+            in_flight: FxHashMap::default(),
+            cutout_target: None,
             meshed: FxHashSet::default(),
+            unmeshed: FxHashSet::default(),
             removed_pending: FxHashSet::default(),
             removed: Vec::new(),
             covered: FxHashSet::default(),
@@ -1189,6 +1207,7 @@ impl Lod {
         self.dirty.insert(key, version);
         self.mesh_version.insert(key, version);
         self.meshed.remove(&key);
+        self.unmeshed.insert(key);
     }
     /// The tile's selection changed: its own mesh, every selected fallback
     /// ancestor that clips around its footprint, and its face neighbours.
@@ -1276,11 +1295,12 @@ impl Lod {
     /// Whether `child` sits on the face of `parent` shared with the tile the
     /// walk came from. Children behind that face are not adjacent to it.
     fn side_flush(child: TileKey, side: usize, parent: TileKey) -> bool {
+        let (cs, ps) = (child.size(), parent.size());
         match side {
-            0 => child.x + child.size() == parent.x * parent.size() + parent.size(),
-            1 => child.x == parent.x * parent.size(),
-            2 => child.z + child.size() == parent.z * parent.size() + parent.size(),
-            _ => child.z == parent.z * parent.size(),
+            0 => (child.x + 1) * cs == (parent.x + 1) * ps,
+            1 => child.x * cs == parent.x * ps,
+            2 => (child.z + 1) * cs == (parent.z + 1) * ps,
+            _ => child.z * cs == parent.z * ps,
         }
     }
     /// The selected tiles across one side of `node`, descending only through
@@ -1356,10 +1376,13 @@ impl Lod {
                     self.removed_pending.insert(node);
                     self.mesh_version.remove(&node);
                     self.meshed.remove(&node);
+                    self.unmeshed.remove(&node);
                 }
             }
-            let changed = old != Some(complete) || active != was_active;
-            if changed {
+            // A pure completion change on an undrawn node changes no mesh;
+            // only the ancestors' own transitions can. Marking descendants
+            // here made tree completion remesh the whole view.
+            if active != was_active {
                 self.mark_selection_changed(node);
             }
             if old == Some(complete) || node.level >= MAX_LEVEL {
@@ -1368,10 +1391,14 @@ impl Lod {
             node = node.parent();
         }
     }
-    /// New or replaced samples for `key`.
-    fn refresh_ready(&mut self, key: TileKey) {
+    /// New or replaced samples for `key`. `existed`: its old data was drawn,
+    /// so the tile and its edge neighbours must be remeshed; a new tile is
+    /// already dirty through its selection change.
+    fn refresh_ready(&mut self, key: TileKey, existed: bool) {
         self.refresh_path(key);
-        self.mark_data_changed(key);
+        if existed {
+            self.mark_data_changed(key);
+        }
     }
     pub fn invalidate_chunk(&mut self, x: i32, z: i32) {
         // The tiles touching the chunk: a few per level, not every active one.
@@ -1453,9 +1480,12 @@ impl Lod {
             level: 0,
         };
         if self.plan.nodes.contains(&fine) || self.ready.contains_key(&fine) {
-            self.ready.insert(fine, Arc::new(columns.to_vec()));
+            let existed = self
+                .ready
+                .insert(fine, Arc::new(columns.to_vec()))
+                .is_some();
             self.detail_masks.insert(fine, [u64::MAX; 4]);
-            self.refresh_ready(fine);
+            self.refresh_ready(fine, existed);
         }
     }
     fn apply_detail(&mut self, (cx, cz): (i32, i32), columns: &ReducedColumns) {
@@ -1515,8 +1545,8 @@ impl Lod {
                     }
                 }
             }
-            self.ready.insert(key, Arc::new(samples));
-            self.refresh_ready(key);
+            let existed = self.ready.insert(key, Arc::new(samples)).is_some();
+            self.refresh_ready(key, existed);
         }
     }
     fn finish_detail(&mut self, key: (i32, i32), columns: ReducedColumns) {
@@ -1659,11 +1689,7 @@ impl Lod {
         crate::spans::time("lod_wanted", || self.request_samples(camera));
         crate::spans::time("lod_dispatch", || self.dispatch_meshes(camera));
         crate::spans::time("lod_removed", || self.release_removed());
-        if self.outstanding_meshes == 0
-            && let Some(cutout) = self.cutout_pending.take()
-        {
-            self.cutout = Some(cutout);
-        }
+        self.publish_cutout_if_ready();
         meshes
     }
     /// Rebuilds the quadtree and the selection it implies. Only runs when the
@@ -1719,6 +1745,7 @@ impl Lod {
         self.mesh_version.retain(|key, _| self.active.contains(key));
         self.dirty.retain(|key, _| self.active.contains(key));
         self.meshed.retain(|key| self.active.contains(key));
+        self.unmeshed.retain(|key| self.active.contains(key));
         self.removed_pending
             .retain(|key| !self.active.contains(key));
         let changed: Vec<_> = old.symmetric_difference(&self.active).copied().collect();
@@ -1742,12 +1769,24 @@ impl Lod {
                 }
                 Done::DetailRequested => self.detail_request_pending = false,
                 Done::Sample { key, samples } => self.finish_sample(key, samples),
-                Done::Mesh { key, version, mesh } => {
+                Done::Mesh {
+                    key,
+                    version,
+                    seq,
+                    mesh,
+                } => {
                     self.outstanding_meshes = self.outstanding_meshes.saturating_sub(1);
+                    if let Some(left) = self.in_flight.get_mut(&seq) {
+                        *left = left.saturating_sub(1);
+                        if *left == 0 {
+                            self.in_flight.remove(&seq);
+                        }
+                    }
                     // A newer batch (or the tile leaving) makes this stale.
                     if self.active.contains(&key) && self.mesh_version.get(&key) == Some(&version) {
                         meshes.push((key, mesh));
                         self.meshed.insert(key);
+                        self.unmeshed.remove(&key);
                     }
                 }
             }
@@ -1770,16 +1809,16 @@ impl Lod {
         if self.retiring.is_empty() {
             return;
         }
-        let (plan, ready, saved, masks) =
-            (&self.plan, &self.ready, &self.saved, &self.detail_masks);
+        let (plan, ready, masks) = (&self.plan, &self.ready, &self.detail_masks);
         let keep: FxHashSet<_> = self
             .retiring
             .iter()
             .copied()
             .filter(|&column| {
-                !plan.replaces(column, ready, |key| {
-                    saved.contains_key(&column) || masks.get(&key) == Some(&[u64::MAX; 4])
-                })
+                // A saved summary alone is not detail: the tile may still be
+                // the empty covered stand-in. Only a completed mask proves
+                // its columns replaced the full-detail mesh.
+                !plan.replaces(column, ready, |key| masks.get(&key) == Some(&[u64::MAX; 4]))
             })
             .collect();
         if keep.len() != self.retiring.len() {
@@ -1829,7 +1868,22 @@ impl Lod {
             self.refresh_path(TileKey { x, z, level: 0 });
         }
         self.cutout_pending = Some(self.covered.clone());
-        self.wanted_stale = true;
+        // The replacements are the next mesh batch, or the jobs already in
+        // flight when no active tile needs remeshing.
+        self.cutout_target = Some(self.dispatch_seq + u64::from(!self.dirty.is_empty()));
+    }
+    /// Publishes the pending cutout once the batch that had to replace the
+    /// affected tiles is in. Later batches (even while loading continues) do
+    /// not delay it.
+    fn publish_cutout_if_ready(&mut self) {
+        let Some(target) = self.cutout_target else {
+            return;
+        };
+        if !self.dirty.is_empty() || self.in_flight.keys().any(|seq| *seq <= target) {
+            return;
+        }
+        self.cutout_target = None;
+        self.cutout = self.cutout_pending.take();
     }
     /// Releases tiles whose every overlapping replacement already has a mesh.
     /// Quadtree tiles are nested or disjoint, so blocking is an ancestor test:
@@ -1852,7 +1906,7 @@ impl Lod {
                 node = node.parent();
             }
         }
-        for &active in self.active.iter().filter(|key| !self.meshed.contains(key)) {
+        for &active in &self.unmeshed {
             let mut node = active;
             loop {
                 if self.removed_pending.contains(&node) {
@@ -1881,6 +1935,11 @@ impl Lod {
         if self.dirty.is_empty() {
             return;
         }
+        // Under load, let the pool drain and send one larger batch with one
+        // snapshot instead of rebuilding the snapshot 20 times a second.
+        if self.outstanding_meshes >= self.mesh_workers * 4 {
+            return;
+        }
         let keys: Vec<(TileKey, u64)> = self
             .dirty
             .drain()
@@ -1899,6 +1958,8 @@ impl Lod {
             reduced: self.reduced.clone(),
         });
         let covered = Arc::new(self.covered.clone());
+        self.dispatch_seq += 1;
+        let seq = self.dispatch_seq;
         let mut queued = self.shared.mesh_jobs.lock().unwrap();
         let count = keys.len();
         for (key, version) in keys {
@@ -1912,6 +1973,7 @@ impl Lod {
                     snapshot: snapshot.clone(),
                     key,
                     version,
+                    seq,
                     finer,
                     covered: covered.clone(),
                     bounds: self.covered_bounds,
@@ -1920,6 +1982,7 @@ impl Lod {
         }
         drop(queued);
         self.outstanding_meshes += count;
+        *self.in_flight.entry(seq).or_default() += count;
         self.shared.mesh_wake.notify_all();
     }
     fn finer_of(&self, key: TileKey) -> Vec<TileKey> {
@@ -2164,15 +2227,12 @@ impl Drop for Lod {
 fn retiring_detail<'a>(
     plan: &'a Plan,
     retiring: &'a FxHashSet<(i32, i32)>,
-    saved: &'a Saved,
+    _saved: &'a Saved,
     masks: &'a FxHashMap<TileKey, [u64; 4]>,
 ) -> impl Iterator<Item = TileKey> + 'a {
     retiring.iter().filter_map(move |&(x, z)| {
         let key = TileKey { x, z, level: 0 };
-        (plan.nodes.contains(&key)
-            && !saved.contains_key(&(x, z))
-            && masks.get(&key) != Some(&[u64::MAX; 4]))
-        .then_some(key)
+        (plan.nodes.contains(&key) && masks.get(&key) != Some(&[u64::MAX; 4])).then_some(key)
     })
 }
 #[cfg(test)]
@@ -2231,9 +2291,11 @@ mod tests {
         .collect();
         let mut requested: Vec<_> = retiring_detail(&plan, &retiring, &saved, &masks).collect();
         requested.sort_unstable();
-        // Saved or complete detail needs no request; an unplanned retiree and
-        // a planned column that is not retiring must not consume the budget.
-        assert_eq!(requested, [fine(0), fine(3)]);
+        // Complete detail needs no request. A saved summary without a
+        // completed mask still does: it may predate the tile's stand-in.
+        // An unplanned retiree and a planned column that is not retiring
+        // must not consume the budget.
+        assert_eq!(requested, [fine(0), fine(1), fine(3)]);
     }
     #[test]
     fn reduced_far_detail_only_merges_tiles_away_from_the_near_terrain() {
@@ -3110,6 +3172,184 @@ mod tests {
     }
 
     #[test]
+    fn only_children_on_the_shared_face_are_walked() {
+        let west = TileKey {
+            x: -1,
+            z: 0,
+            level: 1,
+        };
+        assert!(Lod::side_flush(
+            TileKey {
+                x: -1,
+                z: 0,
+                level: 0
+            },
+            0,
+            west
+        ));
+        assert!(!Lod::side_flush(
+            TileKey {
+                x: -2,
+                z: 0,
+                level: 0
+            },
+            0,
+            west
+        ));
+        let east = TileKey {
+            x: 1,
+            z: 0,
+            level: 1,
+        };
+        assert!(Lod::side_flush(
+            TileKey {
+                x: 2,
+                z: 0,
+                level: 0
+            },
+            1,
+            east
+        ));
+        assert!(!Lod::side_flush(
+            TileKey {
+                x: 3,
+                z: 0,
+                level: 0
+            },
+            1,
+            east
+        ));
+        let north = TileKey {
+            x: 0,
+            z: -1,
+            level: 1,
+        };
+        assert!(Lod::side_flush(
+            TileKey {
+                x: 0,
+                z: -1,
+                level: 0
+            },
+            2,
+            north
+        ));
+        assert!(!Lod::side_flush(
+            TileKey {
+                x: 0,
+                z: -2,
+                level: 0
+            },
+            2,
+            north
+        ));
+        let south = TileKey {
+            x: 0,
+            z: 1,
+            level: 1,
+        };
+        assert!(Lod::side_flush(
+            TileKey {
+                x: 0,
+                z: 2,
+                level: 0
+            },
+            3,
+            south
+        ));
+        assert!(!Lod::side_flush(
+            TileKey {
+                x: 0,
+                z: 3,
+                level: 0
+            },
+            3,
+            south
+        ));
+    }
+
+    #[test]
+    fn a_cutout_waits_for_its_batch_not_every_later_one() {
+        let mut lod = Lod::scheduler_for_test();
+        lod.cutout_pending = Some([(1, 2)].into_iter().collect());
+        lod.cutout_target = Some(1);
+        lod.in_flight.insert(1, 1);
+        lod.publish_cutout_if_ready();
+        assert!(lod.take_cutout().is_none(), "cutout before its batch");
+        lod.in_flight.clear();
+        lod.in_flight.insert(2, 1);
+        lod.publish_cutout_if_ready();
+        assert_eq!(lod.take_cutout(), Some([(1, 2)].into_iter().collect()));
+        lod.cutout_pending = Some([(3, 4)].into_iter().collect());
+        lod.cutout_target = Some(2);
+        lod.dirty.insert(
+            TileKey {
+                x: 0,
+                z: 0,
+                level: 0,
+            },
+            7,
+        );
+        lod.publish_cutout_if_ready();
+        assert!(lod.take_cutout().is_none(), "undispatched replacement");
+    }
+
+    /// A saved summary is not detail: a covered empty stand-in must not let
+    /// the cutout release the full-detail columns under it.
+    #[test]
+    fn a_saved_summary_does_not_release_an_unfilled_stand_in() {
+        let mut lod = Lod::scheduler_for_test();
+        let key = TileKey {
+            x: 3,
+            z: -2,
+            level: 0,
+        };
+        lod.plan.nodes.insert(key);
+        lod.ready
+            .insert(key, Arc::new(vec![Column::default(); 256]));
+        lod.saved.insert(
+            (3, -2),
+            Arc::new(std::array::from_fn(|_| Column::default())),
+        );
+        lod.retiring.insert((3, -2));
+        lod.covered.insert((3, -2));
+        lod.prune_retiring();
+        assert!(lod.retiring.contains(&(3, -2)), "released without detail");
+        assert!(lod.covered.contains(&(3, -2)));
+        lod.detail_masks.insert(key, [u64::MAX; 4]);
+        lod.prune_retiring();
+        assert!(!lod.retiring.contains(&(3, -2)));
+        assert!(!lod.covered.contains(&(3, -2)));
+    }
+
+    /// Completing a subtree must not remesh every tile inside it: only a
+    /// tile's own active transition changes the meshes below it.
+    #[test]
+    fn completing_an_undrawn_subtree_marks_no_descendants() {
+        let mut lod = Lod::scheduler_for_test();
+        let parent = TileKey {
+            x: 0,
+            z: 0,
+            level: 1,
+        };
+        let children = parent.children();
+        lod.plan.nodes.insert(parent);
+        lod.plan.split.insert(parent);
+        lod.active.extend(children);
+        for child in children {
+            lod.plan.nodes.insert(child);
+            lod.ready
+                .insert(child, Arc::new(vec![Column::default(); 256]));
+            lod.complete.insert(child, true);
+        }
+        lod.complete.insert(parent, false);
+        lod.dirty.clear();
+        lod.refresh_path(parent);
+        assert!(lod.dirty.is_empty(), "completion remeshed descendants");
+        assert!(lod.complete[&parent]);
+        assert!(!lod.active.contains(&parent));
+    }
+
+    #[test]
     fn removals_wait_for_every_overlapping_replacement_mesh() {
         let mut lod = Lod::scheduler_for_test();
         let parent = TileKey {
@@ -3123,6 +3363,7 @@ mod tests {
             level: 0,
         };
         lod.active.insert(child);
+        lod.unmeshed.insert(child);
         lod.removed_pending.insert(parent);
         lod.release_removed();
         assert!(
@@ -3130,6 +3371,7 @@ mod tests {
             "removed before the replacement was meshed"
         );
         lod.meshed.insert(child);
+        lod.unmeshed.remove(&child);
         lod.release_removed();
         assert_eq!(lod.removed(), [parent]);
         // Out of range: nothing overlaps it, so it may fade out at once.
