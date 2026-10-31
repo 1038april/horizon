@@ -578,12 +578,22 @@ pub enum DamageKind {
     WindCharge,
     /// `wither`: the wither effect.
     Wither,
+    /// `wither_skull`: an owned wither skull's hit (`DamageSources.witherSkull`).
+    WitherSkull,
 }
 impl DamageKind {
     /// DamageTypeTags.BYPASSES_INVULNERABILITY
     pub fn bypasses_invulnerability(self) -> bool {
         matches!(self, DamageKind::OutOfWorld | DamageKind::GenericKill)
     }
+}
+/// `source.getEntity()` of a blow, as `SulfurCube.knockback` reads it: `getEyePosition()`,
+/// `getLookAngle()` and `position()`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Aim {
+    pub eye: [f64; 3],
+    pub look: [f64; 3],
+    pub feet: [f64; 3],
 }
 /// A damage source: its type, the attacking entity and where it came from.
 #[derive(Clone, Copy, Debug)]
@@ -741,12 +751,17 @@ impl Damage {
                 | DamageKind::Starve
                 | DamageKind::SulfurCubeHot
                 | DamageKind::Wither
+                | DamageKind::Spear
         )
     }
     pub fn is_projectile(&self) -> bool {
         matches!(
             self.kind,
-            DamageKind::Arrow | DamageKind::Thrown | DamageKind::Fireball | DamageKind::WindCharge
+            DamageKind::Arrow
+                | DamageKind::Thrown
+                | DamageKind::Fireball
+                | DamageKind::WindCharge
+                | DamageKind::WitherSkull
         )
     }
 }
@@ -775,6 +790,12 @@ pub fn anger_left(anger_end: i64, game_time: i64) -> i32 {
 /// Species-specific persistent state (variants, colours, taming, ageing...).
 #[derive(Clone, Debug, Default)]
 pub struct Extra {
+    /// `Ocelot.DATA_TRUSTING`: it no longer runs from players.
+    pub trusting: bool,
+    /// `Mannequin.DATA_IMMOVABLE`: it neither moves nor falls (`isEffectiveAi` is false).
+    pub immovable: bool,
+    /// `Mannequin.DATA_DESCRIPTION`: the text under its name.
+    pub description: MannequinDescription,
     /// A player's or mannequin's `minecraft:scale`, which scales the whole model
     /// (`LivingEntityRenderState.scale`): the local player's own, and on a
     /// server the others' from their attribute updates; 0 is the default, 1.
@@ -1118,6 +1139,14 @@ pub struct Mob {
     pub silent: bool,
     /// `Invulnerable`: immune to damage (but not to `/kill`).
     pub invulnerable_flag: bool,
+    /// The entity that causes the blow being dealt (`source.getEntity()`): its eye, view
+    /// direction and feet, which `SulfurCube.knockback` turns the launch by. Set by whoever deals
+    /// the blow (`Game::attacker_aim`) and cleared once it is dealt.
+    pub attacker_aim: Option<Aim>,
+    /// The horizontal motion `(x, z)` of the projectile that is the direct entity of the blow
+    /// being dealt (`Projectile.calculateHorizontalHurtKnockbackDirection`): the knock goes the
+    /// way it was travelling. None for any other direct entity.
+    pub projectile_motion: Option<[f64; 2]>,
     pub climbing: bool,
     pub fire_ticks: i32,
     pub ticks_frozen: i32,
@@ -1150,6 +1179,36 @@ pub struct Mob {
     /// A mannequin's `DATA_PROFILE` (ResolvableProfile): the profile's
     /// `textures` property resolves to `skin` like a player's.
     pub profile: Option<horizon_protocol::entity_data::Profile>,
+}
+/// A mannequin's `description` and `hide_description` (`Mannequin.updateDescription`):
+/// the default `entity.minecraft.mannequin.label`, none at all, or a component.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum MannequinDescription {
+    #[default]
+    Default,
+    Hidden,
+    Custom(horizon_world::nbt::Tag),
+}
+impl MannequinDescription {
+    /// `Mannequin.getDescription`: the component `DATA_DESCRIPTION` holds, none when hidden.
+    pub fn component(&self) -> Option<horizon_world::nbt::Tag> {
+        match self {
+            Self::Default => Some(horizon_world::nbt::Tag::compound([(
+                "translate",
+                horizon_world::nbt::Tag::String("entity.minecraft.mannequin.label".into()),
+            )])),
+            Self::Hidden => None,
+            Self::Custom(tag) => Some(tag.clone()),
+        }
+    }
+    /// `DATA_DESCRIPTION` as a client reads it.
+    pub fn from_component(tag: Option<&horizon_world::nbt::Tag>) -> Self {
+        match tag {
+            None => Self::Hidden,
+            Some(tag) if Some(tag) == Self::Default.component().as_ref() => Self::Default,
+            Some(tag) => Self::Custom(tag.clone()),
+        }
+    }
 }
 /// Events a mob tick asks the game to act on.
 #[derive(Clone, Debug)]
@@ -1235,6 +1294,16 @@ pub enum MobEvent {
     /// `InfestedMobEffect.onMobHurt`: the mob was hurt while infested.
     Infested {
         mob: u32,
+    },
+    /// `LivingEntity.hurtArmor` (`doHurtEquipment`): a hit that landed on a mob
+    /// wearing body armour (a horse's) leaves the piece owing
+    /// `max(1, damage / 4)` durability. The host applies it: it is the one
+    /// that knows the item's maximum, whether it wears when hurt at all and
+    /// whether a fire hit leaves it alone (`ItemStack.canBeHurtBy`).
+    ArmorHurt {
+        mob: u32,
+        amount: f32,
+        kind: DamageKind,
     },
     /// `OfferFlowerGoal.stop`: the item goes to the target's antenna (saddle)
     /// slot if it is empty, as a guaranteed drop.
@@ -1357,6 +1426,8 @@ pub enum MobEvent {
         mob: u32,
         charged: bool,
         name: crate::text::Text,
+        /// `Entity.isInWater` of the source: `BlockAttached.ignoreExplosion`.
+        in_water: bool,
     },
     /// The centre, the radius and the kind of the mob blowing up (it may be
     /// gone from the list by the time the blast is handled).
@@ -1472,6 +1543,12 @@ pub enum MobEvent {
     SetBlock {
         pos: [i32; 3],
         state: horizon_world::registry::BlockStateId,
+    },
+    /// `TurtleEggBlock.decreaseEggs` after a mob's step won its 1 in 100: the
+    /// break sound, then one egg fewer, or the block destroyed when it was
+    /// the last.
+    CrackTurtleEgg {
+        pos: [i32; 3],
     },
     /// `LivingEntity.startSleeping` / `stopSleeping`: the bed head at `pos`
     /// gets `occupied` (`setBlockAndUpdate`; the foot follows it).
@@ -2268,6 +2345,14 @@ pub struct MobWorld<'a> {
     pub items: Option<&'a crate::items::Items>,
     /// `ChestBlockEntity.getOpenCount`: the players with each chest open.
     pub lid_openers: &'a HashMap<(i32, i32, i32), i32>,
+    /// What a content mod's effects do, on a server (None on a client).
+    pub mod_effects: Option<&'a dyn ModEffectTicks>,
+}
+/// `MobEffectInstance.tickServer` for a content mod's effect: its
+/// `shouldApplyEffectTickThisTick` and `applyEffectTick`, which the game's
+/// native mods answer. False removes the effect.
+pub trait ModEffectTicks {
+    fn tick_mod_effect(&self, effect: &str, mob: u32, tick_count: i32, amplifier: i32) -> bool;
 }
 /// `Entity.getTeam` of the player and of the mobs on a team.
 #[derive(Clone, Debug, Default)]
@@ -2335,6 +2420,8 @@ impl Mob {
             no_ai: false,
             silent: false,
             invulnerable_flag: false,
+            attacker_aim: None,
+            projectile_motion: None,
             climbing: false,
             fire_ticks: 0,
             ticks_frozen: 0,
@@ -2473,6 +2560,27 @@ impl Mob {
         .map(|i| spawning::armor_stats(i))
         .fold((0.0, 0.0), |(a, t), (x, y)| (a + x, t + y))
     }
+    /// `damage` of a blow whose causing entity is `aim` (`SulfurCube.knockback` reads it).
+    pub fn damage_aimed(&mut self, amount: f32, source: Damage, aim: Option<Aim>) -> bool {
+        self.attacker_aim = aim;
+        let hurt = self.damage(amount, source);
+        self.attacker_aim = None;
+        hurt
+    }
+    /// `damage` of a blow dealt by a projectile (`motion`: its horizontal movement) whose owner
+    /// is `aim`.
+    pub fn damage_projectile(
+        &mut self,
+        amount: f32,
+        source: Damage,
+        aim: Option<Aim>,
+        motion: [f64; 2],
+    ) -> bool {
+        self.projectile_motion = Some(motion);
+        let hurt = self.damage_aimed(amount, source, aim);
+        self.projectile_motion = None;
+        hurt
+    }
     pub fn damage(&mut self, amount: f32, source: Damage) -> bool {
         self.damage_with(amount, source, None)
     }
@@ -2518,6 +2626,18 @@ impl Mob {
         if self.species() == Species::Armadillo {
             amount = armadillo::reduce_damage(self, amount);
         }
+        // LivingEntity.hurtServer, past its guards: a native mod's hook.
+        if crate::health::hurt_server_canceled(
+            crate::health::Hurting::Mob(self, &source),
+            &mut amount,
+        ) {
+            // Ghast.hurtServer: true for a reflected fireball whatever
+            // super.hurtServer did.
+            return reflected;
+        }
+        if amount < 0.0 {
+            amount = 0.0;
+        }
         // #damages_helmet: falling anvils, blocks and stalactites.
         if matches!(
             source.kind,
@@ -2535,6 +2655,9 @@ impl Mob {
             )
         {
             amount *= 5.0;
+        }
+        if !amount.is_finite() {
+            amount = f32::MAX;
         }
         let (worn, worn_toughness) = self.worn_armor();
         // Shulker.setRawPeekAmount: a closed shell adds the covered armor modifier.
@@ -2607,6 +2730,20 @@ impl Mob {
         if !absorbed && dealt != 0.0 {
             self.record_damage(source, dealt);
         }
+        // LivingEntity.hurtArmor: the body armour a mob wears (a horse's) wears
+        // on a hit that reached it. A wolf's armour has its own rule
+        // (`Wolf.actuallyHurt`, `hurt_wolf_armor`).
+        if dealt > 0.0
+            && self.extra.head.is_some()
+            && self.species() != Species::Wolf
+            && drops::head_is_body(self.species())
+        {
+            self.outbox.push(MobEvent::ArmorHurt {
+                mob: self.id,
+                amount: dealt,
+                kind: source.kind,
+            });
+        }
         // Animal.actuallyHurt: damage taken ends love mode (`resetLove`).
         if drops::is_animal(self.species()) {
             self.extra.in_love = 0;
@@ -2622,9 +2759,14 @@ impl Mob {
         // dealDefaultKnockback, unless the damage type is tagged no_knockback;
         // a source without a position knocks in a random direction.
         if knock && !source.no_knockback() {
-            let (dx, dz) = source.from.map_or((0.0, 0.0), |f| {
-                (f[0] - self.position.x, f[2] - self.position.z)
-            });
+            // dealDefaultKnockback: a projectile knocks the way it travelled
+            // (`calculateHorizontalHurtKnockbackDirection`), else from the source's position.
+            let (dx, dz) = match self.projectile_motion {
+                Some([x, z]) => (-x, -z),
+                None => source.from.map_or((0.0, 0.0), |f| {
+                    (f[0] - self.position.x, f[2] - self.position.z)
+                }),
+            };
             self.knockback(f64::from(0.4f32), dx, dz);
         }
         ai::after_hurt(self, &source);
@@ -3328,6 +3470,32 @@ mod elytra_tests {
     }
 }
 #[cfg(test)]
+mod spear_knockback_tests {
+    use super::sensor_scan_tests::kind;
+    use super::*;
+    use horizon_core::geometry::Vec3;
+
+    /// `spear` is in `#no_knockback`: the stab's hurt deals no default
+    /// knockback (the spear pushes with `causeExtraKnockback` itself).
+    #[test]
+    fn a_spear_stab_hurts_without_the_default_knockback() {
+        let mut m = Mob::new(1, kind(), Vec3::ZERO, 0.0);
+        let health = m.health;
+        assert!(m.damage(1.0, Damage::spear([2.0, 0.0, 0.0])));
+        assert_eq!(m.health, health - 1.0);
+        let v = m.velocity;
+        assert_eq!([v.x, v.y, v.z], [0.0; 3]);
+    }
+
+    /// a plain player hit still knocks the mob away from the attacker.
+    #[test]
+    fn a_player_hit_still_knocks_back() {
+        let mut m = Mob::new(1, kind(), Vec3::ZERO, 0.0);
+        assert!(m.damage(1.0, Damage::player([2.0, 0.0, 0.0])));
+        assert!(m.velocity.x < 0.0, "velocity {:?}", m.velocity);
+    }
+}
+#[cfg(test)]
 mod teams_tests {
     use super::*;
     use crate::save::uuid_text;
@@ -3886,5 +4054,52 @@ mod magic_absorb_tests {
         };
         m.damage(20.0, own);
         assert_eq!(m.health, 10.0);
+    }
+}
+
+#[cfg(test)]
+mod armor_hurt_tests {
+    use super::sensor_scan_tests::kind;
+    use super::*;
+    use horizon_core::geometry::Vec3;
+
+    fn horse() -> Mob {
+        let mut kind = kind();
+        let k = Arc::make_mut(&mut kind);
+        k.id = "minecraft:horse".into();
+        k.species = Species::Horse;
+        Mob::new(1, kind, Vec3::ZERO, 0.0)
+    }
+
+    /// `LivingEntity.hurtArmor` (`doHurtEquipment`): a hit that lands on a mob
+    /// wearing body armour leaves the piece owing a wear, which the host
+    /// applies with the item's own maximum and fire rules.
+    #[test]
+    fn a_hurt_horse_reports_the_body_armour_wear() {
+        let hit = Damage {
+            kind: DamageKind::MobAttack,
+            attacker: None,
+            from: None,
+        };
+        let mut m = horse();
+        m.extra.head = Some("minecraft:diamond_horse_armor".into());
+        assert!(m.damage(6.0, hit), "the hit landed");
+        let owed = m.outbox.iter().find_map(|e| match e {
+            MobEvent::ArmorHurt { amount, .. } => Some(*amount),
+            _ => None,
+        });
+        assert!(
+            owed.is_some_and(|amount| amount > 0.0),
+            "the worn armour owes a wear: {owed:?}"
+        );
+        // A horse with no body armour owes nothing.
+        let mut bare = horse();
+        assert!(bare.damage(6.0, hit));
+        assert!(
+            !bare
+                .outbox
+                .iter()
+                .any(|e| matches!(e, MobEvent::ArmorHurt { .. }))
+        );
     }
 }

@@ -15,7 +15,7 @@
 //!
 //! It is off unless the owner sets the key: far tiles show the generator's
 //! terrain far beyond view distance, which helps crack a world's seed.
-use crate::lod::{Column, Span, Surface};
+use crate::lod::{Column, Span, Spans, Surface};
 use horizon_protocol::{
     Error, Result,
     buf::{Reader, Writer},
@@ -223,6 +223,9 @@ pub fn encode_reply(id: u32, columns: Option<&[Column]>, biome_names: &[String])
             body.u16(span.light);
         }
     }
+    if palette.len() > MAX_BIOMES {
+        return refusal(id);
+    }
     w.varint(palette.len() as i32);
     for biome in palette {
         w.string(
@@ -323,7 +326,7 @@ pub fn decode_reply(
         if total > MAX_SPANS {
             return Err(Error::new("far terrain: too many spans"));
         }
-        let mut spans: Vec<Span> = Vec::with_capacity(count);
+        let mut spans = Spans::with_capacity(count);
         for _ in 0..count {
             let span = Span {
                 min: r.i16()?,
@@ -390,13 +393,13 @@ mod tests {
                     water: (i % 5 == 0).then_some((62, BlockStateId(86))),
                     biome: (i % 4) as u16,
                 }),
-                spans: vec![Span {
+                spans: Spans::from(vec![Span {
                     min: -64,
                     max: 60,
                     state: BlockStateId(1),
                     biome: (i % 2) as u16,
                     light: 240,
-                }],
+                }]),
             })
             .collect()
     }
@@ -443,7 +446,7 @@ mod tests {
         };
         let with = |spans: Vec<Span>| {
             let mut tile = vec![Column::default(); SIDE * SIDE];
-            tile[0].spans = spans;
+            tile[0].spans = spans.into();
             encode_reply(1, Some(&tile), &names)
         };
         assert!(decode_reply(&with(vec![span(0, 4), span(4, 9)]), &client, 9).is_ok());
@@ -458,11 +461,11 @@ mod tests {
         }
         // A tile past the span cap is refused by the server and by the client.
         let many: Vec<Span> = (0..=MAX_SPANS as i16 / 4)
-            .map(|i| span(i * 2, i * 2 + 1))
+            .map(|i| span(i - 2048, i - 2047))
             .collect();
         let mut tile = vec![Column::default(); SIDE * SIDE];
         for column in &mut tile[..4] {
-            column.spans = many.clone();
+            column.spans = many.clone().into();
         }
         assert_eq!(
             decode_reply(&with(Vec::new()), &client, 9)
@@ -478,7 +481,8 @@ mod tests {
         let mut forged = Writer::new();
         forged.varint(2);
         forged.u8(0);
-        forged.varint(0);
+        forged.varint(1);
+        forged.string("a");
         forged.varint(256);
         for i in 0..256 {
             forged.bool(false);
@@ -491,7 +495,8 @@ mod tests {
                 forged.u16(0);
             }
         }
-        assert!(decode_reply(&forged.data, &client, 9).is_err());
+        let err = decode_reply(&forged.data, &client, 9).unwrap_err();
+        assert!(err.to_string().contains("too many spans"), "{err}");
         assert!(decode_reply(&vec![0; MAX_REPLY + 1], &client, 9).is_err());
     }
 
