@@ -272,6 +272,8 @@ impl Game<'_> {
                 self.combat.projectile_attacker = shooter;
                 let r = self.projectile_hit(p, on_player);
                 self.combat.refuse_player_hit = false;
+                // A refused or creative hit returns before hurt_player_from takes it.
+                self.combat.projectile_attacker = None;
                 return r;
             }
             Victim::Guest(conn) => self.guest_hit_by(&mut host, conn, |g| {
@@ -279,6 +281,7 @@ impl Game<'_> {
                 g.combat.projectile_attacker = shooter;
                 let r = g.projectile_hit(p, on_player);
                 g.combat.refuse_player_hit = false;
+                g.combat.projectile_attacker = None;
                 r
             }),
         };
@@ -293,7 +296,7 @@ impl Game<'_> {
                 Some((g.entity_id as u32, self.player_text(&g.name, g.uuid)))
             }
             None => self.player.is_some().then(|| {
-                let name = self.player_display_text();
+                let name = self.player_text(&host.host_name, host.host_uuid);
                 (host.host_entity as u32, name)
             }),
         }
