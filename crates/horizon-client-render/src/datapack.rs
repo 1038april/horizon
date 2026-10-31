@@ -574,7 +574,7 @@ pub struct DataStore {
     /// `item_modifier` files, for `/item modify`.
     pub item_modifiers: BTreeMap<String, serde_json::Value>,
     /// The content tables' raw files from the packs after the built-in one:
-    /// `recipe/`, `loot_table/`, `advancement/` and `tags/…/` files, by
+    /// `recipe/`, `loot_table/`, `advancement/`, `dialog/` and `tags/…/` files, by
     /// `<kind-dir>/<ns>:<path>`, each id's files in pack order. The tables
     /// merge them over what they read from the resource root.
     pub files: BTreeMap<String, Vec<Vec<u8>>>,
@@ -583,14 +583,14 @@ pub struct DataStore {
 }
 /// `<kind-dir>/<ns>:<path>` for a pack file the content tables read:
 /// `recipe/`, `loot_table/`, `advancement/`, `trade_set/`,
-/// `villager_trade/` or `tags/<sub>/`, where the id keeps the sub path so a
-/// nested tag kind stays addressable.
+/// `villager_trade/`, `dialog/` or `tags/<sub>/`, where the id keeps the sub
+/// path so a nested tag kind stays addressable.
 fn content_id(file: &str) -> Option<String> {
     let rest = file.strip_prefix("data/")?;
     let (ns, rest) = rest.split_once('/')?;
     let (kind, rest) = rest.split_once('/')?;
     let kind = match kind {
-        "recipe" | "loot_table" | "advancement" | "trade_set" | "villager_trade" => kind,
+        "recipe" | "loot_table" | "advancement" | "trade_set" | "villager_trade" | "dialog" => kind,
         // A tag id is `{ns}:{path-under-tags}` (`tags/worldgen/biome/
         // test:sub/mytag`), the whole path after the namespace, so nested
         // registries keep their directory (`TagLoader`'s id shape).
@@ -621,6 +621,7 @@ impl DataStore {
             let builtin = pack.id == "vanilla";
             for f in pack.list_kinds(&[
                 "advancement",
+                "dialog",
                 "function",
                 "item_modifier",
                 "loot_table",
@@ -1029,6 +1030,10 @@ mod tests {
             "data/mine/predicate/p.json",
             "{\"condition\":\"minecraft:random_chance\",\"chance\":1}",
         );
+        write(
+            "data/mine/dialog/config/points.json",
+            "{\"type\":\"minecraft:notice\",\"title\":\"Points\"}",
+        );
         let packs = discover(&dir);
         assert_eq!(packs.len(), 1);
         assert_eq!(packs[0].id, "file/mypack");
@@ -1041,6 +1046,11 @@ mod tests {
             ["mine:a", "mine:sub/b"]
         );
         assert!(store.predicates.contains_key("mine:p"));
+        // Dialogs reach the synchronized registry through the content files.
+        assert_eq!(
+            store.files["dialog/mine:config/points"],
+            [b"{\"type\":\"minecraft:notice\",\"title\":\"Points\"}".to_vec()]
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
