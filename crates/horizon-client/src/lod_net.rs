@@ -15,7 +15,7 @@
 //!
 //! It is off unless the owner sets the key: far tiles show the generator's
 //! terrain far beyond view distance, which helps crack a world's seed.
-use crate::lod::{Column, Span, Surface};
+use crate::lod::{Column, Span, Spans, Surface};
 use horizon_protocol::{
     Error, Result,
     buf::{Reader, Writer},
@@ -323,7 +323,7 @@ pub fn decode_reply(
         if total > MAX_SPANS {
             return Err(Error::new("far terrain: too many spans"));
         }
-        let mut spans: Vec<Span> = Vec::with_capacity(count);
+        let mut spans = Spans::with_capacity(count);
         for _ in 0..count {
             let span = Span {
                 min: r.i16()?,
@@ -390,13 +390,13 @@ mod tests {
                     water: (i % 5 == 0).then_some((62, BlockStateId(86))),
                     biome: (i % 4) as u16,
                 }),
-                spans: vec![Span {
+                spans: Spans::from(vec![Span {
                     min: -64,
                     max: 60,
                     state: BlockStateId(1),
                     biome: (i % 2) as u16,
                     light: 240,
-                }],
+                }]),
             })
             .collect()
     }
@@ -443,7 +443,7 @@ mod tests {
         };
         let with = |spans: Vec<Span>| {
             let mut tile = vec![Column::default(); SIDE * SIDE];
-            tile[0].spans = spans;
+            tile[0].spans = spans.into();
             encode_reply(1, Some(&tile), &names)
         };
         assert!(decode_reply(&with(vec![span(0, 4), span(4, 9)]), &client, 9).is_ok());
@@ -462,7 +462,7 @@ mod tests {
             .collect();
         let mut tile = vec![Column::default(); SIDE * SIDE];
         for column in &mut tile[..4] {
-            column.spans = many.clone();
+            column.spans = many.clone().into();
         }
         assert_eq!(
             decode_reply(&with(Vec::new()), &client, 9)
