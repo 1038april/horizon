@@ -65,12 +65,40 @@ fn hurt_sound_for(
     damage: &horizon_world::damage_source::Catalog,
     source_type: i32,
 ) -> &'static str {
+    if let Some(Tag::String(effects)) = registries
+        .data("minecraft:damage_type", source_type)
+        .and_then(|t| t.get("effects"))
+        && let Ok(effects) = effects.to_string()
+    {
+        return horizon_client::health::hurt_sound(&effects);
+    }
     registries
         .name("minecraft:damage_type", source_type)
         .and_then(|name| damage.id(name).and_then(|id| damage.definition(id)))
         .map_or(horizon_client::health::hurt_sound("hurt"), |d| {
             horizon_client::health::hurt_sound(&d.effects)
         })
+}
+
+/// Position of the entity a `ClientboundSoundEntityPacket` names, if this level
+/// has it and `EntityBoundSoundInstance.canPlaySound` (`!entity.isSilent()`)
+/// holds. The local player is not a tracked entity; removed ids leave the
+/// tracked table.
+fn entity_position(
+    id: i32,
+    player: Option<(i32, [f64; 3])>,
+    mobs: &[Mob],
+    tracked: &HashMap<i32, Tracked>,
+) -> Option<[f64; 3]> {
+    if let Some((player_id, at)) = player
+        && player_id == id
+    {
+        return Some(at);
+    }
+    if let Some(m) = mobs.iter().find(|m| m.id as i32 == id) {
+        return (!m.silent).then_some([m.position.x, m.position.y, m.position.z]);
+    }
+    tracked.get(&id).map(|t| t.position)
 }
 
 /// `ClientboundOpenScreenPacket.title` as a container screen draws it: the
@@ -507,6 +535,15 @@ impl Game<'_> {
                     .map(str::to_owned)
             }),
         }
+    }
+    /// Position of an entity `ClientboundSoundEntityPacket` names.
+    fn remote_entity_position(&self, id: i32) -> Option<[f64; 3]> {
+        let r = self.remote.as_ref()?;
+        let player = self
+            .player
+            .as_ref()
+            .map(|p| (r.entity_id, [p.position.x, p.position.y, p.position.z]));
+        entity_position(id, player, &self.mobs, &r.entities)
     }
     /// The hurt sound the hurt player's own client plays from
     /// `ClientboundDamageEventPacket` (`LivingEntity.handleDamageEvent`):
@@ -2654,6 +2691,26 @@ impl Game<'_> {
                         f64::from(p.z) / 8.0,
                     ];
                     // ClientPacketListener.handleSoundEvent plays with packet.getSource().
+                    match usize::try_from(p.source)
+                        .ok()
+                        .filter(|s| *s < horizon_client::settings::SOUND_SOURCES.len())
+                    {
+                        Some(source) => {
+                            self.audio
+                                .play_on(source, &name, Some(at), p.volume, p.pitch)
+                        }
+                        None => self.audio.play(&name, Some(at), p.volume, p.pitch),
+                    }
+                }
+            }
+            // shortcut: vanilla's `EntityBoundSoundInstance` re-reads the entity's position
+            // every tick and stops with it, so the sound follows the entity; a play at the
+            // packet's arrival does not. Upgrade when the sound engine has a generic
+            // entity-bound instance (its tickable ones are one per mob kind, e.g. `Ticking::Bee`).
+            C::SoundEntity(p) => {
+                if let Some(name) = self.remote_sound_name(&p.sound)
+                    && let Some(at) = self.remote_entity_position(p.id)
+                {
                     match usize::try_from(p.source)
                         .ok()
                         .filter(|s| *s < horizon_client::settings::SOUND_SOURCES.len())
@@ -9023,6 +9080,60 @@ mod tests {
         assert_eq!(
             hurt_sound_for(&registries, &catalog, types.len() as i32),
             "minecraft:entity.player.hurt"
+        );
+        // A server-defined damage type with inline NBT effects needs no entry in
+        // the client's built-in catalog.
+        let mut custom = horizon_world::nbt::Compound::new();
+        custom.insert(
+            "effects".into(),
+            horizon_world::nbt::Tag::String("burning".into()),
+        );
+        registries.add(horizon_protocol::packets::configuration::RegistryData {
+            registry: "minecraft:damage_type".into(),
+            entries: vec![horizon_protocol::packets::configuration::RegistryEntry {
+                id: "custom:lava_splash".into(),
+                data: Some(horizon_world::nbt::Tag::Compound(custom)),
+            }],
+        });
+        assert_eq!(
+            hurt_sound_for(&registries, &catalog, 0),
+            "minecraft:entity.player.hurt_on_fire"
+        );
+    }
+    /// `ClientboundSoundEntityPacket`: the sound is heard where the entity it
+    /// names is — the local player included, which is no tracked entity — and
+    /// an id this level doesn't have plays nothing at all.
+    #[test]
+    fn a_sound_entity_is_heard_where_its_entity_is() {
+        use std::collections::HashMap;
+        let mut tracked = HashMap::new();
+        tracked.insert(
+            7,
+            super::Tracked {
+                kind: "minecraft:cow".to_owned(),
+                position: [8.5, 64.0, -3.5],
+            },
+        );
+        let player = Some((2, [0.5, 70.0, 0.5]));
+        assert_eq!(
+            super::entity_position(2, player, &[], &tracked),
+            Some([0.5, 70.0, 0.5]),
+            "the local player is named by Remote.entity_id"
+        );
+        assert_eq!(
+            super::entity_position(7, player, &[], &tracked),
+            Some([8.5, 64.0, -3.5]),
+            "another entity the server spawned"
+        );
+        assert_eq!(
+            super::entity_position(9, player, &[], &tracked),
+            None,
+            "getEntity is null: handleSoundEntityEvent returns"
+        );
+        assert_eq!(
+            super::entity_position(2, None, &[], &tracked),
+            None,
+            "a player with no position yet"
         );
     }
     /// Q over a slot of the inventory on a server (#3357): the predicted THROW

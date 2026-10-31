@@ -571,6 +571,15 @@ impl Game<'_> {
     /// The second half of `as_guest`: the guest's state back into their
     /// record, the game's back in place, and what the turn changed sent.
     pub(super) fn leave_guest(&mut self, host: &mut LanHost, swap: GuestSwap) {
+        let turn_events = self
+            .player
+            .as_mut()
+            .map(|p| std::mem::take(&mut p.events))
+            .unwrap_or_default();
+        if !turn_events.is_empty() {
+            self.record_combat(&turn_events);
+            self.wear_armor(&turn_events);
+        }
         // A totem that saved the guest this turn (its hurt set it off).
         let totem = self.apply_totem();
         let GuestSwap {
@@ -866,6 +875,15 @@ impl Game<'_> {
             }
         }
         host.play.insert(conn, play);
+        for event in turn_events {
+            match event {
+                MotionEvent::Health(horizon_client::health::HealthEvent::DamageBroadcast {
+                    source,
+                }) => self.guest_damage_broadcast(host, conn, source),
+                MotionEvent::HurtSound(sound) => self.guest_hurt_sound(host, conn, sound),
+                _ => {}
+            }
+        }
         self.stat_criteria_changed(&name, stat_events);
         if let Some(pos) = opened
             && !self.lan_open_container(host, conn, pos)
@@ -892,6 +910,39 @@ impl Game<'_> {
         if let Some(mob) = guest_mount {
             self.lan_open_mount(host, conn, mob);
         }
+    }
+
+    /// `ServerLevel.broadcastDamageEvent` for a guest that took an unblocked hit.
+    fn guest_damage_broadcast(
+        &mut self,
+        host: &mut LanHost,
+        conn: u32,
+        source: horizon_world::damage_source::DamageTypeId,
+    ) {
+        let Some(g) = host.hub.guest(conn) else {
+            return;
+        };
+        let (id, at) = (g.entity_id, g.position);
+        let kind = self
+            .motion
+            .health
+            .damage
+            .definition(source)
+            .map_or("minecraft:generic", |d| d.name.as_str());
+        host.hub.damage_event(id, kind, None, None, at);
+    }
+
+    /// `LivingEntity.playHurtSound` for a guest: the server's `Entity.playSound`
+    /// reaches every player around but the hurt one, whose own client plays it
+    /// from `handleDamageEvent` (#4149).
+    fn guest_hurt_sound(&mut self, host: &mut LanHost, conn: u32, sound: &str) {
+        let Some(g) = host.hub.guest(conn) else {
+            return;
+        };
+        let at = g.position;
+        let source = horizon_client::settings::sound_source(sound) as i32;
+        self.audio.play_unshared(sound, Some(at), 1.0, 1.0);
+        host.hub.sound(sound, at, 1.0, 1.0, source, Some(conn));
     }
 
     /// `ServerLevel.players()` in turn: the host's own player, then each
@@ -2391,6 +2442,37 @@ impl Game<'_> {
             });
             return;
         }
+        if let Some(index) = self
+            .mobs
+            .iter()
+            .position(|m| m.id as i32 == id && m.alive())
+            .filter(|_| self.dragon.as_ref().is_none_or(|d| d.id as i32 != id))
+        {
+            if host.hub.guests[gi].vehicle == Some(self.mobs[index].id) {
+                return;
+            }
+            // A mace's smash sets the attacker's velocity and sends it at once, before the
+            // Wind Burst's push (MaceItem.hurtEnemy, then the post-attack effects).
+            let sent = self
+                .as_guest(host, conn, |g| {
+                    let marked = g
+                        .player
+                        .as_mut()
+                        .is_some_and(|p| std::mem::take(&mut p.health.sync_velocity));
+                    g.attack_mob(index);
+                    g.swing_arm();
+                    let p = g.player.as_mut()?;
+                    let sent = std::mem::replace(&mut p.health.sync_velocity, marked);
+                    sent.then_some(p.velocity)
+                })
+                .flatten();
+            self.send_guest_motion(host, conn, sent);
+            // The mob now answers to this guest (game/lan_mobs.rs).
+            if let Ok(id) = u32::try_from(id) {
+                host.mob_players.insert(id, conn);
+            }
+            return;
+        }
         let (old_yaw, old_pitch) = (host.hub.guests[gi].yaw, host.hub.guests[gi].pitch);
         if self.look_at_entity(host, gi, id, None).is_none() {
             return;
@@ -3374,13 +3456,13 @@ impl Game<'_> {
         });
         for event in events {
             match event {
+                MotionEvent::Health(horizon_client::health::HealthEvent::DamageBroadcast {
+                    source,
+                }) => self.guest_damage_broadcast(host, conn, source),
                 // LivingEntity.playHurtSound: the server's `Entity.playSound`
                 // reaches every player around but the hurt one, whose own
                 // client plays it from handleDamageEvent (#4149).
-                MotionEvent::HurtSound(sound) => {
-                    let source = horizon_client::settings::sound_source(sound) as i32;
-                    host.hub.sound(sound, at, 1.0, 1.0, source, Some(conn));
-                }
+                MotionEvent::HurtSound(sound) => self.guest_hurt_sound(host, conn, sound),
                 // LivingEntity.checkFallDamage: the crumbs reach every player.
                 MotionEvent::Fall(horizon_client::landing::FallEvent::Particles {
                     state,
