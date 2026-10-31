@@ -241,7 +241,6 @@ API 43 adds the server starting and stopping, on the single player server thread
 and each stop by `WorldCloseFinal`; a server whose loop fails reports `WorldCloseFailed` instead of stopping. Bundles
 that use them need `"hooks": 43`.
 
-
 ## A bundle
 
 A bundle is a folder with a `horizon-mixin.toml`. Besides its helpers and modules (horizon-mixins' README) it can
