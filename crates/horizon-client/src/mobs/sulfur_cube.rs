@@ -475,7 +475,7 @@ fn launch(
     powers: (f32, f32),
     resistance: f32,
     damage: f32,
-    from: [f64; 3],
+    (xd, zd): (f64, f64),
     attacker_feet: [f64; 3],
     position: [f64; 3],
     center: [f64; 3],
@@ -483,10 +483,7 @@ fn launch(
     aim: Option<([f64; 3], [f64; 3])>,
 ) -> [f64; 3] {
     let (h0, v0) = powers;
-    let (mut xd, mut zd) = (
-        (from[0] - position[0]) as f32,
-        (from[2] - position[2]) as f32,
-    );
+    let (mut xd, mut zd) = (xd as f32, zd as f32);
     let (mut h, mut v) = (h0, v0);
     if let Some((eye, look)) = aim {
         let look = normalize(look);
@@ -528,29 +525,33 @@ fn launch(
 /// (`source.getSourcePosition()`) with `knockback(0.4, ...)`. A source with a causing entity goes
 /// through `SulfurCube.knockback`; one with none (a cactus, a fall) through `super.knockback`.
 fn deal_default_knockback(m: &mut Mob, source: &Damage, damage: f32) {
-    let (xd, zd) = source
-        .from
-        .map_or((0.0, 0.0), |f| (f[0] - m.position.x, f[2] - m.position.z));
+    // A projectile knocks the way it travelled (`calculateHorizontalHurtKnockbackDirection`),
+    // else from the source's position.
+    let (xd, zd) = match m.projectile_motion.take() {
+        Some([x, z]) => (-x, -z),
+        None => source
+            .from
+            .map_or((0.0, 0.0), |f| (f[0] - m.position.x, f[2] - m.position.z)),
+    };
     if source.attacker.is_some() {
-        knockback(m, source.from, damage);
+        knockback(m, (xd, zd), source.from, damage);
     } else {
         m.knockback(f64::from(0.4_f32), xd, zd);
     }
 }
 /// `SulfurCube.knockback` with a block and a causing entity: the archetype's powers, turned by
 /// where the blow came from and by the entity's aim (`Mob::attacker_aim`, from the game).
-pub fn knockback(m: &mut Mob, from: Option<[f64; 3]>, damage: f32) -> bool {
+pub fn knockback(m: &mut Mob, direction: (f64, f64), from: Option<[f64; 3]>, damage: f32) -> bool {
     let Some(a) = archetype(m) else {
         return false;
     };
     let aim = m.attacker_aim.take();
-    // No position to knock from (xd and zd of 0): nothing horizontal.
     let from = from.unwrap_or([m.position.x, m.position.y, m.position.z]);
     let delta = launch(
         (a.horizontal_power, a.vertical_power),
         a.knockback_resistance.clamp(0.0, 1.0) as f32,
         damage,
-        from,
+        direction,
         aim.map_or(from, |a| a.feet),
         [m.position.x, m.position.y, m.position.z],
         m.center(),
@@ -886,7 +887,10 @@ mod launch_tests {
             powers: (f32, f32),
             resistance: f32,
             damage: f32,
+            /// The direct entity's position.
             from: [f64; 3],
+            /// Its horizontal motion, if it is a projectile.
+            motion: Option<[f64; 2]>,
             attacker_feet: [f64; 3],
             position: [f64; 3],
             aim: Option<([f64; 3], [f64; 3])>,
@@ -899,6 +903,7 @@ mod launch_tests {
                 resistance: 0.0,
                 damage: 5.0,
                 from: [0.5, 64.0, 0.5],
+                motion: None,
                 attacker_feet: [0.5, 64.0, 0.5],
                 position: [3.5, 64.0, 0.5],
                 aim: Some(([0.5, 65.62, 0.5], [1.0, -0.1, 0.0])),
@@ -909,6 +914,7 @@ mod launch_tests {
                 resistance: 0.25,
                 damage: 8.0,
                 from: [0.5, 64.0, 0.5],
+                motion: None,
                 attacker_feet: [0.5, 64.0, 0.5],
                 position: [3.5, 64.0, 1.5],
                 aim: Some(([0.5, 65.62, 0.5], [0.95, -0.3, 0.2])),
@@ -919,6 +925,7 @@ mod launch_tests {
                 resistance: 0.0,
                 damage: 6.0,
                 from: [10.5, 70.0, -3.5],
+                motion: None,
                 attacker_feet: [10.5, 70.0, -3.5],
                 position: [7.5, 64.0, -2.0],
                 aim: Some(([10.5, 71.62, -3.5], [-0.5, -0.7, 0.4])),
@@ -929,6 +936,7 @@ mod launch_tests {
                 resistance: 0.5,
                 damage: 4.0,
                 from: [0.5, 64.0, 0.5],
+                motion: None,
                 attacker_feet: [0.5, 64.0, 0.5],
                 position: [2.5, 64.0, 0.5],
                 aim: None,
@@ -939,20 +947,22 @@ mod launch_tests {
                 resistance: 0.0,
                 damage: 6.0,
                 from: [1.5, 64.9, 0.5],
+                motion: Some([0.9, 0.1]),
                 attacker_feet: [-6.5, 64.0, 0.5],
                 position: [3.5, 64.0, 0.5],
                 aim: Some(([-6.5, 65.62, 0.5], [1.0, -0.05, 0.1])),
-                expected: [0.9673684563243138, 0.5878775954246521, -0.15555815498040762],
+                expected: [0.9786302987781631, 0.5878775954246521, -0.04777874198383045],
             },
             Case {
                 powers: (2.0, 1.0),
                 resistance: 0.25,
                 damage: 5.0,
                 from: [-2.5, 66.0, 3.5],
+                motion: Some([-0.7, 0.4]),
                 attacker_feet: [-9.5, 64.0, 6.5],
                 position: [1.5, 64.0, -0.5],
                 aim: Some(([-9.5, 65.62, 6.5], [0.8, -0.2, -0.5])),
-                expected: [0.3121084870810207, 2.012461280822754, -0.320294105719234],
+                expected: [-0.38538593044563885, 2.012461280822754, 0.22688699055044273],
             },
         ];
         for (i, c) in cases.into_iter().enumerate() {
@@ -962,11 +972,17 @@ mod launch_tests {
                 c.position[1] + f64::from(height) / 2.0,
                 c.position[2],
             ];
+            // dealDefaultKnockback: a projectile knocks the way it travelled, else away from the
+            // source's position.
+            let direction = match c.motion {
+                Some([x, z]) => (-x, -z),
+                None => (c.from[0] - c.position[0], c.from[2] - c.position[2]),
+            };
             let got = launch(
                 c.powers,
                 c.resistance,
                 c.damage,
-                c.from,
+                direction,
                 c.attacker_feet,
                 c.position,
                 center,

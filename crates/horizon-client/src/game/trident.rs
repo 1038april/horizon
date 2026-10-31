@@ -596,7 +596,7 @@ impl Game<'_> {
                     let aim = self.attacker_aim(Some(Who::Player));
                     if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
                         let from = Some([t.position.x, t.position.y, t.position.z]);
-                        let hurt = m.damage_aimed(
+                        let hurt = m.damage_projectile(
                             damage,
                             Damage {
                                 kind: DamageKind::Arrow,
@@ -604,6 +604,7 @@ impl Game<'_> {
                                 from,
                             },
                             aim,
+                            [t.velocity.x, t.velocity.z],
                         );
                         if hurt {
                             hurt_at = Some([m.position.x, m.position.y, m.position.z]);

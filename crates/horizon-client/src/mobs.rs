@@ -1113,6 +1113,10 @@ pub struct Mob {
     /// direction and feet, which `SulfurCube.knockback` turns the launch by. Set by whoever deals
     /// the blow (`Game::attacker_aim`) and cleared once it is dealt.
     pub attacker_aim: Option<Aim>,
+    /// The horizontal motion `(x, z)` of the projectile that is the direct entity of the blow
+    /// being dealt (`Projectile.calculateHorizontalHurtKnockbackDirection`): the knock goes the
+    /// way it was travelling. None for any other direct entity.
+    pub projectile_motion: Option<[f64; 2]>,
     pub climbing: bool,
     pub fire_ticks: i32,
     pub ticks_frozen: i32,
@@ -2291,6 +2295,7 @@ impl Mob {
             silent: false,
             invulnerable_flag: false,
             attacker_aim: None,
+            projectile_motion: None,
             climbing: false,
             fire_ticks: 0,
             ticks_frozen: 0,
@@ -2436,6 +2441,20 @@ impl Mob {
         self.attacker_aim = None;
         hurt
     }
+    /// `damage` of a blow dealt by a projectile (`motion`: its horizontal movement) whose owner
+    /// is `aim`.
+    pub fn damage_projectile(
+        &mut self,
+        amount: f32,
+        source: Damage,
+        aim: Option<Aim>,
+        motion: [f64; 2],
+    ) -> bool {
+        self.projectile_motion = Some(motion);
+        let hurt = self.damage_aimed(amount, source, aim);
+        self.projectile_motion = None;
+        hurt
+    }
     pub fn damage(&mut self, amount: f32, source: Damage) -> bool {
         self.damage_with(amount, source, None)
     }
@@ -2577,9 +2596,14 @@ impl Mob {
         // dealDefaultKnockback, unless the damage type is tagged no_knockback;
         // a source without a position knocks in a random direction.
         if knock && !source.no_knockback() {
-            let (dx, dz) = source.from.map_or((0.0, 0.0), |f| {
-                (f[0] - self.position.x, f[2] - self.position.z)
-            });
+            // dealDefaultKnockback: a projectile knocks the way it travelled
+            // (`calculateHorizontalHurtKnockbackDirection`), else from the source's position.
+            let (dx, dz) = match self.projectile_motion {
+                Some([x, z]) => (-x, -z),
+                None => source.from.map_or((0.0, 0.0), |f| {
+                    (f[0] - self.position.x, f[2] - self.position.z)
+                }),
+            };
             self.knockback(f64::from(0.4f32), dx, dz);
         }
         ai::after_hurt(self, &source);
