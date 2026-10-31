@@ -1513,6 +1513,15 @@ impl FallingBlock {
         )
     }
 }
+
+/// `FallingBlockRenderer.shouldRender` drops a falling block whose own state is
+/// the state of the cell it is in (`level.getBlockState(entity.blockPosition())`):
+/// a `NoGravity` block, or one that has just landed, sits inside an identical
+/// block, and vanilla draws no model for it.
+fn falling_block_visible(state: BlockStateId, cell: BlockStateId) -> bool {
+    state != cell
+}
+
 /// The data loaded once at startup and never changed: blocks, items,
 /// recipes, biomes, mobs, collision and motion. Read-only and `Send + Sync`,
 /// so the client and an integrated server thread can share one copy.
@@ -9851,17 +9860,22 @@ impl Game<'_> {
         // Falling blocks use their baked model, including non-cubic shapes.
         self.mark_entity(out.len(), "minecraft:falling_block");
         for f in &self.falling {
+            // `FallingBlockEntity.blockPosition()`: the cell its feet are in.
+            let (x, y, z) = (
+                f.position.x.floor() as i32,
+                f.position.y.floor() as i32,
+                f.position.z.floor() as i32,
+            );
+            if !falling_block_visible(f.state, self.world.block(x, y, z)) {
+                continue;
+            }
             let Some((_, tint)) = self.block_face_sprite(f.state) else {
                 continue;
             };
             let tables = &self.pack.context.tables;
             let p = f.model_origin(alpha, |state, x, z| tables.offset(state, x, z)) - camera;
             let o = p.as_vec3();
-            let light = self.world.light(
-                f.position.x.floor() as i32,
-                f.position.y.floor() as i32 + 1,
-                f.position.z.floor() as i32,
-            );
+            let light = self.world.light(x, y + 1, z);
             let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
             let start = out.len();
             self.block_model_vertices(
@@ -18710,6 +18724,17 @@ mod tests {
         // Blocks without a random offset are drawn centred on the entity.
         let origin = falling.model_origin(1.0, |_, _, _| None);
         assert_eq!(origin, glam::DVec3::new(3.0, 70.25, -2.0));
+    }
+
+    /// `FallingBlockRenderer.shouldRender` emits nothing for a falling block whose
+    /// own state is the state of the cell it is in (a `NoGravity` block, or one
+    /// that has just landed), where Horizon drew a z-fighting copy; the same block
+    /// draws its model again once that cell is cleared.
+    #[test]
+    fn a_falling_block_in_its_own_state_emits_nothing() {
+        let state = BlockStateId(7);
+        assert!(!falling_block_visible(state, state));
+        assert!(falling_block_visible(state, BlockStateId(0)));
     }
 
     /// A key bound to key.attack keeps attacking while it is held: each
