@@ -1871,3 +1871,228 @@ fn creative_tabs_come_on_their_own_page() {
     assert_eq!(creative.page, 0);
     fs::remove_dir_all(&scratch).unwrap();
 }
+
+/// A block that gives each of its template's states a run moves a template
+/// state to the first of its own: the combination every declared property is
+/// at its default for, which is the one the id cursor points at first.
+#[test]
+fn a_fan_out_rename_moves_a_template_state_to_its_first_state() {
+    let mut r = Rename::new("minecraft:test", "testmod:test");
+    r.states = 10..12;
+    r.first = 100;
+    r.fanout = 6;
+    assert_eq!(
+        (r.id(9), r.id(10), r.id(11), r.id(12)),
+        (None, Some(100), Some(106), None)
+    );
+}
+
+/// A base root of one template with two states, and a mod that adds a block
+/// to it. `declarations` go in as the block file.
+fn block_base(tag: &str, declarations: &[&str]) -> (PathBuf, Vec<ContentMod>) {
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-{tag}-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let base = scratch.join("base");
+    fs::create_dir_all(&base).unwrap();
+    let facts = r#"{"states":[
+      ["minecraft:test",false,false,"",{"id":"minecraft:test","properties":{"axis":"x"}}],
+      ["minecraft:test",false,false,"",{"id":"minecraft:test","properties":{"axis":"y"}}]],
+      "defaults":{"minecraft:test":0}}"#;
+    fs::write(base.join("facts.json"), facts).unwrap();
+    fs::write(
+        base.join("gameplay-facts.json"),
+        r#"{"states":[{"item":"minecraft:test"},{"item":"minecraft:test"}]}"#,
+    )
+    .unwrap();
+    fs::write(base.join("items.json"), r#"{"minecraft:test":{}}"#).unwrap();
+    fs::write(
+        base.join("registries.json"),
+        r#"{"minecraft:item":{"entries":{"minecraft:test":{"protocol_id":0}}},"minecraft:block":{"entries":{"minecraft:test":{"protocol_id":0}}}}"#,
+    )
+    .unwrap();
+    let mods: Vec<ContentMod> = declarations
+        .iter()
+        .enumerate()
+        .map(|(i, declaration)| {
+            let dir = scratch.join(format!("mod{i}"));
+            folder_mod(
+                &dir,
+                &[
+                    ("horizon-mod.toml", &manifest("testmod", "")),
+                    ("data/testmod/horizon/block/test.json", *declaration),
+                ],
+            )
+        })
+        .collect();
+    (base, mods)
+}
+
+/// A block's states are its template's times the combinations of the state
+/// properties it declares, in a fixed order with every default first.
+#[test]
+fn content_block_state_properties_fan_out_its_states() {
+    let declaration = r#"{"template":"minecraft:test","item":false,
+      "state_properties":{"lit":{"type":"boolean"},
+        "facing":{"type":"enum","values":["north","south","east"]}}}"#;
+    let (base, mods) = block_base("block-states", &[declaration]);
+    let plan = Plan::new(&base, &mods).unwrap();
+    let facts = fs::read_to_string(base.join("facts.json")).unwrap();
+    let mut doc: J = serde_json::from_str(&facts).unwrap();
+    plan.json("facts.json", &mut doc).unwrap();
+    // Two template states times the six combinations, after the template's.
+    let Some(J::Arr(rows)) = doc.get("states") else {
+        panic!("no states")
+    };
+    assert_eq!(rows.len(), 2 + 12);
+    // The default is the first combination of the template's default state.
+    assert_eq!(
+        doc.get("defaults").unwrap().get("testmod:test"),
+        Some(&J::Num(2.into()))
+    );
+    let properties = |i: usize| -> BTreeMap<String, String> {
+        let J::Arr(row) = &rows[i] else {
+            panic!("row {i} is not a state")
+        };
+        let Some(J::Obj(state)) = row.get(4) else {
+            panic!("row {i} has no state")
+        };
+        let Some((_, J::Obj(p))) = state.iter().find(|(k, _)| k == "properties") else {
+            panic!("row {i} has no properties")
+        };
+        p.iter()
+            .map(|(k, v)| match v {
+                J::Str(s) => (k.clone(), s.clone()),
+                _ => panic!("{k} is not a string"),
+            })
+            .collect()
+    };
+    // By name `facing` varies slowest, and each one's default comes first.
+    assert_eq!(
+        properties(2),
+        BTreeMap::from([
+            ("axis".to_owned(), "x".to_owned()),
+            ("facing".to_owned(), "north".to_owned()),
+            ("lit".to_owned(), "false".to_owned()),
+        ])
+    );
+    // And the last is the second template state and the last combination.
+    assert_eq!(
+        properties(13),
+        BTreeMap::from([
+            ("axis".to_owned(), "y".to_owned()),
+            ("facing".to_owned(), "east".to_owned()),
+            ("lit".to_owned(), "true".to_owned()),
+        ])
+    );
+    // Every state of the block is a different one: the registry indexes
+    // states by their name and properties, so a repeat would be a collision.
+    let states: BTreeSet<BTreeMap<String, String>> = (2..14).map(properties).collect();
+    assert_eq!(states.len(), 12);
+    fs::remove_dir_all(&base).unwrap();
+    fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
+}
+
+/// The declared default comes first in the run, so its id is the block's
+/// default with no arithmetic of its own.
+#[test]
+fn content_block_state_properties_put_the_declared_default_first() {
+    let declaration = r#"{"template":"minecraft:test","item":false,
+      "state_properties":{"facing":{"type":"enum","values":["north","south","east"]}},
+      "default_state":{"facing":"south"}}"#;
+    let (base, mods) = block_base("block-default-first", &[declaration]);
+    let plan = Plan::new(&base, &mods).unwrap();
+    let facts = fs::read_to_string(base.join("facts.json")).unwrap();
+    let mut doc: J = serde_json::from_str(&facts).unwrap();
+    plan.json("facts.json", &mut doc).unwrap();
+    let Some(J::Arr(rows)) = doc.get("states") else {
+        panic!("no states")
+    };
+    // Two template states times three values.
+    assert_eq!(rows.len(), 2 + 6);
+    let facing = |i: usize| -> String {
+        let J::Arr(row) = &rows[i] else {
+            panic!("row {i} is not a state")
+        };
+        let Some(J::Obj(state)) = row.get(4) else {
+            panic!("row {i} has no state")
+        };
+        match state
+            .iter()
+            .find(|(k, _)| k == "properties")
+            .map(|(_, p)| p)
+        {
+            Some(p) => match p.get("facing") {
+                Some(J::Str(s)) => s.clone(),
+                _ => panic!("row {i} has no facing"),
+            },
+            None => panic!("row {i} has no properties"),
+        }
+    };
+    // The declared default is the block's default, and it comes first.
+    assert_eq!(
+        doc.get("defaults").unwrap().get("testmod:test"),
+        Some(&J::Num(2.into()))
+    );
+    assert_eq!(facing(2), "south");
+    // The rest keep their declared order, rotated to start at the default.
+    assert_eq!(
+        (facing(3), facing(4)),
+        ("east".to_owned(), "north".to_owned())
+    );
+    fs::remove_dir_all(&base).unwrap();
+    fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
+}
+
+/// What a declaration may not do: shadow its template's property, name a
+/// value its own property does not have, or ask for more states than a world
+/// holds.
+#[test]
+fn content_block_state_properties_are_validated() {
+    // The template's `axis` is not the mod's to redefine.
+    let (base, mods) = block_base(
+        "block-shadow",
+        &[r#"{"template":"minecraft:test","state_properties":{"axis":{"type":"boolean"}}}"#],
+    );
+    let error = match Plan::new(&base, &mods) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("a shadowed template property was accepted"),
+    };
+    assert!(error.contains("axis is already on"), "{error}");
+    fs::remove_dir_all(&base).unwrap();
+    fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
+
+    // A default is one of the values the block declared.
+    let (base, mods) = block_base(
+        "block-bad-default",
+        &[r#"{"template":"minecraft:test",
+             "state_properties":{"lit":{"type":"boolean"}},"default_state":{"lit":"maybe"}}"#],
+    );
+    let error = match Plan::new(&base, &mods) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("a default outside a property's values was accepted"),
+    };
+    assert!(error.contains("is not one of its values"), "{error}");
+    fs::remove_dir_all(&base).unwrap();
+    fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
+
+    // Twenty-one booleans are more combinations than a world can hold, and
+    // are refused before the product is built.
+    let declared: Vec<String> = (0..21)
+        .map(|i| format!(r#""p{i}":{{"type":"boolean"}}"#))
+        .collect();
+    let declaration = format!(
+        r#"{{"template":"minecraft:test","item":false,"state_properties":{{{}}}}}"#,
+        declared.join(",")
+    );
+    let (base, mods) = block_base("block-too-many", &[&declaration]);
+    let error = match Plan::new(&base, &mods) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("more states than a world holds were accepted"),
+    };
+    assert!(
+        error.contains("more than the") && error.contains("world can hold"),
+        "{error}"
+    );
+    fs::remove_dir_all(&base).unwrap();
+    fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
+}
