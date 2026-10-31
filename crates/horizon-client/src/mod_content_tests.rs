@@ -1112,6 +1112,74 @@ fn content_root_carries_a_structure_mod() {
     let _ = fs::remove_dir_all(&scratch);
 }
 
+/// `FlatLevelSource.createState`: a superflat world runs the structure sets its
+/// `structure_overrides` allow (the classic flat world: strongholds and villages) on its
+/// flat ground, and no other set, with the layers where the terrain would be.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn a_superflat_world_runs_its_structure_sets_on_flat_ground() {
+    use crate::streaming::ChunkGenerator;
+    let Some(base) = prepared() else {
+        return;
+    };
+    let assets = Assets::load(&base).unwrap();
+    let biomes = crate::biome::Biomes::load(&base).unwrap();
+    let flat = horizon_world::worldgen::generator::FlatSettings {
+        layers: vec![
+            ("minecraft:bedrock".into(), 1),
+            ("minecraft:dirt".into(), 2),
+            ("minecraft:grass_block".into(), 1),
+        ],
+        biome: "minecraft:plains".into(),
+        structure_overrides: Some(vec![
+            "minecraft:strongholds".into(),
+            "minecraft:villages".into(),
+        ]),
+    };
+    let terrain = crate::vanillagen::VanillaTerrain::for_flat(
+        &base.join("worldgen"),
+        &Default::default(),
+        assets.registry,
+        &biomes,
+        1234,
+        &flat,
+        true,
+    )
+    .unwrap();
+    // A village and a stronghold are found; a mineshaft is not in the overrides.
+    let village = terrain.locate(&["minecraft:village_plains".to_owned()], [0, 64, 0], 12);
+    assert!(village.is_some(), "no plains village near the origin");
+    assert!(
+        terrain
+            .locate(&["minecraft:stronghold".to_owned()], [0, 64, 0], 12)
+            .is_some()
+    );
+    assert!(
+        terrain
+            .locate(&["minecraft:mineshaft".to_owned()], [0, 64, 0], 12)
+            .is_none()
+    );
+    // The layers: bedrock, two dirt and grass from the level's minimum Y, air above.
+    let mut worker = terrain.worker();
+    let chunk = terrain.finish(terrain.proto(&mut worker, 3, 3));
+    let name = |y| {
+        let id = chunk.block(3 * 16 + 5, y, 3 * 16 + 7);
+        assets.registry.state(id).unwrap().name.clone()
+    };
+    assert_eq!(
+        [-65, -64, -63, -62, -61, -60].map(name),
+        [
+            "minecraft:air",
+            "minecraft:bedrock",
+            "minecraft:dirt",
+            "minecraft:dirt",
+            "minecraft:grass_block",
+            "minecraft:air"
+        ]
+        .map(String::from)
+    );
+}
+
 /// A mod's mob effect gets the network id after vanilla's last, on the game
 /// and its server alike, and joins the ids `/effect` and its suggestions
 /// check.

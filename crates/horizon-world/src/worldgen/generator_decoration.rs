@@ -115,6 +115,15 @@ impl Decoration {
         data: &Arc<GeneratorData>,
         source: &ResolvedBiomeSource,
     ) -> Result<Option<Self>, GeneratorError> {
+        Self::new_with(data, source, true)
+    }
+    /// `new`, with `features` off: the biome's decoration steps, none of its placed features
+    /// (a superflat world without `features`).
+    pub(super) fn new_with(
+        data: &Arc<GeneratorData>,
+        source: &ResolvedBiomeSource,
+        with_features: bool,
+    ) -> Result<Option<Self>, GeneratorError> {
         let Some(resources) = &data.feature_resources else {
             return Ok(None);
         };
@@ -208,6 +217,9 @@ impl Decoration {
                     _ => return Err(resource("biome feature step")),
                 };
                 for entry in entries {
+                    if !with_features {
+                        continue;
+                    }
                     let feature = identity(&super::tags::identifier(&entry)?);
                     list.push(feature);
                     biome_features[id.0 as usize].insert(feature);

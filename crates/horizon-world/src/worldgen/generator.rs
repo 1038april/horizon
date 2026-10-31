@@ -916,6 +916,29 @@ struct Pipeline<R: RandomSource> {
     /// The noise settings' `debug_functions`: label and sampler.
     debug_density: Vec<(String, Arc<dyn DensitySampler>)>,
     spawn_position: std::sync::OnceLock<[i32; 2]>,
+    /// A superflat world: its layers stand where the noise terrain would.
+    flat: Option<FlatLayers>,
+}
+/// `FlatLevelGeneratorSettings.getLayers` as `FlatLevelSource` reads them: the states from the
+/// level's minimum Y up, with the layers `adjustGenerationSettings` replaced by `null`
+/// (not opaque to `MOTION_BLOCKING`: a feature fills them later) marked.
+struct FlatLayers {
+    min_y: i32,
+    states: Vec<BlockStateId>,
+    /// `layers.get(i) == null`: counts as opaque in `getBaseHeight` and `getBaseColumn`.
+    null: Vec<bool>,
+    /// The block a null layer stands for in the noise column queries (any opaque one).
+    stand_in: BlockStateId,
+}
+/// A superflat world's generator settings (`FlatLevelGeneratorSettings`).
+#[derive(Clone, Debug)]
+pub struct FlatSettings {
+    /// The layers, bottom up: block id and height.
+    pub layers: Vec<(String, i32)>,
+    /// The biome the whole world is.
+    pub biome: String,
+    /// `structure_overrides`: the structure sets that may generate (all of them when `None`).
+    pub structure_overrides: Option<Vec<String>>,
 }
 const CACHE_LIMIT: usize = 16384;
 /// Coordinates only equal missing neighbour keys. Weak entries retain no
@@ -1173,6 +1196,7 @@ where
             old_world: std::sync::OnceLock::new(),
             debug_density,
             spawn_position: std::sync::OnceLock::new(),
+            flat: None,
         };
         pipeline.decoration = pipeline
             .data
@@ -1473,6 +1497,51 @@ where
             }
             None => (Vec::new(), Starts::default()),
         };
+        // `FlatLevelSource.buildTerrain`: the layers, and nothing else (no noise, surface or carvers).
+        if let Some(flat) = &self.flat {
+            for (i, &state) in flat.states.iter().enumerate() {
+                let y = flat.min_y + i as i32;
+                if y >= self.settings.level_min_y + self.settings.level_height {
+                    break;
+                }
+                if data.states.get(state).is_air() {
+                    continue;
+                }
+                for z in 0..16 {
+                    for x in 0..16 {
+                        chunk
+                            .set_block_raw(
+                                pos.x.wrapping_shl(4) + x,
+                                y,
+                                pos.z.wrapping_shl(4) + z,
+                                state,
+                            )
+                            .map_err(stage("flat"))?;
+                    }
+                }
+            }
+            chunk
+                .prime_heightmaps(&[
+                    HeightmapType::WorldSurfaceWg,
+                    HeightmapType::OceanFloorWg,
+                    HeightmapType::MotionBlocking,
+                    HeightmapType::MotionBlockingNoLeaves,
+                    HeightmapType::OceanFloor,
+                    HeightmapType::WorldSurface,
+                ])
+                .map_err(stage("heightmaps"))?;
+            chunk.set_generation_stage(PreLightChunkStage::Terrain);
+            return Ok(ProtoChunk {
+                terrain: chunk,
+                biomes: center,
+                data: data.clone(),
+                decorated: false,
+                block_entities: Vec::new(),
+                structure_starts: references,
+                own_starts,
+                entities: Vec::new(),
+            });
+        }
         let volume = DensityVolume::new(
             [16, height, 16],
             [pos.x.wrapping_shl(4), min, pos.z.wrapping_shl(4)],
@@ -1705,6 +1774,26 @@ where
     }
     /// iterateNoiseColumn from the top down until `visit` returns true.
     fn noise_column(&self, x: i32, z: i32, visit: &mut dyn FnMut(i32, BlockStateId) -> bool) {
+        // `FlatLevelSource.getBaseHeight` and `getBaseColumn`: the layers, and air above them.
+        if let Some(flat) = &self.flat {
+            let air = self.data.registry.default_state("minecraft:air");
+            let top = self.settings.level_min_y + self.settings.level_height;
+            for y in (self.settings.level_min_y..top).rev() {
+                let i = (y - flat.min_y) as usize;
+                let state = match flat.states.get(i) {
+                    Some(_) if flat.null[i] => flat.stand_in,
+                    Some(&state) => state,
+                    None => match air {
+                        Some(air) => air,
+                        None => return,
+                    },
+                };
+                if visit(y, state) {
+                    return;
+                }
+            }
+            return;
+        }
         let (min, height) = (self.settings.noise_min_y, self.settings.noise_height);
         let Ok(volume) = DensityVolume::new([1, height, 1], [x, min, z], [1; 3]) else {
             return;
@@ -2552,6 +2641,20 @@ where
         };
         self.noise_column(x, z, &mut visit);
         let (height, state) = top?;
+        // A superflat surface is its top layer, with its one biome.
+        if self.flat.is_some() {
+            let biome = self
+                .source
+                .possible_biomes()
+                .into_iter()
+                .find_map(|name| self.data.biome_id(name))?;
+            return Some(SurfaceSample {
+                height,
+                state,
+                water,
+                biome,
+            });
+        }
         let y = height - 1;
         let position = BlockPos::new(x, y, z);
         let mut resolver = self.source.resolver(
@@ -2616,6 +2719,20 @@ where
     ) -> Result<Vec<LodColumn>, GeneratorError> {
         if width <= 0 || side == 0 || side > 64 {
             return Err(resource("far sample dimensions"));
+        }
+        // A superflat world's columns are its layers: the surface sample, and its spans.
+        if self.flat.is_some() {
+            let mut columns = Vec::with_capacity(side * side);
+            for dz in 0..side {
+                for dx in 0..side {
+                    let (wx, wz) = (x + dx as i32 * width, z + dz as i32 * width);
+                    let mut spans = Vec::new();
+                    let sample =
+                        SeededPipeline::surface_sample(self, worker, wx, wz, Some(&mut spans));
+                    columns.push((sample, spans));
+                }
+            }
+            return Ok(columns);
         }
         let mut geometry = Vec::with_capacity(side * side);
         // The coarse and band passes below share the 2D (x/z-only) parts.
@@ -3066,6 +3183,81 @@ impl OverworldGenerator {
         dimension: &str,
     ) -> Result<Self, GeneratorError> {
         Self::build(data, seed, preset, dimension, true)
+    }
+    /// A superflat overworld (`FlatLevelSource`): the layers where the terrain would be, a
+    /// fixed biome, and the structure sets `structure_overrides` allows (every one when it
+    /// names none) generating on the flat ground, with or without structures.
+    pub fn flat(
+        data: Arc<GeneratorData>,
+        seed: i64,
+        flat: &FlatSettings,
+        structures: bool,
+    ) -> Result<Self, GeneratorError> {
+        let registry = data.registry;
+        let (level_min_y, level_height) = overrides::LevelHeight::of_type(
+            &Value::from("minecraft:overworld"),
+            &data.dimension_types,
+        )
+        .map_or((-64, 384), |h| (h.min_y, h.height));
+        // The overworld's own noise settings give the level its sea level and the rest of
+        // the generator its data; no noise is ever sampled.
+        let settings_json: Value = serde_json::from_str(
+            data.settings
+                .get("minecraft:overworld")
+                .ok_or_else(|| resource("missing noise settings minecraft:overworld"))?,
+        )?;
+        let generator = serde_json::json!({
+            "type": "minecraft:noise",
+            "settings": "minecraft:overworld",
+            "biome_source": { "type": "minecraft:fixed", "biome": flat.biome },
+            "flat": true,
+        });
+        let mut pipeline = Pipeline::new(
+            data.clone(),
+            seed,
+            XoroshiroRandom::new(seed),
+            &generator,
+            &settings_json,
+            structures,
+            Some((level_min_y, level_height)),
+        )?;
+        let mut states = Vec::new();
+        let mut null = Vec::new();
+        for (block, height) in &flat.layers {
+            let id = registry
+                .default_state(block)
+                .ok_or_else(|| resource(format!("missing block {block}")))?;
+            // `adjustGenerationSettings`: a layer that is not opaque to MOTION_BLOCKING is
+            // `null` in the layers `FlatLevelSource` reads.
+            let hole = !HeightmapType::MotionBlocking.is_opaque(data.states.get(id));
+            for _ in 0..(*height).max(0) {
+                states.push(id);
+                null.push(hole);
+            }
+        }
+        states.truncate(level_height.max(0) as usize);
+        null.truncate(states.len());
+        pipeline.flat = Some(FlatLayers {
+            min_y: level_min_y,
+            states,
+            null,
+            stand_in: registry
+                .default_state("minecraft:stone")
+                .ok_or_else(|| resource("missing block minecraft:stone"))?,
+        });
+        // No placed features here (the layers are the whole terrain), but the structure
+        // steps run: the plan keeps the steps and leaves their feature lists empty.
+        pipeline.decoration =
+            super::generator_decoration::Decoration::new_with(&data, &pipeline.source, false)?
+                .map(Arc::new);
+        if let (Some(state), Some(only)) = (pipeline.structures.as_mut(), &flat.structure_overrides)
+        {
+            state.restrict_to(only);
+        }
+        Ok(Self {
+            pipeline: Arc::new(pipeline),
+            noise_clamped: None,
+        })
     }
     /// A dimension of a world preset, with or without structures (the
     /// world's `generate_structures`: without, no starts, terrain adaptation,

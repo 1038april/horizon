@@ -224,6 +224,20 @@ impl StructureState {
             ring_work: OnceLock::new(),
         }))
     }
+    /// `FlatLevelGeneratorSettings.structureOverrides`: only the structure sets named
+    /// (`minecraft:villages`) may generate.
+    pub(super) fn restrict_to(&mut self, names: &[String]) {
+        let registry = &self.registry;
+        self.possible_sets.retain(|&set| {
+            names.iter().any(|name| {
+                name.strip_prefix("minecraft:").unwrap_or(name)
+                    == registry.sets[set]
+                        .name
+                        .strip_prefix("minecraft:")
+                        .unwrap_or(&registry.sets[set].name)
+            })
+        });
+    }
     /// Concentric ring positions of a structure set (vanilla's
     /// getRingPositionsFor), computed now if no lookup needed them yet.
     pub(super) fn ring_positions(

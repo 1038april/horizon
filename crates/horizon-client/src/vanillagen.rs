@@ -182,12 +182,49 @@ impl VanillaTerrain {
         structures: bool,
     ) -> crate::Result<Self> {
         let data: Arc<GeneratorData> = shared_data_with(dir, overrides, registry)?;
-        let biome_map = data
+        let generator = OverworldGenerator::for_world(data, seed, preset, dimension, structures)?;
+        Self::assemble(dir, registry, biomes, generator, seed, preset, dimension)
+    }
+    /// A superflat overworld with the structures its settings allow
+    /// (`FlatLevelSource`: its layers, `structure_overrides` and the fixed biome).
+    #[allow(clippy::too_many_arguments)]
+    pub fn for_flat(
+        dir: &Path,
+        overrides: &WorldgenOverrides,
+        registry: &'static BlockRegistry,
+        biomes: &Biomes,
+        seed: i64,
+        flat: &horizon_world::worldgen::generator::FlatSettings,
+        structures: bool,
+    ) -> crate::Result<Self> {
+        let data: Arc<GeneratorData> = shared_data_with(dir, overrides, registry)?;
+        let generator = OverworldGenerator::flat(data, seed, flat, structures)?;
+        Self::assemble(
+            dir,
+            registry,
+            biomes,
+            generator,
+            seed,
+            "minecraft:normal",
+            "minecraft:overworld",
+        )
+    }
+    /// The terrain around a generator, with the tables the client's chunks need.
+    fn assemble(
+        dir: &Path,
+        registry: &'static BlockRegistry,
+        biomes: &Biomes,
+        generator: OverworldGenerator,
+        seed: i64,
+        preset: &str,
+        dimension: &str,
+    ) -> crate::Result<Self> {
+        let biome_map = generator
+            .data()
             .biome_names()
             .iter()
             .map(|name| biomes.id(name))
             .collect();
-        let generator = OverworldGenerator::for_world(data, seed, preset, dimension, structures)?;
         if let Some((asked, kept)) = generator.noise_clamped() {
             log::warn!(
                 "Horizon: {dimension}'s noise settings reach y {}..{}, past its build height; \
