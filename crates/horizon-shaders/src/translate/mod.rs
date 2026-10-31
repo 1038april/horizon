@@ -937,4 +937,19 @@ mod tests {
             "{errors:?}"
         );
     }
+
+    /// `x / 0.0` and `sqrt(-1.0)` are GL's infinity and NaN at run time; naga folds them into
+    /// constants and refuses them (Mellow, Bloop). `texelFetch2D` is GL_EXT_gpu_shader4's name
+    /// (Bliss).
+    #[test]
+    fn infinities_nans_and_old_fetches_translate() {
+        let fsh = "#version 330\nuniform sampler2D noisetex;\nout vec4 color;\nvoid main() {\n    \
+                   ivec2 t = ivec2(gl_FragCoord.xy);\n    \
+                   color = texelFetch2D(noisetex, t, 0) + vec4(-1.0 / 0.0) + vec4(sqrt(-1.0));\n}\n";
+        let p = program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        );
+        assert!(p.is_ok(), "{:?}", p.err());
+    }
 }
