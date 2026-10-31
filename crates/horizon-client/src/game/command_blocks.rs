@@ -542,7 +542,9 @@ impl Game<'_> {
         };
         let mut command = ChatScreen::command_block(&m, &c, &block.command, w as i32, h as i32);
         command.auto_suggestions = self.settings.auto_suggestions;
+        command.input.message = super::screen_info::tr("advMode.command", &[]);
         let mut previous = EditBox::new(0.0, previous_y(cart.is_some()), 276.0, 20.0);
+        previous.message = super::screen_info::tr("advMode.previousOutput", &[]);
         previous.max_length = 32500;
         previous.text_color = UNEDITABLE;
         previous.focused = false;
@@ -576,6 +578,16 @@ impl Game<'_> {
             self.close_command_block();
             return;
         }
+        // AbstractCommandBlockEditScreen: `GameNarrator.NO_TITLE`; its usage
+        // is the suggestions' while they show (`getUsageNarration`).
+        let usage = s.command.suggestions_usage();
+        horizon_client::widgets::begin_screen(|| {
+            let info = horizon_client::widgets::ScreenInfo::new("command_block", "");
+            match usage {
+                Some(key) => info.usage(super::screen_info::tr(key, &[])),
+                None => info,
+            }
+        });
         let atlas = &self.gui.atlas;
         let (w, h) = (batch.width, batch.height);
         let mid = (w / 2.0).floor();
