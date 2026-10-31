@@ -187,6 +187,7 @@ impl Game<'_> {
         // ignite (fire aspect) and apply_mob_effect (bane of arthropods).
         let mut ignite = 0.0f32;
         let mut mob_effects = Vec::new();
+        let mut hook_calls: Vec<(String, String, Value, u32)> = Vec::new();
         for (id, level) in held.enchantments() {
             let Some(def) = world_stations!(self).enchantments.get(id) else {
                 continue;
@@ -198,13 +199,25 @@ impl Game<'_> {
             {
                 let e = &effect["effect"];
                 let kind_of = e["type"].as_str();
-                if effect["enchanted"] != "attacker"
-                    || effect["affected"] != "victim"
-                    || !matches!(
-                        kind_of,
-                        Some("minecraft:ignite" | "minecraft:apply_mob_effect")
-                    )
-                {
+                if effect["enchanted"] != "attacker" || effect["affected"] != "victim" {
+                    continue;
+                }
+                // A mod's own kind: the hook answers, vanilla's two are
+                // the game's to run. Collected to call after the loop
+                // (the stations borrow is held here).
+                if kind_of.is_some_and(|k| !k.starts_with("minecraft:")) {
+                    hook_calls.push((
+                        id.to_string(),
+                        kind_of.unwrap().to_string(),
+                        e.clone(),
+                        *level,
+                    ));
+                    continue;
+                }
+                if !matches!(
+                    kind_of,
+                    Some("minecraft:ignite" | "minecraft:apply_mob_effect")
+                ) {
                     continue;
                 }
                 let mut random = self.world.random.clone();
@@ -234,6 +247,9 @@ impl Game<'_> {
         }
         for (effect, level) in mob_effects {
             self.apply_mob_effect(mob, &effect, level);
+        }
+        for (id, kind_of, data, level) in hook_calls {
+            self.native_enchant_effect(&id, &kind_of, &data, level);
         }
         self.post_attack_bursts(&held, &kind);
     }

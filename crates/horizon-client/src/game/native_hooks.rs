@@ -972,6 +972,22 @@ impl Game<'_> {
     pub(super) fn native_block_entity_ticks(&self, block: &str, ticks: &mut bool) {
         let _ = (block, ticks);
     }
+    /// An enchantment's effect of a mod's own kind: the entry's `effect`
+    /// named a `type` in a namespace outside `minecraft:`, and the game
+    /// kept it for this call instead of silently skipping it. The
+    /// enchantment id, the kind, the JSON and the level are here; the
+    /// acting player is the one whose weapon carries the enchantment, and
+    /// the game's own damage, sounds, effects and drops are open. An
+    /// unclaimed kind does nothing. API @API:enchant_effect@.
+    pub(super) fn native_enchant_effect(
+        &mut self,
+        enchantment: &str,
+        kind: &str,
+        data: &serde_json::Value,
+        level: u32,
+    ) {
+        let _ = (enchantment, kind, data, level);
+    }
     /// Block `block`'s block entity has item slots (a `WorldlyContainer`):
     /// set `container` when the block is yours. Asked once for each mod
     /// block when the ticking table is built; at most 256 slots, and slot

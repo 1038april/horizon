@@ -355,6 +355,14 @@ horizon-mixins failed (exit status: 1). The end of its output, the whole of it i
 E_CRATE_DEPENDENCY: crate_lock needs rand ^0.9, which isn't in Horizon's Cargo.lock (…/horizon-mixin.toml)
 ```
 
+### A mod's own enchantment effect kinds
+
+An enchantment's `effects` entry that names an `effect.type` in a namespace outside `minecraft:` — where the
+game used to silently skip it — reaches `native_enchant_effect(enchantment, kind, data, level)` at the
+effect's firing point (the `post_attack` components first), for the acting player whose weapon carries the
+enchantment. The game's own damage, sounds, effects and drops are open to the hook; an unclaimed kind does
+nothing.
+
 ### Data files
 
 A bundle's `data/` folder (any files) is staged as `native-data/<mod>/` at the root of the workspace. A helper or

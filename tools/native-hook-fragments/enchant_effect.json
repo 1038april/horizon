@@ -1,0 +1,10 @@
+{
+  "hooks": [
+    {
+      "name": "enchant_effect",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_enchant_effect"
+    }
+  ],
+  "rust_summary": "an enchantment's effect of a mod's own kind\n(`native_enchant_effect`, which the unknown `effect.type` in a namespace of its\nown reaches with the enchantment id, the kind, its JSON and the level).",
+  "doc_summary": "an enchantment's effect of a mod's own kind. The entry's `effect` that names a `type` in a namespace outside `minecraft:` — where the\ngame used to silently skip it — reaches `native_enchant_effect(enchantment, kind, data, level)` at the effect's firing point, for the acting\nplayer whose weapon carries the enchantment. The game's own damage, sounds, effects and drops are open to the hook; an unclaimed kind does\nnothing."
+}
