@@ -576,18 +576,40 @@ impl Game<'_> {
         if !self.before_block(d) || self.mob_hit().is_some_and(|m| m.1 < d) {
             return false;
         }
-        // The stand's box and id, before the hit may remove it.
-        let (area, id) = (self.armor_stands[i].bounds(), self.armor_stands[i].id);
         let (_, _, _, magic) = self.melee_damage("minecraft:armor_stand", true);
-        let hurt = self.punch_armor_stand(i);
-        if hurt {
-            self.attack_effects(
+        let hurt = self.hit_armor_stand(i, |g, area, id| {
+            g.attack_effects(
                 area,
                 Some(id as i32),
                 super::mace::Spared::Stand(id),
                 magic.then_some(id as i32),
             );
+        });
+        if hurt {
             self.swing_arm();
+        }
+        hurt
+    }
+    /// A player's attack on the stand `i` once it is picked: the stand's own
+    /// hurt, `before_weapon` (the attack's sounds and particles, given the
+    /// stand's box and id) and `Player.itemAttackInteraction`, which treats
+    /// the stand as a living target: the held weapon's hit and post-attack
+    /// effects.
+    pub(super) fn hit_armor_stand(
+        &mut self,
+        i: usize,
+        before_weapon: impl FnOnce(&mut Self, Aabb, u32),
+    ) -> bool {
+        // The stand's box, id and place, before the hit may remove it.
+        let (area, id) = (self.armor_stands[i].bounds(), self.armor_stands[i].id);
+        let (center, on_ground) = (
+            self.armor_stands[i].position,
+            self.armor_stands[i].on_ground,
+        );
+        let hurt = self.punch_armor_stand(i);
+        if hurt {
+            before_weapon(self, area, id);
+            self.weapon_hit_stand(id, center, on_ground);
         }
         hurt
     }
@@ -685,14 +707,14 @@ impl Game<'_> {
             if !ticking(a.position.x.floor() as i32, a.position.z.floor() as i32) {
                 continue;
             }
-            let in_water = a.in_water(&self.world, &self.res.motion().fluids);
+            let in_water = a.update_fluids(&self.world, &self.res.motion().fluids);
             let (world, registry, facts, collision) = (
                 &self.world,
                 self.pack.assets.registry,
                 self.res.facts(),
                 self.collision,
             );
-            a.tick(&mut scene, in_water, &mut |bounds, velocity| {
+            a.tick(&mut scene, facts, in_water, &mut |bounds, velocity| {
                 horizon_client::motion::bubble_column_push(
                     world, registry, facts, collision, bounds, velocity,
                 );
@@ -1070,7 +1092,8 @@ fn swap_with_equipment_slot(
 }
 impl Game<'_> {
     /// `Equippable.swapWithEquipmentSlot`: right-clicking armor swaps it into
-    /// its slot (the worn piece comes back to the hand).
+    /// its slot (the worn piece comes back to the hand). It runs on a client
+    /// too (`Item.use`), as the prediction the server's slot packets confirm.
     pub(super) fn equip_from_hand(&mut self, stack: &ItemStack) -> bool {
         let Some(info) = self.items().get(&stack.item) else {
             return false;
@@ -1103,11 +1126,17 @@ impl Game<'_> {
         if let Some(old) = swap.to_inventory
             && let Some(rest) = self.give(old)
             && !self.creative
+            // Player.drop is the server's on a client: it spawns the item.
+            && self.remote.is_none()
             && let Some(eye) = self.eye_position()
         {
             self.spawn_item(rest, eye, [0.0; 3], 40);
         }
-        self.apply_equipment();
+        // The attribute modifiers of a worn piece come from the server's
+        // ClientboundUpdateAttributesPacket on a client.
+        if self.remote.is_none() {
+            self.apply_equipment();
+        }
         self.swing_arm();
         true
     }
