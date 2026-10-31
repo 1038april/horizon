@@ -539,6 +539,7 @@ impl Game<'_> {
         self.mobs.push(m);
         if finalize {
             self.enchant_spawn_equipment(id);
+            self.halloween_spawn_head(id);
         }
         for rider in riders {
             if let Some(r) = self.load_mob(rider, Some(id))

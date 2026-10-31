@@ -12,7 +12,6 @@ use crate::{
         spawning::{LocalDifficulty, MOON_BRIGHTNESS},
     },
 };
-use chrono::Datelike;
 use horizon_core::{
     geometry::{Aabb, Vec3},
     random::{LegacyRandom, RandomSource, XoroshiroRandom},
@@ -121,8 +120,7 @@ impl FinalizeLevel for Level<'_> {
         self.day_time
     }
     fn halloween(&self) -> bool {
-        let today = chrono::Local::now();
-        (today.month(), today.day()) == (10, 31)
+        finalize::is_halloween()
     }
     fn create(&mut self, kind: &str, _: Reason) -> Option<Mob> {
         if self.difficulty == 0 && !finalize::allowed_in_peaceful(kind) {
