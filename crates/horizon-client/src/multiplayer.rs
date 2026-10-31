@@ -304,8 +304,10 @@ pub fn save_server_icon(saves: &Path, address: &str, png: &[u8]) {
     }
 }
 
-/// Horizon's official survival server: a name and an address like any entry.
-pub const OFFICIAL_SERVER: (&str, &str) = ("Horizon Official", "horizon.bunchy7s.dev");
+/// Horizon's official survival server: a name and an address like any entry. The launcher's
+/// copy follows `launcher/links.json` and moves the entry when the server moves
+/// (`horizon_launcher::server_list::add_official`); this one is for a game folder it hasn't seen.
+pub const OFFICIAL_SERVER: (&str, &str) = ("Horizon Official", "play.playhorizon.dev");
 /// Beside servers.dat once the official server was offered, so a player who
 /// deletes it never gets it back. The launcher writes the same file.
 const OFFICIAL_MARKER: &str = "horizon_official_server.txt";
@@ -1900,11 +1902,11 @@ mod tests {
         assert_eq!(ips(), [address, "127.0.0.1:2", "example.org"]);
         // Already there under the player's own name and spelling: not duplicated.
         fresh(&[
-            ServerEntry::new("SMP", "Horizon.Bunchy7s.dev:25565"),
+            ServerEntry::new("SMP", "Play.PlayHorizon.dev:25565"),
             mine[0].clone(),
         ]);
         add_official_server(&dir).unwrap();
-        assert_eq!(ips(), ["Horizon.Bunchy7s.dev:25565", "127.0.0.1:2"]);
+        assert_eq!(ips(), ["Play.PlayHorizon.dev:25565", "127.0.0.1:2"]);
         // Deleted by the player: never back.
         fresh(&mine);
         add_official_server(&dir).unwrap();
