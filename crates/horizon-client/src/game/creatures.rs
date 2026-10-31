@@ -1201,7 +1201,7 @@ impl Game<'_> {
         self.villager_murdered(m, slain_by_player, killer.flatten());
         let pos = [m.position.x, m.position.y + 0.5, m.position.z];
         let killer_entity = self.killer_loot_entity(killer.flatten());
-        let player = killer.map(|conn| self.killer_uuid(conn));
+        let player = killer.and_then(|conn| self.killer_uuid(conn));
         self.drop_death_loot(&mut dying, player, by_player, killer_entity, consumed, pos);
         self.create_wither_rose(m);
         if m.species() == Species::CopperGolem {
@@ -1320,10 +1320,15 @@ impl Game<'_> {
         own(self)
     }
     /// The UUID of the player `last_hurt_by_player` keeps: the guest on
-    /// connection `conn`, else the player in place.
-    fn killer_uuid(&mut self, conn: Option<u32>) -> u128 {
-        let guest = conn.and_then(|conn| self.lan.as_ref()?.hub.guest(conn));
-        guest.map_or_else(|| self.native_acting_id(), |g| g.uuid)
+    /// connection `conn` (None once they left), else the player in place.
+    fn killer_uuid(&mut self, conn: Option<u32>) -> Option<u128> {
+        match conn {
+            // During that guest's own turn, the hub is out of `lan`.
+            Some(conn) if self.lan_acting != Some(conn) => {
+                Some(self.lan.as_ref()?.hub.guest(conn)?.uuid)
+            }
+            _ => Some(self.native_acting_id()),
+        }
     }
     fn drop_death_loot(
         &mut self,

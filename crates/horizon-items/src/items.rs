@@ -1931,7 +1931,10 @@ mod tests {
     /// `wall_torch`, `blocks/oak_sign` for `oak_wall_sign`...).
     #[test]
     fn wall_blocks_use_the_standing_blocks_table() {
-        let facts = br#"{"defaults":{"minecraft:air":0},"states":[
+        let facts = br#"{"defaults":{"minecraft:air":0,"minecraft:wall_torch":1,
+            "minecraft:oak_wall_sign":2,"minecraft:skeleton_wall_skull":3,
+            "minecraft:dead_brain_coral_wall_fan":4,"test:wall_lamp":5,"minecraft:cobblestone_wall":6},
+            "states":[
             ["air",true,false,"","minecraft:air"],
             ["a",false,false,"","minecraft:wall_torch"],
             ["b",false,false,"","minecraft:oak_wall_sign"],
