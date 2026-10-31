@@ -1953,6 +1953,7 @@ impl Game<'_> {
         host.hub.anticheat_ping();
         drop(holding);
         self.flush_native_net(&mut host);
+        self.flush_far_terrain(&mut host);
         lan::flush_all(host.hub.guests.iter().map(|g| &g.sender));
         self.lan = Some(host);
         // A blast from a guest's attack, and a mace's wind burst.

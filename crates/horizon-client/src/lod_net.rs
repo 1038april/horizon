@@ -24,7 +24,7 @@ use horizon_world::registry::BlockStateId;
 use std::{collections::HashMap, time::Instant};
 
 mod server;
-pub use server::{Job, Service};
+pub use server::{Delivery, Job, Service, Verdict};
 
 /// The custom payload channel, both ways.
 pub const CHANNEL: &str = "horizon:lod";
