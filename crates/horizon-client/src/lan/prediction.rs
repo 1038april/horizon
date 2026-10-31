@@ -73,7 +73,8 @@ pub struct Played {
     /// How far the closest outcome ended from where the client said.
     pub offset: f64,
     /// Which of the unknowns it took: 1, the ground the other way (the first tick after a start); 2,
-    /// the item use before the server's change. 0 is the tick as the server heard it.
+    /// the item use before the server's change; 4, the jump delay the other way (a jump held soon
+    /// after an excuse). 0 is the tick as the server heard it.
     pub candidate: u8,
     /// The replay and the client agree about the ground (the move's flag 1).
     pub ground: bool,
@@ -98,6 +99,9 @@ pub struct Replay {
     fresh: bool,
     /// The server's item-use slowdown at the last tick played.
     using: Option<f32>,
+    /// Ticks the client's jump delay is unknown: under an excuse the replay may have jumped where the
+    /// client couldn't (on a block it hadn't received), or the other way round.
+    jump_unsure: u8,
     /// The last ticks played, oldest first, at most [`KEPT`].
     pub ticks: VecDeque<Played>,
 }
@@ -120,6 +124,7 @@ impl Replay {
             applied: restart.changed,
             fresh: true,
             using: server.item_use_speed,
+            jump_unsure: 0,
             ticks: VecDeque::new(),
         }
     }
@@ -151,7 +156,9 @@ impl Replay {
 
     /// Plays the ticks the client ended before it accepted a teleport, which the replay hasn't yet
     /// (a burst of them came with the accept): what they did to the body (its jump delay) goes on
-    /// through the teleport. Nothing counts. False when the record no longer keeps them.
+    /// through the teleport. Then applies the changes the server sent before the teleport that those
+    /// ticks hadn't seen: the client had them all when it accepted it. Nothing counts. False when the
+    /// record no longer keeps them.
     pub fn finish(
         &mut self,
         record: &Record,
@@ -159,8 +166,21 @@ impl Replay {
         restart: &Restart,
         run: impl FnMut(&mut PlayerMotion, Keys, bool) -> crate::Result<()>,
     ) -> bool {
-        self.play_to(record, server, restart.ended, f64::INFINITY, run)
-            .is_some()
+        if self
+            .play_to(record, server, restart.ended, f64::INFINITY, run)
+            .is_none()
+        {
+            return false;
+        }
+        let Some(changes) = record.changes_since(self.applied) else {
+            return false;
+        };
+        let left = usize::try_from(restart.changed.saturating_sub(self.applied)).unwrap_or(0);
+        for &(_, change) in changes.take(left) {
+            self.apply(change, server);
+            self.applied += 1;
+        }
+        true
     }
 
     fn play_to(
@@ -172,6 +192,9 @@ impl Replay {
         mut run: impl FnMut(&mut PlayerMotion, Keys, bool) -> crate::Result<()>,
     ) -> Option<Over> {
         let mut over = Over::default();
+        // A tick of this catch-up already counted: the client has been displaced by its lie, so a
+        // tick that agrees from there must not replace the setback point (#5132).
+        let mut counted = false;
         let mut changes = record.changes_since(self.applied)?.peekable();
         let new = usize::try_from(ended.saturating_sub(self.played)).ok()?;
         for tick in record.since(self.played)?.take(new) {
@@ -195,9 +218,14 @@ impl Replay {
                     || record.unseen_near(tick.seen, |block| near(at, block, slack))
             };
             if offset <= AGREED {
-                (self.agreed, self.drift) = (self.said, 0);
+                if !counted {
+                    self.agreed = self.said;
+                }
+                self.drift = 0;
             } else if offset <= tolerance {
-                self.agreed = self.said;
+                if !counted {
+                    self.agreed = self.said;
+                }
                 self.drift = self.drift.saturating_sub(1);
             } else if self.drift == 0 && unseen() {
                 self.excuse();
@@ -205,6 +233,7 @@ impl Replay {
                 self.drift -= 1;
                 self.agreed = self.said;
             } else {
+                counted = true;
                 over.ticks += 1;
                 over.worst = over.worst.max(offset);
                 over.weight += (offset / tolerance).min(MOST_WEIGHT) as f32;
@@ -216,7 +245,12 @@ impl Replay {
     /// The ticks just caught up landed off for a reason the replay can't play yet: they count for
     /// nothing, and neither do the ones after until the moves agree again (at most [`DRIFT`]).
     pub fn excuse(&mut self) {
-        (self.agreed, self.drift) = (self.said, DRIFT);
+        (self.agreed, self.drift, self.jump_unsure) = (self.said, DRIFT, DRIFT);
+    }
+
+    /// Whether an excuse still covers the ticks.
+    pub fn excused(&self) -> bool {
+        self.drift > 0
     }
 
     /// Where the client was when its moves last agreed.
@@ -232,10 +266,10 @@ impl Replay {
             Change::Velocity(v) => body.velocity = vector(v),
             Change::Knockback(k) => body.velocity = body.velocity.add_vector(vector(k)),
             Change::State => {
-                // The attributes hold the server's sprint modifier: the body sprints as the server
-                // thinks until the replay sets the client's own.
+                // ClientPacketListener.handleUpdateAttributes: the client takes the server's
+                // modifiers, its sprint modifier included, and goes on sprinting or not as it was
+                // (a sprint modifier gone while it sprints stays gone until it stops).
                 body.attributes = server.attributes.clone();
-                body.sprinting = server.sprinting;
                 body.status = server.status.clone();
             }
             // `sync` takes them every tick.
@@ -272,17 +306,21 @@ impl Replay {
             // No move: the client is within 2.0E-4 of where it last said.
             None => (body.position.distance(last) - UNSENT).max(0.0),
         };
+        let jump_unsure = self.jump_unsure > 0 && keys.jump;
+        self.jump_unsure = self.jump_unsure.saturating_sub(1);
         let unknown = |candidate: u8| {
-            candidate & 1 != 0 && fresh || candidate & 2 != 0 && using != server.item_use_speed
+            candidate & 1 != 0 && fresh
+                || candidate & 2 != 0 && using != server.item_use_speed
+                || candidate & 4 != 0 && jump_unsure
         };
-        let (offset, candidate) = if !unknown(1) && !unknown(2) {
+        let (offset, candidate) = if ![1, 2, 4].into_iter().any(unknown) {
             // Nothing to try (most ticks): the body itself plays the tick.
             run(&mut self.body, keys, tick.sprinting).ok()?;
             (offset(&self.body), 0)
         } else {
             let mut best: Option<(f64, u8, Box<PlayerMotion>)> = None;
-            for candidate in
-                (0..4u8).filter(|&c| c == 0 || (1..=2).all(|b| c & b == 0 || unknown(b)))
+            for candidate in (0..8u8)
+                .filter(|&c| c == 0 || [1, 2, 4].into_iter().all(|b| c & b == 0 || unknown(b)))
             {
                 let mut body = self.body.clone();
                 if candidate & 1 != 0 {
@@ -290,6 +328,9 @@ impl Replay {
                 }
                 if candidate & 2 != 0 {
                     body.item_use_speed = using;
+                }
+                if candidate & 4 != 0 {
+                    body.no_jump_delay = i32::from(body.no_jump_delay == 0);
                 }
                 if run(&mut body, keys, tick.sprinting).is_err() {
                     continue;
@@ -442,6 +483,9 @@ mod tests {
         /// From tick `.0` on, the ticks come in a burst that the server only plays at tick `.1`,
         /// when the client accepts a teleport back to where the burst began.
         teleport: Option<(usize, usize)>,
+        /// Ticks `.0 .. .1` arrive together: the server plays them all at tick `.1`, in one
+        /// catch-up, as it does when its tick lags the client's.
+        burst: Option<(usize, usize)>,
         /// Blocks set in the scene after the floor.
         blocks: Vec<([i32; 3], &'static str)>,
     }
@@ -455,6 +499,7 @@ mod tests {
                 pitch: 0.0,
                 glider: false,
                 teleport: None,
+                burst: None,
                 blocks: Vec::new(),
             }
         }
@@ -532,6 +577,7 @@ mod tests {
         let mut replay = Replay::new(&server, &record.take_restart().unwrap());
         let mut played = Vec::new();
         let run_teleport = run.teleport;
+        let run_burst = run.burst;
         let mut back = start;
         for (i, (input, yaw)) in run.script.into_iter().enumerate() {
             let tick = i as u64;
@@ -558,6 +604,10 @@ mod tests {
             let ground = u8::from(client.ground.on_ground);
             record.moved(Some([p.x, p.y, p.z]), Some((yaw, run.pitch)), ground);
             record.tick_end(input, client.sprinting);
+            // A burst: the server hears these ticks now and plays them together at the last one.
+            if run_burst.is_some_and(|(from, to)| (from..to).contains(&i)) {
+                continue;
+            }
             let mut run = |body: &mut PlayerMotion, keys, sprinting| {
                 let mut result = Ok(());
                 world(body, &mut |w| result = w.replayed_tick(keys, sprinting));
@@ -665,6 +715,44 @@ mod tests {
         }
     }
 
+    /// Ticks that arrive together when the server's tick lags the client's are played in one
+    /// catch-up: a lie on the first makes the replay stand at the client's spot, and the honest
+    /// tick after it must not become the setback point (#5132).
+    #[test]
+    fn a_burst_keeps_the_setback_before_its_lie() {
+        let Some(steps) = steps_in(
+            Run {
+                burst: Some((20, 21)),
+                ..Run::walk()
+            },
+            |i, _, honest| {
+                if i == 20 {
+                    honest.add_vector(Vec3::new(3.0, 0.0, 0.0))
+                } else {
+                    honest
+                }
+            },
+            None,
+        ) else {
+            return;
+        };
+        // Ticks 0-19 each play on their own; tick 20's lie arrives with tick 21, so the burst's
+        // single step is the 21st: the lie counts once, and the setback point stays where the walk
+        // agreed, before it.
+        assert_eq!(
+            steps.len(),
+            script().len() - 1,
+            "one catch-up for the burst"
+        );
+        let burst = &steps[20];
+        assert_eq!(burst.over.ticks, 1, "{:?}", burst.over);
+        assert!(burst.over.worst > 2.9, "{:?}", burst.over);
+        assert_eq!(
+            burst.agreed, steps[19].said,
+            "the setback point must be the last honest spot"
+        );
+    }
+
     /// A push the server never sent (another entity's): excused, the replay takes the client's
     /// velocity, is back within the tolerance in a few ticks, and nothing counts.
     #[test]
@@ -703,6 +791,7 @@ mod tests {
             pitch: 10.0,
             glider: true,
             teleport: None,
+            burst: None,
             blocks: Vec::new(),
         };
         let Some(steps) = steps_in(run, |_, _, honest| honest, None) else {

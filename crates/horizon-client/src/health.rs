@@ -373,6 +373,7 @@ impl PlayerMotion {
             entity: self.entity_id,
             causing,
             invulnerable,
+            client_loaded: self.client_loaded,
             rules,
             source,
             living_cause,
@@ -387,6 +388,7 @@ impl PlayerMotion {
             knocked: false,
             totem: totem_ready,
             totem_fired: false,
+            canceled: false,
         };
         let hurt = ServerPlayerCombat::new(
             &mut self.attributes,
@@ -401,6 +403,7 @@ impl PlayerMotion {
             blocked: environment.blocked,
             sound: environment.block_sound,
             knockback: environment.knocked,
+            canceled: environment.canceled,
         };
         if environment.totem_fired {
             h.totem_used = true;
@@ -459,6 +462,9 @@ pub(crate) struct Environment<'a> {
     pub(crate) causing: i32,
     /// Abilities.invulnerable.
     pub(crate) invulnerable: bool,
+    /// The player's client has loaded the world since its last respawn or
+    /// level change (`ServerGamePacketListenerImpl.hasClientLoaded`).
+    pub(crate) client_loaded: bool,
     pub(crate) rules: HealthRules,
     pub(crate) source: DamageSource<'a, ()>,
     /// The causing entity is a living non-player (a mob, or its projectile's owner).
@@ -478,6 +484,8 @@ pub(crate) struct Environment<'a> {
     /// LivingEntity.checkTotemDeathProtection: a totem is held / was used.
     pub(crate) totem: bool,
     pub(crate) totem_fired: bool,
+    /// A native mod canceled the hit (`living_incoming_damage`).
+    pub(crate) canceled: bool,
 }
 /// `LivingEntity.applyItemBlocking` inputs for a raised `BlocksAttacks` item:
 /// reductions whose damage-type sets are already matched against the source.
@@ -540,6 +548,8 @@ pub struct BlockOutcome {
     /// The hit knocks the player back (`dealDefaultKnockback`): not one in
     /// the hurt cooldown, nor one the shield took whole.
     pub knockback: bool,
+    /// A native mod canceled the hit: its attacker must not be credited.
+    pub canceled: bool,
 }
 struct MatchedSets;
 impl horizon_world::blocking_rules::TypeMatchWorld for MatchedSets {
@@ -697,7 +707,7 @@ impl ImmunityWorld for Environment<'_> {
         Ok(self.source.is_type("minecraft:ender_pearl"))
     }
     fn client_loaded(&mut self) -> io::Result<bool> {
-        Ok(true)
+        Ok(self.client_loaded)
     }
 }
 impl HurtWorld for Environment<'_> {
@@ -730,10 +740,9 @@ impl HurtWorld for Environment<'_> {
             causing: self.causing,
             direct: 0,
         };
-        Ok(hurt_server_canceled(
-            Hurting::Player(self.entity, source),
-            damage,
-        ))
+        let canceled = hurt_server_canceled(Hurting::Player(self.entity, source), damage);
+        self.canceled |= canceled;
+        Ok(canceled)
     }
     fn sleeping(&mut self, _: &mut State) -> io::Result<bool> {
         Ok(false)
@@ -1054,6 +1063,38 @@ mod tests {
         assert!(hurt.unwrap().hurt);
         assert_eq!(seen(9011), [("minecraft:arrow 0".to_owned(), 5.0)]);
         assert_eq!(seen(9013), [("minecraft:arrow 44".to_owned(), 5.0)]);
+    }
+
+    /// #4301: `ServerPlayer.isInvulnerableTo`'s `!connection.hasClientLoaded`
+    /// term spares a respawned player the void until the client has loaded the
+    /// world; once it has, the void hurts again.
+    #[test]
+    fn the_void_spares_a_player_whose_client_has_not_loaded() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let resources = crate::motion::MotionResources::load(&root, &assets).unwrap();
+        let mut player =
+            crate::motion::PlayerMotion::new(&resources, horizon_core::geometry::Vec3::ZERO)
+                .unwrap();
+        let (health, rules) = (&resources.health, super::HealthRules::default());
+        let id = health.damage.id("minecraft:out_of_world").unwrap();
+        player.client_loaded = false;
+        assert!(
+            !player.hurt(health, rules, id, 4.0).unwrap(),
+            "an unloaded client must not take void damage"
+        );
+        assert_eq!(player.health.health(), 20.0);
+        player.client_loaded = true;
+        assert!(
+            player.hurt(health, rules, id, 4.0).unwrap(),
+            "a loaded client takes the void's 4.0"
+        );
+        assert_eq!(player.health.health(), 16.0);
     }
 
     #[test]

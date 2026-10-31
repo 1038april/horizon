@@ -64,6 +64,7 @@ impl PlayerMotion {
             resources,
             rules,
             invulnerable: self.invulnerable || self.spectator,
+            client_loaded: self.client_loaded,
             attributes: &mut self.attributes,
             data: &mut h.data,
             ids: h.ids,
@@ -82,6 +83,7 @@ struct TickWorld<'a> {
     resources: &'a HealthResources,
     rules: HealthRules,
     invulnerable: bool,
+    client_loaded: bool,
     attributes: &'a mut Attributes,
     data: &'a mut SyncedFloats,
     ids: PlayerFloatIds,
@@ -149,6 +151,7 @@ impl FoodWorld for TickWorld<'_> {
             entity: self.entity,
             causing: 0,
             invulnerable: false,
+            client_loaded: self.client_loaded,
             rules: self.rules,
             source: self
                 .resources
@@ -167,6 +170,7 @@ impl FoodWorld for TickWorld<'_> {
             knocked: false,
             totem: false,
             totem_fired: false,
+            canceled: false,
         };
         if ServerPlayerCombat::new(self.attributes, self.data, food, self.ids, &mut environment)?
             .hurt(self.hurt, amount)?
