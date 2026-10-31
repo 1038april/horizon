@@ -53,8 +53,8 @@ def stamp(check):
             catalog["hooks"].append({"name": hook["name"], "version": 1, "target": hook["target"]})
         rust_summary = fragment["rust_summary"].replace(marker, str(version))
         doc_summary = fragment["doc_summary"].replace(marker, str(version))
-        if not fragment["hooks"] or not rust_summary or not doc_summary:
-            raise ValueError(f"{path}: expected hooks and summaries")
+        if not rust_summary or not doc_summary:
+            raise ValueError(f"{path}: expected summaries")
         rust_entry = f"//! API {version} adds " + rust_summary.replace("\n", "\n//! ") + "\n//!\n"
         if "//! API " not in source:
             raise ValueError("missing source history insertion point")

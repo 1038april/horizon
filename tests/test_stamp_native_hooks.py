@@ -73,6 +73,17 @@ class StampTests(unittest.TestCase):
         self.assertEqual([(h["name"], h["version"]) for h in hooks], [("z", 1), ("a", 1)])
         self.assertFalse(stamp.stamp(False))
 
+    def test_helper_only_gets_a_number(self):
+        self.git("add", ".")
+        self.git("commit", "-qm", "base")
+        path = self.fragment("helper")
+        fragment = json.loads(path.read_text())
+        fragment["hooks"] = []
+        path.write_text(json.dumps(fragment))
+        self.assertFalse(stamp.stamp(False))
+        self.assertIn("NATIVE_HOOKS_API: u32 = 8;", (self.root / stamp.SOURCE).read_text())
+        self.assertEqual(json.loads((self.root / stamp.CATALOG).read_text())["hooks"], [])
+
     def test_duplicate_fails_before_writes(self):
         self.git("add", ".")
         self.git("commit", "-qm", "base")

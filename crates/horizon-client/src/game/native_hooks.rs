@@ -2534,7 +2534,7 @@ mod tests {
                 version > 0 && contracts.insert((name, version)),
                 "invalid or duplicate hook: {name} v{version}"
             );
-            names.insert(name.to_owned());
+            names.insert(name);
             let owner = if level_hooks.contains(name) {
                 "GameLevel"
             } else {
@@ -2545,7 +2545,6 @@ mod tests {
                 format!("horizon_client::game::native_hooks::{owner}<'_>::native_{name}")
             );
         }
-        let declared: BTreeSet<String> = declared.into_iter().map(str::to_owned).collect();
         assert_eq!(names, declared);
     }
 

@@ -1,7 +1,7 @@
 # Native hook API fragments
 
 A hook PR adds a uniquely named JSON file here instead of editing the API number,
-the API histories or `native-hooks.json`. Example:
+the API histories or `native-hooks.json`. Helper-only additions use an empty\n`hooks` array. Example:
 
 ```json
 {
