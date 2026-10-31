@@ -571,6 +571,26 @@ fn world_info(world: &WorldEntry) -> crate::text::Text {
     )))
     .append(version)
 }
+/// A translation for the narrator (`Component.translatable(key, args)`).
+pub(crate) fn narration_text(key: &str, args: &[&str]) -> String {
+    crate::screen_narrator::translate(key, args)
+}
+/// `WorldListEntry.getNarration`: "Selected: Selected <name>, last played:
+/// <date>, <info>" (the date as `Date.toString` writes it).
+fn world_narration(world: &WorldEntry) -> String {
+    let date: chrono::DateTime<chrono::Local> = world.modified.into();
+    let date = date.format("%a %b %d %H:%M:%S %Z %Y").to_string();
+    let info = world_info(world).plain();
+    let entry = narration_text("narrator.select.world_info", &[&world.name, &date, &info]);
+    // A locked world's info already says so (LevelSummary.createInfo), and
+    // getNarration adds it again.
+    let entry = if world.locked {
+        crate::widgets::join_for_narration(&[&entry, &narration_text("selectWorld.locked", &[])])
+    } else {
+        entry
+    };
+    narration_text("narrator.select", &[&entry])
+}
 fn choose_splash(text: &str, index: usize, date: (u32, u32)) -> Option<String> {
     // SplashManager checks SpecialDates before the resource list (local date).
     let special = match date {
@@ -1877,6 +1897,11 @@ impl Title {
                 "create_world",
                 get("selectWorld.create", "Create New World"),
             ),
+            // PresetFlatWorldScreen over CreateFlatWorldScreen.
+            Mode::CreateFlat { flat, .. } if flat.page == flat::Page::Presets => ScreenInfo::new(
+                "create_world/flat/presets",
+                get("createWorld.customize.presets.title", "Select a Preset"),
+            ),
             Mode::CreateFlat { .. } => ScreenInfo::new(
                 "create_world/flat",
                 get(
@@ -2036,6 +2061,45 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         Some(info)
     }
 
+    /// A button's narration: `gui.narrate.button` of its label, or the icon
+    /// buttons' own message and tooltip, in the order the screen adds them.
+    fn button_narration(&self, b: &Button) -> crate::widgets::Narratable {
+        use crate::widgets::Narratable;
+        let rect = [b.x, b.y, b.w, 20.0];
+        match &self.mode {
+            Mode::Main => {}
+            Mode::Create {
+                creative, options, ..
+            } => return create_world::button_narration(b, *creative, options),
+            Mode::Multiplayer(screen) => {
+                return screen.button_narration(b.id, rect, &b.label, b.enabled);
+            }
+            _ => return Narratable::button(b.label.clone(), rect, b.enabled),
+        }
+        // CommonButtons and FriendsButton narrate their `.narration`, and
+        // read their tooltip as a hint.
+        let icon = |narration: &str, tooltip: &str| {
+            Narratable::named(narration_text(narration, &[]), rect, b.enabled)
+                .hint(narration_text(tooltip, &[]))
+        };
+        let narratable = match b.id {
+            5 => icon("gui.friends.open.narration", "gui.friends.open.tooltip"),
+            6 => icon("options.language.narration", "options.language.tooltip"),
+            7 => icon(
+                "accessibility.onboarding.accessibility.button.narration",
+                "options.accessibility.tooltip",
+            ),
+            _ => Narratable::button(b.label.clone(), rect, b.enabled),
+        };
+        // TitleScreen.init adds the icon row after Minecraft Realms and before
+        // Options... and Quit Game, which Horizon draws first.
+        narratable.order(match b.id {
+            5..=7 => 1,
+            2 | 3 => 2,
+            _ => 0,
+        })
+    }
+
     pub fn draw(
         &self,
         atlas: &HudAtlas,
@@ -2138,6 +2202,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     self.search_focused,
                     self.started,
                 );
+                crate::widgets::name_last_edit_box(|| narration_text("selectWorld.search", &[]));
                 if self.search.is_empty() && !self.search_focused {
                     batch.text_styled(
                         atlas,
@@ -2163,6 +2228,25 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 let x = left + 2.0;
                 let mut slot = 0;
                 let hovered = self.world_row_at(worlds, cursor, (w, h));
+                // WorldSelectionList: the row under the mouse, else the
+                // selected one.
+                crate::widgets::narratable(|| {
+                    use crate::widgets::{ListKind, Narratable, Row};
+                    let rows: Vec<&WorldEntry> =
+                        self.visible_worlds(worlds).map(|(_, w)| w).collect();
+                    let row = |r: usize| Row::new(r, world_narration(rows[r]));
+                    let selected = self
+                        .visible_worlds(worlds)
+                        .position(|(i, _)| Some(i) == *selected);
+                    Narratable::list(
+                        ListKind::Object,
+                        rows.len(),
+                        hovered.map(|(r, _)| row(r)),
+                        selected.map(row),
+                        [0.0, top, w, bottom - top],
+                    )
+                    .key(crate::widgets::key_of(&"select_world/worlds"))
+                });
                 for (row, (i, world)) in self.visible_worlds(worlds).enumerate() {
                     let y = top + 4.0 + row as f32 * ROW_HEIGHT - offset;
                     if y + 32.0 <= top || y >= bottom {
@@ -2302,6 +2386,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                     *focused,
                     self.started,
                 );
+                crate::widgets::name_last_edit_box(|| narration_text("selectWorld.enterName", &[]));
             }
             Mode::Delete { world } => {
                 crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
@@ -2617,6 +2702,11 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 let box_x = ((w - box_w) / 2.0).floor();
                 let box_y = top + 29.0;
                 let box_h = lines.len() as f32 * 9.0 + 8.0;
+                // WarningScreen's FittingMultiLineTextWidget narrates the
+                // message; the title's StringWidget isn't active.
+                crate::widgets::narratable(|| {
+                    crate::widgets::Narratable::text(message.clone(), [box_x, box_y, box_w, box_h])
+                });
                 crate::ui::nine_slice(
                     batch,
                     atlas,
@@ -2645,6 +2735,15 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 let y = top + 57.0 + lines.len() as f32 * 9.0;
                 self.warning_check.set([x, y, width, BOX]);
                 let hover = (x..x + width).contains(&cursor.0) && (y..y + BOX).contains(&cursor.1);
+                crate::widgets::narratable(|| {
+                    crate::widgets::Narratable::checkbox(
+                        label.clone(),
+                        *check,
+                        [x, y, width, BOX],
+                        true,
+                    )
+                    .hovered(hover)
+                });
                 let sprite = match (*check, hover) {
                     (true, true) => "gui/sprites/widget/checkbox_selected_highlighted",
                     (true, false) => "gui/sprites/widget/checkbox_selected",
@@ -2691,14 +2790,7 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
             crate::widgets::record(&b.label, [b.x, b.y, b.w, 20.0], b.enabled);
             let inside =
                 cursor.0 >= b.x && cursor.0 < b.x + b.w && cursor.1 >= b.y && cursor.1 < b.y + 20.0;
-            crate::widgets::narratable(|| {
-                crate::widgets::Narratable::button(
-                    b.label.clone(),
-                    [b.x, b.y, b.w, 20.0],
-                    b.enabled,
-                )
-                .hovered(inside)
-            });
+            crate::widgets::narratable(|| self.button_narration(&b).hovered(inside));
             crate::widgets::widget_cursor(inside, b.enabled);
             let hover = b.enabled && inside;
             let sprite = if !b.enabled {
@@ -3362,6 +3454,9 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         {
             *selected = None;
             self.scroll.set(crate::ui::Scroll::default());
+            // WorldSelectionList.notifyListUpdated: the filtered list is
+            // narrated at once.
+            crate::widgets::narrate_now();
         }
     }
     pub fn confirm_edit(&mut self) {
