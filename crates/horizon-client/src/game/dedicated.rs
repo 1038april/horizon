@@ -35,6 +35,7 @@ use std::{
 };
 
 pub(super) mod events;
+mod management;
 mod report;
 mod status;
 

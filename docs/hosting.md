@@ -368,9 +368,9 @@ enabled = true                                     # false pauses it and keeps t
 The lines of each 2 seconds are drawn as one picture of the in-game chat (transparent, shadowed letters, colours
 included), and a channel gets at most one post every 2 seconds (more when Discord asks for it: a burst beyond 20
 lines is counted, not drawn). Only `chat` is forwarded, never a message the server's chat filter held back. Posts
-never ping: they allow no mention, and an `@everyone` typed in game reaches Discord defused. One player's lines
-carry their head as the avatar (mc-heads.net, by UUID); players' addresses are never sent, and a player is always
-named by their account's name (a nickname only next to it). The server only makes outgoing HTTPS calls to Discord;
+never ping: they allow no mention, and an `@everyone` typed in game reaches Discord defused. Every post comes
+from the webhook's own name and avatar (set them in Discord), never a player's; players' addresses are never sent,
+and a player is always named by their account's name (a nickname only next to it). The server only makes outgoing HTTPS calls to Discord;
 the API and the panel show the webhook as `(set)`. The letters are Pixelify Sans (SIL Open Font License,
 `crates/horizon-theme/fonts`), not Minecraft's font.
 
