@@ -101,7 +101,7 @@ Cat.tryToTame	inline	crates/horizon-client/src/game/creatures.rs::Game::interact
 Cat.CatAvoidEntityGoal.canContinueToUse	inline	crates/horizon-client/src/mobs/goals.rs::AvoidEntity::can_continue	gap: minor: a cat tamed mid flight finishes its escape path, the untamed check is only in can_use
 Cat.CatRelaxOnOwnerGoal.spaceIsOccupied	port	crates/horizon-client/src/mobs/tame.rs::CatRelaxOnOwner::occupied	another lying or relaxing cat within 2 blocks of the spot
 Cat.CatRelaxOnOwnerGoal.canContinueToUse	port	crates/horizon-client/src/mobs/tame.rs::CatRelaxOnOwner::can_continue	tame, not sitting, owner still asleep and the spot free
-Cat.CatTemptGoal.canScare	missing		player: a cat lured with fish is scared by every move or look of the player; vanilla lets a randomly picked player (re-rolled every 500 to 600 ticks) approach without scaring it
+Cat.CatTemptGoal.canScare	port	crates/horizon-client/src/mobs/tame.rs::CatTempt::can_continue	the player that tempted it is never the one that scares it
 CatVariants.bootstrap	skip:data		variant registry bootstrap; Horizon reads cat variants from data
 Ocelot.registerGoals	missing		player: an ocelot only panics, wanders and looks at players (the generic animal goals): it is not lured by fish, does not run from players, never stalks chickens or baby turtles and has no breed goal
 Ocelot.customServerAiStep	port	crates/horizon-client/src/mobs/tame.rs::cat_anim	crouch and sprint pose from the move speed, shared with cats; nothing sets those speeds for an ocelot yet
@@ -145,4 +145,4 @@ TropicalFish.get	inline	crates/horizon-client/src/entity_nbt.rs::bucket_componen
 TropicalFish.applyImplicitComponents	port	crates/horizon-client/src/entity_nbt.rs::load_bucket_data	pattern and colours from the bucket
 TropicalFish.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	one in ten is a lone random fish, else a shared common variant
 TropicalFish.checkTropicalFishSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	water below and above, and any height biomes or the surface rule
-TropicalFish.Pattern.addToTooltip	missing		player: a tropical fish bucket shows no pattern and colour lines in its tooltip
+TropicalFish.Pattern.addToTooltip	port	crates/horizon-client/src/item_tooltip.rs::PlayerHeadName::tropical_fish_lines	ticked in #3512; `TropicalFish.Pattern.addToTooltip` is cited at crates/horizon-client/src/item_tooltip.rs:362

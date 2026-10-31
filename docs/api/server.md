@@ -77,9 +77,8 @@ addition; a change to one starts `/api/v2`, served beside `/api/v1`.
 - **Backups**: restore a single dimension.
 - **Mods on a dedicated server**: list, turn on and off, and their settings, once native mods can be built for the
   server ([mods.md](../mods.md), [native-mods.md](../native-mods.md#multiplayer)).
-- **Vanilla's management protocol**: changing `ip_bans` and `operators` (`ip_bans/*`, `operators/*` but the
-  getters), `serversettings/*`, `gamerules`, the notifications and the status heartbeat. They answer
-  an internal error saying so; a kick's translatable message is sent as its key.
+- **Vanilla's management protocol**: `serversettings/*`, `gamerules`, the notifications and the status
+  heartbeat. They answer an internal error saying so; a kick's translatable message is sent as its key.
 - **Compatibility tests**: golden replies per endpoint, and a `server.toml` from each release line.
 
 ## Changelog
@@ -90,9 +89,10 @@ addition; a change to one starts `/api/v2`, served beside `/api/v1`.
 - `/api/v1` additions: `players`, `players/{kick,ban,pardon,ban-ip,pardon-ip,op,deop}`, `whitelist`,
   `whitelist/{add,remove}`, `metrics/prometheus`, `GET`/`PATCH config`, `DELETE backups`, `GET backups/download`;
   `server.toml` gets `[api]` (`bind`, `token`, `allow_public`); `GET events` (server-sent events, or JSON).
+- RCON (`enable-rcon`, `rcon.port`, `rcon.password`): vanilla's remote console, served by the supervisor.
 - Vanilla's management protocol (`management-server-*`): the WebSocket, its authentication, `rpc.discover`,
   `players`, `players/kick`, `server/{status,save,stop,system_message}`, and the four lists' getters.
 - The management protocol's TLS (on by default, as in vanilla): a PKCS12 keystore, or a self-signed one generated
   in `.horizon/` when none is set.
 - The management protocol's `allowlist/{add,remove,set,clear}` and `bans/{add,remove,set,clear}`.
-- RCON (`enable-rcon`, `rcon.port`, `rcon.password`): vanilla's remote console, served by the supervisor.
+- The management protocol's `ip_bans/{add,remove,set,clear}` and `operators/{add,remove,set,clear}`.

@@ -5,8 +5,8 @@ AbstractNautilus.canDispenserEquipIntoSlot	port	crates/horizon-client/src/game/d
 AbstractNautilus.getControllingPassenger	port	crates/horizon-client/src/mobs/nautilus.rs::controlled	a rider on a saddled nautilus
 AbstractNautilus.getRiddenSpeed	inline	crates/horizon-client/src/mobs/nautilus.rs::ridden	0.0325 in water, 0.02 on land, times the movement speed
 AbstractNautilus.doPlayerRide	inline	crates/horizon-client/src/game/nautili.rs::Game::interact_nautilus	the player mounts it and a lead breaks; there is no home to clear
-AbstractNautilus.getNautilusRestrictionRadius	missing		player: a tame nautilus is never kept near its home, so it wanders off instead of staying within 32 blocks (16 for a baby or a saddled one)
-AbstractNautilus.checkRestriction	missing		player: no home is set for a tame nautilus (ai.home is only set by leads and happy ghasts), see getNautilusRestrictionRadius
+AbstractNautilus.getNautilusRestrictionRadius	port	crates/horizon-client/src/mobs/nautilus.rs::restriction_radius	ticked in #3512; `AbstractNautilus.getNautilusRestrictionRadius` is cited at crates/horizon-client/src/mobs/nautilus.rs:231
+AbstractNautilus.checkRestriction	port	crates/horizon-client/src/mobs/nautilus.rs::check_restriction	ticked in #3512; `AbstractNautilus.checkRestriction` is cited at crates/horizon-client/src/mobs/nautilus.rs:240
 AbstractNautilus.applyEffects	inline	crates/horizon-client/src/mobs/nautilus.rs::ai_step	the rider gets breath of the nautilus for 60 ticks, refreshed every 40 ticks
 AbstractNautilus.onPlayerJump	inline	crates/horizon-client/src/game/mounts.rs::Game::charge_mount_jump	the charged jump scale (0.4 to 1.0) goes to the rider input; the dash itself waits for its cooldown in nautilus::ridden
 AbstractNautilus.executeRidersJump	port	crates/horizon-client/src/mobs/nautilus.rs::dash	gap: minor: the push leaves out getBlockSpeedFactor (soul sand, honey); 1.2 in water, 0.5 on land, 40 tick cooldown, dashing flag
@@ -118,7 +118,7 @@ Rabbit.RaidGardenGoal.tick	missing		player: a rabbit never eats carrots, so ripe
 Rabbit.RaidGardenGoal.isValidTarget	missing		player: part of the missing carrot raid (a ripe carrot on a crop-supporting block)
 Sheep.registerGoals	port	crates/horizon-client/src/mobs/farm.rs::register	Species::Sheep arm: float, panic, breed, tempt, follow parent, eat block, stroll, look
 Sheep.aiStep	inline	crates/horizon-client/src/mobs/ai.rs::species_ai_step	the eat animation counter (anim_ticks) counts down each tick
-Sheep.handleEntityEvent	missing		player: on a server a sheep never lowers its head to eat grass, because entity event 10 is not handled in remote.rs (the integrated server sets anim_ticks itself)
+Sheep.handleEntityEvent	port	crates/horizon-client/src/mobs/sync.rs::entity_event	ticked in #3512; `Sheep.handleEntityEvent` is cited at crates/horizon-client/src/mobs/sync.rs:132 (in a comment, so `where` names the enclosing fn)
 Sheep.getHeadEatPositionScale	inline	crates/horizon-client/src/mobs/anim.rs::setup	Anim::Sheep arm: head drops by 9 times the scale (halved for a lamb)
 Sheep.getHeadEatAngleScale	inline	crates/horizon-client/src/mobs/anim.rs::setup	Anim::Sheep arm: head tilt of pi/5 with the nibbling wobble
 Sheep.mobInteract	port	crates/horizon-client/src/game/creatures.rs::Game::interact_mob	shears drop the shearing loot and set sheared; a dye recolours an unsheared sheep
