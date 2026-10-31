@@ -579,6 +579,39 @@ fn a_deleted_message_shows_60_ticks_then_becomes_the_marker() {
     assert!(chat.deletions.is_empty());
 }
 
+/// `SuggestionsList.select` says an entry once (`lastNarratedEntry`), as
+/// "suggestion N out of M", with its tooltip when it has one.
+#[test]
+fn a_suggestion_is_narrated_by_its_place_once() {
+    let suggestion = |text: &str, tooltip: Option<&str>| Suggestion {
+        range: (1, 1),
+        text: text.into(),
+        tooltip: tooltip.map(str::to_owned),
+        int_value: None,
+    };
+    let mut l = SuggestionList {
+        rect: [0; 4],
+        original: "/".into(),
+        list: vec![
+            suggestion("give", None),
+            suggestion("gamemode", Some("Mode")),
+        ],
+        offset: 0,
+        current: 1,
+        last_mouse: (0, 0),
+        tab_cycles: false,
+        last_narrated: 0,
+    };
+    let said = l.narration_message().component();
+    assert_eq!(l.last_narrated, 1);
+    assert_eq!(said["translate"], "narration.suggestion.tooltip");
+    assert_eq!(said["with"].as_array().map(Vec::len), Some(4));
+    l.current = 0;
+    let said = l.narration_message().component();
+    assert_eq!(said["translate"], "narration.suggestion");
+    assert_eq!(said["with"].as_array().map(Vec::len), Some(3));
+}
+
 #[test]
 fn a_chat_message_is_trimmed_and_its_whitespace_runs_collapsed() {
     // ChatScreen.normalizeChatMessage: String.trim, then StringUtils

@@ -1755,8 +1755,14 @@ impl Game<'_> {
                     owner,
                 } => self.add_fangs(at, yaw, delay, owner),
                 MobEvent::Shoot(..) => {}
-                MobEvent::ExplosionSource { mob, charged, name } => {
+                MobEvent::ExplosionSource {
+                    mob,
+                    charged,
+                    name,
+                    in_water,
+                } => {
                     self.combat.explosion_source = Some(mob);
+                    self.combat.explosion_in_water = in_water;
                     // The creeper causes the blast's damage, but it is out of
                     // the mob list already: its name comes with the event.
                     self.combat.exploded.push((mob, name));
@@ -1809,6 +1815,7 @@ impl Game<'_> {
                     };
                     self.combat.explosion_source = None;
                     self.combat.explosion_source_named = false;
+                    self.combat.explosion_in_water = false;
                     self.combat.explosion_cause = None;
                     result?
                 }
@@ -4277,12 +4284,14 @@ impl Game<'_> {
                     }
                 }
                 self.combat.explosion_owner = owner;
+                self.combat.explosion_in_water = p.touching_water;
                 // The blast's source names the owner, so a dragon it kills
                 // remembers the player who shot it.
                 self.set_blast_by_player(p.owner == Some(Who::Player));
                 let result = self.explode(atp, *power as f32);
                 self.set_blast_by_player(false);
                 self.combat.explosion_owner = None;
+                self.combat.explosion_in_water = false;
                 result?;
             }
             (
@@ -5754,9 +5763,9 @@ impl Game<'_> {
                 }
             }
             if is_player {
-                // PlayerRenderer's CapeLayer, WingsLayer and SpinAttackEffectLayer.
-                // Only the cape hides with the body; WingsLayer and
-                // SpinAttackEffectLayer have no `isInvisible` check.
+                // PlayerRenderer's CapeLayer, WingsLayer, ParrotOnShoulderLayer
+                // and SpinAttackEffectLayer. Only the cape hides with the body;
+                // the others have no `isInvisible` check.
                 let chest = mob.extra.chest.as_deref();
                 if !layers_only {
                     self.player_cape_geometry(mob, chest, camera, alpha as f32, packed, out);
@@ -5769,6 +5778,7 @@ impl Game<'_> {
                     self.player_ears_geometry(mob, &name, camera, alpha as f32, packed, out);
                 }
                 self.player_elytra_geometry(mob, chest, camera, alpha as f32, packed, out);
+                self.shoulder_parrots_geometry(mob, camera, alpha as f32, packed, out);
                 self.spin_attack_geometry(mob, camera, alpha as f32, packed, out);
                 self.stuck_in_body_geometry(mob, mob.id as i32, camera, alpha as f32, packed, out);
             }
