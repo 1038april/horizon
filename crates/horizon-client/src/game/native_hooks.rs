@@ -1125,8 +1125,10 @@ impl Game<'_> {
     /// no screen button, no drag, no hotbar key, no sort or header button.
     ///
     /// It fires before anything the screen does with the press, on the window
-    /// only, and only while a screen of the game's is open. It does not fire
-    /// on the title screen, the connect and loading screens, nor for a server
+    /// only, and only while a screen of the game's is open (Options and the
+    /// pack list opened from the title screen count, with no player and no
+    /// `menu`). It does not fire on the title screen itself, the connect and
+    /// loading screens, nor for a server
     /// dialog, the server pack, link and code-of-conduct prompts, a book or a
     /// sign editor drawn over gameplay, nor while a world loads or saves: the
     /// click there stays the game's own. A gamepad click or a click the
@@ -1151,9 +1153,8 @@ impl Game<'_> {
     ///
     /// Cancel a release only when the press it ends was cancelled too: a
     /// release the screen took ends the drag or the scroll it began, as it
-    /// does in vanilla, and no guard here un-cancels it. The screens that never
-    /// fire are the press's, and a release fires whenever a screen is open, so
-    /// a press that opened another screen ends on that one.
+    /// does in vanilla, and no guard here un-cancels it. Same screens as the
+    /// press; a press that opened another screen ends on that one.
     /// API @API:screen_mouse_button@.
     pub(super) fn native_screen_mouse_button_released_pre(
         &self,
