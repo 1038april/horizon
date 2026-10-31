@@ -304,7 +304,10 @@ impl Game<'_> {
                 let key = key_code(arg(1)?).ok_or_else(|| format!("unknown key {}", words[1]))?;
                 let action = arg(2)?;
                 if !matches!(action, "down" | "up" | "tap" | "repeat") {
-                    return Err("key action must be down, up, tap or repeat".into());
+                    return Err(format!(
+                        "key action must be down, up, tap or repeat, not {action}"
+                    )
+                    .into());
                 }
                 // A server's dialog takes the keys, in configuration too.
                 if self.dialog_open() {
@@ -418,12 +421,7 @@ impl Game<'_> {
                         self.physical_keys.remove(&physical);
                         self.debug_key(physical, horizon_client::debug_keys::KeyAction::Release);
                     }
-                    other => {
-                        return Err(format!(
-                            "key action must be down, up, tap or repeat, not {other}"
-                        )
-                        .into());
-                    }
+                    _ => unreachable!("checked above"),
                 }
                 ok()
             }
@@ -431,6 +429,22 @@ impl Game<'_> {
                 self.keys.clear();
                 self.physical_keys.clear();
                 self.modifiers = winit::keyboard::ModifiersState::empty();
+                // Sneak and sprint pressed through `key` live in the toggle
+                // mappings: release them as their key's release would (a
+                // toggled one stays on), or the next sync puts them back. A
+                // controller still holding one keeps it.
+                let options = [self.settings.toggle_crouch, self.settings.toggle_sprint];
+                for (slot, name) in [(0, "key.sneak"), (1, "key.sprint")] {
+                    if !self.pad.holds_action(&self.settings.controller, name) {
+                        self.toggles.key(
+                            slot,
+                            horizon_client::keymapping::KeyAction::Release,
+                            false,
+                            options[slot],
+                        );
+                    }
+                    self.sync_toggle(slot);
+                }
                 self.left = false;
                 self.right = false;
                 ok()

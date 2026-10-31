@@ -2582,6 +2582,7 @@ def check_recipe_shift(host, guest, out):
                 guest.wait(5)
                 break
     # Diamond armour is also craftable; select a tab with only the block recipe.
+    buttons = recipes()
     for t in (t for t in guest('screen')['recipe_book']['targets']
               if abs(t[2] - 35.0) < 0.001 and abs(t[3] - 27.0) < 0.001):
         guest.raw('click-at', f'{t[0] + 17:.1f}', f'{t[1] + 13:.1f}')

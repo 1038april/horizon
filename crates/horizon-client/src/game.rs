@@ -1816,8 +1816,10 @@ fn follow_keymap(event: &mut WindowEvent) {
     }
 }
 
-fn drop_whole_stack(physical_keys: &HashSet<KeyCode>) -> bool {
-    physical_keys.contains(&KeyCode::ControlLeft) || physical_keys.contains(&KeyCode::ControlRight)
+/// Q throws the whole stack with Control down: the same modifier word the
+/// screens read (`has_control_down`), never a latched sprint toggle.
+fn drop_whole_stack(modifiers: winit::keyboard::ModifiersState) -> bool {
+    modifiers.control_key()
 }
 
 fn select_creative_tab(
@@ -8804,7 +8806,7 @@ impl Game<'_> {
             (Some(n), _) => self.menu_click(Some(slot), n as i32, Input::Swap),
             (None, KeyCode::KeyF) => self.menu_click(Some(slot), 40, Input::Swap),
             (None, KeyCode::KeyQ) => {
-                let all = drop_whole_stack(&self.physical_keys);
+                let all = drop_whole_stack(self.modifiers);
                 self.menu_click(Some(slot), i32::from(all), Input::Throw)
             }
             _ => false,
@@ -14294,7 +14296,7 @@ impl Game<'_> {
                 self.using = None;
             }
             KeyCode::KeyQ if self.screen == Screen::Playing => {
-                let all = drop_whole_stack(&self.physical_keys);
+                let all = drop_whole_stack(self.modifiers);
                 self.drop_held(all);
             }
             KeyCode::Digit1
@@ -18746,7 +18748,7 @@ mod tests {
     }
 
     #[test]
-    fn stack_drop_requires_physical_ctrl_even_with_sprint_latched() {
+    fn stack_drop_requires_ctrl_even_with_sprint_latched() {
         for sprint in [false, true] {
             let mut toggles = ToggleKeys::default();
             if sprint {
@@ -18756,17 +18758,29 @@ mod tests {
             assert_eq!(toggles.is_down(SPRINT), sprint);
 
             for held in 0..4 {
+                let mut modifiers = winit::keyboard::ModifiersState::empty();
                 let mut physical_keys = HashSet::from([KeyCode::ShiftLeft, KeyCode::KeyQ]);
-                if held & 1 != 0 {
-                    physical_keys.insert(KeyCode::ControlLeft);
+                let sides = [KeyCode::ControlLeft, KeyCode::ControlRight];
+                for (bit, key) in sides.into_iter().enumerate() {
+                    if held & (1 << bit) != 0 {
+                        horizon_client_input::modifiers::set_key(
+                            &mut modifiers,
+                            &mut physical_keys,
+                            key,
+                            true,
+                        );
+                    }
                 }
-                if held & 2 != 0 {
-                    physical_keys.insert(KeyCode::ControlRight);
+                assert_eq!(drop_whole_stack(modifiers), held != 0);
+                for key in sides {
+                    horizon_client_input::modifiers::set_key(
+                        &mut modifiers,
+                        &mut physical_keys,
+                        key,
+                        false,
+                    );
                 }
-                assert_eq!(drop_whole_stack(&physical_keys), held != 0);
-                physical_keys.remove(&KeyCode::ControlLeft);
-                physical_keys.remove(&KeyCode::ControlRight);
-                assert!(!drop_whole_stack(&physical_keys));
+                assert!(!drop_whole_stack(modifiers));
                 assert_eq!(toggles.is_down(SPRINT), sprint);
             }
         }
