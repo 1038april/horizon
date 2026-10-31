@@ -612,6 +612,19 @@ pub fn item(v: &Value, it: &ItemView, w: &dyn World) -> bool {
     }
     true
 }
+/// `LockCode.canUnlock`: a spectator opens any container; otherwise the
+/// player's main hand must match the lock's `ItemPredicate`. An empty hand
+/// holds nothing to match (`getMainHandItem` is `ItemStack.EMPTY`), while
+/// `LockCode.NO_LOCK`'s empty predicate takes any stack.
+pub fn can_unlock(
+    lock: &Value,
+    spectator: bool,
+    main_hand: Option<&ItemView>,
+    w: &dyn World,
+) -> bool {
+    let empty = ItemView::default();
+    spectator || item(lock, main_hand.unwrap_or(&empty), w)
+}
 /// `BlockPredicate`.
 pub fn block(v: &Value, pos: [i32; 3], w: &dyn World) -> bool {
     if v.is_null() {
@@ -1423,6 +1436,32 @@ mod tests {
                 || (tag == "minecraft:is_projectile"
                     && matches!(id, "minecraft:fireball" | "minecraft:arrow"))
         }
+    }
+    /// `LockCode.canUnlock` for a chest with
+    /// `lock:{items:"minecraft:gold_ingot"}`: a gold ingot opens it, an empty
+    /// hand or another item does not, and a spectator always does.
+    #[test]
+    fn a_lock_takes_its_item_and_any_spectator() {
+        let lock = serde_json::json!({"items": "minecraft:gold_ingot"});
+        let gold = ItemView {
+            id: "minecraft:gold_ingot".into(),
+            count: 1,
+            ..Default::default()
+        };
+        let stick = ItemView {
+            id: "minecraft:stick".into(),
+            count: 1,
+            ..Default::default()
+        };
+        assert!(can_unlock(&lock, false, Some(&gold), &Flat));
+        assert!(!can_unlock(&lock, false, Some(&stick), &Flat));
+        assert!(!can_unlock(&lock, false, None, &Flat));
+        assert!(can_unlock(&lock, true, None, &Flat));
+        assert!(can_unlock(&lock, true, Some(&stick), &Flat));
+        // `LockCode.NO_LOCK` is the empty predicate: it takes any stack, and
+        // `unlocksWith(EMPTY)` too.
+        let none = serde_json::json!({});
+        assert!(can_unlock(&none, false, None, &Flat));
     }
     /// `PassengerPredicate.matches`: ride_a_boat_with_a_goat's vehicle holds a goat.
     #[test]
