@@ -1295,6 +1295,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-narrator"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "windows 0.62.2",
+]
+
+[[package]]
 name = "horizon-port-pack"
 version = "0.1.0"
 dependencies = [
