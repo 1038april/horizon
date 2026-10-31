@@ -163,7 +163,7 @@ impl Brewing {
         // NeoForge's load conditions: a file whose don't hold is silently
         // absent. Vanilla's brewing recipes carry none; a pack's can.
         let mods: Vec<String> = {
-            let mut mods = horizon_items::content_namespaces::namespaces(root);
+            let mut mods = horizon_items::content_namespaces::mod_ids(root);
             if !mods.iter().any(|m| m == "minecraft") {
                 mods.push("minecraft".to_owned());
             }
@@ -180,9 +180,6 @@ impl Brewing {
                 .filter_map(|e| {
                     let bytes = fs::read(e.path()).ok()?;
                     let v = serde_json::from_slice::<Value>(&bytes).ok()?;
-                    if !conditions_hold(&v) {
-                        return None;
-                    }
                     Some((
                         format!(
                             "minecraft:brewing/{}",
@@ -201,14 +198,14 @@ impl Brewing {
             let Ok(v) = serde_json::from_slice::<Value>(PackOverlay::top(files)) else {
                 continue;
             };
-            if !conditions_hold(&v) {
-                continue;
-            }
             match sources.iter_mut().find(|(n, _)| n == id) {
                 Some(slot) => slot.1 = v,
                 None => sources.push((id.to_owned(), v)),
             }
         }
+        // The gate answers the merged file, as the crafting loader's does:
+        // a false-conditioned pack file leaves the lower one gone too.
+        sources.retain(|(_, v)| conditions_hold(v));
         sources.sort_by(|a, b| a.0.cmp(&b.0));
         let mut recipes = Vec::new();
         for (id, v) in sources {

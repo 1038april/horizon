@@ -1254,8 +1254,11 @@ impl Recipes {
         let mut sources: Vec<(String, Vec<u8>)> = Vec::new();
         // NeoForge's load conditions: `mod_loaded` asks which mods' data is
         // in this root (`minecraft`, always, and the content mods').
+        // `mod_loaded` asks which mods are loaded, not which namespaces
+        // they own: a mod that also owns a namespace doesn't make that
+        // namespace another mod.
         let mods: Vec<String> = {
-            let mut mods = crate::mod_content::namespaces(root);
+            let mut mods = horizon_items::content_namespaces::mod_ids(root);
             if !mods.iter().any(|m| m == "minecraft") {
                 mods.push("minecraft".to_owned());
             }
@@ -1954,6 +1957,11 @@ mod tests {
         fs::create_dir_all(root.join("data/minecraft/recipe")).unwrap();
         fs::write(
             root.join(horizon_items::content_namespaces::MARKER),
+            br#"["mymod"]"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join(horizon_items::content_namespaces::MOD_IDS_MARKER),
             br#"["mymod"]"#,
         )
         .unwrap();

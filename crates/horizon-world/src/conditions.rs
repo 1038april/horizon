@@ -24,13 +24,13 @@ pub fn conditions_hold(v: &Value, loaded: &ModLoaded) -> bool {
         match c["type"].as_str() {
             Some("neoforge:mod_loaded") => c["modid"].as_str().is_some_and(loaded),
             Some("neoforge:true") => true,
-            Some("neoforge:not") => !hold(&c["value"], loaded),
+            // An unknown child fails the file: `not` of it is not a pass.
+            Some("neoforge:not") => known(&c["value"]) && !hold(&c["value"], loaded),
             Some("neoforge:and") => all("values"),
-            Some("neoforge:or") => c["values"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .any(|c| hold(c, loaded)),
+            Some("neoforge:or") => {
+                let values: Vec<&Value> = c["values"].as_array().into_iter().flatten().collect();
+                values.iter().all(|v| known(v)) && values.iter().any(|v| hold(v, loaded))
+            }
             _ => false,
         }
     }
@@ -39,6 +39,20 @@ pub fn conditions_hold(v: &Value, loaded: &ModLoaded) -> bool {
         .into_iter()
         .flatten()
         .all(|c| hold(c, loaded))
+}
+
+/// Whether the condition's kind is one the game knows; an unknown kind
+/// anywhere in the tree leaves the file out, through `not` and the
+/// combinators alike.
+fn known(c: &Value) -> bool {
+    matches!(
+        c["type"].as_str(),
+        Some("neoforge:mod_loaded")
+            | Some("neoforge:true")
+            | Some("neoforge:not")
+            | Some("neoforge:and")
+            | Some("neoforge:or")
+    )
 }
 
 #[cfg(test)]
