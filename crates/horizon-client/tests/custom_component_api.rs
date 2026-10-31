@@ -125,6 +125,9 @@ fn registration_limits_and_defaults_are_bound_to_the_connection() {
         r#"{"states":[{"item":"minecraft:stone"}]}"#,
     )
     .unwrap();
+    let blockstates = base.join("assets/minecraft/blockstates");
+    fs::create_dir_all(&blockstates).unwrap();
+    fs::write(blockstates.join("stone.json"), "{}").unwrap();
     let out = scratch.join("out");
     build(&base, &accepted, &out).unwrap();
     let items: serde_json::Value =
