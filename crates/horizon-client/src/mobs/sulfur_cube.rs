@@ -460,6 +460,17 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if fuse(m) == 0
         && let Some((_, power, _)) = archetype(m).and_then(|a| a.explosion)
     {
+        // `level.explode(this, ...)`: the cube is the blast's source and its
+        // causing entity, so its entity query leaves it out.
+        let name = match &m.custom_name {
+            Some(name) => crate::text::Text::literal(name.clone()),
+            None => crate::text::Text::translate("entity.minecraft.sulfur_cube", &[]),
+        };
+        events.push(MobEvent::ExplosionSource {
+            mob: m.id,
+            charged: false,
+            name,
+        });
         events.push(MobEvent::Explode(
             [m.position.x, m.position.y + 0.0625, m.position.z],
             power,
