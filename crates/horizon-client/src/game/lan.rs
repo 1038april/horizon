@@ -150,6 +150,8 @@ pub struct LanSettings {
 
 pub(super) struct LanHost {
     pub hub: Hub,
+    /// The mods heard that everyone still here leaves with the server.
+    pub players_told_left: bool,
     pub settings: LanSettings,
     pub host_entity: i32,
     /// The host's swings the guests were told of (`Game::swings_started`).
@@ -1377,6 +1379,7 @@ impl Game<'_> {
         self.world.block_log = Some(Vec::new());
         self.world.light_log = Some(Default::default());
         self.lan = Some(LanHost {
+            players_told_left: false,
             hub,
             settings: LanSettings { port, ..settings },
             host_entity,
@@ -1423,6 +1426,7 @@ impl Game<'_> {
             return;
         }
         self.friends_lan_closed();
+        self.native_players_leaving();
         let Some(mut host) = self.lan.take() else {
             return;
         };
@@ -1760,7 +1764,8 @@ impl Game<'_> {
     ///
     /// Both the pre-block packet phase and the normal LAN tick receive the
     /// same event stream. Keep their side effects in one place so joins,
-    /// departures, chat, and queued guest commands cannot drift apart.
+    /// departures, chat, and queued guest commands cannot drift apart. None when a native hook's
+    /// command closed the hub.
     fn lan_process_events(
         &mut self,
         mut host: LanHost,
@@ -1768,7 +1773,7 @@ impl Game<'_> {
         state: Option<&HostState>,
         entities: &[EntityState],
         spawn: [f64; 3],
-    ) -> LanHost {
+    ) -> Option<LanHost> {
         for event in events {
             match event {
                 event @ (HostEvent::Chat { .. } | HostEvent::Warn(_) | HostEvent::Error(_)) => {
@@ -1829,6 +1834,17 @@ impl Game<'_> {
                                 .with_color(horizon_client::text::YELLOW),
                         );
                     }
+                    if let Some((uuid, name)) = host
+                        .hub
+                        .guest(conn)
+                        .filter(|g| g.placed)
+                        .map(|g| (g.uuid, g.name.clone()))
+                    {
+                        self.lan = Some(host);
+                        self.native_player_logged_in(uuid, &name);
+                        // A hook's command can close the hub.
+                        host = self.lan.take()?;
+                    }
                 }
                 HostEvent::Left(mut guest) => {
                     // The container they had open loses an opener.
@@ -1876,6 +1892,11 @@ impl Game<'_> {
                                 .with_color(horizon_client::text::YELLOW),
                         );
                     }
+                    if guest.placed && !host.players_told_left {
+                        self.lan = Some(host);
+                        self.native_player_logged_out(guest.uuid, &guest.name);
+                        host = self.lan.take()?;
+                    }
                 }
                 HostEvent::Packet(conn, packet) => {
                     self.lan_guest_packet(&mut host, conn, *packet);
@@ -1887,7 +1908,7 @@ impl Game<'_> {
                 }
             }
         }
-        host
+        Some(host)
     }
 
     /// Handle this level's player packets before scheduled block ticks
@@ -1944,7 +1965,12 @@ impl Game<'_> {
             events.extend(host.hub.drain_packets(&mut ctx));
             events
         };
-        host = self.lan_process_events(host, events, state.as_ref(), entities.as_slice(), spawn);
+        let Some(back) =
+            self.lan_process_events(host, events, state.as_ref(), entities.as_slice(), spawn)
+        else {
+            return;
+        };
+        host = back;
         if !host.quiet.is_empty() {
             self.lan = Some(host);
             self.run_quiet_commands();
@@ -2109,7 +2135,11 @@ impl Game<'_> {
                 host.hub.set_host_game_mode(state.uuid, state.game_mode);
             }
             self.wake_woken_guests(&mut host);
-            host = self.lan_process_events(host, events, state.as_ref(), entities, spawn);
+            let Some(back) = self.lan_process_events(host, events, state.as_ref(), entities, spawn)
+            else {
+                return;
+            };
+            host = back;
             host.states = states;
         }
         if !host.quiet.is_empty() {

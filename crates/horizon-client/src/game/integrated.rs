@@ -537,6 +537,7 @@ impl Game<'_> {
     ) -> Result<()> {
         let result = self.run_integrated_inner(launch, flags, tasks, ready, opening);
         if let Err(error) = &result {
+            self.native_players_leaving();
             self.native_lifecycle_close_failed(&error.to_string());
         }
         result
@@ -741,6 +742,7 @@ impl Game<'_> {
         self.native_lifecycle.begin_close();
         // MinecraftServer.stopServer's start: everyone is still here.
         self.native_server_stopping(false);
+        self.native_players_leaving();
         // IntegratedServer.stopServer: teardownPublishedState.
         if let Some(s) = self.serving.take() {
             s.flags.published.store(0, Ordering::Relaxed);
