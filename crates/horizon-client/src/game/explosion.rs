@@ -282,12 +282,16 @@ impl Game<'_> {
     /// whole, this push in it, once their server copy has travelled
     /// (Entity.markHurt, then ServerEntity.sendChanges), and replaces what the
     /// packet would add.
+    ///
+    /// `cause` is the blast's source as predicates see it, read before the
+    /// guests' turns swap their own combat state in.
     pub(super) fn explosion_hurt_player(
         &mut self,
         center: [f64; 3],
         radius: f32,
         damage_type: &str,
         exploding: Option<u32>,
+        cause: Option<&horizon_client::advancements::EntityView>,
     ) -> Option<[f64; 3]> {
         let diameter = f64::from(radius * 2.0);
         // Blast protection: `EXPLOSION_KNOCKBACK_RESISTANCE` (0.15 per level and
@@ -308,7 +312,7 @@ impl Game<'_> {
             return None;
         }
         // ServerPlayer.onExplosionHit: the blast that hit the player is theirs.
-        self.adv.marks.blast = Some((feet, self.combat.explosion_cause.clone()));
+        self.adv.marks.blast = Some((feet, cause.cloned()));
         let w = f64::from(p.dimensions.width) / 2.0;
         let h = f64::from(p.dimensions.height);
         let eye = [
@@ -428,8 +432,16 @@ impl Game<'_> {
         };
         // The player, then every other player in the level (LAN guests),
         // each swapped in as the player. In a guest's turn (their hit on an
-        // end crystal) the player is that guest.
-        let own = self.explosion_hurt_player(center, radius, damage_type, exploding);
+        // end crystal) the player is that guest. The blast's source is the
+        // same for all of them (`onExplosionHit(this.source)`).
+        let blast_source = self.combat.explosion_cause.clone();
+        let own = self.explosion_hurt_player(
+            center,
+            radius,
+            damage_type,
+            exploding,
+            blast_source.as_ref(),
+        );
         let mut pushed: Vec<_> = self.lan_acting.zip(own).into_iter().collect();
         if let Some(mut host) = self.lan.take() {
             let guests: Vec<u32> = host
@@ -441,7 +453,13 @@ impl Game<'_> {
                 .collect();
             for conn in guests {
                 let push = self.as_guest(&mut host, conn, |g| {
-                    g.explosion_hurt_player(center, radius, damage_type, exploding)
+                    g.explosion_hurt_player(
+                        center,
+                        radius,
+                        damage_type,
+                        exploding,
+                        blast_source.as_ref(),
+                    )
                 });
                 if let Some(Some(push)) = push {
                     pushed.push((conn, push));
