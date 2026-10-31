@@ -1334,8 +1334,9 @@ pub struct OptionsUi {
     pub stack: Vec<Page>,
     scroll: f32,
     pub(crate) dragging: Option<Opt>,
-    /// The shader pack option whose slider is held.
-    shader_dragging: Option<String>,
+    /// The shader pack option whose slider is held, and the handle's own position: it follows
+    /// the pointer while the option takes the nearest of its values.
+    shader_dragging: Option<(String, f32)>,
     /// The pressed slider's own position (`AbstractSliderButton.value`) and
     /// when it last moved: the handle follows the pointer while the option
     /// keeps its stepped value, then snaps to it (`resetValue`).
@@ -2858,7 +2859,8 @@ impl OptionsUi {
                     );
                 }
                 WKind::ShaderSlider { label, value, name } => {
-                    let dragging = self.shader_dragging.as_ref() == Some(name);
+                    let held = self.shader_dragging.as_ref().filter(|(n, _)| n == name);
+                    let dragging = held.is_some();
                     ui::slider(
                         batch,
                         atlas,
@@ -2866,7 +2868,7 @@ impl OptionsUi {
                         wd.y,
                         wd.w,
                         label,
-                        *value,
+                        held.map_or(*value, |h| h.1),
                         hover || dragging,
                         true,
                         dragging,
@@ -3088,13 +3090,14 @@ impl OptionsUi {
                 }
                 return events;
             }
-            if let Some(name) = &self.shader_dragging
+            if let Some((name, at)) = &mut self.shader_dragging
                 && let Some(wd) = widgets
                     .iter()
                     .find(|wd| matches!(&wd.kind, WKind::ShaderSlider { name: n, .. } if n == name))
                 && let Some(options) = &mut s.shader_options
             {
-                options.set_position(name, ui::slider_value(wd.x, wd.w, x));
+                *at = ui::slider_value(wd.x, wd.w, x);
+                options.set_position(name, *at);
             }
             if let Some(opt) = self.dragging
                 && let Some(wd) = widgets
@@ -3258,10 +3261,11 @@ impl OptionsUi {
                     }
                 }
                 WKind::ShaderSlider { name, .. } => {
+                    let at = ui::slider_value(wd.x, wd.w, x);
                     if let Some(options) = &mut s.shader_options {
-                        options.set_position(&name, ui::slider_value(wd.x, wd.w, x));
+                        options.set_position(&name, at);
                     }
-                    self.shader_dragging = Some(name);
+                    self.shader_dragging = Some((name, at));
                 }
                 WKind::Slider { opt, .. } => {
                     self.dragging = Some(opt);
