@@ -133,6 +133,23 @@ API 26 adds `Game::native_config_dir()`: the game's shared `config/` folder besi
 `server.properties` on a dedicated server), where a mod names its own files, made when missing. It takes no `self`, so
 it works from any hook ([mods.md](mods.md#native-mods)). Bundles that use it need `"hooks": 26`.
 
+API 27 adds the player-health HUD rows through `native_health_hud`: every frame the HUD draws them, the
+hook hears the layout's inputs (`HealthInputs`) and the screen's GUI size, and a mod that answers with
+draws replaces all the rows — armour, hearts, food, air and the heights above the hotbar — for that
+frame. Nothing answered draws Horizon's own. Bundles that use it need `"hooks": 27`.
+
+API 28 adds `native_block_in_tag` and `native_item_in_tag` for server tick hooks. They read the world's merged block and item tags, including data packs and content mods. An unknown tag returns false. An empty item stack tests the `minecraft:air` item, as vanilla does. Calls with an inactive or stale tick context return an error. Bundles that use them need `"hooks": 28`.
+
+API 29 adds right-clicking an entity, on the server for every player: `native_interact_entity` hears a right click on
+an entity (its id and type, and the stack in the hand) where `Player.interactOn` starts, once per hand. A mod that claims
+it swings the hand instead of the entity's and the item's own interaction. Bundles that use it need `"hooks": 29`.
+
+API 30 adds left-clicking a block, on the server for every player: `native_left_click_block` hears the start of a dig
+(the block, the face hit) once the game allowed it, before the block is attacked (a note block plays) or broken in
+creative. A mod that cancels it keeps the block: on the server it isn't attacked, dug or broken, and the player's client
+gets it back. The clicking player's own client still predicts the crack until then.
+Bundles that use it need `"hooks": 30`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads
