@@ -87,6 +87,7 @@ mod creatures;
 mod crossbow;
 pub(crate) mod cushions;
 mod debug_keys;
+mod debug_options;
 mod debug_stick;
 mod decorated_pot;
 mod dedicated;
@@ -706,6 +707,8 @@ enum Screen {
     DialogWarning,
     /// WinScreen: the end poem and the credits (game/win.rs).
     Win,
+    /// DebugOptionsScreen, F3+F6 (game/debug_options.rs).
+    DebugOptions,
 }
 struct Mining {
     pos: [i32; 3],
@@ -2387,8 +2390,11 @@ struct Game<'a> {
     debug_keys: horizon_client::debug_keys::DebugKeys,
     /// The F3 overlay's charts (F3+2, F3+3).
     debug_charts: horizon_client::debug_chart::DebugCharts,
-    show_hitboxes: bool,
-    show_chunk_borders: bool,
+    /// `Minecraft.debugEntries`: what the overlay and the debug renderers
+    /// show (`debug-profile.json`, F3+F6).
+    debug_entries: horizon_client::debug_entries::DebugEntries,
+    /// `DebugOptionsScreen` while it is open (game/debug_options.rs).
+    debug_options: Option<debug_options::DebugOptionsUi>,
     /// PauseScreen.showPauseMenu (false after F3+Escape).
     pause_menu: bool,
     /// MultiPlayerGameMode.previousLocalPlayerMode (F3+N goes back to it).
@@ -2412,6 +2418,9 @@ struct Game<'a> {
     tick_hit: Option<Option<Hit>>,
     /// The part of a right click a guest's packet asks for (game/lan_actions.rs).
     guest_use: Option<GuestUse>,
+    /// The last `use_hand` that ended the click did so with `FAIL`, which
+    /// does not consume the action (handleUseItemOn's ANY_BLOCK_USE).
+    use_failed: bool,
     /// Level events of this tick for the guests, and the guest acting now.
     lan_events: Vec<(i32, [i32; 3], i32, Option<u32>)>,
     /// Jukebox level events 1010 (song name) and 1011 (`None`) for the guests;
@@ -2841,8 +2850,8 @@ impl Game<'_> {
     /// item in use (LocalPlayer.modifyInput), the helmet's Respiration
     /// (decreaseAirSupply), the wings, leather boots on powder snow
     /// (PowderSnowBlock.canEntityWalkOnPowderSnow), freeze-immune wear
-    /// (LivingEntity.canFreeze), the dimension's FAST_LAVA and the sleeping
-    /// pose.
+    /// (LivingEntity.canFreeze), the dimension's FAST_LAVA, the sleeping
+    /// pose and blindness (Player.isMobilityRestricted, which stops a sprint).
     pub(crate) fn sync_player_body(&mut self) {
         let glider = self.glider_worn();
         let sleeping = self.sleeping.is_some();
@@ -2867,10 +2876,12 @@ impl Game<'_> {
         let freeze_immune = self.wears_freeze_immune();
         let burn_immune = self.wears_burn_from_stepping_immunity();
         let nudge = self.closest_space_nudge();
+        let blind = self.potions.effects.get("blindness").is_some();
         let Some(player) = self.player.as_mut() else {
             return;
         };
         player.nudge = nudge;
+        player.mobility_restricted = blind;
         player.yaw = self.yaw;
         player.pitch = self.pitch;
         player.auto_jump_enabled = self.settings.auto_jump;
@@ -5080,6 +5091,12 @@ impl Game<'_> {
             if entity && hand == Hand::Off && self.with_hand(hand, Game::interact_entity)? {
                 return Ok(Some(hand));
             }
+            // A client of a server never hits a fence knot with its crosshair:
+            // `LeadItem.useOn` and `LeashFenceKnotEntity.interact` reach the
+            // server as a click on the fence block.
+            if on_block && self.with_hand(hand, Game::interact_knot) {
+                return Ok(Some(hand));
+            }
             if self.with_hand(hand, |game| game.use_hand(block_hit.as_ref()))? {
                 return Ok(Some(hand));
             }
@@ -5137,6 +5154,7 @@ impl Game<'_> {
     /// One hand's turn in `startUseItem`: `useItemOn` the block aimed at,
     /// then `useItem`. Whether the click ends here (it acted or failed).
     fn use_hand(&mut self, block_hit: Option<&Hit>) -> Result<bool> {
+        self.use_failed = false;
         // isSecondaryUseActive with something in either hand keeps blocks
         // from reacting.
         let sneaking = self.keys.contains(&KeyCode::ShiftLeft);
@@ -5148,6 +5166,8 @@ impl Game<'_> {
             let mut canceled = false;
             self.native_right_click_block(hit.pos, hit.face, &mut canceled);
             if canceled {
+                // Nothing was used, so nothing consumed the action.
+                self.use_failed = true;
                 return Ok(true);
             }
         }
@@ -5263,8 +5283,8 @@ impl Game<'_> {
                 let cake = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
                 let adds_candle =
                     self.with_level(|b, _, _| b.cake_candle_state(cake, item.as_deref()).is_some());
-                let result = self.with_level(|b, level, ticks| {
-                    b.use_item_on(
+                let (result, branch) = self.with_level(|b, level, ticks| {
+                    b.use_item_on_branch(
                         level,
                         ticks,
                         BlockPos::new(hit.pos[0], hit.pos[1], hit.pos[2]),
@@ -5282,7 +5302,6 @@ impl Game<'_> {
                 {
                     self.stats.add("used", &used.item, 1);
                     self.consume_held();
-                    self.trigger_block("minecraft:item_used_on_block", hit.pos, used);
                 }
                 // NoteBlock.useWithoutItem (tuned) and BellBlock.onHit (rung).
                 if result == horizon_world::level::InteractionResult::Success {
@@ -5300,6 +5319,17 @@ impl Game<'_> {
                     }
                 }
                 if result.consumes_action() {
+                    // ServerPlayerGameMode.useItemOn: ITEM_USED_ON_BLOCK with
+                    // the stack before the use, or DEFAULT_BLOCK_USE.
+                    match branch {
+                        horizon_world::level::UseBranch::ItemOn => {
+                            let used = held.unwrap_or_else(|| ItemStack::new("minecraft:air", 0));
+                            self.trigger_block("minecraft:item_used_on_block", hit.pos, &used);
+                        }
+                        horizon_world::level::UseBranch::WithoutItem => {
+                            self.trigger_default_block_use(hit.pos);
+                        }
+                    }
                     self.swing_arm();
                     return Ok(true);
                 }
@@ -5352,6 +5382,9 @@ impl Game<'_> {
                 // `ServerPlayerGameMode.useItemOn`: a consuming `useOn`
                 // triggers ITEM_USED_ON_BLOCK with the stack before the use.
                 self.trigger_block("minecraft:item_used_on_block", hit.pos, &stack);
+            } else {
+                // DebugStickItem.useOn's FAIL.
+                self.use_failed = true;
             }
             return Ok(true);
         }
@@ -5370,7 +5403,10 @@ impl Game<'_> {
                 }
                 return Ok(true);
             }
-            UseResult::Fail => return Ok(true),
+            UseResult::Fail => {
+                self.use_failed = true;
+                return Ok(true);
+            }
             UseResult::Pass => {}
         }
         // PotionItem.useOn comes before PotionItem.use's drink.
@@ -5449,6 +5485,7 @@ impl Game<'_> {
                 || self.place_painting(hit, &stack)
                 || self.place_item_frame(hit, &stack)
                 || self.use_lodestone_compass(hit, &stack)
+                || self.use_map_on_banner(hit, &stack)
                 || self.place_armor_stand(hit, &stack)
                 || self.place_cushion(hit, &stack)
                 || self.place_end_crystal(hit, &stack))
@@ -5511,6 +5548,9 @@ impl Game<'_> {
             // which ItemStack.useOn counts as a use of the item.
             if self.start_eating(&info) {
                 self.stats.add("used", &stack.item, 1);
+            } else {
+                // BlockItem.place's FAIL.
+                self.use_failed = true;
             }
             return Ok(true);
         };
@@ -6799,6 +6839,7 @@ impl Game<'_> {
                     | Screen::ConfirmLink
                     | Screen::DialogWarning
                     | Screen::CommandBlock
+                    | Screen::DebugOptions
             ) || self.book.is_some()
                 || self.win_screen_pauses())
     }
@@ -7155,6 +7196,10 @@ impl Game<'_> {
     }
     fn hud_layers(&mut self, size: [u32; 2]) -> HudBatch {
         let mut batch = HudBatch::new(size);
+        // GlobalSettingsUniform's GameTime, for a resource pack's text shader.
+        batch.game_time = ((self.world.game_time.rem_euclid(24000)) as f32
+            + self.clock.fraction() as f32)
+            / 24000.0;
         let (w, h) = (batch.width, batch.height);
         if self.screen == Screen::Win {
             self.draw_win_screen(&mut batch);
@@ -7455,6 +7500,7 @@ impl Game<'_> {
             Screen::DialogWarning => self.draw_dialog_warning(&mut batch),
             Screen::CommandBlock => self.draw_command_block(&mut batch),
             Screen::BlockEditor => self.draw_block_editor(&mut batch),
+            Screen::DebugOptions => self.draw_debug_options(&mut batch),
             Screen::Inventory => {
                 self.draw_inventory(&mut batch);
                 self.draw_mod_browser(&mut batch);
@@ -10479,6 +10525,13 @@ impl Game<'_> {
         self.score = Default::default();
         self.fns = Default::default();
         self.world_tables = self.build_world_tables();
+        // The registries a preload or an earlier world read are not this
+        // world's packs': a world with packs sends its own (their dialogs,
+        // recipes and advancements). For a world without packs, `sync_data`
+        // drops what was read with packs.
+        if self.world_tables.is_some() {
+            lan::forget_sync_data();
+        }
         // Warm the loot data with this world's packs before chunks decode
         // (`save::roll_loaded_loot` reads the cached copy).
         let _ = horizon_client::structure_blocks::world_loot_data(
@@ -13046,6 +13099,17 @@ impl Game<'_> {
     pub(super) fn sync_level(&mut self) {
         // Level.write saves the game rules (game_rules.dat) with the rest.
         self.level.game_rules = self.ui.rules.by_name();
+        // PrimaryLevelData.setDifficulty: /difficulty and the options button change it.
+        self.level.difficulty =
+            horizon_client::title::DIFFICULTIES[usize::from(self.ui.difficulty) & 3].into();
+        self.level.time = self.world.game_time;
+        self.level.weather = self.world.weather;
+        self.level.day_time = self.world.day_time;
+        // A server has no in-frame player of its own; `enter_guest` puts one in
+        // `self.player` only while a command reads it.
+        if self.player.is_none() && self.options.dedicated.is_some() {
+            return;
+        }
         self.level.selected_slot = self.selected as i32;
         let mode = self.mode_id();
         // The vehicle the player rides (`ServerPlayer.saveParentVehicle`).
@@ -13054,12 +13118,6 @@ impl Game<'_> {
         level.creative = self.creative;
         level.game_mode = mode;
         level.previous_game_mode = self.previous_mode.map(game_mode::mode_id_of);
-        // PrimaryLevelData.setDifficulty: /difficulty and the options button change it.
-        level.difficulty =
-            horizon_client::title::DIFFICULTIES[usize::from(self.ui.difficulty) & 3].into();
-        level.time = self.world.game_time;
-        level.weather = self.world.weather;
-        level.day_time = self.world.day_time;
         level.spawn = self.spawn.map(|s| [s.x, s.y, s.z]);
         level.respawn_elsewhere = self.respawn_config.map(|c| c.saved());
         level.rotation = [self.yaw, self.pitch];
@@ -13163,11 +13221,11 @@ impl Game<'_> {
         self.save_warden_tracker();
         self.sync_level();
         self.store_owner();
-        if self.options.dedicated.is_some() {
-            self.level.write_without_player(&self.world_root)?;
-        } else {
-            self.level.write(&self.world_root)?;
-        }
+        write_level_for_role(
+            &mut self.level,
+            &self.world_root,
+            self.options.execution_role,
+        )?;
         self.save_world_state();
         self.message = Some(("Saved the game".into(), Instant::now()));
         Ok(())
@@ -13965,6 +14023,7 @@ impl Game<'_> {
                 Screen::BlockEditor => self.close_block_editor(),
                 Screen::Chat => self.close_chat(chat::ChatExit::Intentional),
                 Screen::Win => self.close_win_screen()?,
+                Screen::DebugOptions => self.close_debug_options(),
             },
             KeyCode::Digit1
             | KeyCode::Digit2
@@ -14177,7 +14236,7 @@ impl Game<'_> {
             Some(renderer) => {
                 horizon_client::graphics::lod_distance_capped(distance, &renderer.info)
             }
-            None => distance.min(1024),
+            None => distance.min(horizon_client::lod::MAX_CHUNKS),
         }
     }
     /// Only enabled LOD worlds extend the renderer's range, never simulation.
@@ -14838,6 +14897,9 @@ impl ApplicationHandler for Game<'_> {
                     if self.screen == Screen::ServerLinks && d != 0.0 {
                         self.server_links_scroll(d);
                     }
+                    if self.screen == Screen::DebugOptions && d != 0.0 {
+                        self.debug_options_scroll(d);
+                    }
                     if self.screen == Screen::Advancements {
                         self.advancements_scroll(scaled(raw_x) as f32, d);
                     }
@@ -15035,6 +15097,9 @@ impl ApplicationHandler for Game<'_> {
                         Screen::ServerLinks if pressed && button == MouseButton::Left => {
                             self.server_links_click()?
                         }
+                        Screen::DebugOptions if pressed && button == MouseButton::Left => {
+                            self.debug_options_click()
+                        }
                         Screen::ConfirmLink if pressed && button == MouseButton::Left => {
                             self.confirm_link_click()
                         }
@@ -15204,6 +15269,9 @@ impl ApplicationHandler for Game<'_> {
                 }
                 WindowEvent::KeyboardInput { event, .. } if self.screen == Screen::CommandBlock => {
                     self.command_block_key(&event)
+                }
+                WindowEvent::KeyboardInput { event, .. } if self.screen == Screen::DebugOptions => {
+                    self.debug_options_key(&event)
                 }
                 WindowEvent::KeyboardInput { event, .. } if self.screen == Screen::BlockEditor => {
                     self.block_editor_key(&event)
@@ -16040,8 +16108,10 @@ impl<'a> Game<'a> {
             friends: None,
             debug_keys: Default::default(),
             debug_charts: Default::default(),
-            show_hitboxes: false,
-            show_chunk_borders: false,
+            debug_entries: horizon_client::debug_entries::DebugEntries::load(
+                &std::env::current_dir().unwrap_or_default(),
+            ),
+            debug_options: None,
             pause_menu: true,
             previous_mode: None,
             gamemode_switcher: None,
@@ -16053,6 +16123,7 @@ impl<'a> Game<'a> {
             forced_hit: None,
             tick_hit: None,
             guest_use: None,
+            use_failed: false,
             lan_events: Vec::new(),
             lan_songs: Vec::new(),
             lan_cushion_breaks: Vec::new(),
@@ -16373,18 +16444,24 @@ impl Game<'_> {
         }
         self.world_tables = self.build_world_tables();
         horizon_client::structure_blocks::forget_loot_data();
-        lan::forget_sync_data();
         // PlayerList.reloadResources: the tags and recipes go to the players
-        // and their advancements reload.
-        if self.lan.is_some() {
-            match lan::sync_data(&self.options.resources, &self.pack_files()) {
-                Ok(sync) => {
-                    if let Some(host) = self.lan.as_mut() {
-                        host.hub.reload_resources(sync);
+        // and their advancements reload. The synchronized registries (the
+        // dialogs, and the commands' ids of them) stay the hub's.
+        let kept = self.lan.as_ref().map(|host| host.hub.lan.shared.sync());
+        match kept {
+            Some(kept) => {
+                match lan::reload_sync_data(&self.options.resources, &self.pack_files(), &kept) {
+                    Ok(sync) => {
+                        if let Some(host) = self.lan.as_mut() {
+                            host.hub.reload_resources(sync);
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("Horizon: the players are not sent the reloaded data: {e}")
                     }
                 }
-                Err(e) => log::warn!("Horizon: the players are not sent the reloaded data: {e}"),
             }
+            None => lan::forget_sync_data(),
         }
         let overlay = pack_files(&self.world_tables);
         self.adv.tree = Arc::new(horizon_client::advancements::Tree::load_with(
@@ -16589,7 +16666,12 @@ fn load_core(
                 .map_err(|e| e.to_string());
                 Ok((render, item_renderer))
             });
+            // Nor the face visibility the mesher and the block entity
+            // renderer cull with (19 MB).
             let visibility = Step::spawn(scope, parallel, || {
+                if headless {
+                    return Ok(horizon_world::block_render::FaceVisibility::empty());
+                }
                 models::load_visibility(root, registry).map_err(|e| e.to_string())
             });
             let biomes = Step::spawn(scope, parallel, || {
@@ -17075,6 +17157,9 @@ fn build_renderer(
         .iter()
         .map(|(rect, animation)| (*rect, animation.clone(), (usize::MAX, 0, 0)))
         .collect();
+    renderer
+        .hud
+        .set_text_shader(&renderer.device, atlas.text_shader.as_deref());
     Ok(renderer)
 }
 
@@ -18472,5 +18557,75 @@ mod tests {
             ModifiersState::empty(),
             &HashSet::new()
         ));
+    }
+
+    #[test]
+    fn integrated_server_save_persists_owner_player_data() {
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-integrated-player-save-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Initial world creation writes `level.dat` before the player spawns.
+        let mut level = Level {
+            name: "Creative".into(),
+            creative: true,
+            game_mode: 1,
+            ..Level::default()
+        };
+        level.write(&dir).unwrap();
+
+        // The integrated server stores the owner's state in `level` and saves the world.
+        level.position = Some([128.5, 72.0, -64.25]);
+        level.inventory = vec![(0, "minecraft:diamond_pickaxe".into(), 1, 0)];
+        write_level_for_role(
+            &mut level,
+            &dir,
+            execution_role::ExecutionRole::IntegratedServer,
+        )
+        .unwrap();
+
+        let reopened = Level::read(&dir).unwrap();
+        assert_eq!(reopened.position, Some([128.5, 72.0, -64.25]));
+        assert_eq!(
+            reopened.inventory,
+            vec![(0, "minecraft:diamond_pickaxe".into(), 1, 0)]
+        );
+
+        // A dedicated server save updates world metadata without overwriting the player file.
+        let mut dedicated = Level {
+            player_uuid: level.player_uuid,
+            day_time: 6000,
+            ..Level::default()
+        };
+        write_level_for_role(
+            &mut dedicated,
+            &dir,
+            execution_role::ExecutionRole::DedicatedServer,
+        )
+        .unwrap();
+
+        let reopened = Level::read(&dir).unwrap();
+        assert_eq!(reopened.day_time, 6000);
+        assert_eq!(reopened.position, Some([128.5, 72.0, -64.25]));
+        assert_eq!(
+            reopened.inventory,
+            vec![(0, "minecraft:diamond_pickaxe".into(), 1, 0)]
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+fn write_level_for_role(
+    level: &mut Level,
+    dir: &std::path::Path,
+    role: execution_role::ExecutionRole,
+) -> Result<()> {
+    if role.writes_singleplayer_player() {
+        level.write(dir)
+    } else {
+        level.write_without_player(dir)
     }
 }
