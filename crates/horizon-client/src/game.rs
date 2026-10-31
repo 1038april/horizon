@@ -2432,6 +2432,11 @@ struct Game<'a> {
     /// `remote_handle_input`): picked once, so a creative break does not
     /// move the use that follows it past the broken block.
     tick_hit: Option<Option<Hit>>,
+    /// `Player.entityInteractionRange` and `blockInteractionRange`, refreshed
+    /// each tick from the attribute (a server's reach modifier, creative's
+    /// +2): the pick helpers' `&self` reach.
+    entity_reach: f64,
+    block_reach: f64,
     /// The part of a right click a guest's packet asks for (game/lan_actions.rs).
     guest_use: Option<GuestUse>,
     /// The last `use_hand` that ended the click did so with `FAIL`, which
@@ -2641,8 +2646,9 @@ impl Game<'_> {
         }
         Some((self.eye_position()?, view_vector(self.yaw, self.pitch)))
     }
+    /// `Player.blockInteractionRange`: the block pick's and mining's reach.
     fn reach(&self) -> f64 {
-        if self.creative { 5.0 } else { 4.5 }
+        self.block_reach
     }
     /// Outline shapes that depend on more than the block state, as one box
     /// in block space: `LightBlock` and `ScaffoldingBlock.getShape` are a full
@@ -2715,7 +2721,24 @@ impl Game<'_> {
             return hit;
         }
         let (origin, dir) = self.aim()?;
-        self.clip_ray(origin, dir, self.reach())
+        // GameRenderer.pick: the block ray runs out to the larger of the two
+        // interaction ranges; filterHitResult then drops a hit past the
+        // block's.
+        self.clip_ray(origin, dir, self.block_reach.max(self.entity_reach))
+            .filter(|hit| {
+                let distance: [f64; 3] = std::array::from_fn(|i| hit.point[i] - origin[i]);
+                distance.iter().map(|v| v * v).sum::<f64>() <= self.block_reach.powi(2)
+            })
+    }
+    /// The same traversal without `filterHitResult`: the block hit that
+    /// bounds the entity ray in `GameRenderer.pick`, out to the larger
+    /// interaction range — a wall between the two still hides the entity.
+    fn pick_unfiltered(&self) -> Option<Hit> {
+        if let Some(hit) = self.forced_hit {
+            return Some(hit);
+        }
+        let (origin, dir) = self.aim()?;
+        self.clip_ray(origin, dir, self.block_reach.max(self.entity_reach))
     }
     /// The first block outline hit within `reach` along the unit `dir`.
     fn clip_ray(&self, origin: [f64; 3], dir: [f64; 3], reach: f64) -> Option<Hit> {
@@ -6232,6 +6255,10 @@ impl Game<'_> {
         if self.agent.hold_server {
             return Ok(());
         }
+        // `Player.entityInteractionRange`/`blockInteractionRange` for the tick's
+        // picks: the attribute carries creative's and a server's modifiers.
+        self.entity_reach = self.interaction_range("minecraft:entity_interaction_range", 3.0, 5.0);
+        self.block_reach = self.interaction_range("minecraft:block_interaction_range", 4.5, 5.0);
         self.tick_debug_keys()?;
         self.tick_debug_charts();
         self.tick_tutorial();
@@ -9883,13 +9910,15 @@ impl Game<'_> {
     }
     fn mob_hit(&self) -> Option<(usize, f64)> {
         let (eye, dir) = self.aim()?;
-        let reach: f64 = if self.creative { 5.0 } else { 3.0 };
+        let reach: f64 = self.entity_reach;
         let mut best: Option<(usize, f64)> = None;
         for (i, m) in self.mobs.iter().enumerate() {
             // ProjectileUtil.getEntityHitResult: the mob the player rides
             // shares its root vehicle and is never the hit, nor is the
-            // camera entity the pick starts from.
-            if !m.alive() || Some(m.id) == self.riding || Some(m.id) == self.remote_camera_id() {
+            // camera entity the pick starts from. EntitySelector.CAN_BE_PICKED
+            // is isPickable — `!isRemoved`, not alive: a health-0 fake player
+            // still answers a click.
+            if m.removed || Some(m.id) == self.riding || Some(m.id) == self.remote_camera_id() {
                 continue;
             }
             if let Some(t) = ray_box(eye, dir, reach, m.bounds())
@@ -10080,14 +10109,7 @@ impl Game<'_> {
         // A painting nearer than the targeted block and mob breaks instead.
         if let Some((i, d)) = self.painting_hit()
             && self.mob_hit().is_none_or(|m| d < m.1)
-            && self.pick().is_none_or(|h| {
-                let eye = self.eye_position().unwrap_or_default();
-                (0..3)
-                    .map(|a| (h.point[a] - eye[a]).powi(2))
-                    .sum::<f64>()
-                    .sqrt()
-                    > d
-            })
+            && self.before_block(d)
         {
             self.break_painting(i, true);
             return true;
@@ -10109,15 +10131,8 @@ impl Game<'_> {
         let Some((index, distance)) = self.mob_hit() else {
             return false;
         };
-        if let Some(hit) = self.pick() {
-            let eye = self.eye_position().unwrap_or_default();
-            let d = ((hit.point[0] - eye[0]).powi(2)
-                + (hit.point[1] - eye[1]).powi(2)
-                + (hit.point[2] - eye[2]).powi(2))
-            .sqrt();
-            if d < distance {
-                return false;
-            }
+        if !self.before_block(distance) {
+            return false;
         }
         self.attack_mob(index);
         // Minecraft.startAttack swings after the attack.
@@ -16155,6 +16170,8 @@ impl<'a> Game<'a> {
             world_icon: None,
             forced_hit: None,
             tick_hit: None,
+            entity_reach: 3.0,
+            block_reach: 4.5,
             guest_use: None,
             use_failed: false,
             lan_events: Vec::new(),

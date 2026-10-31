@@ -4243,7 +4243,7 @@ impl Game<'_> {
         let Some((index, distance)) = self.mob_hit() else {
             return Ok(false);
         };
-        if let Some(hit) = self.pick()
+        if let Some(hit) = self.pick_unfiltered()
             && let Some(eye) = self.eye_position()
         {
             let d = ((hit.point[0] - eye[0]).powi(2)
