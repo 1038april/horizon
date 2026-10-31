@@ -14,6 +14,7 @@ pub(super) mod pregen;
 mod profiles;
 mod raid;
 mod terrain_cmds;
+mod test_runs;
 mod text_commands;
 mod world_cmds;
 
@@ -970,6 +971,8 @@ impl Game<'_> {
             id if id.starts_with("posteffect.") => self.cmd_posteffect(id, ctx),
             "kick" => self.cmd_kick(ctx),
             "op" | "deop" | "ban" | "pardon" => self.cmd_profiles(id, ctx),
+            "ban-ip" | "pardon-ip" => self.cmd_ip_bans(id, ctx),
+            id if id.starts_with("banlist") => self.cmd_banlist(id),
             id if id.starts_with("whitelist.") => self.cmd_whitelist(id, ctx),
             "fetchprofile" => self.cmd_fetchprofile(ctx),
             "publish" => self.cmd_publish(ctx),
@@ -1540,7 +1543,7 @@ impl Game<'_> {
     /// unless the entity moves first.
     /// `Entity.getId` as the players' clients know it: a player's is the one the
     /// hub gave it, any other entity's is its own id.
-    fn network_entity_id(&self, t: Target) -> Option<i32> {
+    pub(super) fn network_entity_id(&self, t: Target) -> Option<i32> {
         let host = self.lan.as_ref();
         match t {
             Target::Player => match self.lan_acting {
