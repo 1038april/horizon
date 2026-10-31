@@ -1444,6 +1444,30 @@ mod tests {
     }
 
     #[test]
+    fn fields_and_elements_as_out_arguments_write_spirv() {
+        let fsh = "#version 330\nstruct S { float a; vec2 b; };\nvoid f(out float x) { x = 0.5; }\n\
+                   void main() { S s; float arr[2]; f(s.a); f(arr[1]); f(s.b.y);\n\
+                   gl_FragData[0] = vec4(s.a, arr[1], s.b.y, 1.0); }\n";
+        let p = program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+        for module in [&p.vertex, &p.fragment] {
+            let info = Validator::new(ValidationFlags::all(), Capabilities::all())
+                .validate(module)
+                .unwrap();
+            let entry = &module.entry_points[0];
+            let pipeline = naga::back::spv::PipelineOptions {
+                shader_stage: entry.stage,
+                entry_point: entry.name.clone(),
+            };
+            naga::back::spv::write_vec(module, &info, &Default::default(), Some(&pipeline))
+                .unwrap();
+        }
+    }
+
+    #[test]
     fn a_pack_keeps_its_own_inverse() {
         let fsh = "#version 120\nuniform mat4 gbufferProjection;\n\
                    mat4 inverse(mat4 m) { return m; }\n\

@@ -415,4 +415,9 @@ fn backends(post: &horizon_shaders::Post) {
         "    backends: {} modules, {errors} errors, {panics} panics",
         modules.len()
     );
+    assert_eq!(
+        (errors, panics),
+        (0, 0),
+        "a backend failed on a translated module"
+    );
 }
