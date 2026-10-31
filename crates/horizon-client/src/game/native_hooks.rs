@@ -1294,6 +1294,60 @@ impl Game<'_> {
     pub(super) fn native_on_equip(&mut self, slot: &str, new: Option<&ItemStack>) {
         let _ = (slot, new);
     }
+    /// `MobEffect.shouldApplyEffectTickThisTick` for a content mod's effect
+    /// `effect` (`ruby:bleeding`), each tick a player or a mob has it, in
+    /// `MobEffectInstance.tickServer` before it counts down: `tick_count` is
+    /// the ticks left (the entity's tick count when infinite). Set `apply`
+    /// and `native_apply_effect_tick` follows. Server-side. API @API:mob_effect_hooks@.
+    pub(super) fn native_should_apply_effect_tick_this_tick(
+        &self,
+        effect: &str,
+        tick_count: i32,
+        amplifier: i32,
+        apply: &mut bool,
+    ) {
+        let _ = (effect, tick_count, amplifier, apply);
+    }
+    /// `MobEffect.applyEffectTick`: the content mod's effect `effect` acts on
+    /// `entity` in `dimension` (`minecraft:overworld`). Clear `keep` and the
+    /// effect ends now, before it counts down. `entity` is a mob's
+    /// `Entity.getId`, None for a player (`native_acting_player` says who).
+    /// It runs inside the entity's tick: a mob's world borrows the game
+    /// there, so the game is read-only, and it does not hold the ticking
+    /// mobs, nor the player's effects. Server-side. API @API:mob_effect_hooks@.
+    pub(super) fn native_apply_effect_tick(
+        &self,
+        effect: &str,
+        dimension: &str,
+        entity: Option<i32>,
+        amplifier: i32,
+        keep: &mut bool,
+    ) {
+        let _ = (effect, dimension, entity, amplifier, keep);
+    }
+    /// `MobEffect.onEffectAdded`: `LivingEntity.addEffect` gave `entity`
+    /// (as in `native_apply_effect_tick`) the content mod's effect `effect`,
+    /// which it didn't have. Server-side. API @API:mob_effect_hooks@.
+    pub(super) fn native_on_effect_added(
+        &mut self,
+        effect: &str,
+        entity: Option<i32>,
+        amplifier: i32,
+    ) {
+        let _ = (effect, entity, amplifier);
+    }
+    /// NeoForge's `MobEffectEvent.Added`, vanilla's `MobEffect.onEffectStarted`:
+    /// every `LivingEntity.addEffect` of the content mod's effect `effect`,
+    /// new or not, changed or not, after `native_on_effect_added`.
+    /// Server-side. API @API:mob_effect_hooks@.
+    pub(super) fn native_mob_effect_added(
+        &mut self,
+        effect: &str,
+        entity: Option<i32>,
+        amplifier: i32,
+    ) {
+        let _ = (effect, entity, amplifier);
+    }
     /// `LivingEntity.hurtServer`, past its guards (invulnerable, dead, fire
     /// with fire resistance), is about to hurt entity `entity` of type `kind`
     /// (`minecraft:zombie`, `minecraft:player`) by `amount` of `damage_type`
