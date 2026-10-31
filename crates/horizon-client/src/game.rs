@@ -6693,23 +6693,44 @@ impl Game<'_> {
             self.keys.remove(&key);
         }
     }
-    /// Let a held sneak or sprint go when the keyboard reports its modifier up.
-    /// A release does not always reach the mapping: a screen reads presses only,
-    /// and an unfocused window is given no release at all, so the latch would
-    /// keep the player sneaking or sprinting until the key is tapped again. The
-    /// modifier state is what the keyboard itself asserts, so it settles the
-    /// question. A mapping that toggles, or one a pad latched, keeps its state:
-    /// `set_down(false, needs_toggle)` leaves those alone, and a toggle the
-    /// player asked for is meant to outlive the key. A mapping rebound away
-    /// from its modifier is left alone too: the modifier says nothing about it.
+    /// Let a held sneak, sprint or modifier key go when the keyboard reports
+    /// its modifier up. A release does not always reach the mapping: a screen
+    /// reads presses only, and an unfocused window is given no release at all,
+    /// so the latch would keep the player sneaking or sprinting until the key
+    /// is tapped again. The modifier state is what the keyboard itself
+    /// asserts, so it settles the question. A mapping that toggles, or one a
+    /// pad latched, keeps its state: `set_down(false, needs_toggle)` leaves
+    /// those alone, and a toggle the player asked for is meant to outlive the
+    /// key. A mapping rebound away from its modifier is left alone too: the
+    /// modifier says nothing about it.
+    ///
+    /// `physical_keys` and the plain keys go by the same rule, and are the
+    /// worse bug: `Screen.hasShiftDown` and `hasControlDown` read the physical
+    /// state (vanilla's `InputConstants.isKeyDown`), so a Shift no one is
+    /// holding makes every inventory click a shift-click and every throw a
+    /// whole-stack drop. Those do not care what sneak and sprint are bound to.
+    /// A modifier says nothing about which side is down, so one being up means
+    /// both Shifts, or both Controls, are.
     fn heal_hold_latches(&mut self) {
+        let (shift, control) = (self.modifiers.shift_key(), self.modifiers.control_key());
+        if !shift {
+            for key in [KeyCode::ShiftLeft, KeyCode::ShiftRight] {
+                self.physical_keys.remove(&key);
+                self.keys.remove(&key);
+            }
+        }
+        if !control {
+            for key in [KeyCode::ControlLeft, KeyCode::ControlRight] {
+                self.physical_keys.remove(&key);
+            }
+        }
         for (slot, mapping, needs_toggle) in [
             (0, "key.sneak", self.settings.toggle_crouch),
             (1, "key.sprint", self.settings.toggle_sprint),
         ] {
             let held = match horizon_client::keybinds::key_code(self.settings.keys.get(mapping)) {
-                Some(KeyCode::ShiftLeft | KeyCode::ShiftRight) => self.modifiers.shift_key(),
-                Some(KeyCode::ControlLeft | KeyCode::ControlRight) => self.modifiers.control_key(),
+                Some(KeyCode::ShiftLeft | KeyCode::ShiftRight) => shift,
+                Some(KeyCode::ControlLeft | KeyCode::ControlRight) => control,
                 _ => continue,
             };
             if !held {
