@@ -1826,6 +1826,9 @@ struct Game<'a> {
     rest_loader: Option<WorldRestLoader>,
     pending_entry: Option<PendingWorldEntry>,
     world_loader: Option<world_loading::WorldLoader>,
+    /// `DebugEntryChunkGeneration`'s `lastPos` and `result`: F3's `Density` line is sampled
+    /// again only when the feet block (or the dimension) changes.
+    debug_density: RefCell<Option<(&'static str, [i32; 3], Option<String>)>>,
     pending_pack_reload: bool,
     /// When `resourcepacks/` was last looked at for the open pack screen, and what it held
     /// (`watch_pack_folder`).
@@ -15696,6 +15699,7 @@ impl<'a> Game<'a> {
             rest_loader: None,
             pending_entry: None,
             world_loader: None,
+            debug_density: RefCell::new(None),
             pending_pack_reload: false,
             pack_folder: None,
             pack_reload: None,

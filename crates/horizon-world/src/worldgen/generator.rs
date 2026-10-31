@@ -3042,6 +3042,12 @@ impl OverworldGenerator {
     ) -> Box<dyn super::structure::legacy::PieceRandom> {
         self.pipeline.region_random(center)
     }
+    /// `NoiseBasedChunkGenerator.addDebugScreenInfo`: the `Density` line of
+    /// the noise settings' `debug_functions` at the feet (none without them).
+    /// It reads the pipeline's samplers only, so it needs no worker.
+    pub fn debug_density_line(&self, feet: [i32; 3]) -> Option<String> {
+        self.pipeline.debug_density_line(feet)
+    }
     /// Create per-thread state. Workers are cheap; keep one per thread.
     pub fn worker(&self) -> GeneratorWorker {
         let data = self.pipeline.data();

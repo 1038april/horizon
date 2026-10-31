@@ -345,14 +345,25 @@ impl Game<'_> {
                 Some(server) => server.terrain(self.dim.id()),
                 None => self.end.locator(),
             };
-            if let Some(line) = terrain.and_then(|t| {
-                t.density_debug_line([
-                    p.position.x.floor() as i32,
-                    p.position.y.floor() as i32,
-                    p.position.z.floor() as i32,
-                ])
-            }) {
-                d.group("chunk_generation", [line]);
+            // `DebugEntryChunkGeneration.display`: the feet block decides whether the line is
+            // sampled again; otherwise the last result is drawn.
+            let feet = [
+                p.position.x.floor() as i32,
+                p.position.y.floor() as i32,
+                p.position.z.floor() as i32,
+            ];
+            let dim = self.dim.id();
+            let mut last = self.debug_density.borrow_mut();
+            // Not kept while the level has no generator yet (the server thread has not run it).
+            if !last
+                .as_ref()
+                .is_some_and(|(d, f, _)| *d == dim && *f == feet)
+                && let Some(t) = terrain
+            {
+                *last = Some((dim, feet, t.density_debug_line(feet)));
+            }
+            if let Some((_, _, Some(line))) = last.as_ref() {
+                d.group("chunk_generation", [line.clone()]);
             }
         }
         // simple_performance_impactors.
