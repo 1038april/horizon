@@ -9895,9 +9895,11 @@ CHECK_FNS['creative_tools'] = check_creative_tools
 
 def check_creative_throw(host, guest, out):
     """#3684: Q over a hotbar slot on a creative item tab drops the item instead of deleting it.
-    CreativeModeInventoryScreen.slotClicked: with an empty hand the menu's THROW sends the stack
-    (handleCreativeModeItemDrop), Control+Q the whole stack; while carrying a stack the screen
-    itself drops one from the slot and the carried stack stays."""
+    CreativeModeInventoryScreen.slotClicked on an item tab: with an empty hand the menu's THROW
+    sends the stack (handleCreativeModeItemDrop), Control+Q the whole stack; while carrying a stack
+    the screen itself drops one (Control: all) from the slot and the carried stack stays; over a
+    display slot it drops one, or a full stack with Control, of the shown item. On the Survival
+    Inventory tab the screen drops from the slot itself, one or the whole stack, carrying or not."""
     seen = {}
 
     def dropped(player, item):
@@ -9908,15 +9910,34 @@ def check_creative_throw(host, guest, out):
         player('command', command='kill @e[type=minecraft:item,distance=..16]')
         player.wait(2)
 
-    def hotbar(player):
-        return {s['slot']: (s.get('item'), s.get('count')) for s in player('inventory')['hotbar'][:2]}
+    def slots(player, *ids):
+        inventory = player('inventory')
+        every = {s['slot']: (s.get('item'), s.get('count')) for s in inventory['hotbar'] + inventory['main']}
+        return {i: every[i] for i in ids}
+
+    def throw(player, slot, ctrl=False):
+        # The pointer over the slot, then Q (Control+Q) as AbstractContainerScreen.keyPressed reads it.
+        player.raw('scroll-at', *(f'{v:.1f}' for v in slot_point(player, slot)), 0)
+        if ctrl:
+            player.raw('key', 'ctrl', 'down')
+        player.raw('key', 'q', 'tap')
+        if ctrl:
+            player.raw('key', 'ctrl', 'up')
+        player.wait(5)
+
+    def tab(player, x, y):
+        # A tab button, from the screen's origin (slot 0 sits at 9, 112 on every tab).
+        sx, sy, _, _ = next(w for w in player.raw('ui')['widgets'] if w.get('id') == 'slot-0')['bounds']
+        player.raw('click-at', f'{sx - 9 + x:.1f}', f'{sy - 112 + y:.1f}')
+        player.wait(5)
 
     for label, player in (('host', host), ('guest', guest)):
         player('command', command='gamemode creative')
         player('command', command='clear @s')
         clear()
-        player('command', command='item replace entity @s hotbar.0 with minecraft:stone 10')
-        player('command', command='item replace entity @s hotbar.1 with minecraft:dirt 5')
+        for slot, item in (('hotbar.0', 'stone 10'), ('hotbar.1', 'dirt 5'), ('hotbar.2', 'gravel 6'),
+                           ('inventory.0', 'cobblestone 10'), ('inventory.1', 'sand 5')):
+            player('command', command=f'item replace entity @s {slot} with minecraft:{item}')
         player.wait(10)
         player.raw('key', 'e', 'tap')
         player.raw('wait-for', 'screen', 'creative', '--timeout', 10)
@@ -9924,38 +9945,75 @@ def check_creative_throw(host, guest, out):
         widgets = {w['id']: w for w in player.raw('ui')['widgets']}
         if 'slot-900' not in widgets:
             raise Failed(f'{label}: the creative screen did not open on an item tab')
+        shown = (widgets['slot-900'].get('stack') or {}).get('item')
+        s = seen[label] = {}
         try:
-            # Empty hand: Q drops one stone.
-            player.raw('scroll-at', *(f'{v:.1f}' for v in slot_point(player, 0)), 0)
-            player.raw('key', 'q', 'tap')
-            player.wait(5)
-            one = (hotbar(player)[0], dropped(player, 'minecraft:stone'))
+            # Empty hand: Q drops one stone, Control+Q all the gravel.
+            throw(player, 0)
+            s['one'] = (slots(player, 0)[0], dropped(player, 'minecraft:stone'))
             # Each step's drops go before the next, so none is picked up again (40 ticks' delay).
+            clear()
+            throw(player, 2, ctrl=True)
+            s['all'] = (slots(player, 2)[2], dropped(player, 'minecraft:gravel'))
             clear()
             # Carrying a picked display stack: Q over the dirt drops one dirt, the hand keeps its stack.
             player.raw('click', 'slot-900')
             player.wait(2)
             carried = player('inventory').get('carried')
-            player.raw('scroll-at', *(f'{v:.1f}' for v in slot_point(player, 1)), 0)
-            player.raw('key', 'q', 'tap')
-            player.wait(5)
-            carrying = (hotbar(player)[1], dropped(player, 'minecraft:dirt'), player('inventory').get('carried'))
+            throw(player, 1)
+            s['carrying'] = (slots(player, 1)[1], dropped(player, 'minecraft:dirt'), player('inventory').get('carried'))
             clear()
-            # Control+Q: the rest of the dirt.
-            player.raw('key', 'ctrl', 'down')
-            player.raw('key', 'q', 'tap')
-            player.raw('key', 'ctrl', 'up')
-            player.wait(5)
-            whole = (hotbar(player)[1], dropped(player, 'minecraft:dirt'))
+            # Control+Q, still carrying: the rest of the dirt.
+            throw(player, 1, ctrl=True)
+            s['whole'] = (slots(player, 1)[1], dropped(player, 'minecraft:dirt'), player('inventory').get('carried'))
+            clear()
+            # The carried stack goes to the empty hotbar slot 3.
+            player.raw('click', 'slot-3')
+            player.wait(2)
+            # A display slot: one of the shown item, a full stack with Control; the hotbar stays.
+            throw(player, 900)
+            s['display'] = dropped(player, shown)
+            clear()
+            throw(player, 900, ctrl=True)
+            s['display_all'] = dropped(player, shown)
+            s['hotbar'] = slots(player, 0, 1, 2, 3)
+            clear()
             player.shot(out, f'creative-throw-{label}')
+            # The Survival Inventory tab (the bottom row's last).
+            tab(player, 169 + 13, 132 + 14)
+            if 'slot-9' not in {w['id'] for w in player.raw('ui')['widgets']}:
+                raise Failed(f'{label}: the Survival Inventory tab did not open')
+            throw(player, 9)
+            s['inventory_one'] = (slots(player, 9)[9], dropped(player, 'minecraft:cobblestone'))
+            clear()
+            throw(player, 9, ctrl=True)
+            s['inventory_all'] = (slots(player, 9)[9], dropped(player, 'minecraft:cobblestone'))
+            clear()
+            # Carrying the sand: Q over the stone drops one stone, the hand keeps the sand.
+            player.raw('click', 'slot-10')
+            player.wait(2)
+            throw(player, 0)
+            s['inventory_carrying'] = (slots(player, 0)[0], dropped(player, 'minecraft:stone'),
+                                       player('inventory').get('carried'))
+            player.raw('click', 'slot-10')
+            player.wait(2)
+            clear()
+            player.shot(out, f'creative-throw-inventory-{label}')
+            # Back to the first tab, where the screen opens next time.
+            tab(player, 13, -28 + 14)
         finally:
             player.raw('key', 'esc', 'tap')
             player.wait(5)
-        seen[label] = {'one': one, 'carrying': carrying, 'whole': whole}
-        assert one == (('minecraft:stone', 9), 1), seen
-        assert carried and carrying[2] == carried, seen
-        assert carrying[:2] == (('minecraft:dirt', 4), 1), seen
-        assert whole == ((None, None), 4), seen
+        assert s['one'] == (('minecraft:stone', 9), 1), seen
+        assert s['all'] == ((None, None), 6), seen
+        assert carried and s['carrying'] == (('minecraft:dirt', 4), 1, carried), seen
+        assert s['whole'] == ((None, None), 4, carried), seen
+        assert s['display'] == 1 and s['display_all'] == 64, seen
+        assert s['hotbar'] == {0: ('minecraft:stone', 9), 1: (None, None), 2: (None, None),
+                               3: (carried['item'], carried['count'])}, seen
+        assert s['inventory_one'] == (('minecraft:cobblestone', 9), 1), seen
+        assert s['inventory_all'] == ((None, None), 9), seen
+        assert s['inventory_carrying'] == (('minecraft:stone', 8), 1, {'count': 5, 'item': 'minecraft:sand'}), seen
         clear()
     return seen
 

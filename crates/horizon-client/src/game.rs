@@ -8433,36 +8433,46 @@ impl Game<'_> {
             return true;
         }
         if let Some(slot) = slot
-            && slot < 9
             && input == horizon_client::menu::Input::Throw
-            && self.creative_tab_open()
             && self.carried.is_some()
             && self.remote.is_some()
+            && ((slot < 9 && self.creative_tab_open()) || self.creative_inventory_open())
         {
-            self.creative_hotbar_throw_carrying(slot, button);
+            self.creative_throw_carrying(slot, button);
             return true;
         }
         self.menu_ops(&[(slot, button, input)])
     }
-    /// `CreativeModeInventoryScreen.slotClicked`: THROW on an item tab's hotbar slot while a
-    /// stack is carried. The menu's own THROW needs an empty hand, so the screen drops from the
-    /// slot itself: one item, or the whole stack with the control key, through
-    /// `handleCreativeModeItemDrop`, then `broadcastChanges` sends the slot. Only the server
-    /// drops it: this is the client of a server (`remote`).
-    fn creative_hotbar_throw_carrying(&mut self, slot: usize, button: i32) {
-        let Some(old) = self.inventory[slot].as_mut() else {
+    /// `CreativeModeInventoryScreen.slotClicked`: THROW while a stack is carried, on an item
+    /// tab's hotbar slot or any slot of the Survival Inventory tab. The menu's own THROW needs an
+    /// empty hand, so the screen drops from the slot itself: one item, or with the control key
+    /// the whole stack (on the inventory tab `Slot.remove(getMaxStackSize())`), through
+    /// `handleCreativeModeItemDrop`, then sends the slot (`broadcastChanges`,
+    /// `handleCreativeModeItemAdd`); the carried stack stays. Only the server drops it: this is
+    /// the client of a server (`remote`).
+    fn creative_throw_carrying(&mut self, slot: usize, button: i32) {
+        let Some(old) = self.slot_mut(slot).clone() else {
             return;
         };
-        let count = if button == 0 { 1 } else { old.count };
-        let thrown = ItemStack {
-            count,
-            ..old.clone()
+        let count = if button == 0 {
+            1
+        } else if self.creative_inventory_open() {
+            let max = world_items!(self)
+                .get(&old.item)
+                .map_or(64, |i| i.max_stack);
+            old.count.min(max)
+        } else {
+            old.count
         };
-        old.count -= count;
-        if old.count == 0 {
-            self.inventory[slot] = None;
-        }
-        self.remote_creative_throw(thrown);
+        let before = self.player_equipment();
+        let left = old.count - count;
+        *self.slot_mut(slot) = (left > 0).then(|| ItemStack {
+            count: left,
+            ..old.clone()
+        });
+        self.player_equipment_changed(&before);
+        self.apply_equipment();
+        self.remote_creative_throw(ItemStack { count, ..old });
         self.send_creative_slots();
     }
     /// A click on an item tab's display slot: the screen's own handling
@@ -8999,10 +9009,11 @@ impl Game<'_> {
                 self.award_furnace_recipes(pos, at);
             }
         } else if self.screen == Screen::Creative {
-            // A THROW in the creative screen, on the Survival Inventory tab or an item tab's
-            // hotbar (`AbstractContainerMenu.doClick` calls `Player.handleCreativeModeItemDrop`):
-            // the stack goes to the server, the slot follows with the others
-            // (SetCreativeModeSlot). Only the server can drop it; the slot is already empty.
+            // A THROW in the creative screen with an empty hand: on an item tab's hotbar
+            // `AbstractContainerMenu.doClick` calls `Player.handleCreativeModeItemDrop`, on the
+            // Survival Inventory tab the screen does. The stack goes to the server, the slot
+            // follows with the others (SetCreativeModeSlot). Only the server can drop it; the
+            // slot has already given it up.
             for stack in dropped {
                 self.remote_creative_throw(stack);
             }
