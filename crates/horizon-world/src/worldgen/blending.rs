@@ -415,9 +415,19 @@ pub trait OldWorld: Send + Sync {
     /// (`[min x, min y, min z, max x, max y, max z]`). What the chunk saved
     /// is what `getStructureAt` and `/locate` see there, not what this
     /// generator would make.
-    fn saved_starts(&self, _x: i32, _z: i32) -> Vec<(String, Option<[i32; 6]>)> {
+    fn saved_starts(&self, _x: i32, _z: i32) -> Vec<SavedStart> {
         Vec::new()
     }
+}
+
+/// A structure start an old chunk saved (`structures.starts.<name>`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SavedStart {
+    pub name: String,
+    /// The union of the pieces' `BB`: `[min x, min y, min z, max x, max y, max z]`.
+    pub bounds: Option<[i32; 6]>,
+    /// The start's `Children`, as saved.
+    pub pieces: Vec<crate::nbt::Tag>,
 }
 
 /// `Blender.BlendingOutput`.

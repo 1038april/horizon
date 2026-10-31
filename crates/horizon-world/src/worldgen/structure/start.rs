@@ -820,7 +820,7 @@ pub trait StartContext: JigsawContext {
         false
     }
     /// The starts that old chunk saved: see `OldWorld::saved_starts`.
-    fn saved_starts(&self, _chunk: ChunkPos) -> Vec<(String, Option<[i32; 6]>)> {
+    fn saved_starts(&self, _chunk: ChunkPos) -> Vec<crate::worldgen::blending::SavedStart> {
         Vec::new()
     }
     fn seed(&self) -> i64;

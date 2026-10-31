@@ -152,7 +152,7 @@ impl OldWorld for SavedOldWorld {
         }
         false
     }
-    fn saved_starts(&self, x: i32, z: i32) -> Vec<(String, Option<[i32; 6]>)> {
+    fn saved_starts(&self, x: i32, z: i32) -> Vec<horizon_world::worldgen::blending::SavedStart> {
         self.save
             .raw_chunk(x, z)
             .map(|root| starts_of(&root.tag))
@@ -214,7 +214,7 @@ impl OldWorld for SavedOldWorld {
 
 /// The `structures.starts` of a saved chunk: each valid start's name and the
 /// union of its pieces' `BB`.
-fn starts_of(chunk: &Tag) -> Vec<(String, Option<[i32; 6]>)> {
+fn starts_of(chunk: &Tag) -> Vec<horizon_world::worldgen::blending::SavedStart> {
     let Some(Tag::Compound(starts)) = chunk.get("structures").and_then(|s| s.get("starts")) else {
         return Vec::new();
     };
@@ -244,7 +244,15 @@ fn starts_of(chunk: &Tag) -> Vec<(String, Option<[i32; 6]>)> {
                     }
                 }
             }
-            (name.to_string_lossy(), bounds)
+            let pieces = match start.get("Children") {
+                Some(Tag::List(children)) => children.clone(),
+                _ => Vec::new(),
+            };
+            horizon_world::worldgen::blending::SavedStart {
+                name: name.to_string_lossy(),
+                bounds,
+                pieces,
+            }
         })
         .collect()
 }
@@ -281,13 +289,11 @@ mod tests {
                 ]),
             )]),
         )]);
-        assert_eq!(
-            starts_of(&chunk),
-            vec![(
-                "minecraft:village_plains".to_owned(),
-                Some([-4, 60, 0, 10, 72, 20])
-            )]
-        );
+        let starts = starts_of(&chunk);
+        assert_eq!(starts.len(), 1);
+        assert_eq!(starts[0].name, "minecraft:village_plains");
+        assert_eq!(starts[0].bounds, Some([-4, 60, 0, 10, 72, 20]));
+        assert_eq!(starts[0].pieces.len(), 2, "the Children come with it");
         assert!(starts_of(&Tag::compound([("DataVersion", Tag::Int(1))])).is_empty());
     }
 }
