@@ -864,6 +864,27 @@ fn mob_meta(
             }
             defaults.push((18, serializer::INT, Value::Int(0)));
         }
+        // Mannequin.DATA_PROFILE, DATA_IMMOVABLE and DATA_DESCRIPTION (after Avatar's two):
+        // `updateDescription` keeps the last as a component, or none when hidden.
+        "minecraft:mannequin" => {
+            if let Some(profile) = &m.profile {
+                meta.push((
+                    17,
+                    serializer::RESOLVABLE_PROFILE,
+                    Value::Profile(profile.clone()),
+                ));
+            }
+            if e.immovable {
+                meta.push((18, serializer::BOOLEAN, Value::Bool(true)));
+            }
+            defaults.push((18, serializer::BOOLEAN, Value::Bool(false)));
+            let default = horizon_client::mobs::MannequinDescription::Default.component();
+            let shown = e.description.component();
+            if shown != default {
+                meta.push((19, serializer::OPTIONAL_COMPONENT, Value::OptText(shown)));
+            }
+            defaults.push((19, serializer::OPTIONAL_COMPONENT, Value::OptText(default)));
+        }
         // Creaking.CAN_MOVE, IS_ACTIVE and IS_TEARING_DOWN.
         "minecraft:creaking" => {
             if e.flag2 {

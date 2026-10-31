@@ -784,6 +784,10 @@ pub fn anger_left(anger_end: i64, game_time: i64) -> i32 {
 /// Species-specific persistent state (variants, colours, taming, ageing...).
 #[derive(Clone, Debug, Default)]
 pub struct Extra {
+    /// `Mannequin.DATA_IMMOVABLE`: it neither moves nor falls (`isEffectiveAi` is false).
+    pub immovable: bool,
+    /// `Mannequin.DATA_DESCRIPTION`: the text under its name.
+    pub description: MannequinDescription,
     /// A player's or mannequin's `minecraft:scale`, which scales the whole model
     /// (`LivingEntityRenderState.scale`): the local player's own, and on a
     /// server the others' from their attribute updates; 0 is the default, 1.
@@ -1167,6 +1171,36 @@ pub struct Mob {
     /// A mannequin's `DATA_PROFILE` (ResolvableProfile): the profile's
     /// `textures` property resolves to `skin` like a player's.
     pub profile: Option<horizon_protocol::entity_data::Profile>,
+}
+/// A mannequin's `description` and `hide_description` (`Mannequin.updateDescription`):
+/// the default `entity.minecraft.mannequin.label`, none at all, or a component.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum MannequinDescription {
+    #[default]
+    Default,
+    Hidden,
+    Custom(horizon_world::nbt::Tag),
+}
+impl MannequinDescription {
+    /// `Mannequin.getDescription`: the component `DATA_DESCRIPTION` holds, none when hidden.
+    pub fn component(&self) -> Option<horizon_world::nbt::Tag> {
+        match self {
+            Self::Default => Some(horizon_world::nbt::Tag::compound([(
+                "translate",
+                horizon_world::nbt::Tag::String("entity.minecraft.mannequin.label".into()),
+            )])),
+            Self::Hidden => None,
+            Self::Custom(tag) => Some(tag.clone()),
+        }
+    }
+    /// `DATA_DESCRIPTION` as a client reads it.
+    pub fn from_component(tag: Option<&horizon_world::nbt::Tag>) -> Self {
+        match tag {
+            None => Self::Hidden,
+            Some(tag) if Some(tag) == Self::Default.component().as_ref() => Self::Default,
+            Some(tag) => Self::Custom(tag.clone()),
+        }
+    }
 }
 /// Events a mob tick asks the game to act on.
 #[derive(Clone, Debug)]

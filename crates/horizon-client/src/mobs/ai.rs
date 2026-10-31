@@ -1226,7 +1226,8 @@ fn ai_step(m: &mut Mob, w: &MobWorld, level_random: &mut LegacyRandom, events: &
         // LivingEntity.travelRidden: the rider's client moves it
         // (handleMoveVehicle), so the server only stops it.
         m.velocity = Vec3::ZERO;
-    } else {
+    } else if !(m.species() == Species::Mannequin && m.extra.immovable) {
+        // Mannequin.isEffectiveAi: an immovable one never travels.
         m.travel(w, input, events);
     }
     push_entities(m, w, events);
