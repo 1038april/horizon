@@ -1219,6 +1219,21 @@ fn a_superflat_world_keeps_its_strongholds_on_every_seed_and_leaves_null_layers_
             .expect("a stronghold")
     };
     assert_eq!(stronghold(1234), stronghold(-987654321));
+    // `moveBelowSeaLevel(-63, ChunkGenerator.getMinY() = 0, ..)`: the sea level less 10 is far
+    // below the room's height above 0, so the stronghold's top lands at `ySpan + 1` above Y 0
+    // (with the level's -64 it would sit 64 blocks lower). The start's box is inflated by 12
+    // for the terrain adaptation: the pieces span Y 2 to 36, the box -10 to 48.
+    let (_, at) = stronghold(1234);
+    let starts = make(1234).starts_at(at[0] >> 4, at[2] >> 4);
+    let start = starts
+        .iter()
+        .find(|s| s.name == "minecraft:stronghold")
+        .expect("the stronghold start");
+    assert!(
+        start.bounding_box.min[1] >= -12,
+        "the stronghold sits below the generator's Y 0: {:?}",
+        start.bounding_box
+    );
     let terrain = make(1234);
     let mut worker = terrain.worker();
     let chunk = terrain.finish(terrain.proto(&mut worker, 3, 3));

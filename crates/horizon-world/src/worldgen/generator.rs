@@ -1949,6 +1949,13 @@ where
     fn sea_level(&self) -> i32 {
         self.pipeline.settings.sea_level
     }
+    fn generator_min_y(&self) -> i32 {
+        if self.pipeline.flat.is_some() {
+            0
+        } else {
+            self.pipeline.settings.noise_min_y
+        }
+    }
     fn base_column(&mut self, x: i32, z: i32, kind: HeightmapType) -> Vec<bool> {
         self.pipeline.base_column(x, z, kind)
     }
