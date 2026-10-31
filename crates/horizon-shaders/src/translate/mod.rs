@@ -1536,4 +1536,34 @@ mod tests {
             "{errors:?}"
         );
     }
+
+    /// `x / 0.0` and `sqrt(-1.0)` are GL's infinity and NaN at run time; naga folds them into
+    /// constants and refuses them (Mellow, Bloop). `texelFetch2D` is GL_EXT_gpu_shader4's name
+    /// (Bliss).
+    #[test]
+    fn infinities_nans_and_old_fetches_translate() {
+        let fsh = "#version 330\nuniform sampler2D noisetex;\nout vec4 color;\nvoid main() {\n    \
+                   ivec2 t = ivec2(gl_FragCoord.xy);\n    \
+                   color = texelFetch2D(noisetex, t, 0) + vec4(-1.0 / 0.0) + vec4(sqrt(-1.0));\n}\n";
+        let p = program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        );
+        assert!(p.is_ok(), "{:?}", p.err());
+    }
+
+    /// `const`s that call a built-in naga's constant evaluator lacks (`mix`, `smoothstep`...)
+    /// are evaluated where the program runs: a global by our `main`, a local in place (Bliss).
+    #[test]
+    fn constants_naga_cannot_fold_are_evaluated_at_run_time() {
+        let fsh = "#version 120\nvarying vec2 texcoord;\nconst vec3 tint = mix(vec3(0.2), vec3(1.0), 0.25);\n\
+                   const float edge = smoothstep(0.0, 1.0, 0.5), mid = 0.5;\n\
+                   float shade(float x) {\n    const float k = mix(0.5, 1.0, 0.3);\n    return x * k;\n}\n\
+                   void main() { gl_FragColor = vec4(tint * shade(texcoord.x) * edge * mid, 1.0); }\n";
+        let p = program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        );
+        assert!(p.is_ok(), "{:?}", p.err());
+    }
 }

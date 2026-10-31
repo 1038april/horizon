@@ -4,7 +4,7 @@
 pub use crate::chunk::block_entity::{
     Banner, Beacon, BlockEntity, Brushable, Campfire, ChiseledBookshelf, Crafter, CreakingHeart,
     EndGateway, Furnace, FurnaceKind, Jukebox, Lectern, MOD_MENUS, ModBlockEntity, ModContainer,
-    PotentSulfur, Shelf, Skull, SkullSkin,
+    ModFluidTanks, PotentSulfur, Shelf, Skull, SkullSkin,
 };
 use crate::items::ItemStack;
 use std::collections::HashMap;
@@ -80,6 +80,17 @@ pub fn display_name(custom: Option<&str>, default_key: &str) -> horizon_world::n
 /// `FIRST`), else the second's, else `container.chestDouble`.
 pub fn double_chest_name(first: Option<&str>, second: Option<&str>) -> horizon_world::nbt::Tag {
     display_name(first.or(second), "container.chestDouble")
+}
+
+/// `BaseContainerBlockEntity.sendChestLockedNotifications`: the action bar
+/// message of a container that refuses to open, `container.isLocked` naming it
+/// by its display name.
+pub fn locked_message(title: &horizon_world::nbt::Tag) -> horizon_world::nbt::Tag {
+    use horizon_world::nbt::Tag;
+    Tag::compound([
+        ("translate", Tag::String("container.isLocked".into())),
+        ("with", Tag::List(vec![title.clone()])),
+    ])
 }
 
 /// The menu a container vehicle's `createMenu` builds (`ContainerEntity`):
