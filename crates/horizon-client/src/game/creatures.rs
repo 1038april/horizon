@@ -1599,6 +1599,15 @@ impl Game<'_> {
             self.next_entity += 1;
             p.id = self.next_entity;
         }
+        // Projectile.setOwner: the acting player's or the mob's UUID, which
+        // its save keeps even once the owner is gone.
+        if p.owner_uuid.is_none() {
+            p.owner_uuid = match p.owner {
+                Some(Who::Player) => Some(self.acting_player_uuid()),
+                Some(Who::Mob(id)) => Some(self.uuid_for(id)),
+                None => None,
+            };
+        }
         self.creatures.projectiles.push(p);
     }
     pub(super) fn handle_mob_events(&mut self, events: Vec<MobEvent>) -> Result<()> {
@@ -3411,9 +3420,10 @@ impl Game<'_> {
                 } = hit
                     && let Some(j) = wind_charge_hit(id)
                 {
-                    let (owner, guest) = (p.owner, p.guest);
+                    let (owner, owner_uuid, guest) = (p.owner, p.owner_uuid, p.guest);
                     let look = self.owner_look(owner, guest);
-                    super::deflect::aim_deflect(&mut projectiles[j], look, owner, guest);
+                    let wind = &mut projectiles[j];
+                    super::deflect::aim_deflect(wind, look, owner, owner_uuid, guest);
                 }
             }
             let mut idx = 0;
