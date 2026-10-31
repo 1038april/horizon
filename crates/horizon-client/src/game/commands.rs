@@ -3349,13 +3349,30 @@ impl Game<'_> {
                 .options
                 .resources
                 .join(format!("data/{ns}/tags/{registry}/{path}.json"));
-            let Ok(v) = std::fs::read(file)
-                .map_err(|_| ())
-                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).map_err(|_| ()))
-            else {
-                continue;
-            };
-            for e in v["values"].as_array().into_iter().flatten() {
+            // The game's file and the world's packs' both count, entries
+            // joined in resource-stack order; a pack file with `replace`
+            // drops what the lower sources put in (`TagLoader.load`).
+            let packed = self
+                .fns
+                .store
+                .files
+                .get(&format!("tags/{ns}:{registry}/{path}"))
+                .into_iter()
+                .flatten()
+                .filter_map(|b| serde_json::from_slice::<serde_json::Value>(b).ok());
+            let parsed = std::fs::read(file)
+                .ok()
+                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+                .into_iter()
+                .chain(packed);
+            let mut entries = Vec::new();
+            for v in parsed {
+                if v["replace"].as_bool() == Some(true) {
+                    entries.clear();
+                }
+                entries.extend(v["values"].as_array().into_iter().flatten().cloned());
+            }
+            for e in &entries {
                 let id = e.as_str().or_else(|| e["id"].as_str()).unwrap_or_default();
                 match id.strip_prefix('#') {
                     Some(nested) => pending.push(nested.to_owned()),

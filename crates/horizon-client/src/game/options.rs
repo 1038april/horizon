@@ -340,8 +340,9 @@ impl Game<'_> {
                     super::packs::open_folder(&dir);
                 }
                 Event::DataPacks(ids) => {
+                    let resources = self.vanilla_root();
                     if let Some(title) = &mut self.title {
-                        title.set_data_packs(ids);
+                        title.offer_data_packs(&resources, ids);
                     }
                 }
                 Event::OpenDataPackFolder(dir) => {

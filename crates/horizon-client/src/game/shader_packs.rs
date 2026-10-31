@@ -97,7 +97,7 @@ impl Game<'_> {
                         let folder = dimension_folder(&pack, dimension);
                         let inputs = renderer.pack_inputs();
                         let mut post = load_post(&pack, &folder, &properties, &macros, &inputs);
-                        let biomes = self.res.biomes();
+                        let biomes = world_biomes!(self);
                         let names: Vec<&str> =
                             biomes.list.iter().map(|b| b.name.as_str()).collect();
                         post.custom.set_biomes(&names);
@@ -175,7 +175,7 @@ impl Game<'_> {
             .get(&(at.x >> 4, at.z >> 4))
             .map(|c| c.biome(at.x, at.y, at.z));
         let (held_items, held_light) = self.held_for_pack();
-        let info = biome.map(|b| self.res.biomes().get(b));
+        let info = biome.map(|b| world_biomes!(self).get(b));
         PackInputs {
             day_time: self.world.day_time,
             rain: lerp(self.world.weather.rain_level),

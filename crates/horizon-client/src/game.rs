@@ -30,6 +30,16 @@ macro_rules! world_stations {
         }
     };
 }
+/// The biome table the world plays with (`Game::biomes`), as a field-level
+/// borrow: the world's packs' over the game's own.
+macro_rules! world_biomes {
+    ($s:expr) => {
+        match &$s.world_biomes {
+            Some(b) => b,
+            None => $s.res.biomes(),
+        }
+    };
+}
 
 /// The world's packs' content files, as a field-level borrow (see the macros).
 fn pack_files(world_tables: &Option<WorldTables>) -> horizon_world::loot::PackOverlay<'_> {
@@ -1898,6 +1908,9 @@ struct Game<'a> {
     weather_parameters: horizon_client::weather::ParameterCache,
     panorama_rotation: horizon_client::gfx::panorama::Rotation,
     world: World,
+    /// The biome table the world plays with: the game's own with the world's
+    /// packs over it (`Biomes::with_packs`), `None` before a world opens.
+    world_biomes: Option<Arc<Biomes>>,
     streaming: Streaming,
     lod: Option<horizon_client::lod::Lod>,
     lod_source_attempted: bool,
@@ -2089,6 +2102,9 @@ struct Game<'a> {
     lectern_pulses: Vec<((i32, i32, i32), i32)>,
     /// LevelLoadingScreen.smoothedProgress while the player is not placed yet.
     loading_progress: f32,
+    /// `CreateWorldScreen.openCreateWorldScreen`'s data read, on a worker,
+    /// while the title says `createWorld.preparing`.
+    creation_job: Option<std::thread::JoinHandle<()>>,
     /// When `loading_progress` last eased (the server thread's load, 50 ms a step).
     loading_progress_at: Option<std::time::Instant>,
     /// The world spawn search's origin chunk and fallback height, once known.
@@ -3130,7 +3146,7 @@ impl Game<'_> {
                 state,
                 pos,
                 &region,
-                self.res.biomes(),
+                world_biomes!(self),
                 self.streaming.biome_zoom,
                 self.streaming.biome_blend,
             )
@@ -3662,7 +3678,7 @@ impl Game<'_> {
             player_box,
             guest_boxes,
             player_collision,
-            biomes: self.res.biomes(),
+            biomes: world_biomes!(self),
             seed: self.level.seed,
             behaviours: self.res.behaviours(),
             items: world_items!(self),
@@ -10716,6 +10732,28 @@ impl Game<'_> {
             }
             let _ = std::fs::remove_dir_all(dir);
         }
+        // The world's pack selection (`DataPackConfig`), for the pack stack
+        // to read: the picked packs on, the feature packs left out off.
+        // Only when `install` did not run (no Data Packs screen opened): it
+        // writes the file itself, and its `disabled` must not be lost.
+        if let Some(o) = create.filter(|o| o.pack_dir.is_none()) {
+            let world = std::env::current_dir()?.join("saves").join(folder);
+            if let Err(e) = std::fs::create_dir_all(&world) {
+                log::warn!("Horizon: data packs for {folder}: {}: {e}", world.display());
+            } else {
+                let disabled: Vec<String> =
+                    horizon_client::datapack::feature_packs(&self.vanilla_root())
+                        .into_iter()
+                        .map(|p| p.id)
+                        .filter(|id| !o.data_packs.contains(id))
+                        .collect();
+                let json = serde_json::json!({"enabled": o.data_packs, "disabled": disabled});
+                let file = world.join("datapacks.json");
+                if let Err(e) = std::fs::write(&file, json.to_string()) {
+                    log::warn!("Horizon: data packs for {folder}: {}: {e}", file.display());
+                }
+            }
+        }
         if self
             .options
             .execution_role
@@ -10780,6 +10818,9 @@ impl Game<'_> {
         let dim = Dim::from_id(&level.dimension);
         self.level_shapes = shapes;
         self.world_root = save_root.clone();
+        // The world's packs over the game's biomes (`Biomes::with_packs`),
+        // the table its chunks were built with.
+        self.world_biomes = self.packed_biomes();
         horizon_client::crash::set_detail(
             "World",
             format!("{} ({})", level.name, save_root.display()),
@@ -10950,6 +10991,7 @@ impl Game<'_> {
             dim,
             self.level_shapes.get(dim.id()),
             seed,
+            &self.level.enabled_features,
         )?;
         self.end.set_locator(locator);
         self.share_spawn_conditions();
@@ -10979,7 +11021,7 @@ impl Game<'_> {
         let keys: Vec<_> = self.world.modified.drain().collect();
         let chunks = self.with_entities(keys.iter().filter_map(|k| self.world.chunks.get(k)));
         self.save
-            .save(&chunks, self.pack.assets.registry, self.res.biomes())?;
+            .save(&chunks, self.pack.assets.registry, world_biomes!(self))?;
         self.save_dimension_entities()?;
         // Coordinates scale by 8 between the Overworld and the Nether.
         let scale = match (self.dim, target) {
@@ -13613,6 +13655,19 @@ impl Game<'_> {
             &self.world_root,
             self.options.execution_role,
         )?;
+        // PlayerList.saveAll: every placed player saves with the server, to
+        // their own file (`PlayerDataStorage.save`); the level itself carries
+        // no player.
+        if self.options.dedicated.is_some()
+            && self.options.execution_role == execution_role::ExecutionRole::IntegratedServer
+            && let Some(host) = self.lan.take()
+        {
+            for g in host.hub.guests.iter().filter(|g| g.placed) {
+                let vehicle = self.root_vehicle_uuid(g.vehicle);
+                horizon_client::lan::playerdata::save(g, &self.world_root, vehicle);
+            }
+            self.lan = Some(host);
+        }
         self.save_world_state();
         self.message = Some(("Saved the game".into(), Instant::now()));
         Ok(())
@@ -13624,7 +13679,7 @@ impl Game<'_> {
         let keys: Vec<_> = self.world.modified.drain().collect();
         let chunks = self.with_entities(keys.iter().filter_map(|k| self.world.chunks.get(k)));
         self.save
-            .save_later(&chunks, self.pack.assets.registry, self.res.biomes())?;
+            .save_later(&chunks, self.pack.assets.registry, world_biomes!(self))?;
         // Prepare entities while the chunk writer runs, then use one barrier.
         self.save_entities(false)?;
         self.save_raids();
@@ -13844,7 +13899,7 @@ impl Game<'_> {
         // EnvironmentAttributeProbe: the spatially interpolated biome colours,
         // Gaussian-weighted over the noise biomes around the camera (plains
         // where no chunk is loaded, as ClientLevel.getUncachedNoiseBiome).
-        let biomes = self.res.biomes();
+        let biomes = world_biomes!(self);
         let weights = {
             let chunks = &self.world.chunks;
             let plains = biomes.id("minecraft:plains");
@@ -14762,7 +14817,7 @@ impl Game<'_> {
         if !modified.is_empty()
             && let Err(e) = horizon_client::spans::time("save_chunks", || {
                 self.save
-                    .save_later(&modified, self.pack.assets.registry, self.res.biomes())
+                    .save_later(&modified, self.pack.assets.registry, world_biomes!(self))
             })
         {
             log::warn!("Horizon: failed to save unloaded chunks: {e}");
@@ -14982,6 +15037,12 @@ impl ApplicationHandler for Game<'_> {
             );
             self.sync_toggle(SNEAK);
             self.sync_toggle(SPRINT);
+        }
+        // `PackSelectionScreen.onFilesDrop` on the Create New World screen.
+        if let WindowEvent::DroppedFile(path) = &event
+            && let Some(title) = &mut self.title
+        {
+            title.drop_file(path.clone());
         }
         // Fullscreen is a window shortcut, before screens consume keyboard input.
         if let WindowEvent::KeyboardInput { event, .. } = &event
@@ -16211,6 +16272,7 @@ impl<'a> Game<'a> {
             &gui.atlas.translucent,
         );
         Ok(Game {
+            world_biomes: None,
             res: res.clone(),
             rest_loader: None,
             pending_entry: None,
@@ -16362,6 +16424,7 @@ impl<'a> Game<'a> {
             book_last_click: None,
             lectern_pulses: Vec::new(),
             loading_progress: 0.0,
+            creation_job: None,
             loading_progress_at: None,
             spawn_origin: None,
             spawn_spiral: Default::default(),
@@ -16770,6 +16833,7 @@ impl Game<'_> {
     fn resume_world_entry(&mut self) -> Result<()> {
         self.poll_integrated_start()?;
         self.poll_world_rest()?;
+        self.poll_world_creation();
         if let Some(loader) = &self.world_loader {
             if !loader.ready() {
                 return Ok(());
@@ -16826,6 +16890,44 @@ impl Game<'_> {
         Ok(())
     }
 
+    /// `CreateWorldScreen.openCreateWorldScreen`: read the world generation
+    /// data the create screen describes, on a worker, then open the screen
+    /// (`title.preparing`).
+    fn poll_world_creation(&mut self) {
+        let Some(title) = self.title.as_ref() else {
+            return;
+        };
+        if !title.preparing() {
+            return;
+        }
+        if self.creation_job.is_none() {
+            let dir = self.options.resources.join("worldgen");
+            let registry = self.pack.assets.registry;
+            self.creation_job = std::thread::Builder::new()
+                .name("world-creation".into())
+                .spawn(move || {
+                    if let Err(e) = horizon_client::vanillagen::shared_data(&dir, registry) {
+                        log::warn!("Horizon: preparing world creation failed: {e}");
+                    }
+                })
+                .ok();
+            return;
+        }
+        if !self
+            .creation_job
+            .as_ref()
+            .is_none_or(std::thread::JoinHandle::is_finished)
+        {
+            return;
+        }
+        if let Some(job) = self.creation_job.take() {
+            let _ = job.join();
+        }
+        if let Some(title) = self.title.as_mut() {
+            title.finish_preparing();
+        }
+    }
+
     fn poll_world_rest(&mut self) -> Result<()> {
         if let Some(loader) = &self.rest_loader
             && loader.ready()?
@@ -16861,6 +16963,16 @@ impl Game<'_> {
         }
     }
     /// The world's packs' content files, none without packs.
+    /// The biome table the world plays with, `None` before a world opens.
+    fn packed_biomes(&self) -> Option<Arc<Biomes>> {
+        let table = world_loading::packed_biomes(
+            &self.world_root,
+            &self.options.resources,
+            self.res.biomes(),
+            &self.level.enabled_features,
+        );
+        (!Arc::ptr_eq(&table, self.res.biomes())).then_some(table)
+    }
     fn pack_files(&self) -> horizon_world::loot::PackOverlay<'_> {
         pack_files(&self.world_tables)
     }
@@ -16872,6 +16984,7 @@ impl Game<'_> {
             &self.world_root,
             &self.options.resources,
             self.cmds.vanilla_disabled,
+            &self.level.enabled_features,
         );
         if files.is_empty() {
             return None;
