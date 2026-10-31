@@ -6,8 +6,10 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
-//! API 43 adds the server starting and stopping (`native_server_about_to_start`,
+//! API 44 adds the server starting and stopping (`native_server_about_to_start`,
 //! `native_server_stopping`).
+//!
+//! API 43 adds the server level's random (`native_level_random`).
 //!
 //! API 42 adds the item entities near a block (`native_item_entities`,
 //! `native_set_item_entity`).
@@ -200,7 +202,7 @@ pub(super) use horizon_world::level::flags;
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 43;
+pub(crate) const NATIVE_HOOKS_API: u32 = 44;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -674,7 +676,7 @@ impl Game<'_> {
     /// pressed, a dedicated server once its settings are read. Each is
     /// followed by `native_world_lifecycle`'s `WorldOpenReady` or
     /// `WorldOpenFailed`. `dedicated` tells a dedicated server from the single
-    /// player one. API 43.
+    /// player one. API 44.
     pub(super) fn native_server_about_to_start(&mut self, dedicated: bool) {
         let _ = dedicated;
     }
@@ -683,7 +685,7 @@ impl Game<'_> {
     /// still loaded and the players still connected and not yet saved, so a
     /// mod can save its own data or tell them. `native_world_lifecycle`'s
     /// `WorldCloseFinal` follows once the worlds are saved. A server whose loop
-    /// fails stops without this (`WorldCloseFailed` reports it). API 43.
+    /// fails stops without this (`WorldCloseFailed` reports it). API 44.
     pub(super) fn native_server_stopping(&mut self, dedicated: bool) {
         let _ = dedicated;
     }
@@ -1403,6 +1405,34 @@ impl Game<'_> {
         }
         let _ = self.process_level_events();
         changed
+    }
+    /// The random of the server level `dimension`: vanilla's `Level.random`
+    /// (`level.getRandom()`), the one its explosions, block drops and other
+    /// level draws use, so a mod's draws move vanilla's later ones as a Java
+    /// mod's do. Draw with `horizon_core::random::RandomSource` (`next_int_bound`,
+    /// `next_float`...). `None` on a client of a server, and for a level not
+    /// open: the Nether and the End open when someone first goes there and
+    /// close after 300 ticks with nobody in them (`close_idle_levels`). API 43.
+    pub(super) fn native_level_random(
+        &mut self,
+        dimension: &str,
+    ) -> Option<&mut horizon_core::random::LegacyRandom> {
+        if self.serving.is_none() && self.options.dedicated.is_none() {
+            return None;
+        }
+        let dim = match dimension {
+            "minecraft:overworld" => super::Dim::Overworld,
+            "minecraft:the_nether" => super::Dim::Nether,
+            "minecraft:the_end" => super::Dim::End,
+            _ => return None,
+        };
+        if dim == self.dim {
+            Some(&mut self.world.random)
+        } else {
+            self.levels
+                .parked_world_mut(dim)
+                .map(|world| &mut world.random)
+        }
     }
     /// The item entities of the server level `dimension` whose box meets
     /// the box `min`..`max`, in the level's order: vanilla's

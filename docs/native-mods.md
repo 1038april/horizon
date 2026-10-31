@@ -234,12 +234,18 @@ API 42 adds the item entities near a block, for machines that pick up items as a
 does with what it takes. Both act on the level in place, as `native_set_block` does. Bundles that use them need
 `"hooks": 42`.
 
-API 43 adds the server starting and stopping, on the single player server thread and on a dedicated server:
+API 43 adds `native_level_random(dimension)`, the server level's own random (vanilla's `Level.random`, NeoForge mods'
+`level.getRandom()`): a mod draws from the stream vanilla's explosions and block drops use, so its draws shift theirs
+as a Java mod's would. It is `None` on a client of a server and for a level that isn't open: the Nether and the End
+open when someone first goes there and close after 300 ticks with nobody in them. Bundles
+that use it need `"hooks": 43`.
+
+API 44 adds the server starting and stopping, on the single player server thread and on a dedicated server:
 `native_server_about_to_start(dedicated)` before the worlds load (NeoForge's `ServerAboutToStartEvent`), and
 `native_server_stopping(dedicated)` when an orderly stop begins, with the players still connected and not yet saved
 (`ServerStoppingEvent`). Each start is followed by `native_world_lifecycle`'s `WorldOpenReady` or `WorldOpenFailed`,
 and each stop by `WorldCloseFinal`; a server whose loop fails reports `WorldCloseFailed` instead of stopping. Bundles
-that use them need `"hooks": 43`.
+that use them need `"hooks": 44`.
 
 ## A bundle
 
