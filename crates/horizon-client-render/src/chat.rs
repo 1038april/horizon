@@ -1174,12 +1174,14 @@ impl ChatScreen {
             let value = self.input.value.clone();
             let auto = self.auto_suggestions;
             let abilities = self.abilities;
+            let message = std::mem::take(&mut self.input.message);
             *self = if self.layout == SuggestLayout::CHAT {
                 Self::new(m, c, &value, self.history_pos, width, height, abilities)
             } else {
                 Self::command_block(m, c, &value, width, height)
             };
             self.auto_suggestions = auto;
+            self.input.message = message;
         }
     }
     /// `ChatScreen.onEdited`.
@@ -1816,5 +1818,19 @@ impl ChatScreen {
     }
     pub fn suggestions_visible(&self) -> bool {
         self.suggestions.is_some()
+    }
+    /// `CommandSuggestions.getUsageNarration` while the list shows
+    /// (`isVisible`): whether Tab cycles it or fills the input in, and
+    /// whether Escape hides it (`allowHiding`, which only the chat's turns
+    /// off).
+    pub fn suggestions_usage(&self) -> Option<&'static str> {
+        let list = self.suggestions.as_ref()?;
+        let hidable = self.layout != SuggestLayout::CHAT;
+        Some(match (list.tab_cycles, hidable) {
+            (true, true) => "narration.suggestion.usage.cycle.hidable",
+            (true, false) => "narration.suggestion.usage.cycle.fixed",
+            (false, true) => "narration.suggestion.usage.fill.hidable",
+            (false, false) => "narration.suggestion.usage.fill.fixed",
+        })
     }
 }

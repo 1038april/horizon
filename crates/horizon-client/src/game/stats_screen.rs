@@ -240,6 +240,12 @@ impl Game<'_> {
         mobs
     }
     pub(super) fn draw_stats(&mut self, batch: &mut HudBatch) {
+        horizon_client::widgets::begin_screen(|| {
+            horizon_client::widgets::ScreenInfo::new(
+                "stats",
+                super::screen_info::tr("gui.stats", &[]),
+            )
+        });
         let (w, h) = (batch.width, batch.height);
         let atlas = &self.gui.atlas;
         ui::menu_background(batch, atlas, 0.0, 0.0, w, h, true);
@@ -248,10 +254,30 @@ impl Game<'_> {
         // The tab bar.
         let mut tab_tip = false;
         let (x0, tw) = tabs(w);
-        for (i, key) in ["stat.generalButton", "stat.itemsButton", "stat.mobsButton"]
-            .into_iter()
-            .enumerate()
-        {
+        const TABS: [&str; 3] = ["stat.generalButton", "stat.itemsButton", "stat.mobsButton"];
+        // Its TabNavigationBar: the hovered tab, else the current one (a
+        // GridLayoutTab's extra narration is empty).
+        horizon_client::widgets::narratable(|| {
+            use horizon_client::widgets::{ListKind, Narratable, Row, What};
+            let row = |i: usize| {
+                let mut row = Row::new(i, Text::translate(TABS[i], &[]).plain());
+                row.hint = Some(String::new());
+                row
+            };
+            let hovered = (0..TABS.len())
+                .find(|&i| ui::hovered(self.cursor, x0 + tw * i as f32, 0.0, tw, TAB_H));
+            Narratable::new(
+                What::List {
+                    kind: ListKind::Tabs,
+                    total: TABS.len(),
+                    hovered: hovered.map(row),
+                    selected: Some(row(self.stats_ui.tab.min(TABS.len() - 1))),
+                },
+                [x0, 0.0, tw * TABS.len() as f32, TAB_H],
+            )
+            .key(horizon_client::widgets::key_of(&"stats/tabs"))
+        });
+        for (i, key) in TABS.into_iter().enumerate() {
             let x = x0 + tw * i as f32;
             let selected = self.stats_ui.tab == i;
             let active = self.stats_tab_active(i);
