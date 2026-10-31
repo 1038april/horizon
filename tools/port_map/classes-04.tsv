@@ -71,7 +71,7 @@ StonecutterBlock.useWithoutItem	port	crates/horizon-world/src/level/interact.rs:
 SugarCaneBlock.randomTick	port	crates/horizon-world/src/level/tick.rs::Sim::random_tick_block	growth arm of the random tick
 SugarCaneBlock.tick	port	crates/horizon-world/src/level/tick.rs::Sim::tick_block	
 SugarCaneBlock.updateShape	port	crates/horizon-world/src/level/shapes.rs::Sim::update_shape_class	
-SuspiciousEffectHolder.tryGet	skip:data		the effect comes from the item's stew effects data (item_data.rs)
+SuspiciousEffectHolder.tryGet	port	crates/horizon-items/src/flowers.rs::stew_effect	the item's block is looked up in the flower table
 TallSeagrassBlock.canSurvive	port	crates/horizon-world/src/level/survive.rs::Sim::can_survive_class	
 TallSeagrassBlock.getStateForPlacement	port	crates/horizon-world/src/level/place.rs::Sim::placement_class	
 TallSeagrassBlock.mayPlaceOn	port	crates/horizon-world/src/level/survive.rs::Sim::may_place_on	
@@ -181,8 +181,9 @@ StateDefinition	skip:java		codecs and state builders; states come from the gener
 StateDefinition.Builder	skip:java		state builder
 StateDefinition.StateCollection	skip:data		neighbour tables of the state graph are generated data
 BlockInWorld	skip:java		accessor over the level's state and block entity
-BlockPattern.matches	port	crates/horizon-client/src/game/golems.rs::Game::find_golem	golem head and body patterns only, not a generic pattern matcher
-BlockPattern.translateAndRotate	inline	crates/horizon-client/src/game/golems.rs::Game::find_golem	pattern placement folded into golem search
+BlockPattern.matches	port	crates/horizon-client/src/block_pattern.rs::BlockPattern::matches	the wither's, the golems' and the dispenser's patterns all go through it
+BlockPattern.find	port	crates/horizon-client/src/block_pattern.rs::BlockPattern::find	every corner of the search cube (x fastest, then y, then z), then every forwards/up pair in Direction order
+BlockPattern.translateAndRotate	port	crates/horizon-client/src/block_pattern.rs::translate_and_rotate	x along forwards x up, y against up, z along forwards
 BlockPattern.BlockPatternMatch	skip:java		match result accessor
 BlockPatternBuilder	skip:java		builder for block patterns
 BlockStatePredicate	skip:java		predicate builder

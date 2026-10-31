@@ -2,7 +2,8 @@
 //! `ItemEntity.tick`: gravity 0.04, 0.98 drag (block friction on the ground),
 //! a ground bounce of -0.5, slime landing restitution (0.8, including a moving
 //! piston that is carrying slime), water buoyancy, pickup delay, 6000-tick despawn,
-//! and `HoneyBlock.entityInside` when falling against a honey block's side.
+//! `HoneyBlock.entityInside` when falling against a honey block's side, and
+//! `BubbleColumnBlock.entityInside` (lift / drag, including the surface jump).
 use crate::{
     blocks::{BlockFacts, Fluid},
     collisions::SceneCollisions,
@@ -219,6 +220,7 @@ impl ItemEntity {
     pub fn tick(
         &mut self,
         world: &World,
+        registry: &horizon_world::registry::BlockRegistry,
         facts: &BlockFacts,
         collision: &BlockCollisionRegistry<'_>,
         no_physics: bool,
@@ -229,7 +231,6 @@ impl ItemEntity {
         if self.pickup_delay > 0 && self.pickup_delay != u32::MAX {
             self.pickup_delay -= 1;
         }
-        // Entity.baseTick pushes before ItemEntity applies buoyancy and moves.
         let (water_height, lava_height) = self.update_fluids(world, fluids);
         let in_water = water_height > f64::from(0.1f32);
         if in_water {
@@ -249,6 +250,10 @@ impl ItemEntity {
             self.velocity.y -= 0.04;
         }
         let horizontal = self.velocity.x * self.velocity.x + self.velocity.z * self.velocity.z;
+        // ItemEntity.tick: skip move 3 of 4 ticks while grounded with no
+        // horizontal speed. The idle branch still runs bubble-column push
+        // (`applyEffectsFromBlocksForLastMovements`), so lift builds up and
+        // the item moves on the next wake-up (#4558).
         if !self.on_ground || horizontal > 1.0e-5 || (self.age + self.id).is_multiple_of(4) {
             let mut scene = SceneCollisions {
                 world,
@@ -285,8 +290,17 @@ impl ItemEntity {
                 let slime = item_support_is_slime(world, facts, self.position);
                 self.velocity.y = item_vertical_collision_velocity(wanted.y, slime);
             }
-            // Entity.move -> applyEffectsFromBlocks: HoneyBlock.entityInside.
+            // Entity.move -> applyEffectsFromBlocks: honey then bubble columns
+            // (before air drag), matching ItemEntity.tick.
             self.apply_honey_slide(world, facts);
+            crate::motion::bubble_column_push(
+                world,
+                registry,
+                facts,
+                collision,
+                self.bounds(),
+                &mut self.velocity,
+            );
             let mut friction = 0.98;
             if self.on_ground {
                 let below = world.block(
@@ -304,9 +318,19 @@ impl ItemEntity {
             if self.on_ground && self.velocity.y < 0.0 {
                 self.velocity.y *= -0.5;
             }
+        } else {
+            // applyEffectsFromBlocksForLastMovements: still lift/drag while idle.
+            crate::motion::bubble_column_push(
+                world,
+                registry,
+                facts,
+                collision,
+                self.bounds(),
+                &mut self.velocity,
+            );
         }
         self.age += 1;
-        // ItemEntity.tick refreshes immersion and pushes again after moving.
+        // ItemEntity.tick refreshes immersion after moving.
         self.update_fluids(world, fluids);
         self.age < 6000 && self.position.y > -128.0
     }
@@ -882,6 +906,10 @@ pub struct ArmorStand {
     /// `DATA_HEAD_POSE` to `DATA_RIGHT_LEG_POSE`: head, body, left arm, right
     /// arm, left leg, right leg, in degrees (`POSE_KEYS` order).
     pub pose: [[f32; 3]; 6],
+    /// `Entity.vehicle` on a server's client (`SetPassengers`): the mob it
+    /// rides, which seats it every tick (`positionRider`), as NPC plugins hang
+    /// a second name over a player's head.
+    pub vehicle: Option<u32>,
 }
 impl ArmorStand {
     pub const SLOTS: [&'static str; 6] = ["mainhand", "offhand", "feet", "legs", "chest", "head"];
@@ -916,6 +944,7 @@ impl ArmorStand {
             name_visible: false,
             last_hit: i64::MIN / 2,
             pose: Self::DEFAULT_POSE,
+            vehicle: None,
         }
     }
     pub fn environment_tick(
@@ -975,49 +1004,45 @@ impl ArmorStand {
             Vec3::new(p.x + w, p.y + h, p.z + w),
         )
     }
-    /// `isInWater`: some water block of the stand's box has its surface
-    /// (`FluidState.getHeight`, a full block under more water) at or above the
-    /// box's bottom, as `Entity.updateFluidHeightAndDoFluidPushing` counts it.
-    pub fn in_water(&self, world: &World, fluids: &crate::motion::FluidResources) -> bool {
-        let (lo, hi) = (self.bounds().min_position(), self.bounds().max_position());
-        let water = |x: i32, y: i32, z: i32| {
-            let state = fluids.fluid(world.block(x, y, z));
-            (state.kind() == horizon_world::fluid::FluidKind::Water).then_some(state)
-        };
-        (lo.x.floor() as i32..=hi.x.floor() as i32).any(|x| {
-            (lo.y.floor() as i32..hi.y.ceil() as i32).any(|y| {
-                (lo.z.floor() as i32..=hi.z.floor() as i32).any(|z| {
-                    water(x, y, z).is_some_and(|state| {
-                        let height = if water(x, y + 1, z).is_some() {
-                            1.0
-                        } else {
-                            state.own_height()
-                        };
-                        f64::from(y) + f64::from(height) >= lo.y
-                    })
-                })
-            })
-        })
-    }
-    /// LivingEntity.travel (armor stands have no other movement): move by
-    /// the velocity (a landing stops the fall,
-    /// `Block.updateEntityMovementAfterFallOn`), let the blocks it is inside
+    /// LivingEntity.travel (armor stands have no other movement): clamp tiny
+    /// velocity components (`LivingEntity.aiStep`), move by the velocity (a
+    /// landing stops the fall, `Block.updateEntityMovementAfterFallOn`, and a
+    /// wall collision zeros that horizontal axis), let the blocks it is inside
     /// push it (`push`: a bubble column), then in water the 0.8 slowdown and
-    /// `getFluidFallingAdjustedMovement`, in air gravity 0.08 and the 0.98
-    /// drag, so a stand at rest on the ground keeps -0.0784 as vanilla's.
+    /// `getFluidFallingAdjustedMovement`, in air gravity 0.08, ground/air
+    /// horizontal drag (`friction * 0.91`), and the 0.98 vertical drag, so a
+    /// stand at rest on the ground keeps -0.0784 as vanilla's.
     pub fn tick(
         &mut self,
         scene: &mut crate::collisions::SceneCollisions,
+        facts: &BlockFacts,
         in_water: bool,
         push: &mut dyn FnMut(Aabb, &mut Vec3),
     ) {
         if self.marker {
             return;
         }
-        let wanted = self.velocity;
-        // `travelInFluid` reads `isFalling` before the move and any push.
+        let v = self.velocity;
+        let wanted = Vec3::new(
+            if v.x.abs() < 0.003 { 0.0 } else { v.x },
+            if v.y.abs() < 0.003 { 0.0 } else { v.y },
+            if v.z.abs() < 0.003 { 0.0 } else { v.z },
+        );
+        self.velocity = wanted;
+        // `travelInFluid` reads `isFalling` before the move and any push;
+        // `travelInAir` reads ground friction before the move.
         let falling = wanted.y <= 0.0;
-        let mut y = wanted.y;
+        let friction = if !in_water && self.on_ground {
+            let below = scene.world.block(
+                self.position.x.floor() as i32,
+                (self.position.y - 0.500_001).floor() as i32,
+                self.position.z.floor() as i32,
+            );
+            facts.get(below).friction
+        } else {
+            1.0
+        };
+        let mut velocity = wanted;
         if let Ok(moved) = scene.resolve(self.bounds(), wanted, 0.0, self.on_ground) {
             self.position = Vec3::new(
                 self.position.x + moved.x,
@@ -1025,26 +1050,37 @@ impl ArmorStand {
                 self.position.z + moved.z,
             );
             self.on_ground = wanted.y < 0.0 && moved.y > wanted.y;
+            if (wanted.x - moved.x).abs() >= f64::from(1.0e-5_f32) {
+                velocity.x = 0.0;
+            }
             if moved.y != wanted.y {
-                y = 0.0;
+                velocity.y = 0.0;
+            }
+            if (wanted.z - moved.z).abs() >= f64::from(1.0e-5_f32) {
+                velocity.z = 0.0;
             }
         }
-        let mut velocity = Vec3::new(0.0, y, 0.0);
         push(self.bounds(), &mut velocity);
         self.velocity = if in_water {
             // travelInWater: slowDown 0.8, then `getFluidFallingAdjustedMovement`
             // with gravity / 16 (the stand is falling while its fall is not
             // already nearly stopped).
-            let y = velocity.y * f64::from(0.8f32);
+            let slow = f64::from(0.8f32);
+            let y = velocity.y * slow;
             let adjusted =
                 if falling && (y - 0.005).abs() >= 0.003 && (y - 0.08 / 16.0).abs() < 0.003 {
                     -0.003
                 } else {
                     y - 0.08 / 16.0
                 };
-            Vec3::new(0.0, adjusted, 0.0)
+            Vec3::new(velocity.x * slow, adjusted, velocity.z * slow)
         } else {
-            Vec3::new(0.0, (velocity.y - 0.08) * f64::from(0.98f32), 0.0)
+            let drag = f64::from(friction * 0.91f32);
+            Vec3::new(
+                velocity.x * drag,
+                (velocity.y - 0.08) * f64::from(0.98f32),
+                velocity.z * drag,
+            )
         };
     }
 }
@@ -1379,6 +1415,101 @@ mod merge_tests {
 #[cfg(test)]
 mod honey_slide_tests {
     use super::*;
+
+    /// Gravity still stacks on idle ticks; waking every 4th tick zeroes Y on
+    /// the ground (`ItemEntity.tick` with `onGround`).
+    #[test]
+    fn a_resting_item_skips_move_three_of_four_ticks() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let facts = crate::blocks::BlockFacts::load(&root, assets.registry).unwrap();
+        let fluids = crate::motion::FluidResources::new(&assets, &facts).unwrap();
+        let collision = crate::collisions::load(&root, assets.registry).unwrap();
+        let mut world = World::test_scene(&assets, &render, 3).unwrap();
+        let stone = assets.registry.default_state("minecraft:stone").unwrap();
+        for x in 19..=21 {
+            for z in 19..=21 {
+                world.set(x, 3, z, stone).unwrap();
+            }
+        }
+        let at = Vec3::new(20.5, 4.0, 20.5);
+        let mut item = falling_item(at.x, at.y, at.z, 0.0, 0.0, 0.0);
+        item.on_ground = true;
+        item.age = 0;
+        item.id = 1;
+        let mut ys = Vec::new();
+        for _ in 0..8 {
+            item.tick(&world, assets.registry, &facts, &collision, false, &fluids);
+            ys.push(item.velocity.y);
+        }
+        // Idle ticks keep gravity; the 4th tick's move hits the floor and
+        // clears Y (vanilla's sequence for a resting item).
+        assert_eq!(ys, vec![-0.04, -0.08, -0.12, 0.0, -0.04, -0.08, -0.12, 0.0]);
+        assert_eq!(item.position.y, at.y);
+    }
+
+    /// #4558: idle ticks still run `BubbleColumnBlock.entityInside`, so lift
+    /// builds and the next wake-up rises off the soul sand.
+    #[test]
+    fn a_grounded_item_in_a_soul_sand_column_rises() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let facts = crate::blocks::BlockFacts::load(&root, assets.registry).unwrap();
+        let fluids = crate::motion::FluidResources::new(&assets, &facts).unwrap();
+        let collision = crate::collisions::load(&root, assets.registry).unwrap();
+        let mut world = World::test_scene(&assets, &render, 3).unwrap();
+        let soul = assets
+            .registry
+            .default_state("minecraft:soul_sand")
+            .unwrap();
+        let mut column = assets
+            .registry
+            .state(
+                assets
+                    .registry
+                    .default_state("minecraft:bubble_column")
+                    .unwrap(),
+            )
+            .unwrap()
+            .clone();
+        column.properties.insert("drag".into(), "false".into());
+        let column = assets.registry.resolve(&column).unwrap();
+        for x in 19..=21 {
+            for z in 19..=21 {
+                world.set(x, 3, z, soul).unwrap();
+                for y in 4..=8 {
+                    world.set(x, y, z, column).unwrap();
+                }
+            }
+        }
+        let at = Vec3::new(20.5, 4.0, 20.5);
+        let mut item = falling_item(at.x, at.y, at.z, 0.0, 0.0, 0.0);
+        item.on_ground = true;
+        item.age = 0;
+        item.id = 1;
+        let before = item.position.y;
+        for _ in 0..16 {
+            item.tick(&world, assets.registry, &facts, &collision, false, &fluids);
+        }
+        assert!(
+            item.position.y > before + 0.5,
+            "expected rise from soul-sand column, y={} (was {})",
+            item.position.y,
+            before
+        );
+    }
 
     fn falling_item(x: f64, y: f64, z: f64, vx: f64, vy: f64, vz: f64) -> ItemEntity {
         let at = Vec3::new(x, y, z);
