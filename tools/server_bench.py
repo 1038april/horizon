@@ -38,7 +38,7 @@ Both run with the same heap as vanilla (`--heap`).
 
 `pumpkin` runs Pumpkin (github.com/Pumpkin-MC/Pumpkin, GPL-3.0), a binary you built yourself and name with
 `--pumpkin`: a black box, nothing of it is read or shipped. A first start in a scratch folder writes its default
-configuration; every run gets that file with the same settings as the others (seed, view and simulation
+configuration (started on 127.0.0.1 only, with no telemetry); every run gets that file with the same settings as the others (seed, view and simulation
 distance 10, creative, offline, no encryption, 127.0.0.1) and Pumpkin's Bedrock and LAN listeners, query,
 plugins and telemetry off. docs/performance/server-vs-pumpkin.md has the comparison and its commands.
 """
@@ -211,11 +211,46 @@ def fabric_mods():
     return jars, {'fabric_loader': lock['fabric_loader'], 'lithium': lock['projects']['lithium']['version']}
 
 
+# What Pumpkin's first start gets: its own defaults listen on every address (and for Bedrock and LAN
+# players) and send telemetry. It fills in the rest of the file.
+PUMPKIN_SEED = '''[networking.java]
+address = "127.0.0.1:{port}"
+online_mode = false
+encryption = false
+
+[networking.query]
+enabled = false
+address = "127.0.0.1:{query}"
+
+[networking.bedrock]
+enabled = false
+
+[networking.bedrock.nethernet]
+enabled = false
+address = "127.0.0.1:0"
+
+[networking.lan_broadcast]
+enabled = false
+
+[networking.management]
+enabled = false
+
+[plugins]
+enabled = false
+
+[telemetry]
+enabled = false
+endpoint = ""
+'''
+
+
 def pumpkin_defaults(exe, out):
-    """Pumpkin's default configuration files (name → text), written by a first start in a scratch folder."""
+    """Pumpkin's default configuration files (name → text), written by a first start in a scratch folder
+    from PUMPKIN_SEED."""
     directory = out / 'pumpkin-defaults'
     shutil.rmtree(directory, ignore_errors=True)
     directory.mkdir(parents=True)
+    (directory / 'pumpkin.toml').write_text(PUMPKIN_SEED.format(port=lab.free_port(), query=lab.free_port()))
     server = Server([exe], directory, out / 'pumpkin-defaults.log')
     try:
         server.wait_for(PUMPKIN_READY, 600)
