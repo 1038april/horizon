@@ -34,6 +34,7 @@ impl StartupMenu {
                 address: address.clone(),
                 name: options.player_name(),
                 cookies: None,
+                lan: false,
             })
         } else {
             options
@@ -131,10 +132,11 @@ impl StartupMenu {
                 creative,
                 create: Some(Box::new(options)),
             },
-            Action::Connect { address } => PendingWorldEntry::Server {
+            Action::Connect { address, lan } => PendingWorldEntry::Server {
                 address,
                 name: player_name,
                 cookies: None,
+                lan,
             },
             _ => return,
         };
@@ -241,6 +243,7 @@ pub(super) fn spawn_loader(
     let settings = settings.clone();
     let vanilla_root = vanilla_root.to_path_buf();
     let dev_mods = options.dev_mods.clone();
+    let world = launch_world(options).map(str::to_owned);
     let progress = progress.clone();
     let handle = std::thread::Builder::new()
         .name("resource-loader".into())
@@ -254,6 +257,7 @@ pub(super) fn spawn_loader(
             let root = mods::content_root(&root, &settings.mods.enabled, &dev_mods);
             let result = load_resources(
                 root,
+                world.as_deref(),
                 &vanilla_root,
                 &settings,
                 started,
@@ -872,16 +876,17 @@ mod tests {
     }
 
     #[test]
-    fn queued_server_keeps_address_and_player_identity() {
+    fn queued_server_keeps_address_player_identity_and_lan_kind() {
         let mut menu = StartupMenu::default();
         menu.queue_entry(
             Action::Connect {
                 address: "localhost:25565".into(),
+                lan: true,
             },
             "Guest".into(),
         );
         assert!(
-            matches!(menu.pending.take(), Some(PendingWorldEntry::Server { address, name, .. })
+            matches!(menu.pending.take(), Some(PendingWorldEntry::Server { address, name, lan: true, .. })
             if address == "localhost:25565" && name == "Guest")
         );
         assert!(menu.pending.take().is_none(), "an entry is consumed once");
