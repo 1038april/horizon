@@ -1490,15 +1490,13 @@ impl Game<'_> {
         }
     }
     /// Save a guest when they leave or the world closes (after
-    /// `take_parent_vehicle`): an integrated server's owner with the world
-    /// (`save_game`), anyone else in their file.
+    /// `take_parent_vehicle`, `PlayerList.save`): an integrated server's owner
+    /// into the level (`/data`) and both its files (`playerdata::save_owner`),
+    /// anyone else into their own file.
     pub(super) fn save_guest(&mut self, host: &LanHost, guest: &horizon_client::lan::guest::Guest) {
-        if host.owner.as_ref().is_some_and(|o| o.uuid == guest.uuid) && guest.placed {
-            // The world's own player state rides in the level (`/data`).
-            playerdata::store(guest, &mut self.level, None);
-        }
-        if guest.placed {
-            // PlayerList.save/remove: every player saves to their own file.
+        if guest.placed && host.owner.as_ref().is_some_and(|o| o.uuid == guest.uuid) {
+            playerdata::save_owner(guest, &mut self.level, &self.world_root);
+        } else if guest.placed {
             playerdata::save(guest, &self.world_root);
         }
         self.save_guest_records(host, guest);

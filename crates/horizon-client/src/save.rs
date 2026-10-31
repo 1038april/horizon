@@ -3997,6 +3997,18 @@ impl Level {
         self.write_internal(dir, false)
     }
 
+    /// The player's file alone, `players/data/<singleplayer_uuid>.dat`
+    /// (`PlayerDataStorage.save`): the one level.dat names.
+    pub fn write_player(&mut self, dir: &Path) -> Result<()> {
+        let uuid = self.ensure_player_uuid();
+        let player_file = dir
+            .join("players")
+            .join("data")
+            .join(format!("{}.dat", uuid_text(uuid)));
+        back_up_unreadable_player(&player_file);
+        write_dat(&player_file, self.player_tag())
+    }
+
     fn write_internal(&mut self, dir: &Path, write_player: bool) -> Result<()> {
         fs::create_dir_all(dir)?;
         restore_level_dat(dir);
@@ -4200,12 +4212,7 @@ impl Level {
             write_saved_data(dir, "game_rules", rules)?;
         }
         if write_player {
-            let player_file = dir
-                .join("players")
-                .join("data")
-                .join(format!("{}.dat", uuid_text(uuid)));
-            back_up_unreadable_player(&player_file);
-            write_dat(&player_file, self.player_tag())?;
+            self.write_player(dir)?;
         }
         write_dat(&dir.join("level.dat"), Tag::compound([("Data", data)]))?;
         Ok(())

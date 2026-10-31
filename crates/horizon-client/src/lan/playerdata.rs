@@ -39,9 +39,12 @@ pub fn exists(world: &Path, uuid: u128) -> bool {
     path(world, uuid).is_file()
 }
 
-/// Load a guest's saved state, if they have been here before.
+/// `PlayerDataStorage.load`: a guest's saved state, if they have been here
+/// before. The player's file, else its `.dat_old` (what a save cut off
+/// between its two renames leaves, `write_dat`).
 pub fn load(guest: &mut Guest, world: &Path) -> bool {
-    let Some(tag) = read_dat(&path(world, guest.uuid)) else {
+    let file = path(world, guest.uuid);
+    let Some(tag) = read_dat(&file).or_else(|| read_dat(&file.with_extension("dat_old"))) else {
         return false;
     };
     let mut level = Level {
@@ -60,9 +63,10 @@ pub fn load(guest: &mut Guest, world: &Path) -> bool {
 /// level.dat names (`singleplayer_uuid`), as the world opening read it into
 /// `saved`, before the owner's own file. Builds that save the owner to the
 /// named file alone (0.2.93) leave the own file behind, stale (#5351). The
-/// own file is for a world whose named file is missing; then the world's
-/// player (the legacy `Data.Player`, or nothing in a new world). Returns
-/// whether the player has been in this world before.
+/// own file is for a world whose named file is missing; then the player the
+/// world opening found instead (the newest player file, the legacy
+/// `Data.Player`, or nothing in a new world). Returns whether the player has
+/// been in this world before.
 pub fn load_owner(guest: &mut Guest, world: &Path, saved: Option<&Level>) -> bool {
     if let Some(level) = saved.filter(|l| l.singleplayer_file) {
         apply(guest, level);
@@ -75,6 +79,15 @@ pub fn load_owner(guest: &mut Guest, world: &Path, saved: Option<&Level>) -> boo
         apply(guest, level);
         level.position.is_some()
     })
+}
+
+/// Save the world's single-player owner: its state into `level` (`store`),
+/// then to the file level.dat names, which it loads ([`load_owner`]), and to
+/// its own file, so that the one it loads is never the older of the two.
+pub fn save_owner(guest: &Guest, level: &mut Level, world: &Path) {
+    store(guest, level, None);
+    let _ = level.write_player(world);
+    save(guest, world);
 }
 
 /// Give a guest the player state read into `level`.
@@ -346,6 +359,61 @@ mod tests {
         g.uuid = owner;
         assert!(load_owner(&mut g, &dir, Some(&saved)));
         assert_eq!(first_item(&g), Some(("minecraft:diamond", 5)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_save_cut_off_between_its_renames_loads_the_dat_old() {
+        // PlayerDataStorage.load: a file `write_dat` moved to `.dat_old` and
+        // did not replace (the game stopped between the two renames) is read
+        // instead, for the owner's named file and for anyone's own file.
+        let owner = horizon_protocol::crypto::offline_uuid("Player46606");
+        let dir = world("dat-old");
+        let mut level = Level::default();
+        for (item, count) in [("minecraft:diamond", 5), ("minecraft:gold_ingot", 7)] {
+            store(&holding(owner, item, count), &mut level, None);
+            level.write(&dir).unwrap();
+            save(&holding(owner, item, count), &dir);
+        }
+        let named = path(&dir, ints_uuid(level.player_uuid.unwrap()));
+        for file in [&named, &path(&dir, owner)] {
+            std::fs::remove_file(file).unwrap();
+            assert!(file.with_extension("dat_old").is_file());
+        }
+        let saved = Level::read(&dir).unwrap();
+        assert!(saved.singleplayer_file, "the named file's .dat_old counts");
+        let mut g = guest();
+        g.uuid = owner;
+        assert!(load_owner(&mut g, &dir, Some(&saved)));
+        assert_eq!(first_item(&g), Some(("minecraft:diamond", 5)));
+        let mut g = guest();
+        g.uuid = owner;
+        assert!(load(&mut g, &dir), "a guest's own file falls back too");
+        assert_eq!(first_item(&g), Some(("minecraft:diamond", 5)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_owner_leaving_saves_the_file_it_loads() {
+        // The last autosave wrote both files with a diamond; the owner leaves
+        // with gold and the game stops before the world's own save. The file
+        // the owner loads holds the gold, as its own file does.
+        let owner = horizon_protocol::crypto::offline_uuid("Player46606");
+        let dir = world("leave");
+        let mut level = Level::default();
+        store(&holding(owner, "minecraft:diamond", 5), &mut level, None);
+        level.write(&dir).unwrap();
+        save(&holding(owner, "minecraft:diamond", 5), &dir);
+        save_owner(&holding(owner, "minecraft:gold_ingot", 7), &mut level, &dir);
+        let saved = Level::read(&dir).unwrap();
+        let mut g = guest();
+        g.uuid = owner;
+        assert!(load_owner(&mut g, &dir, Some(&saved)));
+        assert_eq!(first_item(&g), Some(("minecraft:gold_ingot", 7)));
+        let mut g = guest();
+        g.uuid = owner;
+        assert!(load(&mut g, &dir));
+        assert_eq!(first_item(&g), Some(("minecraft:gold_ingot", 7)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
