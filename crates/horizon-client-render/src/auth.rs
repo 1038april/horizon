@@ -52,20 +52,20 @@ impl AuthSession {
     /// The session file's JSON: {"name", "uuid", "access_token", "user_type": "msa", "xuid"}.
     pub fn parse(text: &str) -> Result<Self, String> {
         let v: serde_json::Value =
-            serde_json::from_str(text).map_err(|_| "the session file is not valid JSON")?;
+            serde_json::from_str(text).map_err(|_| "the session is not valid JSON")?;
         let field = |k: &str| v.get(k).and_then(|s| s.as_str());
-        let name = field("name").ok_or("the session file has no name")?;
+        let name = field("name").ok_or("the session has no name")?;
         if name.is_empty() || name.chars().count() > 16 {
-            return Err("the session file's name is not a valid player name".into());
+            return Err("the session's name is not a valid player name".into());
         }
         let uuid = field("uuid")
             .and_then(parse_uuid)
-            .ok_or("the session file has no valid uuid")?;
+            .ok_or("the session has no valid uuid")?;
         let access_token = field("access_token")
             .filter(|t| !t.is_empty())
-            .ok_or("the session file has no access token")?;
+            .ok_or("the session has no access token")?;
         if field("user_type").is_some_and(|t| t != "msa") {
-            return Err("the session file is not a Microsoft account session".into());
+            return Err("the session is not a Microsoft account session".into());
         }
         Ok(Self {
             name: name.to_owned(),
@@ -203,6 +203,46 @@ pub fn endpoint(doc: &serde_json::Value, service: &str, name: &str) -> Option<St
         .map(str::to_owned)
 }
 
+/// `Minecraft`'s constructor futures for the title screen: `UserApiService.fetchProperties`
+/// (the `player` service's `getAttributes`, with the bearer token) and
+/// `SessionService.fetchProfile(uuid, true)` (`getProfileById`). A failed
+/// attributes call falls back to the offline properties, a failed profile call
+/// to no actions, as vanilla does. Blocks: call it off the main thread.
+pub fn fetch_account_status(session: &AuthSession) -> crate::ban_notice::AccountStatus {
+    use crate::ban_notice::{AccountStatus, parse_profile_actions, parse_properties};
+    let Ok(doc) = discovery() else {
+        return AccountStatus::default();
+    };
+    let properties = endpoint(&doc, "player", "getAttributes")
+        .and_then(|url| {
+            agent()
+                .get(&url)
+                .set("Authorization", &format!("Bearer {}", session.access_token))
+                .call()
+                .ok()?
+                .into_string()
+                .ok()
+        })
+        .and_then(|body| parse_properties(&body))
+        .unwrap_or_default();
+    let actions = endpoint(&doc, "session", "getProfileById")
+        .and_then(|url| {
+            let url = url.replace("{profileId}", &format!("{:032x}", session.uuid));
+            agent()
+                .get(&format!("{url}?unsigned=true"))
+                .call()
+                .ok()?
+                .into_string()
+                .ok()
+        })
+        .map(|body| parse_profile_actions(&body))
+        .unwrap_or_default();
+    AccountStatus {
+        properties,
+        actions,
+    }
+}
+
 /// The JoinMinecraftServerRequest body; `selectedProfile` is the undashed UUID.
 pub fn join_request(session: &AuthSession, server_hash: &str) -> String {
     serde_json::json!({
@@ -230,6 +270,25 @@ pub fn join_server(session: &AuthSession, server_hash: &str) -> Result<(), JoinE
         )),
         Err(ureq::Error::Transport(_)) => Err(JoinError::Unavailable),
     }
+}
+
+const MINECRAFT_PROFILE: &str = "https://api.minecraftservices.com/minecraft/profile";
+
+/// The signed-in account's active skin and cape from `GET /minecraft/profile`.
+/// Single-player and integrated servers often send no `textures` property, or
+/// one without the equipped cape; the client asks the profile endpoint once.
+pub fn own_textures(session: &AuthSession) -> Option<crate::skins::Textures> {
+    let response = agent()
+        .get(MINECRAFT_PROFILE)
+        .set("Authorization", &format!("Bearer {}", session.access_token))
+        .call()
+        .ok()?;
+    if response.status() != 200 {
+        return None;
+    }
+    let body = response.into_string().ok()?;
+    let profile: serde_json::Value = serde_json::from_str(&body).ok()?;
+    Some(crate::skins::services_profile_textures(&profile))
 }
 
 /// What the session service says about a player joining this server

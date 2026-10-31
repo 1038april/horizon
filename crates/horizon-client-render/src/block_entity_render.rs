@@ -654,10 +654,20 @@ fn sign_text_calls(
         .collect()
 }
 
+/// How far the text of an outlined call sits in front of its outline, in
+/// text units (`Font.DisplayMode.POLYGON_OFFSET`, see `draw_text`).
+const TEXT_OVER_OUTLINE: f32 = 0.05;
+
 /// Draws a text call with the font atlas: 8x8 glyph cells, the outline as
 /// eight one-pixel offsets under the text.
+///
+/// `TextFeatureRenderer.renderText` draws the outline glyphs NORMAL and the
+/// text over them POLYGON_OFFSET, so the coplanar text always wins the depth
+/// test. Here both share one mesh, so the text is lifted a hair towards the
+/// reader instead (a twentieth of a font pixel, invisible) rather than
+/// z-fighting with the outline under it.
 fn draw_text(scene: &Scene, call: &TextCall, out: &mut Vec<Vertex>) {
-    let mut emit = |dx: f32, dy: f32, argb: u32| {
+    let mut emit = |dx: f32, dy: f32, z: f32, argb: u32| {
         let mut x = call.x + dx;
         let y0 = call.y + dy;
         for ch in call.text.chars() {
@@ -672,7 +682,7 @@ fn draw_text(scene: &Scene, call: &TextCall, out: &mut Vec<Vertex>) {
                         normal: [0; 4],
                         pos: call
                             .matrix
-                            .transform_point3(Vec3::new(cx, cy, 0.0))
+                            .transform_point3(Vec3::new(cx, cy, z))
                             .to_array(),
                         uv,
                         layer: 0,
@@ -697,10 +707,15 @@ fn draw_text(scene: &Scene, call: &TextCall, out: &mut Vec<Vertex>) {
             (0.0, 1.0),
             (1.0, 1.0),
         ] {
-            emit(dx, dy, call.outline);
+            emit(dx, dy, 0.0, call.outline);
         }
     }
-    emit(0.0, 0.0, call.color);
+    let z = if call.outline != 0 {
+        TEXT_OVER_OUTLINE
+    } else {
+        0.0
+    };
+    emit(0.0, 0.0, z, call.color);
 }
 
 /// Block-entity fields the level ticks, at one position (vanilla's own field
@@ -774,6 +789,8 @@ pub struct Scene<'a> {
     pub glyphs: u64,
 }
 
+/// Empty by default (a dedicated server): no state has a block entity model.
+#[derive(Default)]
 pub struct BlockEntityRenderer {
     models: HashMap<&'static str, ModelPart>,
     kinds: Vec<Kind>,
@@ -850,13 +867,23 @@ const VIEW_DISTANCE: f64 = 64.0;
 
 impl BlockEntityRenderer {
     pub fn load(root: &Path, registry: &BlockRegistry) -> crate::Result<Self> {
+        let visibility = crate::models::load_visibility(root, registry)?;
+        Self::load_with_visibility(root, registry, visibility)
+    }
+    /// [`BlockEntityRenderer::load`] over the face visibility the meshes use
+    /// (`MeshTables::visibility`): a clone shares its shapes and their faces.
+    pub fn load_with_visibility(
+        root: &Path,
+        registry: &BlockRegistry,
+        visibility: FaceVisibility,
+    ) -> crate::Result<Self> {
         let all: Value = serde_json::from_slice(&std::fs::read(root.join("entity-models.json"))?)?;
         let models = MODELS
             .iter()
             .filter_map(|(key, layer)| all.get(*layer).map(|v| (*key, ModelPart::parse(v))))
             .collect();
         let mut renderer = Self::new(models, registry);
-        renderer.visibility = Some(Mutex::new(crate::models::load_visibility(root, registry)?));
+        renderer.visibility = Some(Mutex::new(visibility));
         // Sherd items: provides_pottery_pattern -> decorated_pot_pattern asset id.
         if let Ok(bytes) = std::fs::read(root.join("items.json")) {
             let items: Value = serde_json::from_slice(&bytes)?;
@@ -1089,7 +1116,12 @@ impl BlockEntityRenderer {
     pub fn renders(&self, state: u32) -> bool {
         !matches!(self.kind(state), Kind::None)
     }
-    /// ChestRenderer and BannerRenderer submit their animated models for crumbling.
+    /// `submitCrumblingOverlay` of ChestRenderer.submit, BannerRenderer.submit,
+    /// SkullBlockRenderer.submitSkull, ShulkerBoxRenderer.submit,
+    /// BellRenderer.submit, LecternRenderer.submit (the book),
+    /// CopperGolemStatueBlockRenderer.submit, ConduitRenderer.submit (the shell
+    /// or cage) and EnchantTableRenderer.submit (the book): the model drawn
+    /// again under the destroy stage.
     pub fn render_breaking(
         &self,
         scene: &Scene,
@@ -1098,7 +1130,18 @@ impl BlockEntityRenderer {
         stage: [f32; 2],
         out: &mut Vec<Vertex>,
     ) {
-        if !matches!(self.kind(state), Kind::Banner { .. } | Kind::Chest { .. }) {
+        if !matches!(
+            self.kind(state),
+            Kind::Banner { .. }
+                | Kind::Chest { .. }
+                | Kind::Skull { .. }
+                | Kind::Shulker { .. }
+                | Kind::Bell
+                | Kind::Lectern { .. }
+                | Kind::CopperGolem { .. }
+                | Kind::Conduit
+                | Kind::EnchantingTable
+        ) {
             return;
         }
         let origin = (DVec3::new(f64::from(pos[0]), f64::from(pos[1]), f64::from(pos[2]))
@@ -1452,6 +1495,7 @@ impl BlockEntityRenderer {
                 } else {
                     None
                 };
+                let has_profile = skin.is_some();
                 let texture = skin.as_deref().unwrap_or(texture);
                 let (Some(model), Some(paint)) =
                     (self.models.get(model), paint(texture, 0xFFFFFF, packed))
@@ -1486,7 +1530,13 @@ impl BlockEntityRenderer {
                     "right_ear" => p[5] = (f64::from(t * PI * 0.2).cos() + 2.5) as f32 * 0.2,
                     _ => {}
                 };
+                let start = out.len();
                 draw_part(model, "root", m, &anim, paint, out);
+                // `SkullBlockRenderer.resolveSkullRenderType`: a head with a profile takes
+                // the player skin's `entityTranslucent` render type.
+                if has_profile {
+                    crate::gfx::mark_oit(&mut out[start..]);
+                }
             }
             Kind::Bell => {
                 let (Some(model), Some(paint)) = (
@@ -1635,6 +1685,10 @@ impl BlockEntityRenderer {
                         * Mat4::from_translation(lift)
                         * Mat4::from_quat(Quat::from_axis_angle(axis, degrees * (PI / 180.0)));
                     draw_part(model, "root", m, &none, paint, out);
+                }
+                // The crumbling overlay covers the shell and the cage only.
+                if crumbling {
+                    return;
                 }
                 let wind = if phase == 1 {
                     "entity/conduit/wind_vertical"
@@ -2258,6 +2312,69 @@ mod tests {
         assert_eq!(out[2].uv, [0.5, 0.5]);
     }
 
+    /// TextFeatureRenderer.renderText: an outlined call's text is drawn over
+    /// its outline (Font.DisplayMode.POLYGON_OFFSET), never level with it,
+    /// and plain text stays on the sign's plane.
+    #[test]
+    fn outlined_sign_text_sits_in_front_of_its_outline() {
+        let world = World::new(BlockStateId(0), 1);
+        let sprites = HashMap::new();
+        let glyph = |_: char| {
+            let rect = Rect {
+                u0: 0.0,
+                v0: 0.0,
+                u1: 0.0625,
+                v1: 0.0625,
+                w: 8,
+                h: 8,
+            };
+            (Some(rect), 6.0)
+        };
+        let scene = Scene {
+            camera: DVec3::ZERO,
+            orientation: Quat::IDENTITY,
+            anim: &|_| BlockAnim::default(),
+            texts: None,
+            partial: 0.0,
+            game_time: 0,
+            max_y: 320,
+            world: &world,
+            sprites: &sprites,
+            nether: false,
+            lid: &|_| 0.0,
+            sign: &|_| None,
+            banner: &|_| Vec::new(),
+            skull: &|_| None,
+            glyph: &glyph,
+            glyphs: 0,
+        };
+        let mut call = TextCall {
+            matrix: Mat4::IDENTITY,
+            x: 0.0,
+            y: 0.0,
+            text: "Hi".into(),
+            color: 0xFFFF_FF00,
+            outline: 0xFF33_3300,
+            light: 240 | 240 << 8,
+        };
+        let mut out = Vec::new();
+        draw_text(&scene, &call, &mut out);
+        // Eight outline copies, then the text, four corners a glyph.
+        assert_eq!(out.len(), 9 * 2 * 4);
+        let (outline, text) = out.split_at(8 * 2 * 4);
+        let front = outline.iter().map(|v| v.pos[2]).fold(f32::MIN, f32::max);
+        assert!(
+            text.iter().all(|v| v.pos[2] > front),
+            "text z {:?} not in front of the outline at {front}",
+            text.iter().map(|v| v.pos[2]).collect::<Vec<_>>()
+        );
+        call.outline = 0;
+        out.clear();
+        draw_text(&scene, &call, &mut out);
+        assert_eq!(out.len(), 2 * 4);
+        assert!(out.iter().all(|v| v.pos[2] == 0.0));
+    }
+
     #[test]
     fn cached_sign_text_matches_and_follows_changes() {
         let renderer = BlockEntityRenderer {
@@ -2285,6 +2402,7 @@ mod tests {
             lines: [line.into(), "two".into(), String::new(), "four".into()],
             color: 3,
             glowing,
+            ..Default::default()
         };
         let first_text = crate::signs::SignData {
             front: text("one", false),

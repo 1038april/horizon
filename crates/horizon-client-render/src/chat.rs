@@ -21,6 +21,14 @@ const COMMAND_HISTORY_FILE: &str = "command_history.txt";
 const MAX_PERSISTED_COMMAND_HISTORY: usize = 50;
 /// GuiMessageTag.systemSinglePlayer's indicator colour.
 pub const SYSTEM_INDICATOR: u32 = 0xD0D0D0;
+/// `GuiMessageTag.CHAT_MODIFIED_INDICATOR_COLOR`.
+const MODIFIED_INDICATOR: u32 = 0x60_6060;
+/// A player message's signature (MessageSignature), which names it to a
+/// server's deletion.
+pub type Signature = horizon_protocol::secure_chat::Signature;
+/// How long a message shows before a deletion replaces it
+/// (`ChatComponent.deleteMessageOrDelay`: `addedTime + 60`).
+const DELETION_DELAY: u64 = 60;
 
 /// `ChatVisiblity`: the Chat option's three values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -163,15 +171,64 @@ impl ChatOptions {
 struct Message {
     added: u64,
     content: Text,
-    indicator: Option<u32>,
+    tag: Option<std::sync::Arc<Tag>>,
     source: ChatSource,
+    /// `GuiMessage.signature`: a signed player message's, for deletion.
+    signature: Option<Box<Signature>>,
 }
 /// A wrapped line (`GuiMessage.Line`).
 #[derive(Clone, Debug)]
 struct Line {
     added: u64,
     content: Text,
-    indicator: Option<u32>,
+    tag: Option<std::sync::Arc<Tag>>,
+}
+
+/// `GuiMessageTag`: the bar at the left of a message's lines, the tooltip
+/// over it, and for a modified message the icon after each line.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tag {
+    pub color: u32,
+    /// `GuiMessageTag.Icon.CHAT_MODIFIED`.
+    pub icon: bool,
+    pub text: Text,
+}
+impl Tag {
+    /// `GuiMessageTag.systemSinglePlayer`, in `color`.
+    pub fn system_single_player(color: u32) -> Self {
+        Self {
+            color,
+            icon: false,
+            text: Text::translate("chat.tag.system_single_player", &[]),
+        }
+    }
+    /// `GuiMessageTag.chatNotSecure`.
+    pub fn not_secure() -> Self {
+        Self {
+            color: SYSTEM_INDICATOR,
+            icon: false,
+            text: Text::translate("chat.tag.not_secure", &[]),
+        }
+    }
+    /// `GuiMessageTag.chatError`: red (`CHAT_ERROR`, 16733525), the tooltip `chat.tag.error`.
+    pub fn chat_error() -> Self {
+        Self {
+            color: 0xFF_5555,
+            icon: false,
+            text: Text::translate("chat.tag.error", &[]),
+        }
+    }
+    /// `GuiMessageTag.chatModified`: the tooltip adds the original content in grey.
+    pub fn modified(original_content: &str) -> Self {
+        Self {
+            color: MODIFIED_INDICATOR,
+            icon: true,
+            text: Text::empty()
+                .append(Text::translate("chat.tag.modified", &[]))
+                .append(Text::literal("\n"))
+                .append(Text::literal(original_content).with_color(text::GRAY)),
+        }
+    }
 }
 
 /// `ChatComponent.AlphaCalculator.timeBased`: opaque for 180 ticks, then
@@ -205,6 +262,9 @@ pub struct Chat {
     pub received: u64,
     /// The Chat option's `visibleMessageFilter` (`set_abilities`).
     abilities: ChatAbilities,
+    /// `ChatComponent.messageDeletionQueue`: deletions of messages still
+    /// too new to replace, with the tick from which they may be.
+    deletions: Vec<(Box<Signature>, u64)>,
 }
 impl Chat {
     pub fn lines_per_page(&self, focused: bool) -> usize {
@@ -225,38 +285,99 @@ impl Chat {
         ticks: u64,
         focused: bool,
     ) {
-        self.add_message(&atlas.font, content, indicator, source, ticks, focused);
+        let tag = indicator.map(|color| std::sync::Arc::new(Tag::system_single_player(color)));
+        self.add_message(&atlas.font, content, tag, source, ticks, focused);
+    }
+    /// `add` of a player message with its signature, which a server's
+    /// deletion names it by (`GuiMessage.signature`).
+    pub fn add_signed(
+        &mut self,
+        atlas: &HudAtlas,
+        content: Text,
+        signature: Option<Signature>,
+        tag: Option<Tag>,
+        ticks: u64,
+        focused: bool,
+    ) {
+        self.add_player_message(&atlas.font, content, signature, tag, ticks, focused);
+    }
+    #[cfg(test)]
+    fn add_signed_message(
+        &mut self,
+        font: &crate::font::Font,
+        content: Text,
+        signature: Option<Signature>,
+        ticks: u64,
+        focused: bool,
+    ) {
+        self.add_player_message(font, content, signature, None, ticks, focused);
+    }
+    /// `ChatComponent.addPlayerMessage`: the tag the message's trust level made.
+    fn add_player_message(
+        &mut self,
+        font: &crate::font::Font,
+        content: Text,
+        signature: Option<Signature>,
+        tag: Option<Tag>,
+        ticks: u64,
+        focused: bool,
+    ) {
+        self.push_message(
+            font,
+            Message {
+                added: ticks,
+                content,
+                tag: tag.map(std::sync::Arc::new),
+                source: ChatSource::Player,
+                signature: signature.map(Box::new),
+            },
+            focused,
+        );
     }
     fn add_message(
         &mut self,
         font: &crate::font::Font,
         content: Text,
-        indicator: Option<u32>,
+        tag: Option<std::sync::Arc<Tag>>,
         source: ChatSource,
         ticks: u64,
         focused: bool,
     ) {
-        if !self.abilities.shows(source) {
+        self.push_message(
+            font,
+            Message {
+                added: ticks,
+                content,
+                tag,
+                source,
+                signature: None,
+            },
+            focused,
+        );
+    }
+    fn push_message(&mut self, font: &crate::font::Font, message: Message, focused: bool) {
+        if !self.abilities.shows(message.source) {
             return;
         }
         // ChatComponent.logChatMessage: every message shown is in the log.
-        crate::logging::write_only(log::Level::Info, &format!("[CHAT] {}", content.plain()));
+        let plain = message.content.plain();
+        crate::logging::write_only(log::Level::Info, &format!("[CHAT] {plain}"));
         if self.log {
-            println!("[CHAT] {}", content.plain());
+            println!("[CHAT] {plain}");
         }
-        let message = Message {
-            added: ticks,
-            content,
-            indicator,
-            source,
-        };
         self.add_lines(font, &message, focused);
         self.messages.insert(0, message);
         self.messages.truncate(100);
         self.received += 1;
     }
     fn add_lines(&mut self, font: &crate::font::Font, message: &Message, focused: bool) {
-        let width = self.max_width();
+        // GuiMessage.splitLines: room for the tag's icon (its width, 4 before and 2 after).
+        let icon = if message.tag.as_ref().is_some_and(|tag| tag.icon) {
+            9 + 4 + 2
+        } else {
+            0
+        };
+        let width = self.max_width() - icon;
         let content = self.displayed(&message.content);
         for line in font.wrap_components(&content, width) {
             if focused && self.scroll > 0 {
@@ -268,7 +389,7 @@ impl Chat {
                 Line {
                     added: message.added,
                     content: line,
-                    indicator: message.indicator,
+                    tag: message.tag.clone(),
                 },
             );
         }
@@ -319,7 +440,67 @@ impl Chat {
     pub fn clear(&mut self) {
         self.messages.clear();
         self.lines.clear();
+        self.deletions.clear();
         self.scroll = 0;
+    }
+    /// `ChatComponent.deleteMessage`: the server deleted a message. One
+    /// shown for 60 ticks becomes the grey "deleted" marker now; a newer
+    /// one waits until then (`messageDeletionQueue`).
+    pub fn delete_message(&mut self, atlas: &HudAtlas, signature: &Signature, ticks: u64) {
+        self.delete_message_with(&atlas.font, signature, ticks);
+    }
+    fn delete_message_with(&mut self, font: &crate::font::Font, signature: &Signature, ticks: u64) {
+        if let Some(delayed) = self.delete_or_delay(font, signature, ticks) {
+            self.deletions.push((Box::new(*signature), delayed));
+        }
+    }
+    /// `ChatComponent.tick` (`processMessageDeletionQueue`): the delayed
+    /// deletions whose message has shown long enough.
+    pub fn tick(&mut self, atlas: &HudAtlas, ticks: u64) {
+        self.process_deletions(&atlas.font, ticks);
+    }
+    fn process_deletions(&mut self, font: &crate::font::Font, ticks: u64) {
+        let mut deletions = std::mem::take(&mut self.deletions);
+        deletions.retain(|(signature, after)| {
+            ticks < *after || self.delete_or_delay(font, signature, ticks).is_some()
+        });
+        self.deletions = deletions;
+    }
+    /// `ChatComponent.deleteMessageOrDelay`: the newest message with this
+    /// signature, replaced by `createDeletedMarker` once 60 ticks have
+    /// passed since it was added; otherwise the tick to retry from.
+    fn delete_or_delay(
+        &mut self,
+        font: &crate::font::Font,
+        signature: &Signature,
+        ticks: u64,
+    ) -> Option<u64> {
+        let message = self
+            .messages
+            .iter_mut()
+            .find(|m| m.signature.as_deref() == Some(signature))?;
+        let deletable = message.added + DELETION_DELAY;
+        if ticks < deletable {
+            return Some(deletable);
+        }
+        *message = Message {
+            added: message.added,
+            content: Self::deleted_marker(),
+            tag: Some(std::sync::Arc::new(Tag::system_single_player(
+                SYSTEM_INDICATOR,
+            ))),
+            source: ChatSource::Server,
+            signature: None,
+        };
+        // refreshTrimmedMessages.
+        self.rewrap(font);
+        None
+    }
+    /// `ChatComponent.DELETED_CHAT_MESSAGE`: grey, italic.
+    fn deleted_marker() -> Text {
+        Text::translate("chat.deleted_marker", &[])
+            .with_color(text::GRAY)
+            .italic()
     }
     /// `new CommandHistory(gameFolder)`: the commands kept from earlier runs
     /// start the chat's history (`ChatComponent`'s constructor).
@@ -431,8 +612,8 @@ impl Chat {
                     shadow: true,
                 });
             }
-            if let Some(indicator) = line.indicator {
-                let color = hud_layout::as8(opacity) << 24 | indicator & 0xFF_FFFF;
+            if let Some(tag) = &line.tag {
+                let color = hud_layout::as8(opacity) << 24 | tag.color & 0xFF_FFFF;
                 out.push(hud_layout::fill(
                     -4,
                     bottom - entry_height,
@@ -593,12 +774,91 @@ impl Chat {
         }
         None
     }
-    /// Whether the cursor is on a line's indicator bar while chat is focused
-    /// (`DrawingFocusedGraphicsAccess.handleTag`), whose tooltip is the
-    /// message tag's text.
-    pub fn indicator_at(&self, height: i32, x: f64, y: f64) -> bool {
-        self.line_at(height, x, y)
-            .is_some_and(|(line, x)| line.indicator.is_some() && (-4.0..-2.0).contains(&x))
+    /// `DrawingFocusedGraphicsAccess.handleTag` and `handleTagIcon` with the
+    /// cursor at GUI position `(x, y)` while chat is focused: the tooltip of
+    /// the tag under it (its bar, or its icon) and the icons to draw, those
+    /// under the cursor and those of the message the cursor is over.
+    pub fn focused_tags(
+        &self,
+        font: &crate::font::Font,
+        height: i32,
+        x: f64,
+        y: f64,
+    ) -> (Option<Text>, Vec<GuiDraw>) {
+        let o = &self.options;
+        let scale = o.scale as f32;
+        let chat_bottom = hud_layout::floor((height - 40) as f32 / scale);
+        let entry_height = o.line_height();
+        let bottom_to_text =
+            (8.0 * (o.line_spacing + 1.0) - 4.0 * o.line_spacing + 0.5).floor() as i32;
+        let (mouse_x, mouse_y) = (x / f64::from(scale) - 4.0, y / f64::from(scale));
+        let inside = |left: i32, top: i32, right: i32, bottom: i32| {
+            mouse_x >= f64::from(left)
+                && mouse_x < f64::from(right)
+                && mouse_y >= f64::from(top)
+                && mouse_y < f64::from(bottom)
+        };
+        let visible = self
+            .lines
+            .len()
+            .saturating_sub(self.scroll)
+            .min(self.lines_per_page(true));
+        let mut tooltip = None;
+        let mut icons = Vec::new();
+        let mut hovered_message = false;
+        for i in (0..visible).rev() {
+            let index = i + self.scroll;
+            let line = &self.lines[index];
+            let bottom = chat_bottom - i as i32 * entry_height;
+            let top = bottom - entry_height;
+            let width = font.width_text(&line.content).ceil() as i32;
+            hovered_message |= inside(0, top, width, bottom);
+            // GuiMessage.Line.endOfEntry: the next newer line is another message's.
+            let end_of_entry = index == 0
+                || match (&line.tag, &self.lines[index - 1].tag) {
+                    (Some(a), Some(b)) => !std::sync::Arc::ptr_eq(a, b),
+                    (None, None) => false,
+                    _ => true,
+                };
+            let force_icon = end_of_entry && hovered_message;
+            if end_of_entry {
+                hovered_message = false;
+            }
+            let Some(tag) = &line.tag else { continue };
+            if inside(-4, top, -2, bottom) {
+                tooltip = Some(tag.text.clone());
+            }
+            if tag.icon {
+                let (left, text_bottom) = (width + 4, bottom - bottom_to_text + 9);
+                let icon_top = text_bottom - 9 - 1;
+                let over = inside(left, icon_top, left + 9, text_bottom);
+                if over {
+                    tooltip = Some(tag.text.clone());
+                }
+                if force_icon || over {
+                    icons.push(GuiDraw::Sprite {
+                        sprite: "icon/chat_modified".into(),
+                        x: left,
+                        y: icon_top,
+                        w: 9,
+                        h: 9,
+                        region: None,
+                        color: hud_layout::WHITE,
+                        blend: hud_layout::Blend::Textured,
+                    });
+                }
+            }
+        }
+        if icons.is_empty() {
+            return (tooltip, icons);
+        }
+        let mut draws = vec![GuiDraw::Push(vec![
+            PoseOp::Scale(scale, scale),
+            PoseOp::Translate(4.0, 0.0),
+        ])];
+        draws.extend(icons);
+        draws.push(GuiDraw::Pop);
+        (tooltip, draws)
     }
     /// Plain text of the newest messages (for tests and the control socket).
     pub fn recent_lines(&self, n: usize) -> Vec<String> {
@@ -653,6 +913,42 @@ pub struct Commands<'a> {
     pub registries: &'a Registries,
 }
 
+/// `CommandSuggestions`' constructor arguments: how a screen's suggestions
+/// parse and where they are drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SuggestLayout {
+    /// `commandsOnly`: the input is a command without a leading `/`.
+    pub commands_only: bool,
+    /// `onlyShowIfCursorPastError`: completions from the command's start,
+    /// not only past the `/`.
+    pub only_past_error: bool,
+    /// `suggestionLineLimit`.
+    pub line_limit: usize,
+    /// `anchorToBottom`: the list and usage over a box at the bottom, else
+    /// under one at the top (y 72).
+    pub anchor_to_bottom: bool,
+    /// `fillColor`: behind the list and the usage lines.
+    pub fill: i32,
+}
+impl SuggestLayout {
+    /// ChatScreen.init's `CommandSuggestions`.
+    pub const CHAT: Self = Self {
+        commands_only: false,
+        only_past_error: false,
+        line_limit: 10,
+        anchor_to_bottom: true,
+        fill: FILL,
+    };
+    /// AbstractCommandBlockEditScreen.init's `CommandSuggestions`.
+    pub const COMMAND_BLOCK: Self = Self {
+        commands_only: true,
+        only_past_error: true,
+        line_limit: 7,
+        anchor_to_bottom: false,
+        fill: i32::MIN,
+    };
+}
+
 /// The open chat screen: vanilla's `ChatScreen` with its `EditBox` and
 /// `CommandSuggestions` (argument colouring, usage lines, parse errors,
 /// the suggestion list, Tab completion, history).
@@ -680,6 +976,7 @@ pub struct ChatScreen {
     pub auto_suggestions: bool,
     /// `CommandSuggestions.setRestrictions`: what the Chat option allows.
     pub abilities: ChatAbilities,
+    pub layout: SuggestLayout,
 }
 /// Local completions waiting for the server's reply to request `id`.
 struct Awaiting {
@@ -750,6 +1047,43 @@ impl ChatScreen {
             keep_suggestions: false,
             auto_suggestions: true,
             abilities,
+            layout: SuggestLayout::CHAT,
+        };
+        s.update_command_info(m, c);
+        s
+    }
+    /// `AbstractCommandBlockEditScreen.init`: the command box at the top,
+    /// focused, holding `command`, with suggestions from the start.
+    pub fn command_block(
+        m: &Measure,
+        c: &Commands,
+        command: &str,
+        width: i32,
+        height: i32,
+    ) -> Self {
+        let mut input = TextField::new(width / 2 - 150, 50, 300, 20);
+        input.max_length = 32500;
+        input.focused = true;
+        input.set_value(m, command);
+        let mut s = Self {
+            input,
+            width,
+            height,
+            history_buffer: String::new(),
+            history_pos: 0,
+            parse: None,
+            pending: None,
+            awaiting: None,
+            request: None,
+            suggestions: None,
+            usage: Vec::new(),
+            usage_position: 0,
+            usage_width: 0,
+            allow_suggestions: true,
+            keep_suggestions: false,
+            auto_suggestions: true,
+            abilities: ChatAbilities::new(ChatVisibility::Full),
+            layout: SuggestLayout::COMMAND_BLOCK,
         };
         s.update_command_info(m, c);
         s
@@ -768,7 +1102,11 @@ impl ChatScreen {
             let value = self.input.value.clone();
             let auto = self.auto_suggestions;
             let abilities = self.abilities;
-            *self = Self::new(m, c, &value, self.history_pos, width, height, abilities);
+            *self = if self.layout == SuggestLayout::CHAT {
+                Self::new(m, c, &value, self.history_pos, width, height, abilities)
+            } else {
+                Self::command_block(m, c, &value, width, height)
+            };
             self.auto_suggestions = auto;
         }
     }
@@ -814,11 +1152,18 @@ impl ChatScreen {
         self.usage.clear();
         let cursor = self.input.cursor;
         let cursor_b = byte_at(&command, cursor);
-        if command.starts_with('/') {
+        let slash = command.starts_with('/');
+        if self.layout.commands_only || slash {
+            let start = usize::from(slash);
             if self.parse.is_none() {
-                self.parse = Some(c.dispatcher.parse_at(&command, 1, c.registries));
+                self.parse = Some(c.dispatcher.parse_at(&command, start, c.registries));
             }
-            if cursor >= 1 && (self.suggestions.is_none() || !self.keep_suggestions) {
+            let from = if self.layout.only_past_error {
+                start
+            } else {
+                1
+            };
+            if cursor >= from && (self.suggestions.is_none() || !self.keep_suggestions) {
                 let parse = self.parse.as_ref().expect("parsed above");
                 let (range, list, ask) =
                     c.dispatcher
@@ -844,7 +1189,9 @@ impl ChatScreen {
         } else if !command.chars().all(char::is_whitespace) {
             let partial = &command[..cursor_b];
             let mut builder = SuggestionsBuilder::new(partial, last_word_index(partial));
-            builder.suggest_matching(c.registries.players.iter().map(String::as_str));
+            // ClientSuggestionProvider.getCustomTabSuggestions: the players
+            // and the server's custom chat completions.
+            builder.suggest_matching(c.registries.custom_tab_suggestions());
             let (range, list) = merge_suggestions(partial, builder.out);
             self.awaiting = None;
             self.pending = Some((range.0, list));
@@ -1002,7 +1349,11 @@ impl ChatScreen {
             0,
             self.input.screen_x(m, 0) + self.input.inner_width() - width,
         );
-        let y = self.height - 12;
+        let y = if self.layout.anchor_to_bottom {
+            self.height - 12
+        } else {
+            72
+        };
         // sortSuggestions: those starting with the word at the cursor first.
         let partial = &value[..byte_at(&value, self.input.cursor)];
         let word = partial[last_word_index(partial)..].to_lowercase();
@@ -1011,9 +1362,16 @@ impl ChatScreen {
                 s.text.starts_with(&word) || s.text.starts_with(&format!("minecraft:{word}"))
             });
         first.extend(rest);
-        let n = first.len().min(10) as i32;
+        // SuggestionsList: beside a bordered box, or over an unbordered one.
+        let n = first.len().min(self.layout.line_limit) as i32;
+        let bordered = i32::from(self.input.bordered);
+        let top = if self.layout.anchor_to_bottom {
+            y - 3 - n * 12
+        } else {
+            y - bordered
+        };
         let mut l = SuggestionList {
-            rect: [x - 1, y - 3 - n * 12, width + 1, n * 12],
+            rect: [x - (1 - bordered), top, width + 1, n * 12],
             original: value,
             list: first,
             offset: 0,
@@ -1042,11 +1400,12 @@ impl ChatScreen {
     }
     fn cycle(&mut self, l: &mut SuggestionList, dir: isize) {
         self.select(l, l.current as isize + dir);
-        let max = l.list.len().saturating_sub(10);
+        let limit = self.layout.line_limit;
+        let max = l.list.len().saturating_sub(limit);
         if l.current < l.offset {
             l.offset = l.current.min(max);
-        } else if l.current > l.offset + 9 {
-            l.offset = (l.current as isize + 1 - 10).clamp(0, max as isize) as usize;
+        } else if l.current >= l.offset + limit {
+            l.offset = (l.current as isize + 1 - limit as isize).clamp(0, max as isize) as usize;
         }
     }
     /// `SuggestionsList.useSuggestion`.
@@ -1074,7 +1433,57 @@ impl ChatScreen {
         ctrl: bool,
     ) -> ChatAction {
         use winit::keyboard::KeyCode as K;
-        // CommandSuggestions.keyPressed.
+        if self.suggestions_key(m, c, key, shift) {
+            return ChatAction::None;
+        }
+        match key {
+            K::Escape => return ChatAction::Close,
+            K::Enter | K::NumpadEnter => {
+                // ChatScreen.keyPressed: without `hasAllowedInput` the input
+                // stays, unsent, and the screen stays open.
+                if !self.abilities.allows(&self.input.value) {
+                    return ChatAction::None;
+                }
+                return ChatAction::Submit(self.normalized());
+            }
+            K::ArrowUp => self.move_in_history(m, c, history, -1),
+            K::ArrowDown => self.move_in_history(m, c, history, 1),
+            _ => {
+                self.field_key(m, c, key, shift, ctrl);
+            }
+        }
+        ChatAction::None
+    }
+    /// The input box's own keys (`EditBox.keyPressed`), the suggestions
+    /// following an edit: whether the box took the key.
+    pub fn field_key(
+        &mut self,
+        m: &Measure,
+        c: &Commands,
+        key: winit::keyboard::KeyCode,
+        shift: bool,
+        ctrl: bool,
+    ) -> bool {
+        match self.input.key(m, key, shift, ctrl) {
+            Some(changed) => {
+                if changed {
+                    self.edited(m, c);
+                }
+                true
+            }
+            None => false,
+        }
+    }
+    /// `CommandSuggestions.keyPressed`: the list's arrows, Tab and Escape,
+    /// and Tab to show it. True when the suggestions took the key.
+    pub fn suggestions_key(
+        &mut self,
+        m: &Measure,
+        c: &Commands,
+        key: winit::keyboard::KeyCode,
+        shift: bool,
+    ) -> bool {
+        use winit::keyboard::KeyCode as K;
         if let Some(mut l) = self.suggestions.take() {
             let handled = match key {
                 K::ArrowUp | K::ArrowDown => {
@@ -1091,37 +1500,18 @@ impl ChatScreen {
                 }
                 K::Escape => {
                     self.input.suggestion = None;
-                    return ChatAction::None;
+                    return true;
                 }
                 _ => false,
             };
             self.suggestions = Some(l);
-            if handled {
-                return ChatAction::None;
-            }
+            handled
         } else if key == K::Tab {
             self.show_suggestions(m);
-            return ChatAction::None;
+            true
+        } else {
+            false
         }
-        match key {
-            K::Escape => return ChatAction::Close,
-            K::Enter | K::NumpadEnter => {
-                // ChatScreen.keyPressed: without `hasAllowedInput` the input
-                // stays, unsent, and the screen stays open.
-                if !self.abilities.allows(&self.input.value) {
-                    return ChatAction::None;
-                }
-                return ChatAction::Submit(self.normalized());
-            }
-            K::ArrowUp => self.move_in_history(m, c, history, -1),
-            K::ArrowDown => self.move_in_history(m, c, history, 1),
-            _ => {
-                if self.input.key(m, key, shift, ctrl) == Some(true) {
-                    self.edited(m, c);
-                }
-            }
-        }
-        ChatAction::None
     }
     /// `ChatScreen.moveInHistory`.
     fn move_in_history(&mut self, m: &Measure, c: &Commands, history: &[String], dir: isize) {
@@ -1175,7 +1565,7 @@ impl ChatScreen {
         if !l.contains(mouse.0, mouse.1) {
             return false;
         }
-        let max = l.list.len().saturating_sub(10) as i32;
+        let max = l.list.len().saturating_sub(self.layout.line_limit) as i32;
         l.offset = ((l.offset as f64 - amount.clamp(-1.0, 1.0)) as i32).clamp(0, max) as usize;
         true
     }
@@ -1246,7 +1636,9 @@ impl ChatScreen {
     ) -> Vec<Draw> {
         let (w, h) = (self.width, self.height);
         let mut out = Vec::new();
-        d::fill(&mut out, 2, h - 14, w - 2, h - 2, background);
+        if self.layout.anchor_to_bottom {
+            d::fill(&mut out, 2, h - 14, w - 2, h - 2, background);
+        }
         let format = |s: &str, o: usize| self.format(s, o);
         self.input.draw(&mut out, m, blink_ms, Some(&format));
         if let Some(mut l) = self.suggestions.take() {
@@ -1254,14 +1646,18 @@ impl ChatScreen {
             self.suggestions = Some(l);
         } else {
             for (i, line) in self.usage.iter().enumerate() {
-                let y = h - 27 - 12 * i as i32;
+                let y = if self.layout.anchor_to_bottom {
+                    h - 27 - 12 * i as i32
+                } else {
+                    72 + 12 * i as i32
+                };
                 d::fill(
                     &mut out,
                     self.usage_position - 1,
                     y,
                     self.usage_position + self.usage_width + 1,
                     y + 12,
-                    FILL,
+                    self.layout.fill,
                 );
                 d::text(&mut out, line.clone(), self.usage_position, y + 2, -1, true);
             }
@@ -1275,7 +1671,7 @@ impl ChatScreen {
         l: &mut SuggestionList,
         mouse: (i32, i32),
     ) {
-        let limit = l.list.len().min(10);
+        let limit = l.list.len().min(self.layout.line_limit);
         let [rx, ry, rw, rh] = l.rect;
         let has_prev = l.offset > 0;
         let has_next = l.list.len() > l.offset + limit;
@@ -1284,8 +1680,8 @@ impl ChatScreen {
             l.last_mouse = mouse;
         }
         if has_prev || has_next {
-            d::fill(out, rx, ry - 1, rx + rw, ry, FILL);
-            d::fill(out, rx, ry + rh, rx + rw, ry + rh + 1, FILL);
+            d::fill(out, rx, ry - 1, rx + rw, ry, self.layout.fill);
+            d::fill(out, rx, ry + rh, rx + rw, ry + rh + 1, self.layout.fill);
             if has_prev {
                 for x in (0..rw).step_by(2) {
                     d::fill(out, rx + x, ry - 1, rx + x + 1, ry, -1);
@@ -1300,7 +1696,7 @@ impl ChatScreen {
         let mut hovered = false;
         for i in 0..limit {
             let y = ry + 12 * i as i32;
-            d::fill(out, rx, y, rx + rw, y + 12, FILL);
+            d::fill(out, rx, y, rx + rw, y + 12, self.layout.fill);
             if mouse.0 > rx && mouse.0 < rx + rw && mouse.1 > y && mouse.1 < y + 12 {
                 if moved {
                     self.select(l, (i + l.offset) as isize);

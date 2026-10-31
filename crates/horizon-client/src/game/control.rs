@@ -22,7 +22,7 @@ const HELP: &[&str] = &[
     "tp X Y Z                       teleport the player",
     "hotbar 1-9                     select a hotbar slot",
     "give ITEM [COUNT]              add items to the inventory",
-    "render-distance N              chunks, 2..64",
+    "render-distance N              chunks, 2..128",
     "lod-distance N                 far surface chunks, 0 disables, up to1024",
     "time TICKS                     set the time of day",
     "summon KIND [X Y Z] [baby]     spawn a mob (in front of the player without a position)",
@@ -34,7 +34,7 @@ const HELP: &[&str] = &[
     "chat TEXT                      send a chat line or /command as if typed",
     "type TEXT                      type into the open chat box (key enter tap sends)",
     "chat-log [N]                   the newest N chat messages (default 10)",
-    "options [PAGE]                 open the options (video sound controls keybinds mouse chat accessibility language font packs mods graphics graphics-advanced)",
+    "options [PAGE]                 open the options (video sound controls keybinds mouse chat accessibility language font packs mods graphics graphics-advanced graphics-hdr)",
     "stats [reset]                  frame-time summary since the last reset",
     "bench SECONDS                  reset stats, wait, then reply with the summary",
     "fly X1 Y1 Z1 X2 Y2 Z2 SECONDS [PITCH [raw]]  fly the camera along a line at constant speed, then reply with the frame summary (raw: every frame time too)",
@@ -339,17 +339,25 @@ impl Game<'_> {
                         self.debug_key(key, KeyAction::Release);
                     }
                 }
-                // Mods' keys (capability `input`) see the key as the keyboard
-                // hook does.
+                // Native mods see the key as the keyboard hook does.
                 let action = arg(2)?;
-                self.mod_key(physical, action != "up", action == "repeat");
                 self.native_key_event(physical, action != "up", action == "repeat");
                 if action == "tap" {
-                    self.mod_key(physical, false, false);
                     self.native_key_event(physical, false, false);
                 }
+                // The merchant's focused offer and the recipe book's last
+                // recipe take Enter and Space, as the window's.
+                if action != "up"
+                    && self.screen == Screen::Inventory
+                    && (self.merchant_key(physical) || self.recipe_book_key(physical))
+                {
+                    return ok();
+                }
                 // Text screens consume raw presses; releases follow key binds.
-                let typing = matches!(self.screen, Screen::Chat | Screen::Options);
+                let typing = matches!(
+                    self.screen,
+                    Screen::Chat | Screen::Options | Screen::CommandBlock | Screen::BlockEditor
+                );
                 let key = if typing && arg(2)? != "up" {
                     key
                 } else {
@@ -361,7 +369,8 @@ impl Game<'_> {
                                 if action != "up" {
                                     self.play_mouse(button, true)?;
                                 }
-                                if action != "down" {
+                                // A repeat keeps the key held, as the window's.
+                                if action == "up" || action == "tap" {
                                     self.play_mouse(button, false)?;
                                 }
                             }
@@ -421,19 +430,15 @@ impl Game<'_> {
                 match arg(2)? {
                     "down" => {
                         self.extras_mouse(button, true);
-                        self.mod_mouse_key(button, true);
                         self.play_mouse(button, true)?
                     }
                     "up" => {
                         self.extras_mouse(button, false);
-                        self.mod_mouse_key(button, false);
                         self.play_mouse(button, false)?
                     }
                     "click" => {
                         self.extras_mouse(button, true);
-                        self.mod_mouse_key(button, true);
                         self.extras_mouse(button, false);
-                        self.mod_mouse_key(button, false);
                         self.play_mouse(button, true)?;
                         self.play_mouse(button, false)?;
                     }
@@ -451,8 +456,10 @@ impl Game<'_> {
                 ok()
             }
             "turn" => {
-                self.yaw += arg(1)?.parse::<f32>()?;
-                self.pitch = (self.pitch + arg(2)?.parse::<f32>()?).clamp(-90.0, 90.0);
+                let yaw = arg(1)?.parse::<f32>()?;
+                let pitch = arg(2)?.parse::<f32>()?;
+                // Degrees, as `Entity.turn` degrees.
+                self.turn_player(f64::from(yaw / 0.15), f64::from(pitch / 0.15));
                 ok()
             }
             "tp" => {
@@ -516,8 +523,9 @@ impl Game<'_> {
             }
             "render-distance" => {
                 let n: i32 = arg(1)?.parse()?;
-                if !(2..=64).contains(&n) {
-                    return Err("render distance must be 2..64".into());
+                let max = horizon_client::options_file::MAX_RENDER_DISTANCE;
+                if !(2..=max).contains(&n) {
+                    return Err(format!("render distance must be 2..{max}").into());
                 }
                 self.settings.render_distance = n;
                 self.apply_settings();
@@ -525,8 +533,12 @@ impl Game<'_> {
             }
             "lod-distance" => {
                 let n: u32 = arg(1)?.parse()?;
-                if n > 1024 {
-                    return Err("LOD distance must be 0..1024".into());
+                if n > horizon_client::lod::MAX_CHUNKS {
+                    return Err(format!(
+                        "LOD distance must be 0..{}",
+                        horizon_client::lod::MAX_CHUNKS
+                    )
+                    .into());
                 }
                 self.settings.horizon.lod_distance = n;
                 self.apply_settings();
@@ -587,7 +599,10 @@ impl Game<'_> {
                 arg(1)?;
                 // The rest of the line: a path may hold spaces.
                 let path = line.trim_start().strip_prefix("screenshot").unwrap_or("");
-                renderer.screenshot = Some(path.trim().into());
+                renderer.screenshot = Some(horizon_client::gfx::ScreenshotRequest {
+                    path: path.trim().into(),
+                    size: None,
+                });
                 self.pending_screenshot = Some(reply.clone());
                 Ok(None)
             }
@@ -626,6 +641,8 @@ impl Game<'_> {
                 match self.screen {
                     Screen::Chat => self.chat_type(text),
                     Screen::CommandBlock => self.command_block_type(text),
+                    Screen::BlockEditor => self.block_editor_type(text),
+                    Screen::DebugOptions => self.debug_options_type(text),
                     Screen::Options => self.ui.options.type_text(&self.gui.atlas, text),
                     // The port, or the game rules' search and number boxes.
                     Screen::WorldOptions if text == "\\b" => self.world_options_text(None),
@@ -677,6 +694,7 @@ impl Game<'_> {
                     "shader-packs" => Page::ShaderPacks,
                     "graphics" => Page::Graphics,
                     "graphics-advanced" => Page::GraphicsAdvanced,
+                    "graphics-hdr" => Page::GraphicsHdr,
                     "extras" => Page::Extras,
                     "credits" => Page::Credits,
                     "horizon" => Page::Horizon,
@@ -815,7 +833,13 @@ impl Game<'_> {
             "dragon-hurt" => {
                 // Test hook: damage the dragon's head as the player would.
                 let amount: f32 = arg(1)?.parse()?;
-                self.hit_special(super::dragon::SPECIAL, amount, true, false);
+                self.hit_special(
+                    super::dragon::SPECIAL,
+                    amount,
+                    true,
+                    horizon_client::mobs::DamageKind::PlayerAttack,
+                    None,
+                );
                 ok()
             }
             "quit" => {
@@ -847,12 +871,24 @@ impl Game<'_> {
 
     fn control_key_down(&mut self, key: KeyCode) -> Result<()> {
         self.physical_keys.insert(key);
+        // The window's shortcuts come before any screen, here too.
+        if self.screenshot_shortcut(key, false) {
+            return Ok(());
+        }
         if self.screen == Screen::Chat {
             self.chat_key_code(key, None);
             return Ok(());
         }
         if self.screen == Screen::Options {
             return self.options_key(key, None);
+        }
+        if self.screen == Screen::CommandBlock {
+            self.command_block_key_code(key, None, None);
+            return Ok(());
+        }
+        if self.screen == Screen::BlockEditor {
+            self.block_editor_key_code(key, None, None);
+            return Ok(());
         }
         if self.keys.insert(key) {
             self.key_pressed(key)?;
@@ -884,8 +920,9 @@ impl Game<'_> {
             Screen::ConfirmLink => "confirm-link",
             Screen::DialogWarning => "dialog-warning",
             Screen::CommandBlock => "command-block",
+            Screen::BlockEditor => "block-editor",
             Screen::Win => "win",
-            Screen::Mod => "mod",
+            Screen::DebugOptions => "debug-options",
         }
     }
 
@@ -1004,6 +1041,7 @@ impl Game<'_> {
             "cached_tiles": self.lod.as_ref().map_or(0, |lod| lod.stats().1),
             "far_detail": self.settings.horizon.far_detail.name(),
             "resident_quads": self.renderer.as_ref().map_or(0, |r| r.lod_quads()),
+            "levels": self.renderer.as_ref().map_or_else(Vec::new, |r| r.lod_levels()),
             "pending_observations": self.lod_observe.len(),
             "refined_samples": self.lod.as_ref().map_or(0, |lod| lod.refined_samples()),
         });
@@ -1017,8 +1055,8 @@ impl Game<'_> {
             "screen": self.screen_name(),
             "debug": {
                 "overlay": self.debug,
-                "hitboxes": self.show_hitboxes,
-                "chunk_borders": self.show_chunk_borders,
+                "hitboxes": self.debug_entry("entity_hitboxes"),
+                "chunk_borders": self.debug_entry("chunk_borders"),
                 "pause_menu": self.pause_menu,
                 "advanced_tooltips": self.settings.file.bool("advancedItemTooltips"),
                 "pause_on_lost_focus": self.settings.file.bool("pauseOnLostFocus"),
@@ -1094,6 +1132,8 @@ impl Game<'_> {
         status["maps"] = json!(self.maps_status());
         // The particles made so far, by type.
         status["particles"] = json!(self.particles.made());
+        // The pickup particles made so far, by what was taken.
+        status["pickups"] = json!(self.pickups.made());
         // The world border this side knows of.
         status["border"] = json!({ "center": self.border.center(), "size": self.border.size() });
         // The scoreboard sidebar the HUD shows.

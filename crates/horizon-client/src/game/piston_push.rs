@@ -9,7 +9,7 @@
 //!
 use super::Game;
 use horizon_client::collisions::{EntityCollisions, SceneCollisions, with_piston_noclip};
-use horizon_core::geometry::{Aabb, Direction, Vec3, border::BorderGeometry};
+use horizon_core::geometry::{Aabb, Axis, Direction, ShapeOp, Vec3, border::BorderGeometry};
 use horizon_core::position::BlockPos;
 use horizon_world::{
     block_collision_scan::BlockCollisionWorld, level::pistons::MovingPiston,
@@ -31,6 +31,8 @@ enum Target {
     Boat(usize),
     Cart(usize),
     ArmorStand(usize),
+    /// Primed TNT (`PrimedTnt`): slime piston bounce (#4550).
+    Tnt(usize),
 }
 
 /// `Entity.getStepHeight` of each body, read before the push.
@@ -203,6 +205,55 @@ impl Game<'_> {
         }
     }
 
+    /// `Block.pushEntitiesUp(old, new, level, pos)` for the block now at `pos`
+    /// (`FarmlandBlock.turnToBaseBlock`, `PathBlock.turnToBaseBlock`): every body
+    /// touching the collision that the new state adds over `old` is lifted
+    /// onto it with `teleportRelative`, no collision scan.
+    pub(super) fn push_entities_up(
+        &mut self,
+        pos: BlockPos,
+        old: horizon_world::registry::BlockStateId,
+    ) {
+        let new = self.world.block(pos.x, pos.y, pos.z);
+        if new == old {
+            return;
+        }
+        let at = [pos.x, pos.y, pos.z];
+        let shape = |state| {
+            let mut scene = SceneCollisions {
+                world: &self.world,
+                binding: self.collision,
+                subject: None,
+            };
+            self.collision.collision_shape(&mut scene, state, at).ok()
+        };
+        let (Some(old_shape), Some(new_shape)) = (shape(old), shape(new)) else {
+            return;
+        };
+        let Ok(added) = old_shape.join_unoptimized(&new_shape, ShapeOp::ONLY_SECOND) else {
+            return;
+        };
+        let added = added.moved(Vec3::new(
+            f64::from(pos.x),
+            f64::from(pos.y),
+            f64::from(pos.z),
+        ));
+        let Some(bounds) = added.bounds() else {
+            return;
+        };
+        let steps = self.push_step_heights();
+        for target in self.push_targets() {
+            let Some(body) = self.push_body(target, pos, &steps) else {
+                continue;
+            };
+            if !body.bounds.intersects(bounds) {
+                continue;
+            }
+            let dy = added.collide(Axis::Y, body.bounds.move_by(Vec3::new(0.0, 1.0, 0.0)), -1.0);
+            self.apply_push(target, Vec3::new(0.0, 1.0 + dy, 0.0));
+        }
+    }
+
     /// `Entity.getStepHeight` for each body, read once: the attribute lookup
     /// needs the mutable body, and the push only needs the number.
     fn push_step_heights(&mut self) -> StepHeights {
@@ -246,6 +297,7 @@ impl Game<'_> {
         targets.extend((0..self.boats.len()).map(Target::Boat));
         targets.extend((0..self.carts.len()).map(Target::Cart));
         targets.extend((0..self.armor_stands.len()).map(Target::ArmorStand));
+        targets.extend((0..self.tnts.len()).map(Target::Tnt));
         targets
     }
 
@@ -336,6 +388,16 @@ impl Game<'_> {
                 if entity.marker {
                     return None;
                 }
+                Some(Body {
+                    bounds: entity.bounds(),
+                    position: entity.position,
+                    on_ground: entity.on_ground,
+                    step_height: 0.0,
+                    supported: false,
+                })
+            }
+            Target::Tnt(i) => {
+                let entity = &self.tnts[i];
                 Some(Body {
                     bounds: entity.bounds(),
                     position: entity.position,
@@ -442,13 +504,19 @@ impl Game<'_> {
                 m.position = m.position.add_vector(movement);
             }
             Target::Item(i) => {
-                self.dropped[i].position = self.dropped[i].position.add_vector(movement)
+                let item = &mut self.dropped[i];
+                item.position = item.position.add_vector(movement);
+                // Entity.move(MoverType.PISTON): onGround only if the push was down.
+                if movement.y != 0.0 {
+                    item.on_ground = movement.y < 0.0;
+                }
             }
             Target::Boat(i) => self.boats[i].position = self.boats[i].position.add_vector(movement),
             Target::Cart(i) => self.carts[i].position = self.carts[i].position.add_vector(movement),
             Target::ArmorStand(i) => {
                 self.armor_stands[i].position = self.armor_stands[i].position.add_vector(movement)
             }
+            Target::Tnt(i) => self.tnts[i].position = self.tnts[i].position.add_vector(movement),
         }
     }
 
@@ -472,10 +540,7 @@ impl Game<'_> {
                     motion.velocity = piston_push::bounce_velocity(movement, motion.velocity);
                 }
             }
-            Target::Item(i) => {
-                self.dropped[i].velocity =
-                    piston_push::bounce_velocity(movement, self.dropped[i].velocity)
-            }
+            Target::Item(i) => self.dropped[i].piston_slime_bounce(movement),
             Target::Boat(i) => {
                 self.boats[i].velocity =
                     piston_push::bounce_velocity(movement, self.boats[i].velocity)
@@ -487,6 +552,13 @@ impl Game<'_> {
             Target::ArmorStand(i) => {
                 self.armor_stands[i].velocity =
                     piston_push::bounce_velocity(movement, self.armor_stands[i].velocity)
+            }
+            Target::Tnt(i) => {
+                self.tnts[i].velocity =
+                    piston_push::bounce_velocity(movement, self.tnts[i].velocity);
+                // Leave the ground so the next tick does not apply the
+                // on-ground Y * -0.5 friction that cancels the launch.
+                self.tnts[i].on_ground = false;
             }
         }
     }

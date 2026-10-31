@@ -1,7 +1,7 @@
-//! Horizon's extras in the game (`docs/extras.md`); a mod's minimap
-//! (`render.set-minimap`: its tiles, image and HUD) and zoom (`render.set-zoom`) on the camera; clicks
-//! and frame times for mods (`input.clicks-per-second`, `render.frame-stats`).
-//! Each hook does nothing while its extra is off and no mod runs.
+//! Horizon's extras in the game (`docs/extras.md`); a native mod's minimap
+//! (`native_minimap`: its tiles, image and HUD) and zoom (`native_zoom`) on the camera; clicks
+//! and frame times for mods (`native_clicks`, `native_frame_rate`).
+//! Each hook does nothing while its extra is off and no mod uses it.
 use super::{Dim, Game, Screen, native_hooks::NativeMinimap};
 use horizon_client::{
     extras::{Corner, Cps, FpsCounter, fov_target},
@@ -76,8 +76,12 @@ impl Game<'_> {
         (cps, self.extras.mouse)
     }
     /// Auto-reconnect: a connection to `address` as `name` starts.
-    pub(super) fn extras_connecting(&mut self, address: &str, name: &str) {
-        self.extras.reconnect.connecting(address, name);
+    pub(super) fn extras_connecting(&mut self, address: &str, name: &str, lan: bool) {
+        self.extras.reconnect.connecting(address, name, lan);
+    }
+    /// The server this game connected to last.
+    pub(super) fn server_address(&self) -> Option<&str> {
+        self.extras.reconnect.address()
     }
     /// Auto-reconnect: the server let the player in.
     pub(super) fn extras_joined(&mut self) {
@@ -120,11 +124,11 @@ impl Game<'_> {
     /// (the launcher's session file is gone after the first read).
     pub(super) fn extras_retry(&mut self) -> horizon_client::Result<()> {
         if let Some(retry) = self.title.as_mut().and_then(|t| t.due_retry()) {
-            self.connect_server(&retry.address, &retry.name)?;
+            self.connect_server_with_options(&retry.address, &retry.name, None, retry.lan)?;
         }
         Ok(())
     }
-    /// The minimap a mod shows (`render.set-minimap`): its corner, its side
+    /// The minimap a mod shows (`native_minimap`): its corner, its side
     /// in GUI pixels and its view of the player.
     fn minimap_shown(&self) -> Option<(Corner, f32, View)> {
         let p = self.player.as_ref()?;
@@ -142,20 +146,9 @@ impl Game<'_> {
         };
         Some((m.corner, m.size, view))
     }
-    /// The minimap shown: a native mod's (`native_minimap`), else a
-    /// WebAssembly mod's.
+    /// The minimap shown: a native mod's (`native_minimap`).
     fn minimap_wanted(&self) -> Option<NativeMinimap> {
-        if let Some(m) = self.native_minimap_now() {
-            return Some(m);
-        }
-        let m = self.mod_minimap()?;
-        Some(NativeMinimap {
-            corner: m.corner,
-            size: m.size,
-            blocks_per_pixel: m.blocks_per_pixel,
-            rotate: m.rotate,
-            round: m.round,
-        })
+        self.native_minimap_now()
     }
     /// Refresh the minimap's tiles within the frame budget, recompose its
     /// image when the view or a tile changed, and queue the upload.
@@ -209,13 +202,10 @@ impl Game<'_> {
             rgba: self.extras.minimap.image.clone(),
         });
     }
-    /// A mod's zoom in effect (`render.set-zoom`): (factor, smooth, turning
+    /// A mod's zoom in effect (`native_zoom`): (factor, smooth, turning
     /// scale); none is 1.
     fn zoom_now(&self) -> (f32, bool, f64) {
-        if let Some(z) = self.native_zoom_now() {
-            return (z.factor, z.smooth, f64::from(z.turn));
-        }
-        self.mod_zoom().map_or((1.0, true, 1.0), |z| {
+        self.native_zoom_now().map_or((1.0, true, 1.0), |z| {
             (z.factor, z.smooth, f64::from(z.turn))
         })
     }
@@ -240,7 +230,6 @@ impl Game<'_> {
     /// The minimap and mods' corner panels, in the HUD layer (hidden with F1
     /// by the caller). The top left corner gives way to the debug screen.
     pub(super) fn draw_extras(&mut self, batch: &mut HudBatch) {
-        let mod_panels = self.mods.has_panels();
         let map = self.minimap_shown();
         let visible = |corner| !(self.debug && corner == Corner::TopLeft);
         let mut corners = Corners::new(batch.width, batch.height, self.effect_rows_height());
@@ -263,9 +252,6 @@ impl Game<'_> {
                 north,
             };
             extras_hud::draw_minimap(batch, atlas, &mut corners, &look);
-        }
-        if mod_panels {
-            self.draw_mod_panels(batch, &mut corners);
         }
         self.native_hud(batch, &mut corners);
     }

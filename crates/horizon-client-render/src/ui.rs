@@ -79,27 +79,31 @@ pub fn load_metadata(root: &Path) {
     }
     *NINE_SLICE.write().unwrap_or_else(|e| e.into_inner()) = Some(map);
 }
-/// The sprite's nine-slice metadata; without any (no resources loaded), its
-/// GUI size and the widgets' usual borders.
-fn scaling(sprite: &str, r: &Rect) -> NineSlice {
+/// The sprite's nine-slice metadata, when its `.png.mcmeta` has any.
+fn nine_slice_metadata(sprite: &str) -> Option<NineSlice> {
     NINE_SLICE
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .as_ref()
         .and_then(|m| m.get(sprite).copied())
-        .unwrap_or(NineSlice {
-            width: r.w,
-            height: r.h,
-            border: match sprite {
-                "gui/sprites/widget/button"
-                | "gui/sprites/widget/button_highlighted"
-                | "gui/sprites/widget/button_disabled" => [3; 4],
-                "gui/sprites/widget/slider_handle"
-                | "gui/sprites/widget/slider_handle_highlighted" => [2, 2, 2, 3],
-                _ => [1; 4],
-            },
-            stretch_inner: false,
-        })
+}
+/// The sprite's nine-slice metadata; without any (no resources loaded), its
+/// GUI size and the widgets' usual borders.
+fn scaling(sprite: &str, r: &Rect) -> NineSlice {
+    nine_slice_metadata(sprite).unwrap_or(NineSlice {
+        width: r.w,
+        height: r.h,
+        border: match sprite {
+            "gui/sprites/widget/button"
+            | "gui/sprites/widget/button_highlighted"
+            | "gui/sprites/widget/button_disabled" => [3; 4],
+            "gui/sprites/widget/slider_handle" | "gui/sprites/widget/slider_handle_highlighted" => {
+                [2, 2, 2, 3]
+            }
+            _ => [1; 4],
+        },
+        stretch_inner: false,
+    })
 }
 /// The region `[x, y, w, h]` of a sprite `size` GUI pixels large, in its
 /// own units (`TextureAtlasSprite.getU(x / width)`).
@@ -150,6 +154,35 @@ pub fn nine_slice(
 ) {
     if let Some(r) = atlas.sprites.get(sprite) {
         draw_nine_slice(batch, *r, scaling(sprite, r), [x, y, w, h], color);
+    }
+}
+/// `GuiGraphicsExtractor.blitSprite`: a sprite over `w` × `h` as its
+/// `gui.scaling` says, nine-sliced, or stretched when it has no metadata.
+/// (`tile`, which no vanilla sprite uses, isn't read yet: it stretches.)
+pub fn blit_sprite(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    sprite: &str,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    color: u32,
+) {
+    if let Some(r) = atlas.sprites.get(sprite) {
+        draw_sprite(batch, *r, nine_slice_metadata(sprite), [x, y, w, h], color);
+    }
+}
+fn draw_sprite(
+    batch: &mut HudBatch,
+    r: Rect,
+    nine_slice: Option<NineSlice>,
+    [x, y, w, h]: [f32; 4],
+    color: u32,
+) {
+    match nine_slice {
+        Some(n) => draw_nine_slice(batch, r, n, [x, y, w, h], color),
+        None => batch.rect_uv(x, y, w, h, r, color),
     }
 }
 fn draw_nine_slice(
@@ -274,6 +307,13 @@ pub fn text_scaled(
 pub fn hovered(cursor: (f32, f32), x: f32, y: f32, w: f32, h: f32) -> bool {
     cursor.0 >= x && cursor.0 < x + w && cursor.1 >= y && cursor.1 < y + h
 }
+/// `TextAlignment.CENTER.calculateLeft` at the box's integer centre:
+/// `x + w / 2 - width / 2`. Flooring `(w - width) / 2` sits odd-width labels
+/// one pixel left of vanilla when `w` is even.
+fn centered_left(x: f32, w: f32, width: f32) -> f32 {
+    x + (w / 2.0).floor() - (width / 2.0).floor()
+}
+
 /// Centered text with a shadow, scrolled when wider than `w` (AbstractWidget.renderScrollingString).
 pub fn centered_text(
     batch: &mut HudBatch,
@@ -287,14 +327,7 @@ pub fn centered_text(
     let text = text.resolved();
     let width = atlas.font.width_text(&text);
     if width <= w {
-        batch.text_styled(
-            atlas,
-            &text,
-            x + ((w - width) / 2.0).floor(),
-            y,
-            color,
-            true,
-        );
+        batch.text_styled(atlas, &text, centered_left(x, w, width), y, color, true);
     } else {
         // Clip by characters (vanilla scrolls; we show the part that fits).
         let mut shown = Text::empty();
@@ -357,6 +390,7 @@ pub fn slider(
     value: f32,
     hover: bool,
     active: bool,
+    dragging: bool,
 ) {
     let kind = crate::widgets::Kind::Slider {
         value,
@@ -368,17 +402,8 @@ pub fn slider(
         // A controller's D-pad can focus it (Horizon's controller support).
         crate::widgets::target_as([x, y, w, 20.0], kind);
     }
-    let track = if hover && active {
-        "gui/sprites/widget/slider_highlighted"
-    } else {
-        "gui/sprites/widget/slider"
-    };
+    let (track, handle) = slider_sprites(hover, active, dragging);
     nine_slice(batch, atlas, track, x, y, w, 20.0, u32::MAX);
-    let handle = if hover && active {
-        "gui/sprites/widget/slider_handle_highlighted"
-    } else {
-        "gui/sprites/widget/slider_handle"
-    };
     nine_slice(
         batch,
         atlas,
@@ -395,6 +420,21 @@ pub fn slider(
         rgba(160, 160, 160, 255)
     };
     centered_text(batch, atlas, label, x + 2.0, y + 6.0, w - 4.0, color);
+}
+/// Track and handle sprites: the track outline shows only while the slider is
+/// dragged, hovering highlights just the handle.
+fn slider_sprites(hover: bool, active: bool, dragging: bool) -> (&'static str, &'static str) {
+    let track = if dragging {
+        "gui/sprites/widget/slider_highlighted"
+    } else {
+        "gui/sprites/widget/slider"
+    };
+    let handle = if hover && active {
+        "gui/sprites/widget/slider_handle_highlighted"
+    } else {
+        "gui/sprites/widget/slider_handle"
+    };
+    (track, handle)
 }
 /// Slider value for a click at `cx` (AbstractSliderButton.setValueFromMouse).
 pub fn slider_value(x: f32, w: f32, cx: f32) -> f32 {
@@ -888,7 +928,7 @@ pub fn multiline_word_position(value: &str, dir: isize, from: usize) -> usize {
 }
 /// `Character.isWhitespace`: Unicode spaces and line breaks but not the no-break spaces, plus
 /// the ASCII separators U+001C to U+001F.
-fn java_whitespace(c: char) -> bool {
+pub(crate) fn java_whitespace(c: char) -> bool {
     (c.is_whitespace() && !matches!(c, '\u{85}' | '\u{a0}' | '\u{2007}' | '\u{202f}'))
         || ('\u{1c}'..='\u{1f}').contains(&c)
 }
@@ -1044,6 +1084,21 @@ impl EditBox {
         } else {
             self.set_cursor(pos, shift);
         }
+    }
+    /// `MultilineTextField.selectWordAtCursor` on a book page: the word before
+    /// the cursor is selected, its end found past non-whitespace only
+    /// (`getWordEndPosition`).
+    pub fn select_word_at_cursor(&mut self) {
+        let begin = multiline_word_position(&self.value, -1, self.cursor);
+        let end = begin
+            + self
+                .value
+                .chars()
+                .skip(begin)
+                .take_while(|c| !java_whitespace(*c))
+                .count();
+        self.set_cursor(begin, false);
+        self.set_cursor(end, true);
     }
     /// EditBox.onDrag: the selection follows the pointer.
     pub fn drag_to(&mut self, atlas: &HudAtlas, x: f32) {
@@ -1234,6 +1289,9 @@ impl EditBox {
                 batch.text(atlas, "_", cursor_x, ty, color, true);
             }
         }
+        if self.focused {
+            crate::preedit::report_caret(cursor_x, ty, 10.0);
+        }
     }
     /// Character index under GUI x (mouse click).
     pub fn index_at(&self, atlas: &HudAtlas, x: f32) -> usize {
@@ -1294,6 +1352,26 @@ mod tests {
     }
     fn faithful(json: &str) -> NineSlice {
         parse_nine_slice(&serde_json::from_str(json).unwrap()).unwrap()
+    }
+    #[test]
+    fn centered_label_matches_vanilla_integer_center() {
+        // Even box, odd text: (w - width) / 2 floors one pixel left of w/2 - width/2.
+        assert_eq!(centered_left(0.0, 200.0, 9.0), 96.0);
+        assert_eq!(centered_left(0.0, 200.0, 8.0), 96.0);
+        assert_eq!(centered_left(10.0, 196.0, 9.0), 104.0);
+        assert_eq!(centered_left(2.0, 196.0, 7.0), 97.0);
+    }
+    #[test]
+    fn slider_track_is_outlined_only_while_dragged() {
+        let (track, handle) = slider_sprites(true, true, false);
+        assert_eq!(track, "gui/sprites/widget/slider");
+        assert_eq!(handle, "gui/sprites/widget/slider_handle_highlighted");
+        let (track, handle) = slider_sprites(true, true, true);
+        assert_eq!(track, "gui/sprites/widget/slider_highlighted");
+        assert_eq!(handle, "gui/sprites/widget/slider_handle_highlighted");
+        let (track, handle) = slider_sprites(false, true, false);
+        assert_eq!(track, "gui/sprites/widget/slider");
+        assert_eq!(handle, "gui/sprites/widget/slider_handle");
     }
     #[test]
     fn separator_tiles_sample_both_rows_and_clip_the_last_column() {
@@ -1376,6 +1454,40 @@ mod tests {
         let q = quads(&batch);
         assert_eq!(q.len(), 1);
         assert_quad(q[0], ([4.0, 4.0, 54.0, 54.0], [0.0, 0.0, 1.0, 1.0]));
+    }
+    #[test]
+    fn blit_sprite_nine_slices_a_sprite_whose_metadata_says_so() {
+        // Vanilla's tooltip/frame: 100x100, border 10, stretched centre.
+        let n = faithful(
+            r#"{"gui":{"scaling":{"type":"nine_slice","width":100,"height":100,"border":10,"stretch_inner":true}}}"#,
+        );
+        let mut batch = HudBatch::new([640, 480]);
+        draw_sprite(
+            &mut batch,
+            sprite(100, 100),
+            Some(n),
+            [10.0, 10.0, 160.0, 26.0],
+            u32::MAX,
+        );
+        let q = quads(&batch);
+        assert_eq!(q.len(), 9);
+        // The corners keep their 10 pixels instead of stretching with the box.
+        assert_quad(q[0], ([10.0, 10.0, 20.0, 20.0], [0.0, 0.0, 0.1, 0.1]));
+        assert_quad(q[5], ([160.0, 26.0, 170.0, 36.0], [0.9, 0.9, 1.0, 1.0]));
+    }
+    #[test]
+    fn blit_sprite_stretches_a_sprite_without_metadata() {
+        let mut batch = HudBatch::new([640, 480]);
+        draw_sprite(
+            &mut batch,
+            sprite(9, 9),
+            None,
+            [0.0, 0.0, 27.0, 18.0],
+            u32::MAX,
+        );
+        let q = quads(&batch);
+        assert_eq!(q.len(), 1);
+        assert_quad(q[0], ([0.0, 0.0, 27.0, 18.0], [0.0, 0.0, 1.0, 1.0]));
     }
     #[test]
     fn borders_shrink_to_half_the_drawn_size() {

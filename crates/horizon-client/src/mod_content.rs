@@ -15,11 +15,12 @@
 //! The loaders need no mod code, vanilla state ids never move, and with no
 //! content mod the root is the base root itself.
 use crate::{Result, blocks::MAP_COLORS};
-use horizon_mods::content::{Block, Content, Rarity};
+use horizon_core::geometry::{Aabb, Axis, ShapeOp, Vec3, VoxelShape};
+use horizon_mods::content::{Block, Content, CreativeTab, MobEffect, Rarity};
 use horizon_world::nbt::{self, JavaString, Limits, Tag};
 use serde::{Deserialize, Serialize, de};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt, fs,
     ops::Range,
     path::{Path, PathBuf},
@@ -29,6 +30,14 @@ use std::{
 pub struct ContentMod {
     pub id: String,
     pub content: Content,
+}
+
+/// The mods' mob effects in registry order: by id, as items are. Their
+/// network ids follow vanilla's in this order.
+pub fn mob_effects(mods: &[ContentMod]) -> Vec<&MobEffect> {
+    let mut effects: Vec<&MobEffect> = mods.iter().flat_map(|m| &m.content.effects).collect();
+    effects.sort_by(|a, b| a.id.cmp(&b.id));
+    effects
 }
 
 /// JSON with its object keys in file order, so a rewritten table differs
@@ -129,6 +138,11 @@ impl J {
             _ => None,
         }
     }
+    fn remove(&mut self, key: &str) {
+        if let J::Obj(o) = self {
+            o.retain(|(k, _)| k != key);
+        }
+    }
     fn get_mut(&mut self, key: &str) -> Option<&mut J> {
         match self {
             J::Obj(o) => o.iter_mut().find(|(k, _)| k == key).map(|(_, v)| v),
@@ -223,29 +237,158 @@ impl Rename {
     }
 }
 
+// DiscreteVoxelShape.forAllEdges: merge consecutive boundary edges.
+fn shape_edges(shape: &VoxelShape) -> Vec<J> {
+    let sizes = shape.sizes();
+    let mut result = Vec::new();
+    for axis in [2, 0, 1] {
+        let a = (axis + 1) % 3;
+        let b = (axis + 2) % 3;
+        for u in 0..=sizes[a] {
+            for v in 0..=sizes[b] {
+                let mut start = None;
+                for t in 0..=sizes[axis] {
+                    let mut count = 0;
+                    let mut odd = 0;
+                    for du in 0..=1 {
+                        for dv in 0..=1 {
+                            let mut p = [0i32; 3];
+                            p[axis] = t as i32;
+                            p[a] = u as i32 + du - 1;
+                            p[b] = v as i32 + dv - 1;
+                            if shape.is_full(p[0], p[1], p[2]) {
+                                count += 1;
+                                odd ^= du ^ dv;
+                            }
+                        }
+                    }
+                    let edge = count == 1 || count == 3 || (count == 2 && odd == 0);
+                    if edge {
+                        if start.is_none() {
+                            start = Some(t);
+                        }
+                    } else if let Some(first) = start.take() {
+                        let mut from = [0.0; 3];
+                        let mut to = [0.0; 3];
+                        from[a] = shape.coordinates(Axis::ALL[a])[u];
+                        from[b] = shape.coordinates(Axis::ALL[b])[v];
+                        to[a] = from[a];
+                        to[b] = from[b];
+                        from[axis] = shape.coordinates(Axis::ALL[axis])[first];
+                        to[axis] = shape.coordinates(Axis::ALL[axis])[t];
+                        result.push(J::Arr(from.into_iter().chain(to).map(J::f64).collect()));
+                    }
+                }
+            }
+        }
+    }
+    result
+}
+
+fn encode_shape(shape: &VoxelShape) -> Tag {
+    let mut c = nbt::Compound::new();
+    let (min, max) = shape.discrete_bounds();
+    c.insert("canonical".into(), Tag::Byte(0));
+    c.insert("cube".into(), Tag::Byte(i8::from(shape.is_cube())));
+    let axes = shape.cube_coordinate_axes();
+    c.insert(
+        "cube_axes".into(),
+        Tag::Byte((axes[0] as i8) | ((axes[1] as i8) << 1) | ((axes[2] as i8) << 2)),
+    );
+    for (name, axis) in ["x", "y", "z"].into_iter().zip(Axis::ALL) {
+        c.insert(
+            name.into(),
+            Tag::LongArray(
+                shape
+                    .coordinates(axis)
+                    .iter()
+                    .map(|n| n.to_bits() as i64)
+                    .collect(),
+            ),
+        );
+    }
+    let [x, y, z] = shape.sizes();
+    let mut occupied = Vec::with_capacity(x * y * z);
+    for i in 0..x {
+        for j in 0..y {
+            for k in 0..z {
+                occupied.push(u8::from(shape.is_full(i as i32, j as i32, k as i32)));
+            }
+        }
+    }
+    c.insert("occupied".into(), Tag::ByteArray(occupied));
+    c.insert("discrete_min".into(), Tag::IntArray(min.to_vec()));
+    c.insert("discrete_max".into(), Tag::IntArray(max.to_vec()));
+    Tag::Compound(c)
+}
+
 /// A block being added: its declaration and where its states go.
 struct NewBlock<'a> {
     decl: &'a Block,
     rename: Rename,
     /// The template's item, if it has one.
     item: Option<String>,
+    shapes: Option<Vec<VoxelShape>>,
+    default: u32,
 }
 /// An item being added (declared, or a block's).
 struct NewItem {
     rename: Rename,
     max_stack_size: Option<u8>,
     rarity: Option<Rarity>,
+    components: Vec<(String, J)>,
+    crafting_remainder: Option<String>,
 }
 
 struct Plan<'a> {
     blocks: Vec<NewBlock<'a>>,
     items: Vec<NewItem>,
+    /// Every vanilla item id, including items omitted from the search tab.
+    vanilla_items: BTreeSet<String>,
+    effects: Vec<&'a MobEffect>,
     /// Vanilla's state count (the tables' length before).
     states: usize,
     /// Each vanilla block's default state.
     defaults: BTreeMap<String, u32>,
     /// The gameplay rows' sound objects, by block, for `sounds` overrides.
     sounds: BTreeMap<String, J>,
+    /// The mods' creative tabs, in mod order.
+    tabs: Vec<&'a CreativeTab>,
+    /// The mods' English names of their items and blocks (`item.<ns>.<path>`,
+    /// `block.<ns>.<path>`), for the search tab.
+    names: BTreeMap<String, String>,
+}
+
+/// An item's component patch on its entry; `known` holds every type a vanilla item has, so typos fail.
+fn patch_components(
+    entry: &mut J,
+    patch: &[(String, J)],
+    known: &BTreeSet<String>,
+) -> std::result::Result<(), String> {
+    for (key, value) in patch {
+        let kind = key.strip_prefix('!').unwrap_or(key);
+        if !known.contains(kind) {
+            return Err(format!("{kind} is no component a vanilla item has"));
+        }
+        if kind == key {
+            entry.set(key, value.clone());
+        } else {
+            entry.remove(kind);
+        }
+    }
+    Ok(())
+}
+
+/// A declared component patch, as the overlay's JSON.
+fn component_patch(
+    id: &str,
+    components: &BTreeMap<String, serde_json::Value>,
+) -> Result<Vec<(String, J)>> {
+    Ok(components
+        .iter()
+        .map(|(k, v)| Ok((k.clone(), serde_json::from_value(v.clone())?)))
+        .collect::<std::result::Result<_, serde_json::Error>>()
+        .map_err(|e| format!("{id}: {e}"))?)
 }
 
 fn read_json(path: &Path) -> Result<J> {
@@ -254,6 +397,13 @@ fn read_json(path: &Path) -> Result<J> {
 
 impl<'a> Plan<'a> {
     fn new(base: &Path, mods: &'a [ContentMod]) -> Result<Self> {
+        let vanilla_items = match base.join("items.json").exists() {
+            true => match read_json(&base.join("items.json"))? {
+                J::Obj(entries) => entries.into_iter().map(|(id, _)| id).collect(),
+                _ => return Err("items.json is not an object".into()),
+            },
+            false => BTreeSet::new(),
+        };
         let mut facts = read_json(&base.join("facts.json"))?;
         let names: Vec<String> = match facts.at("states") {
             Some(J::Arr(states)) => states
@@ -297,6 +447,104 @@ impl<'a> Plan<'a> {
                 let states = range(&decl.template).ok_or_else(|| {
                     format!("{}: template {} is not a block", decl.id, decl.template)
                 })?;
+                let shapes = if let Some(spec) = &decl.shapes {
+                    let Some(J::Arr(rows)) = facts.get("states") else {
+                        unreachable!()
+                    };
+                    let mut used = BTreeSet::new();
+                    let mut out = Vec::new();
+                    for id in states.clone() {
+                        let J::Arr(row) = &rows[id as usize] else {
+                            unreachable!()
+                        };
+                        let Some(J::Str(value)) = row
+                            .get(4)
+                            .and_then(|x| x.get("properties"))
+                            .and_then(|x| x.get(&spec.property))
+                        else {
+                            return Err(format!(
+                                "{}: template state lacks property {}",
+                                decl.id, spec.property
+                            )
+                            .into());
+                        };
+                        let boxes = spec.values.get(value).ok_or_else(|| {
+                            format!("{}: no shape for {}={value}", decl.id, spec.property)
+                        })?;
+                        used.insert(value.as_str());
+                        let mut shape = VoxelShape::empty();
+                        for b in boxes {
+                            let part = VoxelShape::from_box(Aabb::new(
+                                Vec3::new(b[0], b[1], b[2]),
+                                Vec3::new(b[3], b[4], b[5]),
+                            ))?;
+                            shape = shape.join_unoptimized(&part, ShapeOp::OR)?;
+                        }
+                        out.push(shape);
+                    }
+                    if used.len() != spec.values.len() {
+                        return Err(format!(
+                            "{}: shape values include an unknown {} value",
+                            decl.id, spec.property
+                        )
+                        .into());
+                    }
+                    Some(out)
+                } else {
+                    None
+                };
+                let mut default = *defaults.get(&decl.template).ok_or_else(|| {
+                    format!(
+                        "{}: template {} has no default state",
+                        decl.id, decl.template
+                    )
+                })?;
+                if !decl.default_state.is_empty() {
+                    let Some(J::Arr(rows)) = facts.get("states") else {
+                        unreachable!()
+                    };
+                    let properties = |id: u32| -> Option<&J> {
+                        let J::Arr(row) = rows.get(id as usize)? else {
+                            return None;
+                        };
+                        row.get(4)?.get("properties")
+                    };
+                    let mut wanted = properties(default).cloned().ok_or_else(|| {
+                        format!("{}: template default has no state properties", decl.id)
+                    })?;
+                    for (key, value) in &decl.default_state {
+                        if wanted.get(key).is_none() {
+                            return Err(format!(
+                                "{}: unknown state property {key} on {}",
+                                decl.id, decl.template
+                            )
+                            .into());
+                        }
+                        wanted.set(key, J::Str(value.clone()));
+                    }
+                    let matches: Vec<u32> = states
+                        .clone()
+                        .filter(|id| {
+                            properties(*id).is_some_and(|p| {
+                                let (J::Obj(a), J::Obj(b)) = (p, &wanted) else {
+                                    return false;
+                                };
+                                a.len() == b.len() && b.iter().all(|(k, v)| p.get(k) == Some(v))
+                            })
+                        })
+                        .collect();
+                    if matches.len() != 1 {
+                        return Err(format!(
+                            "{}: default_state {:?} matches {} states of {}",
+                            decl.id,
+                            decl.default_state,
+                            matches.len(),
+                            decl.template
+                        )
+                        .into());
+                    }
+                    default = matches[0];
+                }
                 let mut rename = Rename::new(&decl.template, &decl.id);
                 rename.first = next;
                 next += states.len() as u32;
@@ -311,6 +559,8 @@ impl<'a> Plan<'a> {
                     decl,
                     rename,
                     item: None,
+                    shapes,
+                    default,
                 });
             }
         }
@@ -356,6 +606,8 @@ impl<'a> Plan<'a> {
                     rename: Rename::new(item, &b.decl.id),
                     max_stack_size: None,
                     rarity: None,
+                    components: component_patch(&b.decl.id, &b.decl.components)?,
+                    crafting_remainder: None,
                 });
             }
         }
@@ -365,15 +617,37 @@ impl<'a> Plan<'a> {
                     rename: Rename::new(&i.template, &i.id),
                     max_stack_size: i.max_stack_size,
                     rarity: i.rarity,
+                    components: component_patch(&i.id, &i.components)?,
+                    crafting_remainder: i.crafting_remainder.clone(),
                 });
+            }
+        }
+        // Block items and standalone items share the same registry. Sort
+        // them together by mod ID and entry name before assigning IDs.
+        items.sort_by(|a, b| a.rename.to.cmp(&b.rename.to));
+        let mut tabs = Vec::new();
+        let mut lang = BTreeMap::new();
+        for m in &sorted {
+            tabs.extend(m.content.creative_tabs.iter());
+            for ns in &m.content.namespaces {
+                let Ok(bytes) = m.content.file(&format!("assets/{ns}/lang/en_us.json")) else {
+                    continue;
+                };
+                if let Ok(map) = serde_json::from_slice::<BTreeMap<String, String>>(&bytes) {
+                    lang.extend(map);
+                }
             }
         }
         Ok(Plan {
             blocks,
             items,
+            vanilla_items,
+            effects: mob_effects(mods),
             states: names.len(),
             defaults,
             sounds,
+            tabs,
+            names: lang,
         })
     }
 
@@ -409,6 +683,34 @@ impl<'a> Plan<'a> {
                         row.set("item", J::Str("minecraft:air".into()));
                     }
                     self.override_gameplay(b, &mut row);
+                    if let Some(shapes) = &b.shapes {
+                        let shape = &shapes[i];
+                        let boxes = shape
+                            .boxes()
+                            .iter()
+                            .map(|b| {
+                                J::Arr(
+                                    [
+                                        b.min(Axis::X),
+                                        b.min(Axis::Y),
+                                        b.min(Axis::Z),
+                                        b.max(Axis::X),
+                                        b.max(Axis::Y),
+                                        b.max(Axis::Z),
+                                    ]
+                                    .into_iter()
+                                    .map(J::f64)
+                                    .collect(),
+                                )
+                            })
+                            .collect();
+                        row.set("outline", J::Arr(boxes));
+                        row.set("outline_edges", J::Arr(shape_edges(shape)));
+                        row.set(
+                            "full_collision",
+                            J::Bool(!shape.join_is_not_empty(&VoxelShape::block(), ShapeOp::XOR)?),
+                        );
+                    }
                 }
                 list.push(row);
             }
@@ -458,7 +760,18 @@ impl<'a> Plan<'a> {
 
     /// Adds each new item's copy of its template's entry to a map by name;
     /// `components` applies the overrides (items.json).
-    fn items(&self, map: &mut J, components: bool) {
+    fn items(&self, map: &mut J, components: bool) -> Result<()> {
+        let known: BTreeSet<String> = match map {
+            J::Obj(entries) if components => entries
+                .iter()
+                .filter_map(|(_, v)| match v {
+                    J::Obj(c) => Some(c.iter().map(|(k, _)| k.clone())),
+                    _ => None,
+                })
+                .flatten()
+                .collect(),
+            _ => BTreeSet::new(),
+        };
         for i in &self.items {
             let Some(v) = map.get(&i.rename.from) else {
                 continue;
@@ -478,9 +791,25 @@ impl<'a> Plan<'a> {
                     };
                     v.set("minecraft:rarity", J::Str(r.into()));
                 }
+                patch_components(&mut v, &i.components, &known)
+                    .map_err(|e| format!("{}: {e}", i.rename.to))?;
             }
             map.set(&i.rename.to, v);
         }
+        if components {
+            for i in &self.items {
+                if let Some(rest) = &i.crafting_remainder
+                    && map.get(rest).is_none()
+                {
+                    return Err(format!(
+                        "{}: crafting_remainder {rest:?} is not an item",
+                        i.rename.to
+                    )
+                    .into());
+                }
+            }
+        }
+        Ok(())
     }
 
     /// One JSON table, rewritten.
@@ -496,12 +825,13 @@ impl<'a> Plan<'a> {
                 states(doc, "states", false, false)?;
                 let defaults = doc.at("defaults").ok_or("no defaults")?;
                 for b in &self.blocks {
-                    let default = self.defaults[&b.decl.template];
+                    let default = b.default;
                     let id = b.rename.id(default).ok_or("a default outside its block")?;
                     defaults.set(&b.decl.id, J::Num(id.into()));
                 }
             }
             "gameplay-facts.json" => states(doc, "states", false, true)?,
+            "creative-inventory.json" => self.creative_tabs(doc)?,
             "block-behaviours.json" => {
                 states(doc, "states", false, false)?;
                 let Some(J::Arr(blocks)) = doc.at("blocks") else {
@@ -521,7 +851,7 @@ impl<'a> Plan<'a> {
                         blocks.push(v);
                     }
                 }
-                self.items(doc.at("items").ok_or("no items")?, false);
+                self.items(doc.at("items").ok_or("no items")?, false)?;
                 for odds in ["fire/burnOdds", "fire/igniteOdds"] {
                     if let Some(map) = doc.at(odds) {
                         self.names(map, false);
@@ -537,19 +867,33 @@ impl<'a> Plan<'a> {
                     self.names(map, false);
                 }
             }
-            "items.json" => self.items(doc, true),
+            "items.json" => self.items(doc, true)?,
             "registries.json" => {
-                // Network ids: the game and its server map items and blocks through
-                // this report, so new ones get the ids after vanilla's, in plan order.
+                // Network ids: the game and its server map items, blocks and mob
+                // effects through this report, so new ones get the ids after
+                // vanilla's, in plan order. A block entity type for each block too,
+                // named after it: a mod names its types only when one is made
+                // (`native_block_entity`), and the chunk packet carries the type of
+                // each block's entity.
                 let new_items = self.items.iter().map(|i| i.rename.to.clone());
-                let new_blocks = self.blocks.iter().map(|b| b.decl.id.clone());
-                for (registry, names) in [
+                let new_blocks: Vec<_> = self.blocks.iter().map(|b| b.decl.id.clone()).collect();
+                let mut registries = vec![
                     ("minecraft:item", new_items.collect::<Vec<_>>()),
-                    ("minecraft:block", new_blocks.collect()),
-                ] {
+                    ("minecraft:block", new_blocks.clone()),
+                    ("minecraft:block_entity_type", new_blocks),
+                ];
+                if !self.effects.is_empty() {
+                    let new_effects = self.effects.iter().map(|e| e.id.clone());
+                    registries.push(("minecraft:mob_effect", new_effects.collect()));
+                }
+                for (registry, names) in registries {
                     let Some(J::Obj(entries)) =
                         doc.get_mut(registry).and_then(|r| r.get_mut("entries"))
                     else {
+                        // A report without block entity types gets none.
+                        if registry == "minecraft:block_entity_type" {
+                            continue;
+                        }
                         return Err(format!("no {registry} entries").into());
                     };
                     let next = entries
@@ -584,6 +928,14 @@ impl<'a> Plan<'a> {
                 if let Some(J::Arr(ids)) = doc.at("by_registry/minecraft:block/ids") {
                     ids.extend(new_blocks());
                 }
+                // `/effect` and the mob_effect resource arguments.
+                let new_effects = || self.effects.iter().map(|e| J::Str(e.id.clone()));
+                if let Some(J::Arr(ids)) = doc.at("effects") {
+                    ids.extend(new_effects());
+                }
+                if let Some(J::Arr(ids)) = doc.at("by_registry/minecraft:mob_effect/ids") {
+                    ids.extend(new_effects());
+                }
             }
             "mob-data.json" => states(doc, "states", false, false)?,
             "worldgen/block_flags.json" => states(doc, "", false, false)?,
@@ -599,6 +951,98 @@ impl<'a> Plan<'a> {
         Ok(())
     }
 
+    fn collision_shapes(&self, tag: &mut Tag) -> Result<()> {
+        let Tag::Compound(root) = tag else {
+            return Err("collision table is not a compound".into());
+        };
+        let mut indices = Vec::new();
+        let Some(Tag::List(entries)) = root.get_mut(&JavaString::from("shapes")) else {
+            return Err("collision table has no shapes".into());
+        };
+        for block in &self.blocks {
+            if let Some(shapes) = &block.shapes {
+                for (i, shape) in shapes.iter().enumerate() {
+                    let id = entries.len() as i32;
+                    entries.push(encode_shape(shape));
+                    indices.push((block.rename.first as usize + i, id));
+                }
+            }
+        }
+        let Some(Tag::IntArray(mapping)) = root.get_mut(&JavaString::from("cached_shapes")) else {
+            return Err("collision table has no mapping".into());
+        };
+        for (state, id) in indices {
+            mapping[state] = id;
+        }
+        Ok(())
+    }
+
+    /// The creative inventory (`creative-inventory.json`): each mod tab after
+    /// vanilla's, ten to a page as NeoForge pages them (the top row's first
+    /// five columns, then the bottom row's), with only the items the game has;
+    /// the mods' new items join the search tab under their English names.
+    fn creative_tabs(&self, doc: &mut J) -> Result<()> {
+        let Some(J::Arr(tabs)) = doc.at("tabs") else {
+            return Err("no tabs".into());
+        };
+        let stack = |id: &str| J::Str(format!("{{count:1,id:\"{id}\"}}"));
+        // Blocks' items are among `items` already.
+        let new: Vec<&str> = self.items.iter().map(|i| i.rename.to.as_str()).collect();
+        let search = tabs
+            .iter()
+            .position(|t| matches!(t.get("type"), Some(J::Str(k)) if k == "SEARCH"));
+        let known = |id: &str| new.contains(&id) || self.vanilla_items.contains(id);
+        for (i, tab) in self.tabs.iter().enumerate() {
+            let slot = i % 10;
+            let mut row = J::Obj(Vec::new());
+            row.set("id", J::Str(tab.id.clone()));
+            row.set("type", J::Str("CATEGORY".into()));
+            row.set(
+                "row",
+                J::Str(if slot < 5 { "TOP" } else { "BOTTOM" }.into()),
+            );
+            row.set("column", J::Num((slot % 5).into()));
+            row.set("page", J::Num((1 + i / 10).into()));
+            row.set("title", J::Str(tab.title.clone()));
+            row.set("icon", stack(&tab.icon));
+            row.set("visible", J::Bool(true));
+            let items = tab
+                .items
+                .iter()
+                .filter(|id| known(id))
+                .map(|id| stack(id))
+                .collect();
+            row.set("items", J::Arr(items));
+            tabs.push(row);
+        }
+        if let Some(search) = search {
+            let name = |id: &str| {
+                let (ns, path) = id.split_once(':').unwrap_or(("", id));
+                ["item", "block"]
+                    .iter()
+                    .find_map(|kind| self.names.get(&format!("{kind}.{ns}.{path}")))
+                    .cloned()
+                    .unwrap_or_else(|| path.to_owned())
+            };
+            let tab = &mut tabs[search];
+            for (key, add) in [
+                ("items", new.iter().map(|id| stack(id)).collect::<Vec<_>>()),
+                (
+                    "lines",
+                    new.iter()
+                        .map(|id| J::Arr(vec![J::Str(name(id))]))
+                        .collect(),
+                ),
+                // shortcut: a mod item's tags aren't searched by (#tag) yet.
+                ("tags", new.iter().map(|_| J::Arr(Vec::new())).collect()),
+            ] {
+                if let Some(J::Arr(list)) = tab.get_mut(key) {
+                    list.extend(add);
+                }
+            }
+        }
+        Ok(())
+    }
     /// One NBT table: `states` lists, `cached_shapes` arrays and `blocks`
     /// compounds, wherever they are.
     fn nbt(&self, tag: &mut Tag) {
@@ -649,8 +1093,9 @@ impl<'a> Plan<'a> {
 }
 
 /// The JSON and NBT tables rewritten for new blocks and items.
-const JSON_TABLES: [&str; 14] = [
+const JSON_TABLES: [&str; 15] = [
     "facts.json",
+    "creative-inventory.json",
     "registries.json",
     "gameplay-facts.json",
     "block-behaviours.json",
@@ -698,6 +1143,29 @@ const WORLDGEN_BUNDLES: [(&str, &str); 6] = [
     ("placed_feature", "worldgen/placed_features.json"),
 ];
 
+/// The registry of `command-registries.json` that each bundle's ids join,
+/// for the commands that suggest them (`/locate`, `/place`).
+const COMMAND_REGISTRIES: [(&str, &str); 6] = [
+    ("worldgen/structures.json", "minecraft:worldgen/structure"),
+    (
+        "worldgen/structure_sets.json",
+        "minecraft:worldgen/structure_set",
+    ),
+    (
+        "worldgen/template_pools.json",
+        "minecraft:worldgen/template_pool",
+    ),
+    (
+        "worldgen/processor_lists.json",
+        "minecraft:worldgen/processor_list",
+    ),
+    ("worldgen/features.json", "minecraft:worldgen/feature"),
+    (
+        "worldgen/placed_features.json",
+        "minecraft:worldgen/placed_feature",
+    ),
+];
+
 /// A mod file that adds to a worldgen bundle: (bundle, id).
 fn worldgen_entry(file: &str) -> Option<(&'static str, String)> {
     let (ns, rest) = file.strip_prefix("data/")?.split_once("/worldgen/")?;
@@ -706,24 +1174,29 @@ fn worldgen_entry(file: &str) -> Option<(&'static str, String)> {
     Some((bundle, format!("{ns}:{}", path.strip_suffix(".json")?)))
 }
 
-/// The key of a mod's structure set or template pool file that adds its
-/// entries to other sets or pools (vanilla's, another mod's) instead of
-/// being one of its own. Vanilla data never has it.
+/// The key of a mod's structure set, template pool or processor list file
+/// that adds its entries to other sets, pools or lists (vanilla's, another
+/// mod's) instead of being one of its own. Vanilla data never has it.
 const ADD_TO: &str = "horizon:add_to";
+/// An addition's place among the others (lower first; 1000 by default), as
+/// Lithostitched's modifiers' `priority`.
+const PRIORITY: &str = "horizon:priority";
 /// The bundles a mod may add to, and the list each entry goes into.
-const ADDABLE: [(&str, &str); 2] = [
+const ADDABLE: [(&str, &str); 3] = [
     ("worldgen/structure_sets.json", "structures"),
     ("worldgen/template_pools.json", "elements"),
+    ("worldgen/processor_lists.json", "processors"),
 ];
 
 /// A mod file's additions (`horizon:add_to`): its entries appended to the
-/// list of each set or pool it names, as lithostitched's
-/// `add_structure_set_entries` and `add_template_pool_elements` do for
-/// NeoForge and Fabric packs.
+/// list of each set, pool or processor list it names, as Lithostitched's
+/// `add_structure_set_entries`, `add_template_pool_elements` and
+/// `add_processor_list_processors` do for NeoForge and Fabric packs.
 struct Addition {
     targets: Vec<String>,
     list: &'static str,
     entries: Vec<J>,
+    priority: i64,
 }
 impl Addition {
     /// What a mod file of `bundle` adds, if it is an addition file.
@@ -753,10 +1226,16 @@ impl Addition {
         let Some(J::Arr(entries)) = doc.get(list) else {
             return Err(format!("{ADD_TO} without a {list} list").into());
         };
+        let priority = match doc.get(PRIORITY) {
+            None => 1000,
+            Some(J::Num(n)) => n.as_i64().ok_or(format!("{PRIORITY}: not an integer"))?,
+            Some(_) => return Err(format!("{PRIORITY}: not an integer").into()),
+        };
         Ok(Some(Self {
             targets,
             list,
             entries: entries.clone(),
+            priority,
         }))
     }
     /// Appends the entries to each target in the bundle `doc` (id → the
@@ -837,6 +1316,9 @@ impl Overlay<'_> {
         fs::write(path, bytes)?;
         Ok(())
     }
+}
+fn out_path(overlay: &Overlay<'_>, rel: &str) -> PathBuf {
+    overlay.out.join(rel)
 }
 #[cfg(unix)]
 fn link(target: &Path, at: &Path) -> std::io::Result<()> {
@@ -1037,6 +1519,9 @@ fn tables(base: &Path, plan: &Plan, overlay: &Overlay<'_>) -> Result<()> {
             let (mut named, _) = nbt::read_named(&fs::read(&path)?, Limits::tables())
                 .map_err(|e| format!("{name}: {e}"))?;
             plan.nbt(&mut named.tag);
+            if name == "cached-collision.nbt" || name == "worldgen/blocks/cached-collision.nbt" {
+                plan.collision_shapes(&mut named.tag)?;
+            }
             nbt::write_named(&named, Limits::tables()).map_err(|e| format!("{name}: {e}"))?
         };
         overlay.write(name, &bytes)
@@ -1192,7 +1677,11 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
         overlay.write(BIOME_TAGS, &serde_json::to_vec(&doc)?)?;
     }
     // Structures and the pools, sets, processors and features they use, then
-    // what mods add to sets and pools, in mod and file order.
+    // what mods add to sets, pools and lists, by priority, then in mod and
+    // file order.
+    for list in additions.values_mut() {
+        list.sort_by_key(|a| a.priority);
+    }
     for (bundle, entries) in &worldgen {
         if !base.join(bundle).exists() {
             continue;
@@ -1207,6 +1696,32 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
                 .map_err(|e| format!("{bundle}: {e}"))?;
         }
         overlay.write(bundle, &serde_json::to_vec(&doc)?)?;
+    }
+    // The commands suggest ids from `command-registries.json`: add the
+    // structures, pools, sets and features the mods bring.
+    let registries = out_path(&overlay, "command-registries.json");
+    if let Ok(mut doc) = read_json(&registries) {
+        // Registry names hold `/`, so each key is looked up by itself.
+        let mut add = |keys: &[&str], new: &[J]| {
+            let found = keys.iter().try_fold(&mut doc, |j, k| j.get_mut(k));
+            if let Some(J::Arr(ids)) = found {
+                for id in new {
+                    if !ids.contains(id) {
+                        ids.push(id.clone());
+                    }
+                }
+            }
+        };
+        for (bundle, registry) in COMMAND_REGISTRIES {
+            let new: Vec<J> = worldgen
+                .get(bundle)
+                .into_iter()
+                .flatten()
+                .map(|(id, _)| J::Str(id.clone()))
+                .collect();
+            add(&["by_registry", registry, "ids"], &new);
+        }
+        overlay.write("command-registries.json", &serde_json::to_vec(&doc)?)?;
     }
     // A block without its own blockstate looks like its template, so every
     // state still has a model.
@@ -1228,6 +1743,22 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
         .collect();
     namespaces.sort();
     overlay.write(MARKER, &serde_json::to_vec(&namespaces)?)?;
+    let remainders: BTreeMap<&str, &str> = plan
+        .items
+        .iter()
+        .filter_map(|i| Some((i.rename.to.as_str(), i.crafting_remainder.as_deref()?)))
+        .collect();
+    if !remainders.is_empty() {
+        overlay.write(
+            horizon_items::items::MOD_CRAFT_REMAINDERS,
+            &serde_json::to_vec(&remainders)?,
+        )?;
+    }
+    // clients must agree on the block states and the items' and mob effects'
+    // network ids.
+    if !plan.blocks.is_empty() || !plan.items.is_empty() || !plan.effects.is_empty() {
+        overlay.write(crate::content_identity::MARKER, b"1")?;
+    }
     overlay.write(WARNINGS, warnings.join("\n").as_bytes())?;
     Ok(warnings)
 }

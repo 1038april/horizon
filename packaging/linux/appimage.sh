@@ -6,7 +6,7 @@
 #
 #   packaging/linux/appimage.sh BINARY VERSION OUTDIR
 #
-# Needs appimagetool: the AppImage project's, 1.9.1 by default, downloaded here and checked against
+# Needs patchelf, and appimagetool: the AppImage project's, 1.9.1 by default, downloaded here and checked against
 # its SHA-256 ($APPIMAGETOOL names one already on the machine, as the .dmg build takes $DMGBUILD).
 # It runs without FUSE (`--appimage-extract-and-run`), so a runner needs none.
 #
@@ -37,12 +37,13 @@ cp -R "$here/../icons/hicolor/." "$appdir/usr/share/icons/hicolor/"
 cp "$here/../icons/hicolor/512x512/apps/horizon.png" "$appdir/horizon.png"
 ln -s horizon.png "$appdir/.DirIcon"
 
-# Runs the packaged binary with the packaged libraries, the machine's own after them.
+# Runs the packaged binary. It finds the packaged libraries through its own run path (set below),
+# not LD_LIBRARY_PATH, which every program it starts (the game, a browser, a file manager) would
+# inherit and load the launcher's libraries with.
 cat > "$appdir/AppRun" <<'EOF'
 #!/bin/sh
-# AppRun: the launcher, with the libraries packaged beside it.
+# AppRun: the launcher; its libraries are beside it (usr/lib, through its run path).
 here=$(dirname "$(readlink -f "$0")")
-export LD_LIBRARY_PATH="$here/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 exec "$here/usr/bin/horizon-launcher" "$@"
 EOF
 chmod 755 "$appdir/AppRun"
@@ -86,9 +87,18 @@ while [[ ${#todo[@]} -gt 0 ]]; do
   done < <(ldd "$elf")
 done
 
+# Each packaged file looks for the others beside the launcher: the binary in ../lib, a library in
+# its own folder. A run path is the file's own, so nothing the launcher starts inherits it.
+command -v patchelf > /dev/null || { echo "error: patchelf is needed (apt install patchelf)" >&2; exit 1; }
+patchelf --set-rpath '$ORIGIN/../lib' "$appdir/usr/bin/horizon-launcher"
+for lib in "$appdir"/usr/lib/*.so*; do
+  if [[ -e "$lib" ]]; then patchelf --set-rpath '$ORIGIN' "$lib"; fi
+done
+
 # Everything the launcher links is either beside it or the machine's: a library missing on the
-# machine that builds this would make an image that starts nowhere.
-missing=$(LD_LIBRARY_PATH="$appdir/usr/lib" ldd "$appdir/usr/bin/horizon-launcher" | grep "not found" || true)
+# machine that builds this would make an image that starts nowhere. No LD_LIBRARY_PATH: the run
+# paths alone must find them.
+missing=$(ldd "$appdir/usr/bin/horizon-launcher" | grep "not found" || true)
 [[ -z "$missing" ]] || {
   echo "error: the launcher links libraries this machine does not have:" >&2
   echo "$missing" >&2

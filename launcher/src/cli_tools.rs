@@ -11,9 +11,13 @@ use serde_json::{json, Map, Value};
 /// mcp.rs runs in the session.
 const NOT_TOOLS: &[&str] = &[
     "mcp",
+    "completions",
     "agent-config",
     "no-ai",
     "native-build",
+    // They install native code nobody reviewed, and say it first: the player's decision.
+    "mods add-github",
+    "mods update-github",
     "play",
     "server",
     "account sign-in",

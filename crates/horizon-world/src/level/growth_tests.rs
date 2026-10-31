@@ -1,5 +1,6 @@
-//! Sapling growth and bone meal through live feature placement. Needs the
-//! prepared client resources and worldgen bundle (skipped when absent).
+//! Sapling growth, bone meal and templates through live feature placement.
+//! Needs the prepared client resources and worldgen bundle (skipped when
+//! absent).
 use super::*;
 use crate::{chunk::BlockState, worldgen::generator::GeneratorData, worldgen::live::LiveFeatures};
 use std::{
@@ -243,6 +244,35 @@ fn lone_dark_oak_sapling_cannot_grow() {
     assert!(!w.bone_meal(BlockPos::new(0, 64, 0)));
 }
 #[test]
+fn bone_meal_on_a_client_succeeds_only_where_its_level_can_tell() {
+    let Some(f) = fixture() else { return };
+    let mut w = World::new(f, 1);
+    w.floor("grass_block", 4);
+    let sapling = w.id("oak_sapling", &[]);
+    w.put(BlockPos::new(0, 64, 0), sapling);
+    w.put(BlockPos::new(1, 64, 0), w.id("wheat", &[("age", "0")]));
+    w.put(BlockPos::new(2, 64, 0), w.id("wheat", &[("age", "7")]));
+    w.put(BlockPos::new(3, 64, 0), w.id("water", &[("level", "0")]));
+    let before = w.level.blocks.clone();
+    let mut client = |pos| {
+        f.behaviours
+            .bone_meal_succeeds_on_client(&mut w.level, pos, Direction::Up)
+    };
+    // SaplingBlock.isValidBonemealTarget needs a ServerLevel: the client passes.
+    assert!(!client(BlockPos::new(0, 64, 0)));
+    // CropBlock: below its max age.
+    assert!(client(BlockPos::new(1, 64, 0)));
+    assert!(!client(BlockPos::new(2, 64, 0)));
+    // GrassBlock with air above; under water, growWaterPlant above its top face.
+    assert!(client(BlockPos::new(-1, 63, 0)));
+    assert!(client(BlockPos::new(3, 63, 0)));
+    assert!(!client(BlockPos::new(-1, 62, 0)));
+    assert_eq!(w.level.blocks, before, "nothing grows on a client");
+    assert!(w.level.events.is_empty());
+    // The server's growCrop takes the sapling.
+    assert!(w.bone_meal(BlockPos::new(0, 64, 0)));
+}
+#[test]
 fn azalea_and_mangrove_grow() {
     let Some(f) = fixture() else { return };
     for (block, soil, log) in [
@@ -402,6 +432,77 @@ fn snowy_biomes_freeze_and_snow() {
     assert_eq!(rain.kind, PrecipitationKind::Rain);
 }
 
+#[test]
+fn a_template_with_entities_and_no_blocks_places_them() {
+    use crate::{
+        nbt::{Compound, JavaString, Tag},
+        worldgen::structure::{EntityInfo, Mirror, Rotation, StructureTemplate, save_nbt},
+    };
+    let Some(f) = fixture() else { return };
+    let resources = f
+        .behaviours
+        .live_features()
+        .and_then(|features| features.structure_resources())
+        .expect("structure resources");
+    let mut pig = Compound::new();
+    pig.insert("id".into(), Tag::String("minecraft:pig".into()));
+    let pig = EntityInfo {
+        pos: [0.5, 0.0, 0.5],
+        block_pos: [0, 0, 0],
+        nbt: pig,
+    };
+    // StructureTemplate.placeInWorld places when there are blocks, or entities
+    // it does not ignore.
+    for (entities, ignore_entities, expected) in [
+        (vec![pig.clone()], false, true),
+        (vec![pig], true, false),
+        (vec![], false, false),
+    ] {
+        let mut w = World::new(f, 0);
+        let tag = save_nbt(
+            f.registry,
+            &resources.transforms,
+            [1, 1, 1],
+            Vec::new(),
+            &entities,
+            horizon_core::version::DATA_VERSION,
+        );
+        let template = StructureTemplate::from_nbt(&tag, f.registry, &resources.transforms);
+        let settings = TemplateSettings {
+            mirror: Mirror::None,
+            rotation: Rotation::None,
+            ignore_entities,
+            known_shape: false,
+            integrity: 1.0,
+            seed: 0,
+            flags: flags::UPDATE_CLIENTS,
+        };
+        let (placed, spawned) = f
+            .behaviours
+            .place_template(
+                &mut w.level,
+                &mut w.ticks,
+                &template,
+                BlockPos::new(3, 64, -2),
+                settings,
+            )
+            .expect("structure resources");
+        let what = format!("{} entities, ignored {ignore_entities}", entities.len());
+        assert_eq!(placed, expected, "{what}");
+        assert_eq!(spawned.len(), usize::from(expected), "{what}");
+        if let Some(nbt) = spawned.first() {
+            assert_eq!(
+                nbt.get(&JavaString::from("id")),
+                Some(&Tag::String("minecraft:pig".into()))
+            );
+            let pos = [3.5, 64.0, -1.5].map(|v: f64| Tag::Double(v.to_bits()));
+            assert_eq!(
+                nbt.get(&JavaString::from("Pos")),
+                Some(&Tag::List(pos.to_vec()))
+            );
+        }
+    }
+}
 #[test]
 fn eyeblossoms_open_at_night_and_wake_neighbours() {
     let Some(f) = fixture() else { return };
