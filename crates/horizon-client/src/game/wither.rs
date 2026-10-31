@@ -193,8 +193,10 @@ impl Game<'_> {
             None => {}
         }
         self.combat.explosion_owner = owner;
+        self.combat.explosion_in_water = p.touching_water;
         let result = self.with_hive_emptying_blast(|g| g.explode(at, 1.0));
         self.combat.explosion_owner = None;
+        self.combat.explosion_in_water = false;
         result
     }
 }

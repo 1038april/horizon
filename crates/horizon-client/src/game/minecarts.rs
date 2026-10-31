@@ -708,7 +708,9 @@ impl Game<'_> {
         // MinecartTNT.isPrimed (fuse > -1): a cart that ran into a wall or
         // fell unprimed blows rails up like any blast.
         self.combat.rail_proof_blast = c.fuse >= 0;
+        self.combat.explosion_in_water = self.bounds_in_water(c.bounds());
         let _ = self.with_hive_emptying_blast(|g| g.server_explode(at, power, interaction, false));
+        self.combat.explosion_in_water = false;
         self.combat.rail_proof_blast = false;
     }
     /// `AbstractMinecart.push` from each player walking into a cart

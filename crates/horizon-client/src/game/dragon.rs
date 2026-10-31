@@ -962,7 +962,14 @@ impl Game<'_> {
             self.fight.blast_by = by;
             // EndCrystal.hurtServer: ExplosionInteraction.BLOCK.
             let interaction = self.destroy_type("block_explosion_drop_decay");
+            // EndCrystal is 2 by 2 blocks: its box decides `isInWater`.
+            let (x, y, z) = (c.position.x, c.position.y, c.position.z);
+            self.combat.explosion_in_water = self.bounds_in_water(Aabb::new(
+                Vec3::new(x - 1.0, y, z - 1.0),
+                Vec3::new(x + 1.0, y + 2.0, z + 1.0),
+            ));
             let _ = self.server_explode(at, 6.0, interaction, false);
+            self.combat.explosion_in_water = false;
             self.fight.blast_by = None;
         }
         if respawn_crystal {

@@ -1628,8 +1628,14 @@ impl Game<'_> {
                     owner,
                 } => self.add_fangs(at, yaw, delay, owner),
                 MobEvent::Shoot(..) => {}
-                MobEvent::ExplosionSource { mob, charged, name } => {
+                MobEvent::ExplosionSource {
+                    mob,
+                    charged,
+                    name,
+                    in_water,
+                } => {
                     self.combat.explosion_source = Some(mob);
+                    self.combat.explosion_in_water = in_water;
                     // The creeper causes the blast's damage, but it is out of
                     // the mob list already: its name comes with the event.
                     self.combat.exploded.push((mob, name));
@@ -1682,6 +1688,7 @@ impl Game<'_> {
                     };
                     self.combat.explosion_source = None;
                     self.combat.explosion_source_named = false;
+                    self.combat.explosion_in_water = false;
                     self.combat.explosion_cause = None;
                     result?
                 }
@@ -4128,12 +4135,14 @@ impl Game<'_> {
                     }
                 }
                 self.combat.explosion_owner = owner;
+                self.combat.explosion_in_water = p.touching_water;
                 // The blast's source names the owner, so a dragon it kills
                 // remembers the player who shot it.
                 self.set_blast_by_player(p.owner == Some(Who::Player));
                 let result = self.explode(atp, *power as f32);
                 self.set_blast_by_player(false);
                 self.combat.explosion_owner = None;
+                self.combat.explosion_in_water = false;
                 result?;
             }
             (
