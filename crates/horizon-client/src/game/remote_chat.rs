@@ -58,15 +58,26 @@ impl Game<'_> {
             r.secure_chat = SecureChat::default();
             r.signatures = Default::default();
         }
-        auth::prepare_chat_keys(true);
-        self.update_chat_session();
+        // Only when the server says it is in online mode (handleLogin).
+        if self.remote.as_ref().is_some_and(|r| r.online_mode) {
+            auth::prepare_chat_keys(true);
+            self.update_chat_session();
+        }
     }
 
     /// ClientPacketListener.tick's key refresh (shouldRefreshKeyPair), then
     /// setKeyPair with whatever key pair is ready.
     pub(super) fn tick_chat_session(&mut self) {
-        if self.remote.as_ref().is_some_and(|r| r.logged_in) {
-            auth::prepare_chat_keys(false);
+        // shouldRefreshKeyPair is asked only once there is a chat session; a
+        // first key pair arrives through the join's prepareKeyPair.
+        if self
+            .remote
+            .as_ref()
+            .is_some_and(|r| r.logged_in && r.online_mode)
+        {
+            if self.remote.as_ref().is_some_and(|r| r.secure_chat.signed()) {
+                auth::prepare_chat_keys(false);
+            }
             self.update_chat_session();
         }
     }
@@ -137,17 +148,18 @@ impl Game<'_> {
 
     /// ClientPacketListener.sendCommand: a command with message arguments
     /// (SignableCommand.of over the server's tree) has each of them signed,
-    /// all with the same time, salt and last seen; any other command, or any
-    /// command without a chat session, goes as the unsigned packet.
+    /// all with the same time, salt and last seen (without a chat session the
+    /// signature list is empty, as in vanilla); any other command goes as the
+    /// unsigned packet.
     pub(super) fn send_command(&mut self, command: &str) {
         let Some(r) = self.remote.as_mut() else {
             return;
         };
-        let arguments = match (&r.commands, r.secure_chat.signed()) {
-            (Some(tree), true) => tree
+        let arguments = match &r.commands {
+            Some(tree) => tree
                 .parse(command, &self.ui.registries)
                 .signable_arguments(tree),
-            _ => Vec::new(),
+            None => Vec::new(),
         };
         if arguments.is_empty() {
             self.send(S::ChatCommand(play::ChatCommand {
