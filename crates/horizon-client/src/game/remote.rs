@@ -6094,6 +6094,10 @@ impl Game<'_> {
     /// the server, and whether the click ends there is what this client's
     /// copy of the entity answers (`MultiPlayerGameMode.interact`).
     fn remote_use_entity(&mut self, hand: Hand) -> bool {
+        // A menu this use opens (a chest minecart's) is no clicked block's.
+        if let Some(r) = self.remote.as_mut() {
+            r.use_target = None;
+        }
         let sneaking = self.keys.contains(&KeyCode::ShiftLeft);
         // A boat, minecart, item frame, armor stand or painting nearer than
         // any mob: the server uses it (AbstractBoat.interact boards it).
