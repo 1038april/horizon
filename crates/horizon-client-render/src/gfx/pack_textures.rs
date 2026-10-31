@@ -150,14 +150,9 @@ fn format(texture: &Texture) -> wgpu::TextureFormat {
     }
 }
 
-fn create(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    texture: &Texture,
-    features: wgpu::Features,
-) -> Result<(wgpu::TextureView, wgpu::TextureSampleType), String> {
-    let format = format(texture);
-    let bytes: Vec<u8> = match (&texture.texels, format) {
+/// `texture`'s texels as the bytes of `format`, row after row.
+fn bytes(texture: &Texture, format: wgpu::TextureFormat) -> Vec<u8> {
+    match (&texture.texels, format) {
         (Texels::Float(v), f) if f.block_copy_size(None) == Some(texture.components() as u32) => {
             if matches!(
                 f,
@@ -195,7 +190,17 @@ fn create(
                 .flat_map(|x| x.to_le_bytes().into_iter().take(width))
                 .collect()
         }
-    };
+    }
+}
+
+fn create(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &Texture,
+    features: wgpu::Features,
+) -> Result<(wgpu::TextureView, wgpu::TextureSampleType), String> {
+    let format = format(texture);
+    let bytes = bytes(texture, format);
     let [width, height, depth] = texture.size;
     let limits = device.limits();
     let largest = match texture.dim {
@@ -249,4 +254,86 @@ fn create(
         .sample_type(None, Some(features))
         .unwrap_or(wgpu::TextureSampleType::Float { filterable: false });
     Ok((tex.create_view(&Default::default()), sample_type))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use horizon_shaders::Format;
+
+    fn lightmap(stage: &str, name: &str, dimension: wgpu::TextureViewDimension) -> PackTexture {
+        PackTexture {
+            stage: stage.into(),
+            name: name.into(),
+            dimension,
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            blur: false,
+            clamp: false,
+            image: Image::Lightmap,
+        }
+    }
+
+    fn texture(format: &str, texels: Texels) -> Texture {
+        Texture {
+            dim: TextureDim::D2,
+            size: [1, 1, 1],
+            format: Format::parse(format).unwrap(),
+            texels,
+            blur: false,
+            clamp: false,
+        }
+    }
+
+    #[test]
+    fn samplers_find_their_stage_name_and_dimension() {
+        use wgpu::TextureViewDimension as D;
+        let textures = [
+            lightmap("composite", "colortex4", D::D2),
+            lightmap("composite", "noisetex", D::D3),
+            lightmap("gbuffers", "gaux2", D::D2),
+            lightmap("composite", "noisetex", D::D1),
+        ];
+        assert_eq!(find(&textures, Group::Final, "sampler2D", "gaux1"), Some(0));
+        assert_eq!(
+            find(&textures, Group::Composite, "sampler3D", "noisetex"),
+            Some(1)
+        );
+        assert_eq!(
+            find(&textures, Group::Composite, "sampler1D", "noisetex"),
+            Some(3)
+        );
+        assert_eq!(
+            find(&textures, Group::Composite, "sampler2D", "noisetex"),
+            None
+        );
+        assert_eq!(
+            find(&textures, Group::Shadow, "sampler2D", "colortex5"),
+            Some(2)
+        );
+        assert_eq!(
+            find(&textures, Group::Deferred, "sampler2D", "colortex4"),
+            None
+        );
+    }
+
+    #[test]
+    fn texels_pack_into_their_format() {
+        let t = texture("RGBA8", Texels::Float(vec![0.0, 0.5, 1.0, 2.0]));
+        assert_eq!(format(&t), wgpu::TextureFormat::Rgba8Unorm);
+        assert_eq!(bytes(&t, format(&t)), [0, 128, 255, 255]);
+        let t = texture("RG8_SNORM", Texels::Float(vec![-1.0, 0.5]));
+        assert_eq!(format(&t), wgpu::TextureFormat::Rg8Snorm);
+        assert_eq!(bytes(&t, format(&t)), [0x81, 64]);
+        let t = texture("R32F", Texels::Float(vec![1.0]));
+        assert_eq!(bytes(&t, format(&t)), 1.0f32.to_le_bytes());
+        let t = texture("R16F", Texels::Float(vec![1.0]));
+        assert_eq!(format(&t), wgpu::TextureFormat::R16Float);
+        assert_eq!(bytes(&t, format(&t)), [0x00, 0x3c]);
+        let t = texture("RG16I", Texels::Int(vec![-2, 3]));
+        assert_eq!(format(&t), wgpu::TextureFormat::Rg16Sint);
+        assert_eq!(bytes(&t, format(&t)), [0xfe, 0xff, 3, 0]);
+        let t = texture("R8UI", Texels::Uint(vec![7]));
+        assert_eq!(format(&t), wgpu::TextureFormat::R8Uint);
+        assert_eq!(bytes(&t, format(&t)), [7]);
+    }
 }

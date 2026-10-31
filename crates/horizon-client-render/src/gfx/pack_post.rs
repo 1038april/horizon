@@ -330,6 +330,7 @@ pub struct PackPost {
     noise: wgpu::TextureView,
     dummy: wgpu::TextureView,
     dummy_3d: wgpu::TextureView,
+    dummy_1d: wgpu::TextureView,
     textures: Vec<pack_textures::PackTexture>,
     /// The stand-in shadow map and its comparison sampler; cleared on the first frame.
     shadow: (wgpu::TextureView, wgpu::Sampler),
@@ -390,6 +391,18 @@ fn texture_format(f: Format, features: wgpu::Features) -> wgpu::TextureFormat {
 /// The texture behind sampler `name` in a program of the shadow buffers (`shadow_space`: buffer
 /// n is shadowcolor n) or of the others, when the shadow pass runs (`shadow_pass`). `shadow` is
 /// `shadowtex1` when the program also declares `watershadow` (6.3).
+/// Whether a `ty` sampler can read a custom texture of `sample_type`: custom textures hold
+/// colours, never depth to compare against.
+fn fits(ty: &str, sample_type: wgpu::TextureSampleType) -> bool {
+    use wgpu::TextureSampleType as T;
+    !ty.contains("Shadow")
+        && match sample_type {
+            T::Sint => ty.starts_with('i'),
+            T::Uint => ty.starts_with('u'),
+            _ => ty.starts_with('s'),
+        }
+}
+
 fn source(name: &str, shadow_space: bool, shadow_pass: bool, watershadow: bool) -> Source {
     let shadow_color = match name {
         "shadowcolor" | "shadowcolor0" => Some(0),
@@ -767,8 +780,23 @@ fn build_pass(
     };
     for s in &interface.samplers {
         let float = wgpu::TextureSampleType::Float { filterable: true };
+        // A stand-in of the sampler's own dimension.
+        let stand_in = if s.ty.contains("1D") {
+            wgpu::TextureViewDimension::D1
+        } else if s.ty.contains("3D") {
+            wgpu::TextureViewDimension::D3
+        } else {
+            wgpu::TextureViewDimension::D2
+        };
         let custom = pack_textures::find(textures, p.group, &s.ty, &s.name);
         let (src, sample_type, dimension) = match custom {
+            Some(i) if !fits(&s.ty, textures[i].sample_type) => {
+                notes.push(format!(
+                    "{}: `{} {}` can't read texture.{}.{}",
+                    p.name, s.ty, s.name, textures[i].stage, textures[i].name
+                ));
+                (Source::Dummy, float, stand_in)
+            }
             Some(i) => {
                 let t = &textures[i];
                 let src = match t.image {
@@ -839,9 +867,8 @@ fn build_pass(
                         sample_type = float;
                     }
                 }
-                // A stand-in of the sampler's own dimension.
-                let dimension = match (src, s.ty.as_str()) {
-                    (Source::Dummy, t) if t.contains("3D") => wgpu::TextureViewDimension::D3,
+                let dimension = match src {
+                    Source::Dummy => stand_in,
                     _ => wgpu::TextureViewDimension::D2,
                 };
                 (src, sample_type, dimension)
@@ -1529,6 +1556,22 @@ impl PackPost {
                     view_formats: &[],
                 })
                 .create_view(&Default::default()),
+            dummy_1d: device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some("Shader pack 1D stand-in"),
+                    size: wgpu::Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D1,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+                .create_view(&Default::default()),
             textures,
             shadow: (
                 device
@@ -1672,6 +1715,9 @@ impl PackPost {
                     Source::Noise => &self.noise,
                     Source::Dummy if s.dimension == wgpu::TextureViewDimension::D3 => {
                         &self.dummy_3d
+                    }
+                    Source::Dummy if s.dimension == wgpu::TextureViewDimension::D1 => {
+                        &self.dummy_1d
                     }
                     Source::Dummy => &self.dummy,
                     Source::Custom { index, .. } => match &self.textures[index].image {
@@ -2769,6 +2815,19 @@ mod tests {
         let g = |name| texture_format(Format::parse(name).unwrap(), all);
         assert_eq!(g("RGBA16"), T::Rgba16Unorm);
         assert_eq!(g("R11F_G11F_B10F"), T::Rg11b10Ufloat);
+    }
+
+    #[test]
+    fn samplers_read_custom_textures_of_their_type() {
+        use wgpu::TextureSampleType as T;
+        let float = T::Float { filterable: true };
+        assert!(fits("sampler2D", float));
+        assert!(fits("sampler3D", float));
+        assert!(fits("isampler2D", T::Sint));
+        assert!(fits("usampler1D", T::Uint));
+        assert!(!fits("sampler2D", T::Uint));
+        assert!(!fits("isampler2D", float));
+        assert!(!fits("sampler2DShadow", float));
     }
 
     #[test]
