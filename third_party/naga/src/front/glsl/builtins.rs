@@ -1082,8 +1082,140 @@ fn inject_standard_builtins(
         "barrier" => declaration
             .overloads
             .push(module.add_builtin(Vec::new(), MacroCall::Barrier)),
+        "memoryBarrier"
+        | "memoryBarrierBuffer"
+        | "memoryBarrierShared"
+        | "memoryBarrierImage"
+        | "groupMemoryBarrier"
+        | "subgroupMemoryBarrier"
+        | "subgroupMemoryBarrierBuffer"
+        | "subgroupMemoryBarrierShared"
+        | "subgroupMemoryBarrierImage" => {
+            let all = crate::Barrier::STORAGE | crate::Barrier::WORK_GROUP | crate::Barrier::TEXTURE;
+            let flags = match name {
+                "memoryBarrierBuffer" | "subgroupMemoryBarrierBuffer" => crate::Barrier::STORAGE,
+                "memoryBarrierShared" | "subgroupMemoryBarrierShared" => crate::Barrier::WORK_GROUP,
+                "memoryBarrierImage" | "subgroupMemoryBarrierImage" => crate::Barrier::TEXTURE,
+                _ => all,
+            };
+            declaration
+                .overloads
+                .push(module.add_builtin(Vec::new(), MacroCall::MemoryBarrier(flags)))
+        }
+        "subgroupBarrier" => declaration.overloads.push(
+            module.add_builtin(Vec::new(), MacroCall::ControlBarrier(crate::Barrier::SUB_GROUP)),
+        ),
+        "subgroupAll" | "subgroupAny" => {
+            let op = match name {
+                "subgroupAll" => crate::SubgroupOperation::All,
+                _ => crate::SubgroupOperation::Any,
+            };
+            let builtin = MacroCall::SubgroupCollective(op, crate::CollectiveOperation::Reduce);
+            declaration.overloads.push(
+                module.add_builtin(vec![TypeInner::Scalar(Scalar::BOOL)], builtin),
+            )
+        }
+        "subgroupBallot" => declaration.overloads.push(module.add_builtin(
+            vec![TypeInner::Scalar(Scalar::BOOL)],
+            MacroCall::SubgroupBallot,
+        )),
+        _ if subgroup_collective(name).is_some() => {
+            let (op, collective) = subgroup_collective(name).unwrap();
+            let kinds: &[Scalar] = match op {
+                crate::SubgroupOperation::And
+                | crate::SubgroupOperation::Or
+                | crate::SubgroupOperation::Xor => &[Scalar::I32, Scalar::U32, Scalar::BOOL],
+                _ => &[Scalar::F32, Scalar::I32, Scalar::U32],
+            };
+            for &scalar in kinds {
+                for size in [None, Some(VectorSize::Bi), Some(VectorSize::Tri), Some(VectorSize::Quad)] {
+                    let ty = match size {
+                        Some(size) => TypeInner::Vector { size, scalar },
+                        None => TypeInner::Scalar(scalar),
+                    };
+                    declaration.overloads.push(
+                        module.add_builtin(vec![ty], MacroCall::SubgroupCollective(op, collective)),
+                    );
+                }
+            }
+        }
+        "subgroupBroadcastFirst"
+        | "subgroupBroadcast"
+        | "subgroupShuffle"
+        | "subgroupShuffleXor"
+        | "subgroupShuffleUp"
+        | "subgroupShuffleDown" => {
+            let indexed = name != "subgroupBroadcastFirst";
+            for scalar in [Scalar::F32, Scalar::I32, Scalar::U32, Scalar::BOOL] {
+                for size in [None, Some(VectorSize::Bi), Some(VectorSize::Tri), Some(VectorSize::Quad)] {
+                    let ty = match size {
+                        Some(size) => TypeInner::Vector { size, scalar },
+                        None => TypeInner::Scalar(scalar),
+                    };
+                    let mut args = vec![ty];
+                    if indexed {
+                        args.push(TypeInner::Scalar(Scalar::U32));
+                    }
+                    declaration
+                        .overloads
+                        .push(module.add_builtin(args, MacroCall::SubgroupGather(gather_kind(name))));
+                }
+            }
+        }
         // Add common builtins with floats
         _ => inject_common_builtin(declaration, module, name, 4),
+    }
+}
+
+/// `subgroupAdd`, `subgroupInclusiveMul`, `subgroupExclusiveXor`...: the operation and how it
+/// combines.
+fn subgroup_collective(
+    name: &str,
+) -> Option<(crate::SubgroupOperation, crate::CollectiveOperation)> {
+    use crate::{CollectiveOperation as C, SubgroupOperation as O};
+    let rest = name.strip_prefix("subgroup")?;
+    let (collective, rest) = if let Some(r) = rest.strip_prefix("Inclusive") {
+        (C::InclusiveScan, r)
+    } else if let Some(r) = rest.strip_prefix("Exclusive") {
+        (C::ExclusiveScan, r)
+    } else {
+        (C::Reduce, rest)
+    };
+    let op = match rest {
+        "Add" => O::Add,
+        "Mul" => O::Mul,
+        "Min" => O::Min,
+        "Max" => O::Max,
+        "And" => O::And,
+        "Or" => O::Or,
+        "Xor" => O::Xor,
+        _ => return None,
+    };
+    // Scans exist for sums and products only; the backends have no others.
+    if collective != C::Reduce && !matches!(op, O::Add | O::Mul) {
+        return None;
+    }
+    Some((op, collective))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GatherKind {
+    BroadcastFirst,
+    Broadcast,
+    Shuffle,
+    ShuffleXor,
+    ShuffleUp,
+    ShuffleDown,
+}
+
+fn gather_kind(name: &str) -> GatherKind {
+    match name {
+        "subgroupBroadcastFirst" => GatherKind::BroadcastFirst,
+        "subgroupBroadcast" => GatherKind::Broadcast,
+        "subgroupShuffle" => GatherKind::Shuffle,
+        "subgroupShuffleXor" => GatherKind::ShuffleXor,
+        "subgroupShuffleUp" => GatherKind::ShuffleUp,
+        _ => GatherKind::ShuffleDown,
     }
 }
 
@@ -1622,6 +1754,11 @@ pub enum MacroCall {
     BitCast(Sk),
     Derivate(Axis, Ctrl),
     Barrier,
+    ControlBarrier(crate::Barrier),
+    MemoryBarrier(crate::Barrier),
+    SubgroupCollective(crate::SubgroupOperation, crate::CollectiveOperation),
+    SubgroupGather(GatherKind),
+    SubgroupBallot,
     /// SmoothStep needs a separate variant because it might need it's inputs
     /// to be splatted depending on the overload
     SmoothStep {
@@ -2158,12 +2295,81 @@ impl MacroCall {
                 Span::default(),
             )?,
             MacroCall::Barrier => {
+                // A work group's control barrier; subgroups have `subgroupBarrier`.
                 ctx.emit_restart();
                 ctx.body.push(
-                    crate::Statement::ControlBarrier(crate::Barrier::all()),
+                    crate::Statement::ControlBarrier(
+                        crate::Barrier::all() - crate::Barrier::SUB_GROUP,
+                    ),
                     meta,
                 );
                 return Ok(None);
+            }
+            MacroCall::ControlBarrier(flags) => {
+                ctx.emit_restart();
+                ctx.body
+                    .push(crate::Statement::ControlBarrier(flags), meta);
+                return Ok(None);
+            }
+            MacroCall::MemoryBarrier(flags) => {
+                ctx.emit_restart();
+                ctx.body.push(crate::Statement::MemoryBarrier(flags), meta);
+                return Ok(None);
+            }
+            MacroCall::SubgroupCollective(op, collective_op) => {
+                let inner = ctx.resolve_type(args[0], meta)?.clone();
+                let ty = ctx.module.types.insert(Type { name: None, inner }, Span::default());
+                ctx.emit_end();
+                let result = ctx.add_expression(Expression::SubgroupOperationResult { ty }, meta)?;
+                ctx.body.push(
+                    crate::Statement::SubgroupCollectiveOperation {
+                        op,
+                        collective_op,
+                        argument: args[0],
+                        result,
+                    },
+                    meta,
+                );
+                ctx.emit_start();
+                result
+            }
+            MacroCall::SubgroupGather(kind) => {
+                use crate::GatherMode as G;
+                let inner = ctx.resolve_type(args[0], meta)?.clone();
+                let ty = ctx.module.types.insert(Type { name: None, inner }, Span::default());
+                let mode = match kind {
+                    GatherKind::BroadcastFirst => G::BroadcastFirst,
+                    GatherKind::Broadcast => G::Broadcast(args[1]),
+                    GatherKind::Shuffle => G::Shuffle(args[1]),
+                    GatherKind::ShuffleXor => G::ShuffleXor(args[1]),
+                    GatherKind::ShuffleUp => G::ShuffleUp(args[1]),
+                    GatherKind::ShuffleDown => G::ShuffleDown(args[1]),
+                };
+                ctx.emit_end();
+                let result = ctx.add_expression(Expression::SubgroupOperationResult { ty }, meta)?;
+                ctx.body.push(
+                    crate::Statement::SubgroupGather {
+                        mode,
+                        argument: args[0],
+                        result,
+                    },
+                    meta,
+                );
+                ctx.emit_start();
+                result
+            }
+            MacroCall::SubgroupBallot => {
+                ctx.emit_end();
+                let result = ctx.add_expression(Expression::SubgroupBallotResult, meta)?;
+                ctx.body.push(
+                    crate::Statement::SubgroupBallot {
+                        result,
+                        predicate: Some(args[0]),
+                    },
+                    meta,
+                );
+                ctx.emit_start();
+                result
             }
             MacroCall::SmoothStep { splatted } => {
                 ctx.implicit_splat(&mut args[0], meta, splatted)?;
