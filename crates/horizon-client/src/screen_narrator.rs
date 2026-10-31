@@ -8,8 +8,8 @@
 //! and [`ScreenNarrator::frame`] reads the last drawn frame's: a new screen id
 //! is a screen opening (`init`), a new GUI size the same screen resized. The
 //! input events the game hands it schedule the narration, and the frames run
-//! it when due. The frames only record while the narrator speaks screen
-//! narration (`saySystemNow` would say nothing otherwise).
+//! it when due. The frames only record while the narrator can speak
+//! (`shouldRunNarration`), whatever its status.
 use crate::widgets::{self, ElementType, ListKind, Narratable, Narration, ScreenInfo, What};
 use horizon_narrator::screen::{Output, Priority, ScreenNarration, Trigger, find_narratable};
 use std::collections::HashMap;
@@ -266,6 +266,17 @@ fn narrate(
             out.add(ElementType::Usage, ctx.tr(key, &[]));
         }
     };
+    // CycleButton.updateWidgetNarration's usage: the value a click moves to.
+    let cycle_usage = |out: &mut Output<'_>, next: &str, active: bool| {
+        if active {
+            let key = if focused {
+                "narration.cycle_button.usage.focused"
+            } else {
+                "narration.cycle_button.usage.hovered"
+            };
+            out.add(ElementType::Usage, ctx.tr(key, &[next]));
+        }
+    };
     match &n.what {
         What::Button { message, active } => {
             out.add(ElementType::Title, ctx.tr("gui.narrate.button", &[message]));
@@ -296,14 +307,15 @@ fn narrate(
             active,
         } => {
             out.add(ElementType::Title, ctx.tr("gui.narrate.button", &[message]));
-            if *active {
-                let key = if focused {
-                    "narration.cycle_button.usage.focused"
-                } else {
-                    "narration.cycle_button.usage.hovered"
-                };
-                out.add(ElementType::Usage, ctx.tr(key, &[next]));
-            }
+            cycle_usage(out, next, *active);
+        }
+        What::NamedCycle {
+            title,
+            next,
+            active,
+        } => {
+            out.add(ElementType::Title, title.clone());
+            cycle_usage(out, next, *active);
         }
         What::Checkbox {
             message,
@@ -327,6 +339,7 @@ fn narrate(
                 ctx.tr("gui.narrate.editBox", &[message, value]),
             );
         }
+        What::Text { message } => out.add(ElementType::Title, message.clone()),
         What::Recipe { item, more } => {
             out.add(ElementType::Title, ctx.tr("narration.recipe", &[item]));
             let mut lines = vec![ctx.tr("narration.button.usage.hovered", &[])];
@@ -541,9 +554,27 @@ impl ScreenNarrator {
     /// narration). `gui` is the GUI size, `cursor` the mouse in it,
     /// `pad_focus` the controller's focus ring.
     pub fn frame(&mut self, gui: (f32, f32), cursor: (f32, f32), pad_focus: Option<[f32; 4]>) {
-        let narrating =
-            horizon_narrator::is_active() && horizon_narrator::status().should_narrate_system();
-        if !narrating {
+        let active = horizon_narrator::is_active();
+        for said in self.frame_with(active, gui, cursor, pad_focus, &translate) {
+            horizon_narrator::say_system_now(&said);
+        }
+    }
+
+    /// [`frame`](Self::frame) with the narrator there (`active`) or not: what
+    /// to say. `Screen.shouldRunNarration` is `GameNarrator.isActive`, whether
+    /// the narrator *can* speak, not its status: while it is off the screens'
+    /// narration still runs and is marked said (`saySystemNow` drops it), so
+    /// the click that turns it on in the options says only what it changed,
+    /// 200 ms later, after the status announcement.
+    fn frame_with(
+        &mut self,
+        active: bool,
+        gui: (f32, f32),
+        cursor: (f32, f32),
+        pad_focus: Option<[f32; 4]>,
+        tr: Translate<'_>,
+    ) -> Vec<String> {
+        if !active {
             if self.recording {
                 widgets::set_narrating(false);
                 self.recording = false;
@@ -553,24 +584,32 @@ impl ScreenNarrator {
             }
             self.pending_status = None;
             self.started = true;
-            return;
+            return Vec::new();
         }
         let generation = widgets::generation();
         if !self.recording {
             widgets::set_narrating(true);
             self.recording = true;
             self.turned_on(generation);
-            return;
+            return Vec::new();
         }
+        // A screen's `triggerImmediateNarration(true)` (a list refilled)
+        // reads the frame drawn after it.
+        let mut narrate_now = false;
         if generation != self.generation {
             self.generation = generation;
             self.frame = widgets::take_last_narration();
+            narrate_now = widgets::take_narrate_now();
         }
         let now = self.now();
-        let narrate_now = widgets::take_narrate_now();
-        for said in self.step(now, gui, cursor, pad_focus, narrate_now, &translate) {
-            horizon_narrator::say_system_now(&said);
-        }
+        let said = self.step(now, gui, cursor, pad_focus, narrate_now, tr);
+        // The drawers work out what only a focused widget narrates for it.
+        let clicked = self.click_focus.and_then(|key| {
+            let items = &self.frame.items;
+            items.iter().find(|n| n.identity() == key).map(|n| n.rect)
+        });
+        widgets::set_narration_focus(clicked.or(pad_focus));
+        said
     }
 
     /// The frames record from the next one drawn, of `generation + 1`: at
@@ -1174,6 +1213,179 @@ mod tests {
                  narration.button.usage.hovered"
             ]
         );
+    }
+
+    #[test]
+    fn key_binds_rows_name_their_key_and_headers_their_category() {
+        let mut h = Harness::new();
+        let screen = ScreenInfo::new("options/KeyBinds", "Key Binds");
+        let list = widgets::key_of(&"options/KeyBinds/list");
+        let child = |n: Narratable, row: usize, x: f32| {
+            n.key(widgets::key_of(&(list, row, x as i32)))
+                .child_of(list, row)
+        };
+        let items = vec![
+            Narratable::container_list(3, Some(1), [0.0, 38.0, 427.0, 160.0]).key(list),
+            child(
+                Narratable::text("Movement", [180.0, 40.0, 60.0, 17.0]),
+                0,
+                180.0,
+            ),
+            child(
+                Narratable::named(
+                    "Jump is bound to gui.narrate.button(Space)",
+                    [200.0, 60.0, 75.0, 20.0],
+                    true,
+                ),
+                1,
+                200.0,
+            ),
+            child(
+                Narratable::named("Reset Jump button", [280.0, 60.0, 50.0, 20.0], false),
+                1,
+                280.0,
+            ),
+            button("Done", 210.0),
+        ];
+        h.draw(0, &screen, &items);
+        h.cursor = (210.0, 65.0);
+        h.at(3000).mouse_moved();
+        assert_eq!(
+            h.draw(3751, &screen, &items),
+            [
+                "Jump is bound to gui.narrate.button(Space). narrator.position.screen(1, 2). \
+                 narrator.position.list(2, 3). narrator.position.object_list(1, 2). \
+                 narration.button.usage.hovered"
+            ]
+        );
+        // The category header row narrates its text, nothing more.
+        let mut items = items;
+        items[0] = Narratable::container_list(3, Some(0), [0.0, 38.0, 427.0, 160.0]).key(list);
+        h.cursor = (200.0, 45.0);
+        h.at(4000).mouse_moved();
+        assert_eq!(
+            h.draw(4751, &screen, &items),
+            ["Movement. narrator.position.list(1, 3)"]
+        );
+    }
+
+    #[test]
+    fn a_switch_narrates_its_own_message_and_next_value() {
+        let mut h = Harness::new();
+        let screen = ScreenInfo::new("create_world", "Create New World");
+        let items = [Narratable::new(
+            What::NamedCycle {
+                title: "Generate Structures. gui.narrate.button(: ON). Villages".into(),
+                next: "OFF".into(),
+                active: true,
+            },
+            [100.0, 100.0, 44.0, 20.0],
+        )
+        .hint("Villages")];
+        h.draw(0, &screen, &items);
+        h.cursor = (110.0, 110.0);
+        h.at(3000).mouse_moved();
+        assert_eq!(
+            h.draw(3751, &screen, &items),
+            [
+                "Generate Structures. gui.narrate.button(: ON). Villages. Villages. \
+                 narration.cycle_button.usage.hovered(OFF)"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_drawers_hear_which_widget_has_the_focus() {
+        let mut n = ScreenNarrator {
+            clock: Some(0),
+            ..Default::default()
+        };
+        let rect = [100.0, 40.0, 150.0, 20.0];
+        let tick = |n: &mut ScreenNarrator, frame: u64, at: i64| {
+            widgets::begin_screen(|| ScreenInfo::new("options/Video", "Video"));
+            widgets::narratable(|| Narratable::button("VSync: ON", rect, true));
+            widgets::end_frame(frame);
+            n.clock = Some(at);
+            n.frame_with(true, GUI, (0.0, 0.0), None, &keys)
+        };
+        tick(&mut n, 50_000, 0);
+        tick(&mut n, 50_001, 16);
+        assert!(!widgets::narration_focused(rect));
+        n.clock = Some(100);
+        n.mouse_pressed((110.0, 50.0), true);
+        tick(&mut n, 50_002, 116);
+        assert!(widgets::narration_focused(rect));
+    }
+
+    #[test]
+    fn turning_the_narrator_on_with_its_button_says_what_the_click_changed() {
+        // The narrator can speak but is off: the screens' narration runs
+        // all the same (`shouldRunNarration` is `isActive`).
+        let mut n = ScreenNarrator {
+            clock: Some(0),
+            ..Default::default()
+        };
+        let mut frames = 40_000;
+        let mut tick = |n: &mut ScreenNarrator, at: i64, label: &str, next: &str, cursor| {
+            widgets::begin_screen(|| ScreenInfo::new("options/Accessibility", "Accessibility"));
+            let (label, next) = (label.to_owned(), next.to_owned());
+            widgets::narratable(|| {
+                Narratable::cycle(label, next, [100.0, 40.0, 150.0, 20.0], true)
+            });
+            widgets::narratable(|| button("Done", 200.0));
+            frames += 1;
+            widgets::end_frame(frames);
+            n.clock = Some(at);
+            n.frame_with(true, GUI, cursor, None, &keys)
+        };
+        let over = (150.0, 50.0);
+        // The first turn switches the frames' recording on.
+        assert!(tick(&mut n, 0, "Narrator: OFF", "Narrates All", over).is_empty());
+        assert!(widgets::narrating());
+        // Built and said (saySystemNow drops it while the status is off).
+        assert_eq!(
+            tick(&mut n, 16, "Narrator: OFF", "Narrates All", over),
+            ["Accessibility. narrator.screen.usage"]
+        );
+        n.clock = Some(100);
+        n.mouse_moved();
+        assert_eq!(
+            tick(&mut n, 2017, "Narrator: OFF", "Narrates All", over),
+            [
+                "gui.narrate.button(Narrator: OFF). narrator.position.screen(1, 2). \
+                 narration.cycle_button.usage.hovered(Narrates All)"
+            ]
+        );
+        // The click turns it on (announced at once by the status update);
+        // 200 ms later the screen says only what the click changed.
+        n.clock = Some(3000);
+        n.mouse_pressed(over, true);
+        assert!(
+            tick(
+                &mut n,
+                3016,
+                "Narrator: Narrates All",
+                "Narrates Chat",
+                over
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            tick(
+                &mut n,
+                3201,
+                "Narrator: Narrates All",
+                "Narrates Chat",
+                over
+            ),
+            [
+                "gui.narrate.button(Narrator: Narrates All). narration.component_list.usage. \
+                 narration.cycle_button.usage.focused(Narrates Chat)"
+            ]
+        );
+        // Without speech nothing is recorded or built.
+        assert!(n.frame_with(false, GUI, over, None, &keys).is_empty());
+        assert!(!widgets::narrating());
     }
 
     #[test]
