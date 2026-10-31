@@ -247,7 +247,9 @@ impl Game<'_> {
             .as_mut()
             .map(|r| r.secure_chat.tracker.take_offset())
             .unwrap_or(0);
-        self.send(S::ChatAck(play::ChatAck { offset }));
+        if offset > 0 {
+            self.send(S::ChatAck(play::ChatAck { offset }));
+        }
     }
 }
 
