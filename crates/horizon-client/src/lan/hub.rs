@@ -18,7 +18,10 @@ use crate::{
     items::ItemStack,
     world::World,
 };
-use horizon_core::geometry::{Aabb, ShapeOp, Vec3, VoxelShape};
+use horizon_core::{
+    geometry::{Aabb, ShapeOp, Vec3, VoxelShape},
+    random::LegacyRandom,
+};
 use horizon_protocol::ids::play::clientbound as ids;
 use horizon_protocol::{
     entity_data::{Particle, ParticleData, Value, serializer},
@@ -31,7 +34,7 @@ use horizon_world::{
     collision_context::CollisionContext,
     nbt::{JavaString, Tag},
 };
-use std::sync::{Arc, atomic::Ordering};
+use std::sync::{Arc, Mutex, atomic::Ordering};
 
 /// GameEvent types (ClientboundGameEventPacket).
 pub mod chat;
@@ -91,6 +94,8 @@ pub struct HostState {
     pub attributes: Vec<play::AttributeSnapshot>,
     /// `LivingEntity.DATA_LIVING_ENTITY_FLAGS` (the item in use).
     pub living_flags: i8,
+    /// `LivingEntity.DATA_ARROW_COUNT_ID` and `DATA_STINGER_COUNT_ID`.
+    pub stuck: (i32, i32),
     /// The bed the host sleeps in (`LivingEntity.SLEEPING_POS`).
     pub bed: Option<[i32; 3]>,
     pub body: BodyFlags,
@@ -181,6 +186,8 @@ pub struct Hub {
     pub guests: Vec<Guest>,
     pub(super) sync: Arc<SyncData>,
     pub ticks: u64,
+    /// `Level.soundSeedGenerator`: a fresh `nextLong` per `playSound`.
+    pub(super) sound_seeds: Mutex<LegacyRandom>,
     /// The `player_movement_check` and `elytra_movement_check` game rules,
     /// set by the game before each tick.
     pub movement_checks: (bool, bool),
@@ -267,6 +274,17 @@ pub fn display_name(uuid: u128, name: &str) -> Tag {
         ),
         ("insertion", string(name)),
     ])
+}
+
+/// `LivingEntity.DATA_ARROW_COUNT_ID` (12) and `DATA_STINGER_COUNT_ID` (13):
+/// the counts of what is stuck in a player, 0 by default.
+fn stuck_meta(state: &mut EntityState, (arrows, stingers): (i32, i32)) {
+    for (index, count) in [(12, arrows), (13, stingers)] {
+        if count != 0 {
+            state.meta.push((index, serializer::INT, Value::Int(count)));
+        }
+        state.defaults.push((index, serializer::INT, Value::Int(0)));
+    }
 }
 
 impl Hub {
@@ -378,6 +396,7 @@ impl Hub {
             guests: Vec::new(),
             sync,
             ticks: 0,
+            sound_seeds: Mutex::new(LegacyRandom::new(crate::sound_engine::unique_seed())),
             immediate_respawn: false,
             movement_checks: (true, true),
             anticheat: None,
@@ -498,6 +517,14 @@ impl Hub {
     pub fn broadcast_level(&self, packet: &C) {
         let body = packet.encode();
         for g in self.guests.iter().filter(|g| self.here(g)) {
+            g.sender.send(body.clone());
+        }
+    }
+    /// `DedicatedServer.sendLowDiskSpaceWarning`: the players with
+    /// `PermissionLevel.ADMINS` (3) or more get `ClientboundLowDiskSpaceWarningPacket`.
+    pub fn send_low_disk_space_warning(&self) {
+        let body = C::LowDiskSpaceWarning(horizon_protocol::packets::Empty).encode();
+        for g in self.guests.iter().filter(|g| g.placed && g.permission >= 3) {
             g.sender.send(body.clone());
         }
     }
@@ -831,8 +858,16 @@ impl Hub {
         g.placed_at = self.ticks;
         self.send_active_effects(i);
         // ServerPlayer.sendPostEffects and initInventoryMenu.
-        self.guests[i].send(&raw(ids::POST_EFFECTS, vec![0]));
+        self.send_post_effects(i);
         self.send_inventory(i);
+    }
+
+    /// `ServerPlayer.sendPostEffects`: the player's `/posteffect` chains.
+    pub fn send_post_effects(&mut self, i: usize) {
+        let g = &mut self.guests[i];
+        g.post_effects_dirty = false;
+        let effects = g.post_effects.clone();
+        g.send(&C::PostEffects(play::PostEffects { effects }));
     }
 
     /// ClientboundUpdateMobEffectPacket for one of the guest's effects.
@@ -1882,6 +1917,7 @@ impl Hub {
             needs_sync: false,
             leash: None,
             spectator: false,
+            watching: false,
         }
     }
 
@@ -1935,6 +1971,7 @@ impl Hub {
                 &[],
             );
             state.spectator = h.game_mode == 3;
+            stuck_meta(&mut state, h.stuck);
             all.push(state);
         }
         let placed: Vec<usize> = (0..self.guests.len())
@@ -1974,6 +2011,8 @@ impl Hub {
                     &g.effects.list,
                 );
                 state.spectator = g.spectator();
+                state.watching = g.watching;
+                stuck_meta(&mut state, g.stuck);
                 state
             })
             .collect();
@@ -2241,6 +2280,10 @@ impl Hub {
             && self.guests[i].sent_health.is_some()
         {
             self.flush_advancements(i, true);
+            // ServerPlayer.doTick: sendPostEffects when postEffectsDirty.
+            if self.guests[i].post_effects_dirty {
+                self.send_post_effects(i);
+            }
         }
     }
     fn flush_advancements(&mut self, i: usize, show: bool) {
@@ -2616,6 +2659,20 @@ impl Hub {
             self.resend_teleport(i, Some(start));
             return;
         }
+        // The anticheat's `ground`: a claim of the ground with nothing to
+        // stand on is dropped (no-fall, walking on water).
+        let mut flags = flags;
+        if flags & 1 != 0 && self.anticheat.is_some() {
+            match self.anticheat_ground(i, to, stands, ctx, events) {
+                Some(true) => {
+                    let g = &mut self.guests[i];
+                    (g.yaw, g.pitch) = (yaw, pitch);
+                    return;
+                }
+                Some(false) => flags &= !1,
+                None => {}
+            }
+        }
         // clientIsFloating, from the move that is accepted: no upward-or-level
         // step onto something, nothing but air around the body, and nothing
         // that lets the player hover (the server's allow-flight, mayfly,
@@ -2925,7 +2982,9 @@ impl Hub {
         }));
         g.sent_xp = Some(xp);
         // ServerPlayer.sendPostEffects.
-        g.send(&raw(ids::POST_EFFECTS, vec![0]));
+        let list = g.post_effects.clone();
+        g.post_effects_dirty = false;
+        g.send(&C::PostEffects(play::PostEffects { effects: list }));
         self.send_level_info(i, ctx, true);
         self.send_permission_level(i);
         // ServerLevel.addRespawnedPlayer: the chunk tracking starts again at the player.
@@ -3036,7 +3095,9 @@ impl Hub {
         self.send_active_effects(i);
         let g = &mut self.guests[i];
         // ServerPlayer.sendPostEffects.
-        g.send(&raw(ids::POST_EFFECTS, vec![0]));
+        let list = g.post_effects.clone();
+        g.post_effects_dirty = false;
+        g.send(&C::PostEffects(play::PostEffects { effects: list }));
         // lastSentExp, lastSentHealth and lastSentFood; the client's new
         // player starts with the default air and no absorption.
         g.sent_health = None;
@@ -3187,6 +3248,22 @@ fn listed_properties(
 mod tests {
     use super::*;
     use crate::fast_hash::FxHashSet;
+
+    /// The counts of what is stuck in a player are sent when set, and a
+    /// count back at zero is sent as the default.
+    #[test]
+    fn stuck_counts_are_synched_as_entity_data() {
+        let mut state = EntityState::default();
+        stuck_meta(&mut state, (3, 0));
+        assert_eq!(state.meta, vec![(12, serializer::INT, Value::Int(3))]);
+        assert_eq!(
+            state.defaults,
+            vec![
+                (12, serializer::INT, Value::Int(0)),
+                (13, serializer::INT, Value::Int(0))
+            ]
+        );
+    }
 
     /// `getMaximumFlyingTicks`: 80 ticks at normal gravity, ceil(80 * 0.08 /
     /// gravity) where it is weaker, and never a kick without gravity.
