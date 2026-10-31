@@ -177,13 +177,12 @@ impl Game<'_> {
         if valid_dialogs.is_empty() {
             return None;
         }
-        // Vanilla: use the dialog_list dialog (minecraft:pause_screen_additions_list)
-        // or create a synthetic one. For now, use the first dialog's external_title
-        // and the tag itself (which Dialog::set_list will expand to a dialog_list).
+        // Vanilla: single button opens the first dialog directly when there's
+        // one entry; with multiple entries it opens a dialog_list. For now,
+        // return the first valid dialog's tag so the button always works.
         let first_dialog = Dialog::parse(&valid_dialogs[0])?;
         let label = first_dialog.external_title.unwrap_or(first_dialog.title);
-        // Return the tag itself - show_dialog will handle dialog_list expansion
-        Some((label, Tag::List(valid_dialogs)))
+        Some((label, valid_dialogs[0].clone()))
     }
 
     /// Singleplayer also has a connection, backed by the integrated server.
