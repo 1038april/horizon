@@ -177,6 +177,11 @@ impl Line {
             "join" => vec![Run::plain(&format!("{name} joined the game"), YELLOW)],
             "leave" => vec![Run::plain(&format!("{name} left the game"), YELLOW)],
             "kick" => vec![Run::plain(&format!("{name} was kicked"), YELLOW)],
+            // The game writes this message itself: should a nickname stand for the player there, the real name
+            // follows it. Lines say who someone is only by `name` (their account), never by a nickname.
+            "death" if !text("message").contains(name.as_str()) => {
+                legacy(&format!("{} ({name})", text("message")), WHITE)
+            }
             "death" => legacy(text("message"), WHITE),
             _ => return None,
         };
@@ -582,6 +587,22 @@ mod tests {
             "never a player's address"
         );
         assert!(Line::from_event(&json!({"type": "log", "line": "x"})).is_none());
+        // A nickname never stands in for the account's name.
+        let nicked = json!({"type": "chat", "name": "Kim0", "display_name": "Bob", "nick": "Bob", "message": "hi"});
+        assert_eq!(Line::from_event(&nicked).unwrap().plain(), "<Kim0> hi");
+        let death = |m: &str| {
+            Line::from_event(&json!({"type": "death", "name": "Kim0", "message": m}))
+                .unwrap()
+                .plain()
+        };
+        assert_eq!(
+            death("Kim0 fell from a high place"),
+            "Kim0 fell from a high place"
+        );
+        assert_eq!(
+            death("Bob fell from a high place"),
+            "Bob fell from a high place (Kim0)"
+        );
         // A message the server's chat filter held back never reaches Discord, whatever the settings say.
         let filtered = json!({"type": "chat_filtered", "name": "Kim0", "message": "x"});
         assert!(Line::from_event(&filtered).is_none());
