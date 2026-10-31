@@ -549,12 +549,12 @@ pub fn same_token(a: &str, b: &str) -> bool {
 }
 
 /// Writes a file only its owner can read.
-pub fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
+pub fn write_private(path: &Path, text: impl AsRef<[u8]>) -> std::io::Result<()> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    options.open(path)?.write_all(text.as_bytes())
+    options.open(path)?.write_all(text.as_ref())
 }
 
 /// Removes the endpoint file when the supervisor ends.
@@ -590,7 +590,7 @@ pub fn start(shared: Arc<Shared>) -> Result<Endpoint, String> {
     let path = shared.dir.join(ENDPOINT);
     write_private(
         &path,
-        &json!({ "address": address.to_string(), "token": token, "pid": std::process::id() })
+        json!({ "address": address.to_string(), "token": token, "pid": std::process::id() })
             .to_string(),
     )
     .map_err(|e| format!("{}: {e}", path.display()))?;
