@@ -7,14 +7,12 @@ use super::{Dim, Game};
 use glam::{DVec3, Mat4, Quat, Vec3};
 use horizon_assets::{
     bake::{bake_flat_face, default_uv},
-    item_model::DisplayContext,
     model::{Direction, Material},
 };
 use horizon_client::{
     block_entity_render::{diffuse, diffuse_lights, vertex_light},
     containers::BlockEntity,
     hud::Rect,
-    items::ItemStack,
     mesher::Vertex,
 };
 use horizon_world::registry::BlockStateId;
@@ -294,46 +292,6 @@ impl Game<'_> {
         let pose = draw.pose();
         self.block_model_vertices(id, 42, pose, draw.light, true, &mut draw.vertices);
         true
-    }
-
-    /// Draws `stack` under `draw`'s pose as an item is drawn in the world
-    /// (`ItemModelResolver.updateForTopItem` and `submitItem`), centred on the
-    /// pose's origin, in its model's `display` transform: `Fixed` as a
-    /// campfire's or an item frame's, `Ground` as a dropped item's. `seed`
-    /// picks among random models (a campfire passes its slot plus its
-    /// position's hash). False for an empty stack or one with no model.
-    /// API @API:block_entity_submit@.
-    pub(super) fn native_draw_item(
-        &self,
-        draw: &mut BlockEntityDraw,
-        stack: &ItemStack,
-        display: DisplayContext,
-        seed: i32,
-    ) -> bool {
-        let item = self.resolve_item(stack, display, None, seed);
-        if item.is_empty() {
-            return false;
-        }
-        let pose = draw.pose();
-        self.submit_item_world(&item, pose, draw.light, &mut draw.vertices);
-        true
-    }
-
-    /// Property `key` of block state `state` (a machine's `facing`, from the
-    /// `state` `native_block_entity_submit` gets), if it has one: no lookup in
-    /// the world, so cheap each frame. API @API:block_entity_submit@.
-    pub(super) fn native_block_state_property(
-        &self,
-        state: BlockStateId,
-        key: &str,
-    ) -> Option<&str> {
-        self.pack
-            .assets
-            .registry
-            .state(state)?
-            .properties
-            .get(key)
-            .map(String::as_str)
     }
 }
 
