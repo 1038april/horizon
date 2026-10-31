@@ -1,5 +1,6 @@
 //! The interactive title before world resources exist. Uses only the menu
 //! atlas/panorama; transfers the actual screen and queued entry to Game.
+use super::event_loop::EventLoopCtl;
 use super::*;
 use horizon_client::{
     clipboard::{self, AppendSelection, SystemClipboard},
@@ -159,7 +160,7 @@ impl StartupMenu {
     }
 
     /// `Screen.keyPressed` on the title screens: the action a key starts (Enter confirms, see `confirm_key` in title.rs).
-    fn title_key(&mut self, event: &KeyEvent) -> Action {
+    fn title_key(&mut self, event: &KeyEvent, viewport: (f32, f32)) -> Action {
         let shortcut = self.shortcut(event);
         let Some(title) = &mut self.title else {
             return Action::None;
@@ -181,10 +182,16 @@ impl StartupMenu {
         match event.physical_key {
             PhysicalKey::Code(KeyCode::Escape) => title.escape(),
             PhysicalKey::Code(KeyCode::F5) => title.refresh_servers(),
-            PhysicalKey::Code(KeyCode::Tab) => title.tab(),
-            PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => return title.confirm_key(),
-            PhysicalKey::Code(KeyCode::Space) if title.list_focused() => {
-                return title.confirm_key();
+            PhysicalKey::Code(KeyCode::Tab) => {
+                title.tab_dir(self.modifiers.shift_key(), viewport);
+            }
+            PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
+                return title.confirm_key_size(viewport).0;
+            }
+            PhysicalKey::Code(KeyCode::Space)
+                if title.list_focused() || title.focused_button.is_some() =>
+            {
+                return title.confirm_key_size(viewport).0;
             }
             PhysicalKey::Code(
                 key @ (KeyCode::Backspace
@@ -199,6 +206,14 @@ impl StartupMenu {
                     self.modifiers.control_key(),
                     self.modifiers.shift_key(),
                 );
+            }
+            PhysicalKey::Code(
+                key @ (KeyCode::ArrowLeft
+                | KeyCode::ArrowRight
+                | KeyCode::ArrowUp
+                | KeyCode::ArrowDown),
+            ) => {
+                title.arrow_key(key, viewport);
             }
             _ => {
                 let cleared = !title.has_caret_field()
@@ -425,8 +440,9 @@ impl Loading {
                     packs::open_folder(&dir);
                 }
                 Event::DataPacks(ids) => {
+                    let resources = self.vanilla_root.clone();
                     if let Some(title) = &mut self.menu.title {
-                        title.set_data_packs(ids);
+                        title.offer_data_packs(&resources, ids);
                     }
                 }
                 Event::OpenDataPackFolder(dir) => {
@@ -489,7 +505,7 @@ impl Loading {
         self.menu_option_events(events);
     }
 
-    fn menu_action(&mut self, event_loop: &ActiveEventLoop, action: Action) {
+    fn menu_action(&mut self, event_loop: &dyn EventLoopCtl, action: Action) {
         match action {
             Action::Quit => event_loop.exit(),
             Action::Options => self.open_menu_options(Page::Main),
@@ -520,7 +536,7 @@ impl Loading {
 
     pub(super) fn menu_event(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn EventLoopCtl,
         event: WindowEvent,
     ) -> Result<()> {
         if let WindowEvent::KeyboardInput { event, .. } = &event
@@ -553,6 +569,13 @@ impl Loading {
             }
             WindowEvent::RedrawRequested => self.draw(),
             WindowEvent::ModifiersChanged(modifiers) => self.menu.modifiers = modifiers.state(),
+            // `PackSelectionScreen.onFilesDrop`: a pack dropped on the window
+            // joins the Create New World screen's data packs.
+            WindowEvent::DroppedFile(path) => {
+                if let Some(title) = &mut self.menu.title {
+                    title.drop_file(path);
+                }
+            }
             WindowEvent::Focused(false) => {
                 self.menu.modifiers = ModifiersState::empty();
                 self.menu.physical_keys.clear();
@@ -696,7 +719,8 @@ impl Loading {
                         self.menu_option_events(events);
                     }
                 } else {
-                    let action = self.menu.title_key(&event);
+                    let batch = HudBatch::new(self.menu_size());
+                    let action = self.menu.title_key(&event, (batch.width, batch.height));
                     self.menu_action(event_loop, action);
                 }
             }

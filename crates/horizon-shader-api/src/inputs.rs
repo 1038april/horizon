@@ -169,6 +169,13 @@ uniform! {
         in_water: f32,
         /// The same for lava (`eye_in` 2).
         in_lava: f32,
+        /// The y of the horizontal water plane `reflection` mirrors the world about, in world
+        /// blocks, while `has_reflection` is 1.
+        water_plane: f32,
+        /// 1 while the material stage's `reflection` holds this frame's water mirror, else 0.
+        has_reflection: u32,
+        /// The size of `reflection`, in pixels: half the world's picture.
+        reflection_resolution: [f32; 2],
         /// Eight values a native mod hands its own pack each frame (`native_shader_params`,
         /// docs/native-mods.md): what they mean is that mod's, such as where and when
         /// something happened in the world. All 0 when no mod sets them.
@@ -208,6 +215,11 @@ pub const MATERIAL_INPUT: Struct = Struct {
         translucent: "bool" = "Drawn in the translucent pass (water, stained glass, ice).",
         tags: "u32" = "The pack's sprite tags this surface's sprite has: bit i for the manifest's i-th `[[tags]]`.",
         screen: "vec2<f32>" = "Where the point is on the screen, 0..1 from the top left (`opaque_depth` and `opaque_color` at `screen * frame.resolution`).",
+        face: "u32" = "For a fluid, which face of the block the point is on, `Direction` order: 0 down, 1 up, 2 north, 3 south, 4 west, 5 east. 0 elsewhere.",
+        fluid: "u32" = "0 not a fluid, 1 water, 2 lava.",
+        emission: "f32" = "How strongly the block itself shines, 0..1, by its kind of light: a redstone torch or a candle 7/15, a torch or lava 14/15, glowstone 1; 0 for most blocks.",
+        normal: "vec3<f32>" = "The surface's geometric normal, a unit vector in world axes, facing the camera. A normal within about 3.6 degrees of an axis is that axis exactly, so distant block faces do not shimmer; flowing water's slopes are steeper and keep theirs.",
+        tangent: "vec4<f32>" = "The surface's tangent: xyz the unit direction in world axes along which `uv.x` grows, w the sign (1 or -1) that makes `cross(normal, tangent.xyz) * tangent.w` the direction `uv.y` grows along (down the texture). With `normal` it turns a normal map's normals into world axes.",
     },
 };
 
@@ -239,9 +251,9 @@ mod tests {
     #[test]
     fn frame_fields_carry_their_docs() {
         let wgsl = Frame::WGSL;
-        assert_eq!(wgsl.fields.len(), 39);
+        assert_eq!(wgsl.fields.len(), 42);
         assert!(wgsl.fields.iter().all(|f| !f.doc.trim().is_empty()));
-        assert_eq!(std::mem::size_of::<Frame>(), 5 * 64 + 12 * 16 + 8 * 16);
+        assert_eq!(std::mem::size_of::<Frame>(), 5 * 64 + 13 * 16 + 8 * 16);
         assert!(
             wgsl.wgsl()
                 .contains("    camera_position: vec3<f32>,\n    time: f32,\n")
