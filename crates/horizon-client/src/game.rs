@@ -5152,6 +5152,8 @@ impl Game<'_> {
             let mut canceled = false;
             self.native_right_click_block(hit.pos, hit.face, &mut canceled);
             if canceled {
+                // Nothing was used, so nothing consumed the action.
+                self.use_failed = true;
                 return Ok(true);
             }
         }
@@ -5366,6 +5368,9 @@ impl Game<'_> {
                 // `ServerPlayerGameMode.useItemOn`: a consuming `useOn`
                 // triggers ITEM_USED_ON_BLOCK with the stack before the use.
                 self.trigger_block("minecraft:item_used_on_block", hit.pos, &stack);
+            } else {
+                // DebugStickItem.useOn's FAIL.
+                self.use_failed = true;
             }
             return Ok(true);
         }

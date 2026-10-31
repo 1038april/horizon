@@ -87,6 +87,9 @@ impl Game<'_> {
             return None;
         }
         if !occupied {
+            // useWithoutItem's CONSUME on an empty slot still consumes the
+            // click (ServerPlayerGameMode.useItemOn's DEFAULT_BLOCK_USE).
+            self.trigger_default_block_use(pos);
             return Some(false);
         }
         // removeBook: the book goes to the inventory, or is dropped.
