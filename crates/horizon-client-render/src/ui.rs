@@ -307,6 +307,13 @@ pub fn text_scaled(
 pub fn hovered(cursor: (f32, f32), x: f32, y: f32, w: f32, h: f32) -> bool {
     cursor.0 >= x && cursor.0 < x + w && cursor.1 >= y && cursor.1 < y + h
 }
+/// `TextAlignment.CENTER.calculateLeft` at the box's integer centre:
+/// `x + w / 2 - width / 2`. Flooring `(w - width) / 2` sits odd-width labels
+/// one pixel left of vanilla when `w` is even.
+fn centered_left(x: f32, w: f32, width: f32) -> f32 {
+    x + (w / 2.0).floor() - (width / 2.0).floor()
+}
+
 /// Centered text with a shadow, scrolled when wider than `w` (AbstractWidget.renderScrollingString).
 pub fn centered_text(
     batch: &mut HudBatch,
@@ -320,14 +327,7 @@ pub fn centered_text(
     let text = text.resolved();
     let width = atlas.font.width_text(&text);
     if width <= w {
-        batch.text_styled(
-            atlas,
-            &text,
-            x + ((w - width) / 2.0).floor(),
-            y,
-            color,
-            true,
-        );
+        batch.text_styled(atlas, &text, centered_left(x, w, width), y, color, true);
     } else {
         // Clip by characters (vanilla scrolls; we show the part that fits).
         let mut shown = Text::empty();
@@ -392,6 +392,27 @@ pub fn slider(
     active: bool,
     dragging: bool,
 ) {
+    slider_ext(
+        batch, atlas, x, y, w, label, value, hover, false, false, active, dragging,
+    );
+}
+
+/// `AbstractSliderButton.extractWidgetRenderState`: track, 8px handle at `value` (0..1),
+/// with support for keyboard focus and `canChangeValue`.
+pub fn slider_ext(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    x: f32,
+    y: f32,
+    w: f32,
+    label: &Text,
+    value: f32,
+    hover: bool,
+    focused: bool,
+    can_change_value: bool,
+    active: bool,
+    dragging: bool,
+) {
     let kind = crate::widgets::Kind::Slider {
         value,
         track: [x + 4.0, w - 8.0],
@@ -402,7 +423,7 @@ pub fn slider(
         // A controller's D-pad can focus it (Horizon's controller support).
         crate::widgets::target_as([x, y, w, 20.0], kind);
     }
-    let (track, handle) = slider_sprites(hover, active, dragging);
+    let (track, handle) = slider_sprites_ext(hover, active, focused, can_change_value, dragging);
     nine_slice(batch, atlas, track, x, y, w, 20.0, u32::MAX);
     nine_slice(
         batch,
@@ -421,15 +442,26 @@ pub fn slider(
     };
     centered_text(batch, atlas, label, x + 2.0, y + 6.0, w - 4.0, color);
 }
-/// Track and handle sprites: the track outline shows only while the slider is
-/// dragged, hovering highlights just the handle.
+#[cfg(test)]
 fn slider_sprites(hover: bool, active: bool, dragging: bool) -> (&'static str, &'static str) {
-    let track = if dragging {
+    slider_sprites_ext(hover, active, false, false, dragging)
+}
+
+/// Track and handle sprites: the track outline shows while dragged or focused with
+/// keyboard navigation (!can_change_value), hovering or editing highlights the handle.
+fn slider_sprites_ext(
+    hover: bool,
+    active: bool,
+    focused: bool,
+    can_change_value: bool,
+    dragging: bool,
+) -> (&'static str, &'static str) {
+    let track = if dragging || (active && focused && !can_change_value) {
         "gui/sprites/widget/slider_highlighted"
     } else {
         "gui/sprites/widget/slider"
     };
-    let handle = if hover && active {
+    let handle = if active && (hover || can_change_value || dragging) {
         "gui/sprites/widget/slider_handle_highlighted"
     } else {
         "gui/sprites/widget/slider_handle"
@@ -1352,6 +1384,14 @@ mod tests {
     }
     fn faithful(json: &str) -> NineSlice {
         parse_nine_slice(&serde_json::from_str(json).unwrap()).unwrap()
+    }
+    #[test]
+    fn centered_label_matches_vanilla_integer_center() {
+        // Even box, odd text: (w - width) / 2 floors one pixel left of w/2 - width/2.
+        assert_eq!(centered_left(0.0, 200.0, 9.0), 96.0);
+        assert_eq!(centered_left(0.0, 200.0, 8.0), 96.0);
+        assert_eq!(centered_left(10.0, 196.0, 9.0), 104.0);
+        assert_eq!(centered_left(2.0, 196.0, 7.0), 97.0);
     }
     #[test]
     fn slider_track_is_outlined_only_while_dragged() {

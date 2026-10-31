@@ -136,7 +136,7 @@ pub enum Screen {
 pub enum Outcome {
     None,
     Back,
-    Connect(String),
+    Connect { address: String, lan: bool },
 }
 /// A button: x, y, width, label, enabled, id.
 pub type ButtonSpec = (f32, f32, f32, String, bool, u8);
@@ -304,41 +304,93 @@ pub fn save_server_icon(saves: &Path, address: &str, png: &[u8]) {
     }
 }
 
-/// Horizon's official survival server: a name and an address like any entry.
-pub const OFFICIAL_SERVER: (&str, &str) = ("Horizon Official", "horizon.bunchy7s.dev");
+/// Horizon's official survival server: a name and an address like any entry. The address is
+/// `horizon_telemetry::server_status::OFFICIAL_ADDRESS`, the one place it is kept.
+pub const OFFICIAL_SERVER: (&str, &str) = (
+    "Horizon Official",
+    horizon_telemetry::server_status::OFFICIAL_ADDRESS,
+);
 /// Beside servers.dat once the official server was offered, so a player who
-/// deletes it never gets it back. The launcher writes the same file.
+/// deletes it never gets it back: the address offered, so a new one moves the
+/// list once. The launcher writes the same file.
 const OFFICIAL_MARKER: &str = "horizon_official_server.txt";
+
+/// An address as the game connects to it: any case, 25565 when no port is given.
+fn address_key(ip: &str) -> Option<(String, u16)> {
+    servers::parse_address(ip).map(|(h, p)| (h.to_ascii_lowercase(), p))
+}
 
 /// Puts the official server at the top of the list in `game_dir`, once: not
 /// again after the player deletes it, and not when the list has its address.
+/// When it moved (the marker names another address), the entries for its
+/// earlier addresses move to the new one, once (`move_official`).
 pub fn add_official_server(game_dir: &Path) -> std::io::Result<()> {
+    let (name, address) = OFFICIAL_SERVER;
     let marker = game_dir.join(OFFICIAL_MARKER);
-    if marker.exists() {
+    // A marker that is there but can't be read: offered already, at an address not known.
+    let offered = match std::fs::read_to_string(&marker) {
+        Ok(text) => Some(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => Some(String::new()),
+    };
+    if offered
+        .as_deref()
+        .is_some_and(|a| address_key(a) == address_key(address))
+    {
         return Ok(());
     }
-    let (name, address) = OFFICIAL_SERVER;
     let file = game_dir.join("servers.dat");
-    let key = |ip: &str| servers::parse_address(ip).map(|(h, p)| (h.to_ascii_lowercase(), p));
     let _guard = SAVING.lock();
-    if !servers::load(&file)
-        .iter()
-        .any(|s| key(&s.ip) == key(address))
+    let mut list = servers::load(&file);
+    let previous = horizon_telemetry::server_status::OFFICIAL_PREVIOUS;
+    if move_official(&mut list, address, previous) {
+        servers::save(&file, &list)?;
+    }
+    if offered.is_none()
+        && !list
+            .iter()
+            .any(|s| address_key(&s.ip) == address_key(address))
     {
         servers::prepend(&file, &ServerEntry::new(name, address))?;
     }
     std::fs::write(marker, format!("{address}\n"))
 }
 
-/// The address of list row `index`: the saved servers, then the LAN games.
-fn entry_address(servers: &[ServerEntry], lan: &Scanner, index: usize) -> Option<String> {
+/// Points the entries for an earlier official address at `address`, each
+/// keeping the player's name and fields. One entry for the server at most: an
+/// old one goes when the list already has `address`. Whether anything changed.
+fn move_official(list: &mut Vec<ServerEntry>, address: &str, previous: &[&str]) -> bool {
+    let new = address_key(address);
+    let old = |ip: &str| {
+        let ip = address_key(ip);
+        ip.is_some() && ip != new && previous.iter().any(|p| address_key(p) == ip)
+    };
+    let mut present = list.iter().any(|s| address_key(&s.ip) == new);
+    let mut changed = false;
+    list.retain_mut(|s| {
+        if !old(&s.ip) {
+            return true;
+        }
+        changed = true;
+        if present {
+            return false;
+        }
+        present = true;
+        s.ip = address.to_owned();
+        true
+    });
+    changed
+}
+
+/// The address and kind of list row `index`: saved servers, then discovered LAN games.
+fn entry_address(servers: &[ServerEntry], lan: &Scanner, index: usize) -> Option<(String, bool)> {
     match servers.get(index) {
-        Some(s) => Some(s.ip.clone()),
+        Some(s) => Some((s.ip.clone(), false)),
         None => lan
             .games()
             .into_iter()
             .nth(index - servers.len())
-            .map(|g| g.address),
+            .map(|g| (g.address, true)),
     }
 }
 
@@ -1165,7 +1217,10 @@ impl Screen {
     pub fn confirm(&self) -> Outcome {
         match self {
             Self::Direct { address } if servers::parse_address(address).is_some() => {
-                Outcome::Connect(direct_address(address))
+                Outcome::Connect {
+                    address: direct_address(address),
+                    lan: false,
+                }
             }
             _ => Outcome::None,
         }
@@ -1189,8 +1244,9 @@ impl Screen {
                 },
                 Some(40),
             ) => {
-                if let Some(address) = selected.and_then(|i| entry_address(servers, lan, i)) {
-                    return Outcome::Connect(address);
+                if let Some((address, lan)) = selected.and_then(|i| entry_address(servers, lan, i))
+                {
+                    return Outcome::Connect { address, lan };
                 }
             }
             (Self::List { .. }, Some(41)) => {
@@ -1300,7 +1356,10 @@ impl Screen {
                     let (rx, ry) = ((x - left - 2.0).floor(), (y - row_top - 2.0).floor());
                     if over_right_half(rx, ry) {
                         *selected = Some(k);
-                        return Outcome::Connect(servers[k].ip.clone());
+                        return Outcome::Connect {
+                            address: servers[k].ip.clone(),
+                            lan: false,
+                        };
                     }
                     let to = if k > 0 && over_top_left(rx, ry) {
                         Some(k - 1)
@@ -1328,10 +1387,10 @@ impl Screen {
                     None => None,
                 };
                 if let Some(index) = index
-                    && let Some(address) = entry_address(servers, lan, index)
+                    && let Some((address, lan)) = entry_address(servers, lan, index)
                 {
                     if *selected == Some(index) {
-                        return Outcome::Connect(address);
+                        return Outcome::Connect { address, lan };
                     }
                     *selected = Some(index);
                 }
@@ -1377,13 +1436,19 @@ impl Screen {
             ) => *self = Self::list(saves),
             (Self::Disconnected { retry, .. }, Some(55)) => *retry = None,
             (Self::Direct { address }, Some(52)) => {
-                return Outcome::Connect(direct_address(address));
+                return Outcome::Connect {
+                    address: direct_address(address),
+                    lan: false,
+                };
             }
             (Self::Friend { code, relay, .. }, Some(56)) => {
                 if horizon_friends::invite::parse(code).is_some() {
                     crate::net::save_friends_relay(relay.trim());
                     let code: String = code.chars().filter(|c| !c.is_whitespace()).collect();
-                    return Outcome::Connect(format!("{}{code}", crate::net::FRIEND));
+                    return Outcome::Connect {
+                        address: format!("{}{code}", crate::net::FRIEND),
+                        lan: false,
+                    };
                 }
             }
             (Self::Edit { .. } | Self::Friend { .. }, None) => {
@@ -1578,6 +1643,43 @@ pub fn wrap(text: &str, width: f32, atlas: &HudAtlas) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_discovered_entries_get_lan_authentication() {
+        let address = "127.0.0.1:25565";
+        let mut screen = Screen::List {
+            servers: vec![ServerEntry::new("Saved", address)],
+            selected: Some(0),
+            pings: Arc::default(),
+            icons: Arc::default(),
+            lan: Scanner::for_tests(vec![crate::lan::discovery::LanGame {
+                motd: "LAN".into(),
+                address: address.into(),
+            }]),
+            scroll: Default::default(),
+        };
+        for (index, expected_lan) in [(0, false), (1, true)] {
+            if let Screen::List { selected, .. } = &mut screen {
+                *selected = Some(index);
+            }
+            let Outcome::Connect {
+                address: actual,
+                lan,
+            } = screen.click(Some(40), 0.0, 0.0, (640.0, 480.0), Path::new(""))
+            else {
+                panic!("join did not connect")
+            };
+            assert_eq!(actual, address);
+            assert_eq!(lan, expected_lan);
+        }
+        let direct = Screen::Direct {
+            address: address.into(),
+        };
+        assert!(matches!(
+            direct.confirm(),
+            Outcome::Connect { lan: false, .. }
+        ));
+    }
 
     #[test]
     fn direct_connection_joins_a_pasted_invite_and_keeps_host_names() {
@@ -1850,17 +1952,63 @@ mod tests {
         assert_eq!(ips(), [address, "127.0.0.1:2", "example.org"]);
         // Already there under the player's own name and spelling: not duplicated.
         fresh(&[
-            ServerEntry::new("SMP", "Horizon.Bunchy7s.dev:25565"),
+            ServerEntry::new("SMP", "Play.PlayHorizon.dev:25565"),
             mine[0].clone(),
         ]);
         add_official_server(&dir).unwrap();
-        assert_eq!(ips(), ["Horizon.Bunchy7s.dev:25565", "127.0.0.1:2"]);
+        assert_eq!(ips(), ["Play.PlayHorizon.dev:25565", "127.0.0.1:2"]);
         // Deleted by the player: never back.
         fresh(&mine);
         add_official_server(&dir).unwrap();
         servers::save(&file, &mine).unwrap();
         add_official_server(&dir).unwrap();
         assert_eq!(ips(), ["127.0.0.1:2", "example.org"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_moved_official_server_moves_the_old_entry_once() {
+        let dir = std::env::temp_dir().join(format!("horizon-mp-moved-{}", std::process::id()));
+        let address = OFFICIAL_SERVER.1;
+        let file = dir.join("servers.dat");
+        let marker = dir.join(OFFICIAL_MARKER);
+        let ips = || -> Vec<String> { servers::load(&file).into_iter().map(|s| s.ip).collect() };
+        let offered_before = |list: &[ServerEntry]| {
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            servers::save(&file, list).unwrap();
+            std::fs::write(&marker, "horizon.bunchy7s.dev\n").unwrap();
+        };
+        // The old address under the player's own name and spelling: moved, name and place kept.
+        let mut old = ServerEntry::new("Our SMP", "Horizon.Bunchy7s.dev:25565");
+        old.icon = Some("AAAA".into());
+        offered_before(&[ServerEntry::new("Mine", "127.0.0.1:2"), old]);
+        add_official_server(&dir).unwrap();
+        let list = servers::load(&file);
+        assert_eq!(ips(), ["127.0.0.1:2", address]);
+        assert_eq!(
+            (list[1].name.as_str(), list[1].icon.as_deref()),
+            ("Our SMP", Some("AAAA"))
+        );
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap(),
+            format!("{address}\n")
+        );
+        // Once: the old address added back afterwards is the player's.
+        servers::prepend(&file, &ServerEntry::new("Old", "horizon.bunchy7s.dev")).unwrap();
+        add_official_server(&dir).unwrap();
+        assert_eq!(ips(), ["horizon.bunchy7s.dev", "127.0.0.1:2", address]);
+        // The new address already listed: no second entry.
+        offered_before(&[
+            ServerEntry::new("Old", "horizon.bunchy7s.dev"),
+            ServerEntry::new("New", address),
+        ]);
+        add_official_server(&dir).unwrap();
+        assert_eq!(ips(), [address]);
+        // Deleted by the player before the move: not offered again; another port is left alone.
+        offered_before(&[ServerEntry::new("Test", "horizon.bunchy7s.dev:25570")]);
+        add_official_server(&dir).unwrap();
+        assert_eq!(ips(), ["horizon.bunchy7s.dev:25570"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1914,7 +2062,10 @@ mod tests {
         );
         // The right half joins at once.
         match screen.click(None, ix + 20.0, iy + 2.0 * ROW_HEIGHT + 10.0, size, &saves) {
-            Outcome::Connect(address) => assert_eq!(address, list[2].ip),
+            Outcome::Connect { address, lan } => {
+                assert_eq!(address, list[2].ip);
+                assert!(!lan);
+            }
             _ => panic!("the join arrow connects"),
         }
         let _ = std::fs::remove_dir_all(&dir);

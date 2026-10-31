@@ -34,6 +34,7 @@ impl StartupMenu {
                 address: address.clone(),
                 name: options.player_name(),
                 cookies: None,
+                lan: false,
             })
         } else {
             options
@@ -131,10 +132,11 @@ impl StartupMenu {
                 creative,
                 create: Some(Box::new(options)),
             },
-            Action::Connect { address } => PendingWorldEntry::Server {
+            Action::Connect { address, lan } => PendingWorldEntry::Server {
                 address,
                 name: player_name,
                 cookies: None,
+                lan,
             },
             _ => return,
         };
@@ -157,7 +159,7 @@ impl StartupMenu {
     }
 
     /// `Screen.keyPressed` on the title screens: the action a key starts (Enter confirms, see `confirm_key` in title.rs).
-    fn title_key(&mut self, event: &KeyEvent) -> Action {
+    fn title_key(&mut self, event: &KeyEvent, viewport: (f32, f32)) -> Action {
         let shortcut = self.shortcut(event);
         let Some(title) = &mut self.title else {
             return Action::None;
@@ -179,10 +181,16 @@ impl StartupMenu {
         match event.physical_key {
             PhysicalKey::Code(KeyCode::Escape) => title.escape(),
             PhysicalKey::Code(KeyCode::F5) => title.refresh_servers(),
-            PhysicalKey::Code(KeyCode::Tab) => title.tab(),
-            PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => return title.confirm_key(),
-            PhysicalKey::Code(KeyCode::Space) if title.list_focused() => {
-                return title.confirm_key();
+            PhysicalKey::Code(KeyCode::Tab) => {
+                title.tab_dir(self.modifiers.shift_key(), viewport);
+            }
+            PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
+                return title.confirm_key_size(viewport).0;
+            }
+            PhysicalKey::Code(KeyCode::Space)
+                if title.list_focused() || title.focused_button.is_some() =>
+            {
+                return title.confirm_key_size(viewport).0;
             }
             PhysicalKey::Code(
                 key @ (KeyCode::Backspace
@@ -197,6 +205,14 @@ impl StartupMenu {
                     self.modifiers.control_key(),
                     self.modifiers.shift_key(),
                 );
+            }
+            PhysicalKey::Code(
+                key @ (KeyCode::ArrowLeft
+                | KeyCode::ArrowRight
+                | KeyCode::ArrowUp
+                | KeyCode::ArrowDown),
+            ) => {
+                title.arrow_key(key, viewport);
             }
             _ => {
                 let cleared = !title.has_caret_field()
@@ -317,11 +333,15 @@ impl Loading {
             gui.atlas.font.japanese = self.settings.japanese_glyphs;
         }
         if let Some(window) = self.window.clone() {
-            let modes = window
+            let monitor = window
                 .current_monitor()
-                .or_else(|| window.primary_monitor())
-                .map(|m| horizon_client::window::monitor_video_modes(&m))
-                .unwrap_or_default();
+                .or_else(|| window.primary_monitor());
+            if let Some(modes) = self
+                .video_modes
+                .refresh(monitor, horizon_client::window::monitor_video_modes)
+            {
+                self.settings.video_modes = modes;
+            }
             let preferred = self
                 .settings
                 .file
@@ -335,7 +355,6 @@ impl Loading {
                 preferred,
                 false,
             );
-            self.settings.video_modes = modes;
         }
         self.update_menu_cursor();
     }
@@ -381,7 +400,7 @@ impl Loading {
     fn open_menu_options(&mut self, page: Page) {
         self.menu.options.open_at(false, page);
         self.menu.options.languages = horizon_client::lang::available(&[&self.menu.root]);
-        self.menu.options.pack_infos = packs::pack_infos(&self.vanilla_root);
+        self.menu.options.pack_infos = packs::pack_infos(&self.vanilla_root, &[]);
         self.menu.options.pack_selection = self.settings.resource_packs.clone();
         self.menu.options.pack_screen = None;
         self.menu.options_open = true;
@@ -420,8 +439,9 @@ impl Loading {
                     packs::open_folder(&dir);
                 }
                 Event::DataPacks(ids) => {
+                    let resources = self.vanilla_root.clone();
                     if let Some(title) = &mut self.menu.title {
-                        title.set_data_packs(ids);
+                        title.offer_data_packs(&resources, ids);
                     }
                 }
                 Event::OpenDataPackFolder(dir) => {
@@ -548,6 +568,13 @@ impl Loading {
             }
             WindowEvent::RedrawRequested => self.draw(),
             WindowEvent::ModifiersChanged(modifiers) => self.menu.modifiers = modifiers.state(),
+            // `PackSelectionScreen.onFilesDrop`: a pack dropped on the window
+            // joins the Create New World screen's data packs.
+            WindowEvent::DroppedFile(path) => {
+                if let Some(title) = &mut self.menu.title {
+                    title.drop_file(path);
+                }
+            }
             WindowEvent::Focused(false) => {
                 self.menu.modifiers = ModifiersState::empty();
                 self.menu.physical_keys.clear();
@@ -691,7 +718,8 @@ impl Loading {
                         self.menu_option_events(events);
                     }
                 } else {
-                    let action = self.menu.title_key(&event);
+                    let batch = HudBatch::new(self.menu_size());
+                    let action = self.menu.title_key(&event, (batch.width, batch.height));
                     self.menu_action(event_loop, action);
                 }
             }
@@ -701,7 +729,13 @@ impl Loading {
     }
 
     pub(super) fn draw_menu(&mut self, batch: &mut HudBatch) {
-        let Some(gui) = &self.gui else { return };
+        let logs = horizon_client::logging::recent_lines();
+        let Some(gui) = &self.gui else {
+            // The pack's screens do not exist yet: the boot screen holds the
+            // window, the wordmark and the console's lines while they load.
+            horizon_client::ui_theme::draw_boot(&self.boot, batch, &logs);
+            return;
+        };
         if self.menu.pending.is_some() {
             horizon_client::level_loading::draw_loading_overlay(
                 batch,
@@ -734,8 +768,13 @@ impl Loading {
                 self.settings.save(&Game::options_path());
             }
             let _ = title.update_toast(self.settings.notification_display_time);
-            title.draw(
+            let items = match &self.loaded {
+                Some(Ok(loaded)) => Some(&*loaded.pack.item_renderer),
+                _ => None,
+            };
+            title.draw_with_items(
                 &gui.atlas,
+                items,
                 batch,
                 self.menu.cursor,
                 self.settings.file.bool("hideSplashTexts"),
@@ -800,9 +839,11 @@ mod tests {
         Loading {
             window: None,
             renderer: None,
+            boot: horizon_client::hud::HudAtlas::boot(),
             gui: None,
             settings: Settings::default(),
             fullscreen: horizon_client::window::FullscreenState::new(false),
+            video_modes: Default::default(),
             options: None,
             vanilla_root: PathBuf::new(),
             pack_error: None,
@@ -874,16 +915,17 @@ mod tests {
     }
 
     #[test]
-    fn queued_server_keeps_address_and_player_identity() {
+    fn queued_server_keeps_address_player_identity_and_lan_kind() {
         let mut menu = StartupMenu::default();
         menu.queue_entry(
             Action::Connect {
                 address: "localhost:25565".into(),
+                lan: true,
             },
             "Guest".into(),
         );
         assert!(
-            matches!(menu.pending.take(), Some(PendingWorldEntry::Server { address, name, .. })
+            matches!(menu.pending.take(), Some(PendingWorldEntry::Server { address, name, lan: true, .. })
             if address == "localhost:25565" && name == "Guest")
         );
         assert!(menu.pending.take().is_none(), "an entry is consumed once");

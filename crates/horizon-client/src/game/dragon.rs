@@ -1190,7 +1190,7 @@ impl Game<'_> {
     /// The dragon part under the crosshair within reach: its id and distance.
     pub(super) fn dragon_hit(&self) -> Option<(u32, f64)> {
         let (eye, dir) = self.aim()?;
-        let reach: f64 = if self.creative { 5.0 } else { 3.0 };
+        let reach: f64 = self.entity_reach;
         let mut best: Option<(u32, f64)> = None;
         for (id, b) in self.special_targets() {
             let (lo, hi) = (b.min_position(), b.max_position());
@@ -1706,15 +1706,7 @@ impl Game<'_> {
                 }
             }
             Phase::Attacking { ticks } => {
-                if *ticks == 0 {
-                    let pitch = 0.8 + self.world.random.next_float() * 0.3;
-                    self.audio.play(
-                        "minecraft:entity.ender_dragon.growl",
-                        Some([pos.x, pos.y, pos.z]),
-                        2.5,
-                        pitch,
-                    );
-                }
+                // The growl is `doClientTick`'s (`remote_dragon_phase_tick`).
                 *ticks += 1;
                 if *ticks > 40 {
                     next = Some(Phase::Flaming { ticks: 0 });
@@ -2700,7 +2692,11 @@ impl Game<'_> {
         }
         additive.extend(eye_quads);
         if death > 0.0 {
+            let rays = additive.len();
             self.dragon_rays(rays_base, death / 200.0, additive);
+            for v in &mut additive[rays..] {
+                v.layer |= u32::from(horizon_client::mesher::VERY_BRIGHT) << 16;
+            }
         }
         // The healing beam to the nearest crystal.
         if let Some(c) = d.nearest_crystal.and_then(|i| self.crystals.get(i)) {
@@ -2770,7 +2766,8 @@ impl Game<'_> {
                     normal: [0; 4],
                     pos: m.transform_point3(p).to_array(),
                     uv,
-                    layer: 6,
+                    // HDR output: the healing beam shines (entity.wgsl fs_hdr_mark).
+                    layer: 6 | u32::from(horizon_client::mesher::BRIGHT) << 16,
                     color: c,
                     light: wrap_light,
 
@@ -3656,7 +3653,107 @@ impl Game<'_> {
         let d = self.dragon.as_mut().expect("dragon");
         d.yaw = wrap(d.yaw);
         d.record();
+        self.remote_dragon_phase_tick();
         self.place_dragon_parts();
+    }
+    /// `DragonLandingPhase.doClientTick`, `DragonSittingFlamingPhase.doClientTick`,
+    /// `DragonDeathPhase.doClientTick` and `DragonSittingAttackingPhase.doClientTick`,
+    /// which `EnderDragon.aiStep` runs on a client. The first two breathe
+    /// dragon breath from the head (their `look.yRot(...)` results are thrown
+    /// away in vanilla, so every puff leaves along the same line), the third
+    /// puffs an explosion every 10 ticks and the last growls on every tick.
+    fn remote_dragon_phase_tick(&mut self) {
+        let look = self.dragon_look();
+        let norm = (look[0] * look[0] + look[1] * look[1] + look[2] * look[2]).sqrt();
+        let look = if norm < 1.0e-5 {
+            [0.0; 3]
+        } else {
+            [look[0] / norm, look[1] / norm, look[2] / norm]
+        };
+        let Some(d) = self.dragon.as_mut() else {
+            return;
+        };
+        let head = d.parts[0].0;
+        let head_y = head.y + PART_SIZES[0].1 * 0.5;
+        let motion = d.velocity;
+        let at = [d.position.x, d.position.y, d.position.z];
+        let mut puffs: Vec<([f64; 3], [f64; 3])> = Vec::new();
+        let mut emitter = None;
+        let mut growl = None;
+        match &mut d.phase {
+            Phase::Landing { .. } => {
+                for _ in 0..8 {
+                    let r = &mut d.random;
+                    let p = [
+                        head.x + r.next_gaussian() / 2.0,
+                        head_y + r.next_gaussian() / 2.0,
+                        head.z + r.next_gaussian() / 2.0,
+                    ];
+                    puffs.push((
+                        p,
+                        [
+                            -look[0] * f64::from(0.08_f32) + motion.x,
+                            -look[1] * f64::from(0.3_f32) + motion.y,
+                            -look[2] * f64::from(0.08_f32) + motion.z,
+                        ],
+                    ));
+                }
+            }
+            Phase::Flaming { ticks } => {
+                *ticks += 1;
+                if *ticks % 2 == 0 && *ticks < 10 {
+                    for _ in 0..8 {
+                        let r = &mut d.random;
+                        let p = [
+                            head.x + r.next_gaussian() / 2.0,
+                            head_y + r.next_gaussian() / 2.0,
+                            head.z + r.next_gaussian() / 2.0,
+                        ];
+                        for j in 0..6 {
+                            puffs.push((
+                                p,
+                                [
+                                    -look[0] * f64::from(0.08_f32) * f64::from(j),
+                                    -look[1] * f64::from(0.6_f32),
+                                    -look[2] * f64::from(0.08_f32) * f64::from(j),
+                                ],
+                            ));
+                        }
+                    }
+                }
+            }
+            Phase::Dying { time, .. } => {
+                if *time % 10 == 0 {
+                    let r = &mut d.random;
+                    let o = [
+                        f64::from((r.next_float() - 0.5) * 8.0),
+                        f64::from((r.next_float() - 0.5) * 4.0),
+                        f64::from((r.next_float() - 0.5) * 8.0),
+                    ];
+                    emitter = Some([at[0] + o[0], at[1] + 2.0 + o[1], at[2] + o[2]]);
+                }
+                *time += 1;
+            }
+            Phase::Attacking { .. } => {
+                growl = Some(0.8 + d.random.next_float() * 0.3);
+            }
+            _ => {}
+        }
+        let breath = ParticleOptions::simple(ParticleType::DragonBreath);
+        for (p, v) in puffs {
+            self.particles.add(&breath, p, v);
+        }
+        if let Some(p) = emitter {
+            self.particles.add(
+                &ParticleOptions::simple(ParticleType::ExplosionEmitter),
+                p,
+                [0.0; 3],
+            );
+        }
+        if let Some(pitch) = growl {
+            self.audio
+                .play("minecraft:entity.ender_dragon.growl", Some(at), 2.5, pitch);
+        }
     }
     /// The dragon's parts as a server's client attacks them: the server's
     /// ids for `EnderDragonPart`s follow the dragon's.
@@ -3850,6 +3947,28 @@ mod tests {
         let hurt = d.hurt_part(0, 1.0, true, DamageKind::WindCharge, Some(&charge));
         assert_eq!(hurt, Hurt::Landed { full: true });
         assert_eq!(d.health, MAX_HEALTH - 1.0);
+    }
+
+    #[test]
+    fn only_a_player_owned_wither_skull_takes_the_dragons_health() {
+        // WitherSkull.onHitEntity: EnderDragon.hurt takes the wither's skull
+        // (not a player, not an explosion) but takes no health, even perched.
+        let skull = ProjectileKind::WitherSkull { dangerous: false };
+        let wither = super::super::wither::skull_source(Some(Who::Mob(7)), [0.0; 3]);
+        assert_eq!((wither.amount, wither.kind), (8.0, DamageKind::WitherSkull));
+        let mut d = dragon(Phase::Scanning { time: 0 });
+        let hurt = d.hurt_part(2, wither.amount, false, wither.kind, Some(&skull));
+        assert_eq!(hurt, Hurt::Landed { full: false });
+        assert_eq!(d.health, MAX_HEALTH);
+        // A player's skull: 8 on the head, 8 / 4 + 1 on the body.
+        let player = super::super::wither::skull_source(Some(Who::Player), [0.0; 3]);
+        let mut d = dragon(Phase::Scanning { time: 0 });
+        let hurt = d.hurt_part(0, player.amount, true, player.kind, Some(&skull));
+        assert_eq!(hurt, Hurt::Landed { full: true });
+        assert_eq!(d.health, MAX_HEALTH - 8.0);
+        let mut d = dragon(flying());
+        d.hurt_part(2, player.amount, true, player.kind, Some(&skull));
+        assert_eq!(d.health, MAX_HEALTH - 3.0);
     }
 
     #[test]

@@ -153,6 +153,23 @@ impl Game<'_> {
         reply: &Sender<String>,
         event_loop: &ActiveEventLoop,
     ) -> Result<Option<Value>> {
+        // A tap's or an up's release must run even when a dialog, the sign
+        // editor or a screen consumes the key, there is no world, or a
+        // command handler returns an error: a lost release keeps Shift down.
+        let released = released_modifier(line);
+        let result = self.control_command_inner(line, reply, event_loop);
+        if let Some(key) = released {
+            self.press_modifier_key(key, false);
+        }
+        result
+    }
+
+    fn control_command_inner(
+        &mut self,
+        line: &str,
+        reply: &Sender<String>,
+        event_loop: &ActiveEventLoop,
+    ) -> Result<Option<Value>> {
         let words: Vec<&str> = line.split_whitespace().collect();
         if self.pending_save.is_some() && words.first() != Some(&"quit") {
             return Err("a world save is in progress".into());
@@ -285,6 +302,13 @@ impl Game<'_> {
             "pad" => Ok(Some(self.pad_command(&words)?)),
             "key" => {
                 let key = key_code(arg(1)?).ok_or_else(|| format!("unknown key {}", words[1]))?;
+                let action = arg(2)?;
+                if !matches!(action, "down" | "up" | "tap" | "repeat") {
+                    return Err(format!(
+                        "key action must be down, up, tap or repeat, not {action}"
+                    )
+                    .into());
+                }
                 // A server's dialog takes the keys, in configuration too.
                 if self.dialog_open() {
                     if arg(2)? != "up" {
@@ -324,6 +348,7 @@ impl Game<'_> {
                 {
                     use horizon_client::debug_keys::KeyAction;
                     let action = arg(2)?;
+                    self.press_modifier_key(key, action != "up");
                     if action != "up" {
                         self.physical_keys.insert(key);
                         if self.debug_key(key, KeyAction::Press) {
@@ -345,8 +370,11 @@ impl Game<'_> {
                 if action == "tap" {
                     self.native_key_event(physical, false, false);
                 }
-                // The merchant's focused offer takes Enter and Space, as the window's.
-                if action != "up" && self.screen == Screen::Inventory && self.merchant_key(physical)
+                // The merchant's focused offer and the recipe book's last
+                // recipe take Enter and Space, as the window's.
+                if action != "up"
+                    && self.screen == Screen::Inventory
+                    && (self.merchant_key(physical) || self.recipe_book_key(physical))
                 {
                     return ok();
                 }
@@ -393,18 +421,30 @@ impl Game<'_> {
                         self.physical_keys.remove(&physical);
                         self.debug_key(physical, horizon_client::debug_keys::KeyAction::Release);
                     }
-                    other => {
-                        return Err(format!(
-                            "key action must be down, up, tap or repeat, not {other}"
-                        )
-                        .into());
-                    }
+                    _ => unreachable!("checked above"),
                 }
                 ok()
             }
             "release" => {
                 self.keys.clear();
                 self.physical_keys.clear();
+                self.modifiers = winit::keyboard::ModifiersState::empty();
+                // Sneak and sprint pressed through `key` live in the toggle
+                // mappings: release them as their key's release would (a
+                // toggled one stays on), or the next sync puts them back. A
+                // controller still holding one keeps it.
+                let options = [self.settings.toggle_crouch, self.settings.toggle_sprint];
+                for (slot, name) in [(0, "key.sneak"), (1, "key.sprint")] {
+                    if !self.pad.holds_action(&self.settings.controller, name) {
+                        self.toggles.key(
+                            slot,
+                            horizon_client::keymapping::KeyAction::Release,
+                            false,
+                            options[slot],
+                        );
+                    }
+                    self.sync_toggle(slot);
+                }
                 self.left = false;
                 self.right = false;
                 ok()
@@ -530,8 +570,12 @@ impl Game<'_> {
             }
             "lod-distance" => {
                 let n: u32 = arg(1)?.parse()?;
-                if n > 1024 {
-                    return Err("LOD distance must be 0..1024".into());
+                if n > horizon_client::lod::MAX_CHUNKS {
+                    return Err(format!(
+                        "LOD distance must be 0..{}",
+                        horizon_client::lod::MAX_CHUNKS
+                    )
+                    .into());
                 }
                 self.settings.horizon.lod_distance = n;
                 self.apply_settings();
@@ -635,6 +679,7 @@ impl Game<'_> {
                     Screen::Chat => self.chat_type(text),
                     Screen::CommandBlock => self.command_block_type(text),
                     Screen::BlockEditor => self.block_editor_type(text),
+                    Screen::DebugOptions => self.debug_options_type(text),
                     Screen::Options => self.ui.options.type_text(&self.gui.atlas, text),
                     // The port, or the game rules' search and number boxes.
                     Screen::WorldOptions if text == "\\b" => self.world_options_text(None),
@@ -914,6 +959,7 @@ impl Game<'_> {
             Screen::CommandBlock => "command-block",
             Screen::BlockEditor => "block-editor",
             Screen::Win => "win",
+            Screen::DebugOptions => "debug-options",
         }
     }
 
@@ -1032,6 +1078,7 @@ impl Game<'_> {
             "cached_tiles": self.lod.as_ref().map_or(0, |lod| lod.stats().1),
             "far_detail": self.settings.horizon.far_detail.name(),
             "resident_quads": self.renderer.as_ref().map_or(0, |r| r.lod_quads()),
+            "levels": self.renderer.as_ref().map_or_else(Vec::new, |r| r.lod_levels()),
             "pending_observations": self.lod_observe.len(),
             "refined_samples": self.lod.as_ref().map_or(0, |lod| lod.refined_samples()),
         });
@@ -1045,8 +1092,8 @@ impl Game<'_> {
             "screen": self.screen_name(),
             "debug": {
                 "overlay": self.debug,
-                "hitboxes": self.show_hitboxes,
-                "chunk_borders": self.show_chunk_borders,
+                "hitboxes": self.debug_entry("entity_hitboxes"),
+                "chunk_borders": self.debug_entry("chunk_borders"),
                 "pause_menu": self.pause_menu,
                 "advanced_tooltips": self.settings.file.bool("advancedItemTooltips"),
                 "pause_on_lost_focus": self.settings.file.bool("pauseOnLostFocus"),
@@ -1147,6 +1194,15 @@ fn vendor_name(id: u32) -> String {
     }
 }
 
+/// The key a `key <name> tap|up` command releases, whatever its handler does.
+fn released_modifier(line: &str) -> Option<KeyCode> {
+    let mut words = line.split_whitespace();
+    match (words.next(), words.next(), words.next()) {
+        (Some("key"), Some(key), Some("tap" | "up")) => key_code(key),
+        _ => None,
+    }
+}
+
 fn key_code(name: &str) -> Option<KeyCode> {
     let name = name.to_ascii_lowercase();
     let letters = [
@@ -1222,4 +1278,25 @@ fn key_code(name: &str) -> Option<KeyCode> {
         "down" => KeyCode::ArrowDown,
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn taps_and_ups_always_release_their_key() {
+        for line in ["key shift tap", "key shift up", "key  Shift  up"] {
+            assert_eq!(released_modifier(line), Some(KeyCode::ShiftLeft), "{line}");
+        }
+        for line in [
+            "key shift down",
+            "key shift repeat",
+            "key shift",
+            "keys shift up",
+            "key nope up",
+        ] {
+            assert_eq!(released_modifier(line), None, "{line}");
+        }
+    }
 }
