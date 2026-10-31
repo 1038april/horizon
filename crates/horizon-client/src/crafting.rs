@@ -54,12 +54,39 @@ impl Ingredient {
     /// list it matches. A kind outside these still fails the file: a mod's
     /// own ingredient types come with their own hook, not the loader.
     fn parse_object(o: &serde_json::Map<String, Value>, items: &Items) -> Option<Self> {
-        let kept = match o.get("type")?.as_str()? {
-            // All the sub-ingredients match the same stack: the items every
-            // one of them names, in the first's order.
-            "neoforge:compound" | "neoforge:intersection" => {
-                let subs = o.get("ingredients")?.as_array()?;
-                let subs: Vec<Self> = subs
+        // Current NeoForge marks a custom ingredient with
+        // `neoforge:ingredient_type`; `type` is the older packs' key.
+        let kind = o
+            .get("neoforge:ingredient_type")
+            .or_else(|| o.get("type"))?
+            .as_str()?;
+        let children = || {
+            o.get("children")
+                .or_else(|| o.get("ingredients"))
+                .and_then(Value::as_array)
+        };
+        let kept = match kind {
+            // `CompoundIngredient`: any of its children matching the stack
+            // is enough — the union of their items.
+            "neoforge:compound" => {
+                let subs: Vec<Self> = children()?
+                    .iter()
+                    .map(|s| Self::parse(s, items))
+                    .collect::<Option<_>>()?;
+                let mut seen = Vec::new();
+                for sub in &subs {
+                    for item in &sub.1 {
+                        if !seen.contains(item) {
+                            seen.push(item.clone());
+                        }
+                    }
+                }
+                seen
+            }
+            // `IntersectionIngredient`: every child must match the same
+            // stack — the items all of them name.
+            "neoforge:intersection" => {
+                let subs: Vec<Self> = children()?
                     .iter()
                     .map(|s| Self::parse(s, items))
                     .collect::<Option<_>>()?;
@@ -79,21 +106,6 @@ impl Ingredient {
                     .filter(|i| !gone.0.contains(*i))
                     .cloned()
                     .collect()
-            }
-            // A fluid in an item slot: the fluid's own item form, its full
-            // bucket (a water or lava tag names the same still fluid).
-            "neoforge:fluid" => {
-                let fluid = o
-                    .get("fluid")
-                    .and_then(Value::as_str)
-                    .or_else(|| o.get("tag").and_then(Value::as_str))?;
-                let bucket = match fluid.trim_start_matches('#') {
-                    "minecraft:water" => "minecraft:water_bucket",
-                    "minecraft:lava" => "minecraft:lava_bucket",
-                    "minecraft:powder_snow" => "minecraft:powder_snow_bucket",
-                    _ => return None,
-                };
-                vec![bucket.to_owned()]
             }
             _ => return None,
         };
@@ -1847,7 +1859,8 @@ mod tests {
         let recipe = r##"{
             "type": "minecraft:crafting_shapeless",
             "ingredients": [
-                {"type": "neoforge:fluid", "fluid": "minecraft:water"},
+                {"neoforge:ingredient_type": "neoforge:compound",
+                 "children": ["minecraft:oak_planks", "minecraft:birch_planks"]},
                 {"type": "neoforge:difference",
                  "base": ["minecraft:oak_planks", "minecraft:birch_planks"],
                  "subtracted": "minecraft:birch_planks"}
@@ -1876,9 +1889,24 @@ mod tests {
         );
         let items = Items::for_tests(tags);
         let json = |s: &str| serde_json::from_str::<Value>(s).unwrap();
-        // Compound: the items every sub-ingredient names, a tag beside an item.
+        // Compound (`CompoundIngredient`): any child matching is enough —
+        // the union of their items, a tag beside an item gives both.
+        let union = Ingredient::parse(
+            &json(r##"{"neoforge:ingredient_type":"neoforge:compound","children":["#minecraft:planks","minecraft:stone"]}"##),
+            &items,
+        )
+        .unwrap();
+        assert_eq!(
+            union.1,
+            [
+                "minecraft:oak_planks",
+                "minecraft:birch_planks",
+                "minecraft:stone"
+            ]
+        );
+        // Intersection: every child must match — only the items all name.
         let both = Ingredient::parse(
-            &json(r##"{"type":"neoforge:compound","ingredients":["#minecraft:planks","minecraft:oak_planks"]}"##),
+            &json(r##"{"type":"neoforge:intersection","children":["#minecraft:planks","minecraft:oak_planks"]}"##),
             &items,
         )
         .unwrap();
@@ -1890,18 +1918,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(no_oak.1, ["minecraft:birch_planks"]);
-        // A fluid in an item slot is its bucket, a tag naming the still fluid too.
-        for shape in [
-            r#"{"type":"neoforge:fluid","fluid":"minecraft:water"}"#,
-            r#"{"type":"neoforge:fluid","tag":"minecraft:water"}"#,
-        ] {
-            let bucket = Ingredient::parse(&json(shape), &items).unwrap();
-            assert_eq!(bucket.1, ["minecraft:water_bucket"]);
-        }
         // An empty intersection and an unknown kind fail the file, as today.
         let empty = Ingredient::parse(
             &json(
-                r#"{"type":"neoforge:compound","ingredients":["minecraft:oak_planks","minecraft:birch_planks"]}"#,
+                r#"{"type":"neoforge:intersection","children":["minecraft:oak_planks","minecraft:birch_planks"]}"#,
             ),
             &items,
         );
