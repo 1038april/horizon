@@ -819,6 +819,10 @@ pub trait StartContext: JigsawContext {
     fn is_old_chunk(&self, _chunk: ChunkPos) -> bool {
         false
     }
+    /// The starts that old chunk saved: see `OldWorld::saved_starts`.
+    fn saved_starts(&self, _chunk: ChunkPos) -> Vec<(String, Option<[i32; 6]>)> {
+        Vec::new()
+    }
     fn seed(&self) -> i64;
     fn sea_level(&self) -> i32;
     /// ChunkGenerator.getBaseColumn as heightmap opacity, indexed from min_y.

@@ -410,6 +410,14 @@ pub trait OldWorld: Send + Sync {
     /// The biomes an old chunk keeps (what the chunk stores, not what the
     /// generator would make there), which its neighbours' surfaces read.
     fn old_biomes(&self, x: i32, z: i32) -> Option<Arc<super::biome_chunk::BiomeChunk<BiomeId>>>;
+    /// The structure starts an old chunk saved (`structures.starts`): each
+    /// structure's name and the union of its pieces' bounding boxes
+    /// (`[min x, min y, min z, max x, max y, max z]`). What the chunk saved
+    /// is what `getStructureAt` and `/locate` see there, not what this
+    /// generator would make.
+    fn saved_starts(&self, _x: i32, _z: i32) -> Vec<(String, Option<[i32; 6]>)> {
+        Vec::new()
+    }
 }
 
 /// `Blender.BlendingOutput`.

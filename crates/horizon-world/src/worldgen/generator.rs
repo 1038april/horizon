@@ -1794,6 +1794,13 @@ where
             .get()
             .is_some_and(|world| world.is_old_chunk_around(chunk, 0))
     }
+    fn saved_starts(&self, chunk: ChunkPos) -> Vec<(String, Option<[i32; 6]>)> {
+        self.pipeline
+            .old_world
+            .get()
+            .map(|world| world.saved_starts(chunk.x, chunk.z))
+            .unwrap_or_default()
+    }
     fn seed(&self) -> i64 {
         self.pipeline.seed
     }

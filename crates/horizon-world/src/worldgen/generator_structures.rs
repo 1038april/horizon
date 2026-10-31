@@ -292,7 +292,39 @@ impl StructureState {
             return found;
         }
         if context.is_old_chunk(chunk) {
-            return Starts::default();
+            // What the old chunk saved, without pieces: a start its own
+            // version made is found by `/locate` and maps, but not rebuilt.
+            return Arc::new(
+                context
+                    .saved_starts(chunk)
+                    .into_iter()
+                    .filter_map(|(name, bounds)| {
+                        let structure = self
+                            .registry
+                            .structures
+                            .iter()
+                            .position(|s| s.name == name)?;
+                        let [x0, y0, z0, x1, y1, z1] = bounds.unwrap_or([
+                            chunk.x * 16,
+                            0,
+                            chunk.z * 16,
+                            chunk.x * 16 + 15,
+                            0,
+                            chunk.z * 16 + 15,
+                        ]);
+                        Some(Arc::new(StructureStart {
+                            structure,
+                            name,
+                            chunk,
+                            pieces: Vec::new(),
+                            bounding_box: crate::worldgen::structure::BoundingBox::new(
+                                [x0, y0, z0],
+                                [x1, y1, z1],
+                            ),
+                        }))
+                    })
+                    .collect(),
+            );
         }
         // Ring searches enlist other workers and wait for them: never hold a
         // chunk-work lock while helping, even when this chunk has no starts.

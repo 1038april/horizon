@@ -152,6 +152,12 @@ impl OldWorld for SavedOldWorld {
         }
         false
     }
+    fn saved_starts(&self, x: i32, z: i32) -> Vec<(String, Option<[i32; 6]>)> {
+        self.save
+            .raw_chunk(x, z)
+            .map(|root| starts_of(&root.tag))
+            .unwrap_or_default()
+    }
     fn blending(&self, x: i32, z: i32) -> Option<Arc<BlendingData>> {
         if !self.is_old(x, z) {
             return None;
@@ -203,5 +209,85 @@ impl OldWorld for SavedOldWorld {
         }
         cache.insert((x, z), made.clone());
         made
+    }
+}
+
+/// The `structures.starts` of a saved chunk: each valid start's name and the
+/// union of its pieces' `BB`.
+fn starts_of(chunk: &Tag) -> Vec<(String, Option<[i32; 6]>)> {
+    let Some(Tag::Compound(starts)) = chunk.get("structures").and_then(|s| s.get("starts")) else {
+        return Vec::new();
+    };
+    starts
+        .iter()
+        .filter(|(_, start)| {
+            !matches!(start.get("id"), Some(Tag::String(id)) if id.to_string_lossy() == "INVALID")
+        })
+        .map(|(name, start)| {
+            let mut bounds: Option<[i32; 6]> = None;
+            if let Some(Tag::List(children)) = start.get("Children") {
+                for child in children {
+                    if let Some(Tag::IntArray(bb)) = child.get("BB")
+                        && let [a, b, c, d, e, f] = bb[..]
+                    {
+                        bounds = Some(match bounds {
+                            None => [a, b, c, d, e, f],
+                            Some([x0, y0, z0, x1, y1, z1]) => [
+                                x0.min(a),
+                                y0.min(b),
+                                z0.min(c),
+                                x1.max(d),
+                                y1.max(e),
+                                z1.max(f),
+                            ],
+                        });
+                    }
+                }
+            }
+            (name.to_string_lossy(), bounds)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saved_starts_are_the_valid_ones_with_their_pieces_union() {
+        let piece = |bb: [i32; 6]| Tag::compound([("BB", Tag::IntArray(bb.to_vec()))]);
+        let chunk = Tag::compound([(
+            "structures",
+            Tag::compound([(
+                "starts",
+                Tag::compound([
+                    (
+                        "minecraft:village_plains",
+                        Tag::compound([
+                            ("id", Tag::String("minecraft:village_plains".into())),
+                            (
+                                "Children",
+                                Tag::List(vec![
+                                    piece([0, 60, 0, 10, 70, 8]),
+                                    piece([-4, 62, 3, 6, 72, 20]),
+                                ]),
+                            ),
+                        ]),
+                    ),
+                    (
+                        "minecraft:mineshaft",
+                        Tag::compound([("id", Tag::String("INVALID".into()))]),
+                    ),
+                ]),
+            )]),
+        )]);
+        assert_eq!(
+            starts_of(&chunk),
+            vec![(
+                "minecraft:village_plains".to_owned(),
+                Some([-4, 60, 0, 10, 72, 20])
+            )]
+        );
+        assert!(starts_of(&Tag::compound([("DataVersion", Tag::Int(1))])).is_empty());
     }
 }
