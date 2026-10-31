@@ -2144,6 +2144,7 @@ impl Game<'_> {
                 on_ground: false,
                 count: 1,
                 ticks: 0,
+                health: 5,
             });
         }
         if let Some(t) = mob_type {
