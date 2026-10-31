@@ -240,7 +240,7 @@ impl Game<'_> {
             // LivingEntity.onItemPickup, before PiglinAi.pickUpItem splits the stack.
             self.mob_item_pickup_trigger(i, &taken_item);
             let stack = if &*item == "minecraft:gold_nugget" {
-                self.dropped.remove(j).stack
+                self.remove_dropped(j).stack
             } else {
                 let e = &mut self.dropped[j];
                 e.stack.count -= 1;
@@ -249,7 +249,7 @@ impl Game<'_> {
                     ..e.stack.clone()
                 };
                 if e.stack.count == 0 {
-                    self.dropped.remove(j);
+                    self.remove_dropped(j);
                 }
                 one
             };
