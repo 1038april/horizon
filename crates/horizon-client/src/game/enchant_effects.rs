@@ -12,7 +12,7 @@ use horizon_client::{
     items::ItemStack,
     mobs::Who,
 };
-use horizon_core::{position::BlockPos, random::RandomSource};
+use horizon_core::{geometry::Vec3, position::BlockPos, random::RandomSource};
 use horizon_world::{fluid::FluidKind, level::LevelAccess, registry::BlockStateId};
 use serde_json::Value;
 
@@ -134,7 +134,10 @@ impl Game<'_> {
     /// enchantment, halved) plus 0.5 for a sprinting full-strength hit, and
     /// whether the hit is that knockback attack.
     pub(super) fn extra_knockback(&mut self, target_kind: &str, scale: f32) -> (f32, bool) {
-        let sprinting = self.player.as_ref().is_some_and(|p| p.sprinting);
+        let is_spear = self
+            .held()
+            .is_some_and(|s| horizon_client::spear::Kinetic::of(&s.item).is_some());
+        let sprinting = !is_spear && self.player.as_ref().is_some_and(|p| p.sprinting);
         let enchanted = match self.held().cloned() {
             Some(held) => {
                 let ctx = EffectContext {
@@ -165,14 +168,16 @@ impl Game<'_> {
         let yaw = f64::from(self.yaw * trig::DEG_TO_RAD);
         (f64::from(trig::sin(yaw)), -f64::from(trig::cos(yaw)))
     }
-    /// The attacker's side of `causeExtraKnockback` as the attacking client
-    /// sees it after a hit on a mob: the server's player stops sprinting, and
-    /// its flag reaches the client. (The server's 0.6 speed cut never does:
-    /// the client's own `Player.attack` simulates no hurt on a mob, so it
-    /// skips the knockback. A hit on another player does simulate one:
-    /// `remote_player_attack`.)
+    /// The attacker's side of `causeExtraKnockback`: cuts the attacker's
+    /// horizontal velocity by 0.6 and stops sprinting.
     pub(super) fn stop_sprint_after_extra_knockback(&mut self) {
         if let Some(p) = self.player.as_mut() {
+            let slowdown = horizon_client::attack_strength::ATTACKER_SLOWDOWN;
+            p.velocity = Vec3::new(
+                p.velocity.x * slowdown,
+                p.velocity.y,
+                p.velocity.z * slowdown,
+            );
             let _ = p.set_sprinting(false);
         }
     }
