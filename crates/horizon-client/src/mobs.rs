@@ -2445,6 +2445,14 @@ impl Mob {
     ) -> bool {
         axolotl::before_damage(self, amount, &source);
         raider::note_hurt(self);
+        // SulfurCube.hurtServer: the priming and a block's immune knockback
+        // come before LivingEntity's checks, so a primed (invulnerable) cube
+        // is still knocked about.
+        if self.species() == Species::SulfurCube
+            && !sulfur_cube::accepts_damage(self, &source, amount)
+        {
+            return false;
+        }
         // LivingEntity.isInvulnerableTo: only #bypasses_invulnerability gets past it.
         if !self.alive()
             || self.removed
