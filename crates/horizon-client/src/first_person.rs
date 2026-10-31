@@ -989,8 +989,10 @@ mod tests {
             yaw += TURN;
         }
         let on_screen = |partial: f32| {
-            let mut camera = crate::camera::Camera::default();
-            camera.y_rot = yaw - TURN * (1.0 - partial);
+            let camera = crate::camera::Camera {
+                y_rot: yaw - TURN * (1.0 - partial),
+                ..Default::default()
+            };
             crate::camera::view_matrix(camera.y_rot, 0.0) * sway.to_world(partial, &camera)
         };
         let first = on_screen(0.0);
