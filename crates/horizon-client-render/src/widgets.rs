@@ -383,6 +383,12 @@ pub enum What {
     },
     /// `RecipeButton`: "Recipe for <item>".
     Recipe { item: String, more: bool },
+    /// `RecipeBookComponent`: one narratable, HOVERED whenever `visible`
+    /// (whatever the mouse and the focus), that narrates the widget
+    /// `findNarratableWidget` picks among its own one level in, with no
+    /// position of its own. Its widgets are the narratables recorded with it
+    /// as their parent (row 0).
+    Group { visible: bool },
 }
 
 /// A `NarratableEntry` as drawn this frame.
@@ -520,6 +526,22 @@ impl Narratable {
     pub fn container_list(rows: usize, hovered_row: Option<usize>, rect: [f32; 4]) -> Self {
         Self::new(What::ContainerList { rows, hovered_row }, rect)
     }
+    /// A `RecipeBookComponent`-like group over `rect`, narrated while
+    /// `visible`; its widgets are recorded with [`Self::in_group`].
+    pub fn group(visible: bool, rect: [f32; 4]) -> Self {
+        Self::new(What::Group { visible }, rect)
+    }
+    /// `RecipeButton`: the recipe's result `item`, and whether it has more
+    /// recipes than one.
+    pub fn recipe(item: impl Into<String>, more: bool, rect: [f32; 4]) -> Self {
+        Self::new(
+            What::Recipe {
+                item: item.into(),
+                more,
+            },
+            rect,
+        )
+    }
     pub fn key(mut self, key: u64) -> Self {
         self.key = key;
         self
@@ -541,6 +563,10 @@ impl Narratable {
         self.parent = Some((list, row));
         self
     }
+    /// A widget of the [`What::Group`] keyed `group`.
+    pub fn in_group(self, group: u64) -> Self {
+        self.child_of(group, 0)
+    }
     pub fn order(mut self, order: i32) -> Self {
         self.order = order;
         self
@@ -559,7 +585,8 @@ impl Narratable {
             | What::Text { .. }
             | What::List { .. }
             | What::ContainerList { .. }
-            | What::Recipe { .. } => true,
+            | What::Recipe { .. }
+            | What::Group { .. } => true,
         }
     }
     /// `key`, or one from the widget's kind and place (never 0).
@@ -842,6 +869,9 @@ mod narration_tests {
         assert!(a.is_active());
         assert!(!Narratable::button("B", a.rect, false).is_active());
         assert!(Narratable::edit_box("Search", "", a.rect).is_active());
+        assert!(Narratable::group(false, a.rect).is_active());
+        let recipe = Narratable::recipe("Torch", true, a.rect).in_group(9);
+        assert_eq!(recipe.parent, Some((9, 0)));
         assert_eq!(join_for_narration(&["Title", "Message"]), "Title. Message");
     }
 }
