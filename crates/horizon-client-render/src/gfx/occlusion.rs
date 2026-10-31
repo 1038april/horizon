@@ -128,6 +128,9 @@ struct Graph {
     /// (`Node.sourceDirections`, as the faces rather than the steps); none for
     /// the camera's.
     entered: Vec<u8>,
+    /// Whether any section in the searched top layer was reached. Sections
+    /// above a clamped box use this conservative sky-band answer.
+    sky_reached: bool,
     /// Per section corner, during a full search: `SEES`, or how far the line
     /// from it towards the camera is known to stay in reached sections (the
     /// first sample that was not). Sections are only ever added during a
@@ -163,9 +166,12 @@ impl Graph {
             && (key.0 - self.from.0).abs() <= self.radius
             && (key.2 - self.from.2).abs() <= self.radius
         {
-            let top_key = (key.0, self.y0 + self.height - 1, key.2);
-            self.index(top_key)
-                .is_some_and(|i| self.directions[i] & REACHED != 0)
+            // Everything above the highest non-air section is open sky. A
+            // full search can reach that layer from a neighbouring column,
+            // so checking only this column's top cell can hide an upper
+            // section that is visible through the open layer. Once any top
+            // cell is reached, conservatively keep the whole sky band visible.
+            self.sky_reached
         } else {
             false
         }
@@ -215,6 +221,7 @@ impl Graph {
         self.directions.resize(size, 0);
         self.entered.clear();
         self.entered.resize(size, 0);
+        self.sky_reached = false;
         self.rays.clear();
         self.rays
             .resize((side + 1) * (side + 1) * (self.height + 1) as usize, 0);
@@ -314,6 +321,9 @@ impl Graph {
         while let Some(index) = queue.pop_front() {
             let i = index as usize;
             let key = self.key(i);
+            if key.1 == self.y0 + self.height - 1 {
+                self.sky_reached = true;
+            }
             let directions = self.directions[i];
             let entered = self.entered[i];
             let exits = if entered == 0 {
@@ -1115,6 +1125,64 @@ mod tests {
             rayed > 100,
             "the distant step test culls sections ({rayed})"
         );
+    }
+
+    /// A clamped search may conservatively show sections above its searched
+    /// box, but it must never hide one that the full-height search reaches.
+    #[test]
+    fn vertical_clamping_only_adds_overdraw() {
+        let mut compared = 0;
+        let mut overdraw = 0;
+        let mut clamped = 0;
+        for seed in [0x9e37_79b9, 7, 0xdead_beef, 0x2545_f491] {
+            for (spread, count, radius) in [(6, 900, 6), (12, 2600, 12)] {
+                let mut o = Occlusion::new(0, 24);
+                random_world(&mut o, seed, count, spread);
+                let camera = at((0, 2, 0)) + DVec3::new(3.3, -5.7, 1.9);
+                o.settle(camera, radius);
+                let graph = o.graph.as_ref().expect("searched");
+                clamped += usize::from(graph.height < o.columns.sections + 2);
+                let full = reference(&o.columns, camera, radius, true);
+                let from = o.columns.section_of(camera);
+                let side = 2 * radius + 1;
+                let height = o.columns.sections + 2;
+                let full_contains = |key: SectionKey| {
+                    let (dx, dz, dy) = (key.0 - from.0, key.2 - from.2, key.1 + 1);
+                    if dx.abs() > radius || dz.abs() > radius || !(0..height).contains(&dy) {
+                        return false;
+                    }
+                    full[(((dz + radius) * side + dx + radius) * height + dy) as usize]
+                };
+                for x in from.0 - radius..=from.0 + radius {
+                    for z in from.2 - radius..=from.2 + radius {
+                        for y in -1..=o.columns.sections {
+                            let key = (x, y, z);
+                            let expected = full_contains(key);
+                            let actual = o.contains(key);
+                            compared += 1;
+                            assert!(
+                                !expected || actual,
+                                "clamped search hid {key:?} for seed {seed:#x}, spread {spread}, radius {radius}; from={from:?}, y0={}, height={}, expected={expected}, actual={actual}",
+                                graph.y0,
+                                graph.height
+                            );
+                            overdraw += usize::from(actual && !expected);
+                            if actual && !expected {
+                                assert!(
+                                    y >= graph.y0 + graph.height,
+                                    "overdraw must be above the clamped box: {key:?}, y0={}, height={}",
+                                    graph.y0,
+                                    graph.height
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(clamped > 0, "the comparison exercised a clamped search");
+        assert!(compared > 50_000, "compared {compared} sections");
+        assert!(overdraw > 0, "the conservative top-cell rule was exercised");
     }
 
     /// A line checked again from the sample it failed at, after more
