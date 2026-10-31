@@ -866,8 +866,8 @@ mod tests {
         item.data_mut().set_other(
             "minecraft:custom_data",
             Some(Tag::compound([(
-                "gtceu_material",
-                Tag::String("chlorine".into()),
+                "mymod_material",
+                Tag::String("ruby".into()),
             )])),
         );
         item.data_mut().set_other(
@@ -881,7 +881,7 @@ mod tests {
                 ),
                 (
                     "strings",
-                    Tag::List(vec![Tag::String("gtceu:chlorine".into())]),
+                    Tag::List(vec![Tag::String("mymod:ruby".into())]),
                 ),
             ])),
         );
