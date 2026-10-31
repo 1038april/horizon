@@ -745,6 +745,9 @@ pub struct Renderer {
     /// Screenshot Quality (Horizon setting): a `scaled` screenshot's frame is this many
     /// times the game's resolution (1, 2, 4 or 8).
     pub screenshot_quality: u32,
+    /// How many times the pending scaled screenshot ran out of video memory: each
+    /// halves its size, down to the window's.
+    screenshot_halvings: u32,
     /// Brightness option (lightmap gamma), 0..1.
     pub gamma: f32,
     /// Optional full-light lightmap (Horizon Extras).
@@ -3152,6 +3155,7 @@ impl Renderer {
             screenshot: None,
             screenshot_result: None,
             screenshot_quality: 1,
+            screenshot_halvings: 0,
             gamma: 0.5,
             improved_transparency: false,
             oit: None,
@@ -4290,7 +4294,7 @@ impl Renderer {
         let scaled = self.screenshot_size();
         let rendered = match scaled {
             Some(size) => self.draw_scaled_frame(frame, size),
-            None => self.draw_frame(frame),
+            None => self.draw_frame(frame, None),
         };
         // A frame that was not drawn still submits the section copies and
         // atlas patches (glyphs, skins, maps), which the caller already took.
@@ -4319,7 +4323,8 @@ impl Renderer {
     }
     /// The frame size of the pending `scaled` screenshot when it is larger than the
     /// window: the window's times the Resolution Scale (when above 100%) and
-    /// `screenshot_quality`, cut down to what one texture and one readback buffer hold.
+    /// `screenshot_quality`, cut down to what one texture and one readback buffer hold,
+    /// and halved for each time it ran out of video memory.
     fn screenshot_size(&self) -> Option<[u32; 2]> {
         let request = self.screenshot.as_ref()?;
         if !request.scaled || request.size.is_some() || self.suspended {
@@ -4333,7 +4338,7 @@ impl Renderer {
             self.screenshot_quality,
             limits.max_texture_dimension_2d,
             limits.max_buffer_size,
-        );
+        ) / 2f32.powi(self.screenshot_halvings as i32);
         (factor > 1.0).then(|| window.map(|side| (side as f32 * factor) as u32))
     }
     /// Draws one frame at `size` into a texture of its own, for the pending screenshot:
@@ -4345,19 +4350,19 @@ impl Renderer {
         let mut config = self.config.clone();
         [config.width, config.height] = size;
         config.usage |= wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
-        // Out of video memory: the window's own frame instead.
-        let scope = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        // Out of video memory (an invalid texture's view is a validation error):
+        // tried again at half the size next frame; the window keeps its last one.
+        let checks = GpuChecks::push(&self.device);
         let target = Self::offscreen_target(&self.device, &config);
         let depth = Self::depth(&self.device, &config);
-        if let Some(e) = pollster::block_on(scope.pop()) {
+        if let Some(e) = checks.pop() {
             log::warn!(
-                "Horizon renderer: no memory for a {}x{} screenshot ({e}); taking it at {}x{}",
+                "Horizon renderer: no memory for a {}x{} screenshot ({e}); trying half the size",
                 size[0],
-                size[1],
-                window[0],
-                window[1]
+                size[1]
             );
-            return self.draw_frame(frame);
+            self.screenshot_halvings += 1;
+            return Ok(false);
         }
         let scale = self.world_post.scale;
         self.world_post.scale = scale / scale.max(1.0);
@@ -4368,7 +4373,8 @@ impl Renderer {
         let hdr = self.hdr.take();
         let offscreen = self.offscreen.replace(target);
         let window_depth = std::mem::replace(&mut self.depth, depth);
-        let drawn = self.draw_frame(frame);
+        // The frame's own targets at `size` can run out of memory too.
+        let drawn = self.draw_frame(frame, Some(GpuChecks::push(&self.device)));
         self.depth = window_depth;
         self.offscreen = offscreen;
         self.hdr = hdr;
@@ -4378,7 +4384,8 @@ impl Renderer {
         self.world_post.scale = scale;
         drawn
     }
-    fn draw_frame(&mut self, frame: &Frame) -> Result<bool> {
+    /// `checks`: the error scopes of a scaled screenshot's frame, checked before its PNG is written.
+    fn draw_frame(&mut self, frame: &Frame, checks: Option<GpuChecks>) -> Result<bool> {
         self.arena.trim();
         self.sorted_indices.trim();
         if let Some(flat) = &mut self.flat {
@@ -6788,21 +6795,34 @@ impl Renderer {
         if let Some(Some(timer)) = Self::pass_timer(&mut self.pack_post, &mut self.native) {
             timer.submitted(&self.queue);
         }
+        let failed = checks.and_then(GpuChecks::pop);
         if let Some((request, buffer)) = readback {
-            if let Some(hdr_buffer) = hdr_readback {
-                let hdr_path = hdr_screenshot_path(&request.path);
-                match self.write_hdr_screenshot(&hdr_path, &hdr_buffer) {
-                    Ok(()) => log::info!("Saved HDR screenshot to {}", hdr_path.display()),
-                    Err(e) => log::warn!(
-                        "Horizon renderer: HDR screenshot {}: {e}",
-                        hdr_path.display()
-                    ),
+            // Out of memory on the way: the PNG would be black; taken again at half the size.
+            if let Some(e) = failed {
+                log::warn!(
+                    "Horizon renderer: a {}x{} screenshot failed ({e}); trying half the size",
+                    self.config.width,
+                    self.config.height
+                );
+                self.screenshot_halvings += 1;
+                self.screenshot = Some(request);
+            } else {
+                self.screenshot_halvings = 0;
+                if let Some(hdr_buffer) = hdr_readback {
+                    let hdr_path = hdr_screenshot_path(&request.path);
+                    match self.write_hdr_screenshot(&hdr_path, &hdr_buffer) {
+                        Ok(()) => log::info!("Saved HDR screenshot to {}", hdr_path.display()),
+                        Err(e) => log::warn!(
+                            "Horizon renderer: HDR screenshot {}: {e}",
+                            hdr_path.display()
+                        ),
+                    }
                 }
+                self.screenshot_result = Some(
+                    self.write_screenshot(&request, &buffer)
+                        .map_err(|e| e.to_string()),
+                );
             }
-            self.screenshot_result = Some(
-                self.write_screenshot(&request, &buffer)
-                    .map_err(|e| e.to_string()),
-            );
         }
         let present = Instant::now();
         if let Some(surface_frame) = surface_frame {
@@ -6848,6 +6868,23 @@ impl Renderer {
         self.visible_lods = visible_lods;
         self.shadow_visible = shadow_visible;
         Ok(true)
+    }
+}
+/// Out-of-memory and validation error scopes, popped together: the first error either caught.
+struct GpuChecks {
+    memory: wgpu::ErrorScopeGuard,
+    validation: wgpu::ErrorScopeGuard,
+}
+impl GpuChecks {
+    fn push(device: &wgpu::Device) -> Self {
+        let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        Self { memory, validation }
+    }
+    fn pop(self) -> Option<wgpu::Error> {
+        let validation = pollster::block_on(self.validation.pop());
+        let memory = pollster::block_on(self.memory.pop());
+        memory.or(validation)
     }
 }
 /// How many times the window's size a scaled screenshot is: the Resolution Scale
