@@ -1664,6 +1664,7 @@ mod tests {
                 nether: false,
                 block_tags: &items.block_tags,
                 biomes: &biomes,
+                universal_anger: false,
                 mob_griefing: true,
                 mob_drops: true,
                 max_entity_cramming: 24,
