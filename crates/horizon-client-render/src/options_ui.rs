@@ -4420,7 +4420,11 @@ impl OptionsUi {
                         }
                         Act::ShaderOption(name) => {
                             if let Some(options) = &mut s.shader_options {
-                                options.cycle(&name, false);
+                                if shift {
+                                    options.reset_option(&name);
+                                } else {
+                                    options.cycle(&name, false);
+                                }
                             }
                         }
                         Act::ShaderScreen(screen) => {
