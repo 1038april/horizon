@@ -1259,6 +1259,16 @@ pub enum MobEvent {
     Infested {
         mob: u32,
     },
+    /// `LivingEntity.hurtArmor` (`doHurtEquipment`): a hit that landed on a mob
+    /// wearing body armour (a horse's) leaves the piece owing
+    /// `max(1, damage / 4)` durability. The host applies it: it is the one
+    /// that knows the item's maximum, whether it wears when hurt at all and
+    /// whether a fire hit leaves it alone (`ItemStack.canBeHurtBy`).
+    ArmorHurt {
+        mob: u32,
+        amount: f32,
+        kind: DamageKind,
+    },
     /// `OfferFlowerGoal.stop`: the item goes to the target's antenna (saddle)
     /// slot if it is empty, as a guaranteed drop.
     Gift {
@@ -2299,6 +2309,14 @@ pub struct MobWorld<'a> {
     pub items: Option<&'a crate::items::Items>,
     /// `ChestBlockEntity.getOpenCount`: the players with each chest open.
     pub lid_openers: &'a HashMap<(i32, i32, i32), i32>,
+    /// What a content mod's effects do, on a server (None on a client).
+    pub mod_effects: Option<&'a dyn ModEffectTicks>,
+}
+/// `MobEffectInstance.tickServer` for a content mod's effect: its
+/// `shouldApplyEffectTickThisTick` and `applyEffectTick`, which the game's
+/// native mods answer. False removes the effect.
+pub trait ModEffectTicks {
+    fn tick_mod_effect(&self, effect: &str, mob: u32, tick_count: i32, amplifier: i32) -> bool;
 }
 /// `Entity.getTeam` of the player and of the mobs on a team.
 #[derive(Clone, Debug, Default)]
@@ -2675,6 +2693,20 @@ impl Mob {
         // Wolf.actuallyHurt keeps a hit its armor takes out of it.
         if !absorbed && dealt != 0.0 {
             self.record_damage(source, dealt);
+        }
+        // LivingEntity.hurtArmor: the body armour a mob wears (a horse's) wears
+        // on a hit that reached it. A wolf's armour has its own rule
+        // (`Wolf.actuallyHurt`, `hurt_wolf_armor`).
+        if dealt > 0.0
+            && self.extra.head.is_some()
+            && self.species() != Species::Wolf
+            && drops::head_is_body(self.species())
+        {
+            self.outbox.push(MobEvent::ArmorHurt {
+                mob: self.id,
+                amount: dealt,
+                kind: source.kind,
+            });
         }
         // Animal.actuallyHurt: damage taken ends love mode (`resetLove`).
         if drops::is_animal(self.species()) {
@@ -3986,5 +4018,52 @@ mod magic_absorb_tests {
         };
         m.damage(20.0, own);
         assert_eq!(m.health, 10.0);
+    }
+}
+
+#[cfg(test)]
+mod armor_hurt_tests {
+    use super::sensor_scan_tests::kind;
+    use super::*;
+    use horizon_core::geometry::Vec3;
+
+    fn horse() -> Mob {
+        let mut kind = kind();
+        let k = Arc::make_mut(&mut kind);
+        k.id = "minecraft:horse".into();
+        k.species = Species::Horse;
+        Mob::new(1, kind, Vec3::ZERO, 0.0)
+    }
+
+    /// `LivingEntity.hurtArmor` (`doHurtEquipment`): a hit that lands on a mob
+    /// wearing body armour leaves the piece owing a wear, which the host
+    /// applies with the item's own maximum and fire rules.
+    #[test]
+    fn a_hurt_horse_reports_the_body_armour_wear() {
+        let hit = Damage {
+            kind: DamageKind::MobAttack,
+            attacker: None,
+            from: None,
+        };
+        let mut m = horse();
+        m.extra.head = Some("minecraft:diamond_horse_armor".into());
+        assert!(m.damage(6.0, hit), "the hit landed");
+        let owed = m.outbox.iter().find_map(|e| match e {
+            MobEvent::ArmorHurt { amount, .. } => Some(*amount),
+            _ => None,
+        });
+        assert!(
+            owed.is_some_and(|amount| amount > 0.0),
+            "the worn armour owes a wear: {owed:?}"
+        );
+        // A horse with no body armour owes nothing.
+        let mut bare = horse();
+        assert!(bare.damage(6.0, hit));
+        assert!(
+            !bare
+                .outbox
+                .iter()
+                .any(|e| matches!(e, MobEvent::ArmorHurt { .. }))
+        );
     }
 }

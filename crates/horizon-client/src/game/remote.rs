@@ -1110,8 +1110,15 @@ impl Game<'_> {
     /// are, so tooltips and models see every field.
     pub(super) fn to_stack(&self, s: &Option<Stack>) -> Option<ItemStack> {
         let r = self.remote.as_ref()?;
+        let stack = s.as_ref()?;
+        if !horizon_protocol::item::custom::permitted(stack, r.registries.custom_components)
+            .unwrap_or(false)
+        {
+            log::warn!("Dropping a stack with unnegotiated custom components");
+            return None;
+        }
         Some(horizon_client::item_sync::from_network(
-            s.as_ref()?,
+            stack,
             &r.builtin,
             &r.registries,
         ))
@@ -1125,8 +1132,23 @@ impl Game<'_> {
         // components go back, as a vanilla client keeps them.
         if let Some((stack, patch)) = s.as_ref().and_then(|s| Some((s, s.wire_patch()?))) {
             let mut out = Stack::new(self.item_id(&stack.item), stack.count as i32);
-            out.wire = horizon_protocol::item::WirePatch(Some(patch));
-            return Some(out);
+            let safe = r.registries.custom_components
+                || horizon_protocol::item::custom::entries().next().is_none()
+                || horizon_protocol::item::WirePatch::decode(&patch)
+                    .and_then(|(added, removed)| {
+                        let decoded = Stack {
+                            added,
+                            removed,
+                            ..Stack::new(out.item, out.count)
+                        };
+                        horizon_protocol::item::custom::permitted(&decoded, false)
+                    })
+                    .unwrap_or(false);
+            if safe {
+                out.wire = horizon_protocol::item::WirePatch(Some(patch));
+                return Some(out);
+            }
+            log::warn!("Cannot send cached custom components to this peer");
         }
         horizon_client::lan::guest::stack_to_network(
             |name| self.item_id(name),
@@ -1136,6 +1158,12 @@ impl Game<'_> {
                     .get(registry)
                     .and_then(|ids| ids.id(name))
                     .or_else(|| r.registries.id(registry, name))
+                    .or_else(|| {
+                        (r.registries.custom_components
+                            && registry == "minecraft:data_component_type")
+                            .then(|| horizon_protocol::item::custom::id(name))
+                            .flatten()
+                    })
             },
             s,
         )

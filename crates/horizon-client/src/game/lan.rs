@@ -150,6 +150,8 @@ pub struct LanSettings {
 
 pub(super) struct LanHost {
     pub hub: Hub,
+    /// The mods heard that everyone still here leaves with the server.
+    pub players_told_left: bool,
     pub settings: LanSettings,
     pub host_entity: i32,
     /// The host's swings the guests were told of (`Game::swings_started`).
@@ -1377,6 +1379,7 @@ impl Game<'_> {
         self.world.block_log = Some(Vec::new());
         self.world.light_log = Some(Default::default());
         self.lan = Some(LanHost {
+            players_told_left: false,
             hub,
             settings: LanSettings { port, ..settings },
             host_entity,
@@ -1423,6 +1426,7 @@ impl Game<'_> {
             return;
         }
         self.friends_lan_closed();
+        self.native_players_leaving();
         let Some(mut host) = self.lan.take() else {
             return;
         };
@@ -1760,7 +1764,8 @@ impl Game<'_> {
     ///
     /// Both the pre-block packet phase and the normal LAN tick receive the
     /// same event stream. Keep their side effects in one place so joins,
-    /// departures, chat, and queued guest commands cannot drift apart.
+    /// departures, chat, and queued guest commands cannot drift apart. None when a native hook's
+    /// command closed the hub.
     fn lan_process_events(
         &mut self,
         mut host: LanHost,
@@ -1768,7 +1773,7 @@ impl Game<'_> {
         state: Option<&HostState>,
         entities: &[EntityState],
         spawn: [f64; 3],
-    ) -> LanHost {
+    ) -> Option<LanHost> {
         for event in events {
             match event {
                 event @ (HostEvent::Chat { .. } | HostEvent::Warn(_) | HostEvent::Error(_)) => {
@@ -1829,6 +1834,17 @@ impl Game<'_> {
                                 .with_color(horizon_client::text::YELLOW),
                         );
                     }
+                    if let Some((uuid, name)) = host
+                        .hub
+                        .guest(conn)
+                        .filter(|g| g.placed)
+                        .map(|g| (g.uuid, g.name.clone()))
+                    {
+                        self.lan = Some(host);
+                        self.native_player_logged_in(uuid, &name);
+                        // A hook's command can close the hub.
+                        host = self.lan.take()?;
+                    }
                 }
                 HostEvent::Left(mut guest) => {
                     // The container they had open loses an opener.
@@ -1876,6 +1892,11 @@ impl Game<'_> {
                                 .with_color(horizon_client::text::YELLOW),
                         );
                     }
+                    if guest.placed && !host.players_told_left {
+                        self.lan = Some(host);
+                        self.native_player_logged_out(guest.uuid, &guest.name);
+                        host = self.lan.take()?;
+                    }
                 }
                 HostEvent::Packet(conn, packet) => {
                     self.lan_guest_packet(&mut host, conn, *packet);
@@ -1887,7 +1908,7 @@ impl Game<'_> {
                 }
             }
         }
-        host
+        Some(host)
     }
 
     /// Handle this level's player packets before scheduled block ticks
@@ -1944,7 +1965,12 @@ impl Game<'_> {
             events.extend(host.hub.drain_packets(&mut ctx));
             events
         };
-        host = self.lan_process_events(host, events, state.as_ref(), entities.as_slice(), spawn);
+        let Some(back) =
+            self.lan_process_events(host, events, state.as_ref(), entities.as_slice(), spawn)
+        else {
+            return;
+        };
+        host = back;
         if !host.quiet.is_empty() {
             self.lan = Some(host);
             self.run_quiet_commands();
@@ -2109,7 +2135,11 @@ impl Game<'_> {
                 host.hub.set_host_game_mode(state.uuid, state.game_mode);
             }
             self.wake_woken_guests(&mut host);
-            host = self.lan_process_events(host, events, state.as_ref(), entities, spawn);
+            let Some(back) = self.lan_process_events(host, events, state.as_ref(), entities, spawn)
+            else {
+                return;
+            };
+            host = back;
             host.states = states;
         }
         if !host.quiet.is_empty() {
@@ -2354,6 +2384,50 @@ impl Game<'_> {
         if event == 45 && self.options.execution_role.is_client() {
             self.fox_eat_particles(id as u32);
         }
+    }
+    /// `LivingEntity.onEquippedItemBroken` for the acting player (the guest whose turn it
+    /// is, else the host): `level.broadcastEntityEvent` with `entityEventForEquipmentBreak`
+    /// of the slot, which each client answers with `breakItem` (the sound and the crumbs,
+    /// `remote_equipment_break`). Without a hub to tell, or in a window that runs the world
+    /// itself, the sound and the crumbs are played here.
+    pub(super) fn player_equipment_broke(
+        &mut self,
+        slot: horizon_world::player_inventory::EquipmentSlot,
+        stack: &horizon_client::items::ItemStack,
+    ) {
+        use horizon_world::player_inventory::EquipmentSlot;
+        let event = match slot {
+            EquipmentSlot::MainHand => 47,
+            EquipmentSlot::OffHand => 48,
+            EquipmentSlot::Head => 49,
+            EquipmentSlot::Chest => 50,
+            EquipmentSlot::Legs => 51,
+            EquipmentSlot::Feet => 52,
+            EquipmentSlot::Body => 65,
+            EquipmentSlot::Saddle => 68,
+        };
+        let Some(at) = self
+            .player
+            .as_ref()
+            .map(|p| [p.position.x, p.position.y, p.position.z])
+        else {
+            return;
+        };
+        let told = if self.lan_acting.is_some() {
+            self.guest_equipment_breaks.push((event, at));
+            true
+        } else if let Some(host) = &self.lan {
+            host.hub.entity_event(host.host_entity, event, at);
+            true
+        } else {
+            false
+        };
+        if told && !self.options.execution_role.is_client() {
+            return;
+        }
+        // LivingEntity.breakItem: the stack's break sound where it stands, then the crumbs.
+        self.break_sound_at(stack, at);
+        self.eat_particles(stack, 5);
     }
     /// `ServerPlayer.crit` (or `magicCrit` when `magic`): this window's
     /// emitter, and an animation for the attacker's client and observers once

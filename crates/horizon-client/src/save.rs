@@ -50,6 +50,8 @@ use std::{
 
 pub const VERSION_NAME: &str = horizon_core::VANILLA_VERSION;
 
+mod gateway;
+
 /// Snapshot live block entities and custom names for a save batch without
 /// mutating the world. Each map is visited once, retaining its iteration order
 /// within each chunk (including repeated chunk coordinates in the input).
@@ -3106,6 +3108,14 @@ impl WorldPreset {
             .position(|preset| *preset == self)
             .unwrap_or(0);
         Self::ALL[(index + 1) % Self::ALL.len()]
+    }
+    /// The preset the world-type button cycles to previously.
+    pub fn prev(self) -> Self {
+        let index = Self::ALL
+            .iter()
+            .position(|preset| *preset == self)
+            .unwrap_or(0);
+        Self::ALL[(index + Self::ALL.len() - 1) % Self::ALL.len()]
     }
     /// The preset a saved overworld generator is: the noise settings name
     /// the preset, and the single-biome preset shares the overworld's noise
@@ -6747,5 +6757,17 @@ mod tests {
             );
         }
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn world_preset_next_and_prev_cycle_bidirectionally() {
+        let first = WorldPreset::Normal;
+        assert_eq!(first.next(), WorldPreset::Flat);
+        assert_eq!(first.prev(), WorldPreset::SingleBiomeSurface);
+        assert_eq!(WorldPreset::SingleBiomeSurface.next(), WorldPreset::Normal);
+        for preset in WorldPreset::ALL {
+            assert_eq!(preset.next().prev(), preset);
+            assert_eq!(preset.prev().next(), preset);
+        }
     }
 }

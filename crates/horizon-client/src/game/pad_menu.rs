@@ -15,6 +15,7 @@
 //! behaviour (drags, sliders, scrollbars, hover highlights) with no pad code
 //! of its own. A screen with nothing registered falls back to the pointer,
 //! and a right stick click swaps modes for the open screen.
+use super::event_loop::EventLoopCtl;
 use super::{Game, Screen};
 use horizon_client::{
     Result,
@@ -27,10 +28,8 @@ use horizon_client::{
 };
 use std::time::Instant;
 use winit::{
-    application::ApplicationHandler,
     dpi::PhysicalPosition,
     event::{DeviceId, ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent},
-    event_loop::ActiveEventLoop,
     keyboard::KeyCode,
 };
 
@@ -242,7 +241,7 @@ impl Game<'_> {
     }
 
     /// Send the window a pointer move to `at` (GUI pixels), as the mouse would.
-    fn pad_pointer_to(&mut self, event_loop: &ActiveEventLoop, at: (f32, f32)) {
+    fn pad_pointer_to(&mut self, event_loop: &dyn EventLoopCtl, at: (f32, f32)) {
         let (Some(window), Some(batch)) = (self.window.as_ref(), self.gui_scale()) else {
             return;
         };
@@ -253,7 +252,7 @@ impl Game<'_> {
         );
         let position =
             PhysicalPosition::new(f64::from(at.0 * batch.scale), f64::from(at.1 * batch.scale));
-        self.window_event(
+        self.handle_window_event(
             event_loop,
             id,
             WindowEvent::CursorMoved {
@@ -265,7 +264,7 @@ impl Game<'_> {
         self.pad.menu.pos = Some(self.cursor);
     }
 
-    fn pad_pointer_button(&mut self, event_loop: &ActiveEventLoop, right: bool, pressed: bool) {
+    fn pad_pointer_button(&mut self, event_loop: &dyn EventLoopCtl, right: bool, pressed: bool) {
         let Some(id) = self.window.as_ref().map(|w| w.id()) else {
             return;
         };
@@ -280,7 +279,7 @@ impl Game<'_> {
         } else {
             ElementState::Released
         };
-        self.window_event(
+        self.handle_window_event(
             event_loop,
             id,
             WindowEvent::MouseInput {
@@ -292,17 +291,17 @@ impl Game<'_> {
     }
 
     /// A click (press and release) at a point, the pointer staying there.
-    fn pad_click_at(&mut self, event_loop: &ActiveEventLoop, at: (f32, f32), right: bool) {
+    fn pad_click_at(&mut self, event_loop: &dyn EventLoopCtl, at: (f32, f32), right: bool) {
         self.pad_pointer_to(event_loop, at);
         self.pad_pointer_button(event_loop, right, true);
         self.pad_pointer_button(event_loop, right, false);
     }
 
-    fn pad_wheel(&mut self, event_loop: &ActiveEventLoop, x: f32, y: f32) {
+    fn pad_wheel(&mut self, event_loop: &dyn EventLoopCtl, x: f32, y: f32) {
         let Some(id) = self.window.as_ref().map(|w| w.id()) else {
             return;
         };
-        self.window_event(
+        self.handle_window_event(
             event_loop,
             id,
             WindowEvent::MouseWheel {
@@ -315,7 +314,7 @@ impl Game<'_> {
 
     /// Put the pointer where the pad last left it, or on the first target
     /// (focus mode: focus lands there too).
-    fn pad_take_pointer(&mut self, event_loop: &ActiveEventLoop) {
+    fn pad_take_pointer(&mut self, event_loop: &dyn EventLoopCtl) {
         if self.pad.menu.pos.is_some() {
             return;
         }
@@ -336,7 +335,7 @@ impl Game<'_> {
     /// A button in a menu.
     pub(super) fn pad_menu_button(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn EventLoopCtl,
         button: Button,
         down: bool,
     ) -> Result<()> {
@@ -460,7 +459,7 @@ impl Game<'_> {
     }
 
     /// One D-pad (or stick) step in either mode.
-    fn pad_step(&mut self, event_loop: &ActiveEventLoop, button: Button) {
+    fn pad_step(&mut self, event_loop: &dyn EventLoopCtl, button: Button) {
         if let Some(keyboard) = self.pad.menu.osk.as_mut() {
             keyboard.step(button);
             return;
@@ -476,7 +475,7 @@ impl Game<'_> {
     }
 
     /// Pointer mode: hop the cursor to the nearest target that way.
-    fn pad_pointer_step(&mut self, event_loop: &ActiveEventLoop, button: Button) {
+    fn pad_pointer_step(&mut self, event_loop: &dyn EventLoopCtl, button: Button) {
         if self.pad.menu.pos.is_none() {
             self.pad_take_pointer(event_loop);
             return;
@@ -501,7 +500,12 @@ impl Game<'_> {
     }
 
     /// Focus mode: move the highlight (or a focused slider's value).
-    fn pad_focus_step(&mut self, event_loop: &ActiveEventLoop, button: Button, targets: &[Target]) {
+    fn pad_focus_step(
+        &mut self,
+        event_loop: &dyn EventLoopCtl,
+        button: Button,
+        targets: &[Target],
+    ) {
         let Some(focus) = self.pad.menu.focus else {
             self.pad.menu.pos = None;
             self.pad_take_pointer(event_loop);
@@ -552,7 +556,7 @@ impl Game<'_> {
         }
     }
 
-    fn pad_focus_on(&mut self, event_loop: &ActiveEventLoop, target: Target) {
+    fn pad_focus_on(&mut self, event_loop: &dyn EventLoopCtl, target: Target) {
         self.pad.menu.focus = Some(target);
         self.pad.menu.pending = None;
         self.pad.menu.nudge = None;
@@ -563,7 +567,7 @@ impl Game<'_> {
 
     /// A bumper: the next or previous tab, wrapping (creative keeps its own
     /// order; other screens register their tabs).
-    fn pad_tab(&mut self, event_loop: &ActiveEventLoop, next: bool) {
+    fn pad_tab(&mut self, event_loop: &dyn EventLoopCtl, next: bool) {
         if self.screen == Screen::Creative && self.title.is_none() {
             self.pad_creative_tab(event_loop, next);
             return;
@@ -598,7 +602,7 @@ impl Game<'_> {
     }
 
     /// Click the next or previous creative tab (wrapping), as a mouse would.
-    fn pad_creative_tab(&mut self, event_loop: &ActiveEventLoop, next: bool) {
+    fn pad_creative_tab(&mut self, event_loop: &dyn EventLoopCtl, next: bool) {
         let Some(batch) = self.gui_scale() else {
             return;
         };
@@ -625,7 +629,7 @@ impl Game<'_> {
     /// steps focus, the right stick scrolls, a held direction repeats, focus
     /// follows its widget from frame to frame, and the OS pointer hides
     /// while the pad drives.
-    pub(super) fn pad_menu_frame(&mut self, event_loop: &ActiveEventLoop) {
+    pub(super) fn pad_menu_frame(&mut self, event_loop: &dyn EventLoopCtl) {
         let now = Instant::now();
         let seconds = self
             .pad
@@ -749,7 +753,7 @@ impl Game<'_> {
     /// Focus mode, each poll: find the focused widget in the new frame (a
     /// list scrolled, a page changed), finish a step that scrolled a list,
     /// and keep the hidden pointer on the focused widget.
-    fn pad_follow_focus(&mut self, event_loop: &ActiveEventLoop, targets: &[Target]) {
+    fn pad_follow_focus(&mut self, event_loop: &dyn EventLoopCtl, targets: &[Target]) {
         let rects: Vec<Rect> = targets.iter().map(|t| t.rect).collect();
         let ready = self
             .pad
