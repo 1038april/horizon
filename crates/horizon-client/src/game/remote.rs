@@ -3360,6 +3360,10 @@ impl Game<'_> {
                 if p.event == 21 {
                     self.start_guardian_sound(p.id as u32);
                 }
+                // Witch.handleEntityEvent 15: the magic puffs over its hat.
+                if p.event == 15 {
+                    self.witch_magic_particles(p.id as u32);
+                }
                 // Fox.handleEntityEvent 45: the crumbs of the food in its mouth.
                 if p.event == 45 {
                     self.fox_eat_particles(p.id as u32);
@@ -4994,6 +4998,10 @@ impl Game<'_> {
         self.border.tick();
         self.player_border();
         self.tick_remote_entities(running);
+        // Breeze.tick's block dust: drawn by each client for the breezes it sees.
+        if running {
+            self.tick_breeze_effects();
+        }
         self.tick_remote_guardian_eyes(running);
         // ClientLevel.tickBlockEntities: chest lids, shulker boxes, bells,
         // and the moving pistons a block event's client-side moveBlocks made
