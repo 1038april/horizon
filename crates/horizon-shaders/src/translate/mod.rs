@@ -1531,4 +1531,19 @@ mod tests {
         );
         assert!(p.is_ok(), "{:?}", p.err());
     }
+
+    /// `const`s that call a built-in naga's constant evaluator lacks (`mix`, `smoothstep`...)
+    /// are evaluated where the program runs: a global by our `main`, a local in place (Bliss).
+    #[test]
+    fn constants_naga_cannot_fold_are_evaluated_at_run_time() {
+        let fsh = "#version 120\nvarying vec2 texcoord;\nconst vec3 tint = mix(vec3(0.2), vec3(1.0), 0.25);\n\
+                   const float edge = smoothstep(0.0, 1.0, 0.5), mid = 0.5;\n\
+                   float shade(float x) {\n    const float k = mix(0.5, 1.0, 0.3);\n    return x * k;\n}\n\
+                   void main() { gl_FragColor = vec4(tint * shade(texcoord.x) * edge * mid, 1.0); }\n";
+        let p = program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        );
+        assert!(p.is_ok(), "{:?}", p.err());
+    }
 }
