@@ -34,7 +34,7 @@ TheEndGatewayBlockEntity.findValidSpawnInChunk	inline	crates/horizon-client/src/
 TheEndGatewayBlockEntity.getParticleAmount	port	crates/horizon-client-render/src/block_entity_render.rs::BlockEntityRenderer::gateway_faces	the count is the number of gateway faces that render; render_tick passes its length to animate_tick, which draws one particle per face
 TrialSpawnerBlockEntity.createDefaultSpawner	port	crates/horizon-client-render/src/chunk/block_entity.rs::TrialSpawner::default	default cooldown 36000 and range 14; the no-creative player filter is in TrialSpawner::detect
 TrialSpawnerBlockEntity.setEntityId	missing		player: a spawn egg used on a trial spawner does not change the mob it spawns; only spawners take eggs (use_spawn_egg_on_spawner)
-TrialSpawnerBlockEntity.setEntityData	missing		player: an op's spawn egg with entity data does nothing to a trial spawner
+TrialSpawnerBlockEntity.setEntityData	inline	crates/horizon-client/src/game/spawner.rs::Game::use_spawn_egg_on_spawner	the egg's data goes through `override_entity_data` on the spawner it is used on
 TrialSpawnerBlockEntity.getState	port	crates/horizon-client/src/game/trial_spawner.rs::Game::trial_spawner_block	reads the state and ominous properties of the block
 TrialSpawnerBlockEntity.setState	port	crates/horizon-client/src/game/trial_spawner.rs::Game::set_trial_spawner_state	writes the state property and the ominous flag together
 TrialSpawnerBlockEntity.markUpdated	port	crates/horizon-client/src/game/trial_spawner.rs::Game::mark_block_entity_updated	
@@ -43,7 +43,7 @@ TrialSpawner.shouldMobBeUntracked	port	crates/horizon-client/src/mobs/trial_spaw
 TrialSpawner.addBecomeOminousParticles	inline	crates/horizon-client/src/game/trial_visuals.rs::Game::trial_level_event	the 3020 arm draws the 20 trial omen and soul fire flame particles
 TrialSpawner.overrideEntityToSpawn	missing		player: a spawn egg on a trial spawner cannot change its mob; the egg only reaches spawners
 TrialSpawner.FullConfig.overrideEntity	missing		player: same as overrideEntityToSpawn; the trial spawner's mob type cannot be set from an egg
-TrialSpawner.FullConfig.overrideEntityData	missing		player: same as overrideEntityToSpawn; egg entity data never reaches a trial spawner
+TrialSpawner.FullConfig.overrideEntityData	port	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawner::override_entity_data	the egg's entity data rewrites both configs' spawn potentials
 TrialSpawnerState.calculatePositionToSpawnSpawner	port	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawner::item_spawner_position	
 TrialSpawnerState.calculatePositionAbove	inline	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawner::item_spawner_position	the clip two to five blocks above the chosen entity and the drop point under it
 TrialSpawnerState.selectEntityToSpawnItemAbove	inline	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawner::item_spawner_position	picks a mob or a player at random, as vanilla does
