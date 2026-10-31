@@ -418,11 +418,15 @@ pub fn mob_to_nbt(
             .iter()
             .map(|&(effect, duration, amplifier)| {
                 let shown = !m.extra.hidden_effects.contains(&effect);
+                let ambient = m.extra.ambient_effects.contains(&effect);
                 let mut e = vec![
                     ("id", string(crate::brewing::namespaced(effect))),
                     ("amplifier", Tag::Byte(amplifier.clamp(0, 255) as u8 as i8)),
                     ("duration", Tag::Int(duration)),
                 ];
+                if ambient {
+                    e.push(("ambient", Tag::Byte(1)));
+                }
                 if !shown {
                     e.push(("show_particles", Tag::Byte(0)));
                 }
@@ -1413,6 +1417,11 @@ pub fn mob_from_nbt(
             m.extra.hidden_effects.retain(|h| *h != effect);
             if number(e.get("show_particles")) == Some(0) {
                 m.extra.hidden_effects.push(effect);
+            }
+            // Details.CODEC: `ambient` defaults to false.
+            m.extra.ambient_effects.retain(|h| *h != effect);
+            if number(e.get("ambient")).is_some_and(|a| a != 0) {
+                m.extra.ambient_effects.push(effect);
             }
         }
     }
@@ -3729,6 +3738,60 @@ mod item_component_tests {
         let mut sheep = spawn("minecraft:sheep", 2);
         apply_item_components(&mut sheep, &egg);
         assert_eq!(sheep.extra.color, 5, "lime, not the white it started as");
+    }
+
+    /// `EntityType.updateCustomEntityTag`: the egg's `entity_data` on the mob it
+    /// spawned, when the type is its own — the mob's compound, the data merged
+    /// over it and loaded back, as the spawn egg site does it.
+    #[test]
+    fn a_spawn_eggs_entity_data_reaches_the_mob_it_spawned() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let data = crate::mobs::MobTypes::load(&root).unwrap();
+        let types: HashMap<String, Arc<MobType>> = data
+            .types
+            .iter()
+            .map(|(k, v)| (k.clone(), Arc::new(v.clone())))
+            .collect();
+        let egg = |entity_data: Option<Tag>| {
+            let mut egg = crate::items::ItemStack::new("minecraft:zombie_spawn_egg", 1);
+            if let Some(data) = entity_data {
+                egg.data_mut()
+                    .set_other("minecraft:entity_data", Some(data));
+            }
+            egg
+        };
+        let spawn = |stack: &crate::items::ItemStack| {
+            let mut m = Mob::new(
+                2,
+                types["minecraft:zombie"].clone(),
+                Vec3::new(0.0, 4.0, 0.0),
+                0.0,
+            );
+            apply_item_components(&mut m, stack);
+            let Some(data) =
+                crate::block_entity_item::spawn_egg_entity_data(stack, &m.kind.id, false)
+            else {
+                return m;
+            };
+            let tag = crate::data_cmd::merged(&mob_to_nbt(&m, [1, 2, 3, 4], None, None), data);
+            mob_from_nbt(&tag, &types, 2, None).unwrap()
+        };
+        // `entity_data={NoAI:1b}`: no id, so the egg's own type holds the data.
+        assert!(spawn(&egg(Some(Tag::compound([("NoAI", Tag::Byte(1))])))).no_ai);
+        // `entity_data.id` names another type: the egg's own type, data skipped.
+        let other = spawn(&egg(Some(Tag::compound([
+            ("id", string("minecraft:pig")),
+            ("NoAI", Tag::Byte(1)),
+        ]))));
+        assert_eq!(other.kind.id.as_str(), "minecraft:zombie");
+        assert!(!other.no_ai);
+        // A plain egg is unchanged.
+        assert!(!spawn(&egg(None)).no_ai);
     }
 }
 
