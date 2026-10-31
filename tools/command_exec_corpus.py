@@ -1322,6 +1322,35 @@ def tame_wolf_kills():
     ]
 
 
+def experience_orb_fall():
+    """`ExperienceOrb.tick`'s fall and landing (the dragon-death XP rain, #4781):
+    gravity 0.03 (skipped while the orb is inside blocks), one drag of
+    `getAirDrag()` times the ground's friction scaled over every axis, and a
+    landing bounce of `-fallSpeed * 0.4` gated on `fallSpeed < -getGravity()` —
+    not a fixed restitution. The orb spawns 16 blocks from the player, out of
+    the 8 block follow radius, 45 blocks above a stone platform; the track
+    draws no random, so both games compare to the digit."""
+    return [
+        *setup('/fill 20 214 20 28 214 28 minecraft:stone'),
+        cmd('/summon minecraft:experience_orb 24.5 260 24.5 {Value:1s}'),
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Pos'),
+        {'op': 'tick', 'n': 1},
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Pos'),
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Motion'),
+        {'op': 'tick', 'n': 64},
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Pos'),
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Motion'),
+        {'op': 'tick', 'n': 20},
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Pos'),
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Motion'),
+        {'op': 'tick', 'n': 35},
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Pos'),
+        cmd('/data get entity @e[type=minecraft:experience_orb,limit=1] Motion'),
+        *setup('/kill @e[type=minecraft:experience_orb]', '/fill 20 214 20 28 214 28 minecraft:air'),
+        {'op': 'tick', 'n': 5},
+    ]
+
+
 def groups():
     return [
         ('setup', group_setup()),
@@ -1351,4 +1380,5 @@ def groups():
         ('ender dragon', ender_dragon()),
         ('place structure', place_structure()),
         ('tame wolf kills', tame_wolf_kills()),
+        ('experience orb fall', experience_orb_fall()),
     ]
