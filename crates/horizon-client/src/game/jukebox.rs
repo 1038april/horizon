@@ -70,6 +70,8 @@ impl Game<'_> {
                 return false;
             }
             self.eject_record(pos);
+            // ServerPlayerGameMode.useItemOn: useWithoutItem consumed the click.
+            self.trigger_default_block_use(pos);
             return true;
         }
         let Some(stack) = held else { return false };
@@ -140,8 +142,10 @@ impl Game<'_> {
         self.jukebox_sounds.insert((pos[0], pos[1], pos[2]), id);
         let description =
             horizon_client::component::to_text(&s.description, &mut |k| Text::literal(k));
-        self.titles
-            .set_overlay(Text::translate("record.nowPlaying", &[description]), true);
+        // Hud.setNowPlaying: the overlay, said at once.
+        let message = Text::translate("record.nowPlaying", &[description]);
+        self.say_system_now(&message);
+        self.titles.set_overlay(message, true);
         self.update_song_volumes();
         self.notify_record_playing(pos, true);
         if self.audio.capture.is_some() {

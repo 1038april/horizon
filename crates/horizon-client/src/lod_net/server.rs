@@ -102,8 +102,10 @@ impl Service {
             in_flight: 0,
             strikes: 0,
         });
+        // The token goes first, so an unreadable request is charged too.
+        let token = player.bucket.take(now);
         let request = match Request::decode(data) {
-            Ok(request) if player.bucket.take(now) => request,
+            Ok(request) if token => request,
             _ => {
                 player.strikes += 1;
                 return if player.strikes >= STRIKES {
