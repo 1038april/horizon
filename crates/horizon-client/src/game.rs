@@ -1667,6 +1667,17 @@ impl Resources {
     }
 }
 
+/// The equipment slot of `armor[index]`: head, chest, legs, feet.
+pub(super) fn armor_slot(index: usize) -> horizon_world::player_inventory::EquipmentSlot {
+    use horizon_world::player_inventory::EquipmentSlot;
+    match index {
+        0 => EquipmentSlot::Head,
+        1 => EquipmentSlot::Chest,
+        2 => EquipmentSlot::Legs,
+        _ => EquipmentSlot::Feet,
+    }
+}
+
 /// Everything the title and menus draw: the GUI atlas with its font and the
 /// title panorama. Kept apart from the world bundle so the title can appear
 /// before the block sprites, models and gameplay tables are ready.
@@ -2529,6 +2540,9 @@ struct Game<'a> {
     /// The acting guest's own entity events (`ServerPlayer.connection.send`),
     /// sent with their entity id, which the guest's turn does not hold.
     guest_entity_events: Vec<i8>,
+    /// The acting guest's equipment breaks (`onEquippedItemBroken`: event and
+    /// position), broadcast with their entity id once their turn ends.
+    guest_equipment_breaks: Vec<(i8, [f64; 3])>,
     /// `Player.playSound` of the acting guest (event, position, volume,
     /// pitch): `level.playSound(player, ...)` leaves the guest out, whose
     /// own client plays it.
@@ -11355,31 +11369,23 @@ impl Game<'_> {
                 _ => 0,
             })
             .collect();
-        for (slot, amount) in self.armor.iter_mut().zip(losses) {
+        for (index, (slot, amount)) in self.armor.iter_mut().zip(losses).enumerate() {
             if let Some(stack) = slot.as_mut()
                 && let Some(info) = world_items!(self).get(&stack.item)
                 && info.max_damage > 0
             {
                 stack.damage += amount;
                 if stack.damage >= info.max_damage {
-                    broken_items.push(stack.clone());
+                    broken_items.push((stack.clone(), index));
                     *slot = None;
                     broke = true;
                 }
             }
         }
         if broke {
-            if let Some(eye) = self.eye_position() {
-                self.audio.play(
-                    "minecraft:entity.item.break",
-                    Some(eye),
-                    0.8,
-                    0.8 + self.world.random.next_float() * 0.4,
-                );
-            }
-            // LivingEntity.breakItem for each armour piece that broke.
-            for stack in &broken_items {
-                self.eat_particles(stack, 5);
+            // LivingEntity.onEquippedItemBroken for each armour piece that broke.
+            for (stack, index) in &broken_items {
+                self.player_equipment_broke(armor_slot(*index), stack);
             }
             self.apply_equipment();
         }
@@ -11744,16 +11750,11 @@ impl Game<'_> {
                 let gone = stack.clone();
                 *cell = None;
                 self.stats.add("broken", &broken, 1);
-                if let Some(eye) = self.eye_position() {
-                    self.audio.play(
-                        "minecraft:entity.item.break",
-                        Some(eye),
-                        0.8,
-                        0.8 + self.world.random.next_float() * 0.4,
-                    );
-                }
-                // LivingEntity.breakItem: the broken item's five crumbs.
-                self.eat_particles(&gone, 5);
+                // LivingEntity.onEquippedItemBroken: the sound and the crumbs.
+                self.player_equipment_broke(
+                    horizon_world::player_inventory::EquipmentSlot::MainHand,
+                    &gone,
+                );
             }
         }
     }
@@ -16556,6 +16557,7 @@ impl<'a> Game<'a> {
             guest_packets: Vec::new(),
             guest_cooldowns: Vec::new(),
             guest_entity_events: Vec::new(),
+            guest_equipment_breaks: Vec::new(),
             guest_player_sounds: Vec::new(),
             lan_acting_name: None,
             lan_acting_uuid: None,
