@@ -6,6 +6,46 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 57 adds chunks and players coming and going (`native_chunk_load`,
+//! `native_chunk_unload`, `native_player_logged_in`, `native_player_logged_out`).
+//!
+//! API 56 adds what a content mod's mob effects do: their effect tick
+//! (`native_should_apply_effect_tick_this_tick`, `native_apply_effect_tick`)
+//! and their being given (`native_on_effect_added`,
+//! `native_mob_effect_added`).
+//!
+//! API 55 adds moving a block's fluids to another block (`native_move_fluids`, in
+//! `machines/native_fluids.rs`: what the target refuses goes back into the
+//! source, whole thirds kept).
+//!
+//! API 54 adds fluid tanks on a mod block's block entity
+//! (`native_block_entity_fluids`), and the fluid helpers in
+//! `machines/native_fluids.rs`: `native_fluid_tanks`,
+//! `native_fluid_insert`, `native_fluid_extract`, which also read and
+//! change a cauldron.
+//!
+//! API 53 adds entities leaving a level (`native_entity_leave_level`), for
+//! item entities and experience orbs so far.
+//!
+//! API 52 adds `native_block_entity_sync`: a mod block entity's block and update tag
+//! sent to clients again (`Level.sendBlockUpdated`).
+//!
+//! API 51 adds `native_menu_button_v2`: a mod container's menu button with the clicking player's cursor stack (`clickMenuButton(Player, int)`).
+//!
+//! API 50 adds damage a mod can change or cancel (`native_living_incoming_damage`).
+//!
+//! API 49 adds, in `native_server.rs`, a sidebar and Tab list lines for one
+//! player (`native_sidebar`, `native_tab_list`), the server's tick times
+//! (`native_tick_stats`), players left out of the sleep count
+//! (`native_sleep_ignored`), and where players look (`yaw`, `pitch`).
+//!
+//! API 48 adds a block's items for server mods (`native_container_slots`,
+//! `native_extract_item`, `native_move_items`, and `native_dimension` for a
+//! machine's tick, in `machines/native_items.rs`).
+//!
+//! API 47 adds entities joining a level (`native_entity_join_level`), for
+//! item entities and experience orbs so far.
+//!
 //! API 46 adds bounded world-space rim and colored-light requests
 //! (`native_visuals`) and opt-in texture-matched emissive material
 //! requests (`native_emissive`).
@@ -210,7 +250,7 @@ pub(super) use horizon_world::level::flags;
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 46;
+pub(crate) const NATIVE_HOOKS_API: u32 = 57;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -902,7 +942,7 @@ impl Game<'_> {
     /// ticking table is built; at most 16 tanks, capacities clamped to
     /// 1..=1 000 000, and tank numbers past the count are left out. The tanks'
     /// contents are kept in the entity's saved compound, under `fluids`, and
-    /// the fluid helpers below read and write them. API @API:fluids@.
+    /// the fluid helpers below read and write them. API 54.
     pub(super) fn native_block_entity_fluids(
         &self,
         block: &str,
@@ -1003,7 +1043,7 @@ impl Game<'_> {
     /// the acting player's cursor stack, `getCarried()`/`setCarried()`,
     /// which `native_menu_button` cannot reach. Fires right after it, same
     /// moment, same `pos`/`entity`/`id`; change `carried` when its id is
-    /// yours. On the server. API @API:menu_button_v2@.
+    /// yours. On the server. API 51.
     pub(super) fn native_menu_button_v2(
         &mut self,
         pos: [i32; 3],
@@ -1193,7 +1233,7 @@ impl Game<'_> {
     /// but its saved entities join afterwards and its light may not be ready:
     /// change the world from a later tick. The chunks around the spawn come
     /// before `WorldOpenReady`. Not told of a chunk a client receives.
-    /// Server-side. API @API:chunks_players@.
+    /// Server-side. API 57.
     pub(super) fn native_chunk_load(&mut self, dimension: &str, chunk: [i32; 2], new: bool) {
         let _ = (dimension, chunk, new);
     }
@@ -1202,14 +1242,14 @@ impl Game<'_> {
     /// read its blocks. Its block entities are still there for this call, so
     /// `native_with_mod_block_entity` can change one and it's saved with the
     /// chunk. Not told when the world closes, which `native_world_lifecycle`
-    /// tells. Server-side. API @API:chunks_players@.
+    /// tells. Server-side. API 57.
     pub(super) fn native_chunk_unload(&mut self, dimension: &str, chunk: [i32; 2]) {
         let _ = (dimension, chunk);
     }
     /// `player` (`name`) joined the game (NeoForge's
     /// `PlayerLoggedInEvent`): placed in the world and listed in
     /// `native_server_players`, so `native_net_send_to_player` reaches them.
-    /// Once a join, with no player's state swapped in. Server-side. API @API:chunks_players@.
+    /// Once a join, with no player's state swapped in. Server-side. API 57.
     pub(super) fn native_player_logged_in(&mut self, player: u128, name: &str) {
         let _ = (player, name);
     }
@@ -1218,7 +1258,7 @@ impl Game<'_> {
     /// Once for each player `native_player_logged_in` told of. They've already
     /// left `native_server_players`, except when the server stops, which tells
     /// before it saves, with them still listed and able to get a last message.
-    /// Server-side. API @API:chunks_players@.
+    /// Server-side. API 57.
     pub(super) fn native_player_logged_out(&mut self, player: u128, name: &str) {
         let _ = (player, name);
     }
@@ -1253,7 +1293,7 @@ impl Game<'_> {
     /// a level closing with nobody in it included. Not for the entities still
     /// loaded when the server stops, as in vanilla. `entity` is its ID and
     /// `kind` its type (`minecraft:item`); it is no longer in the level's lists.
-    /// It only hears. @API:entity_leave_level@ tells item entities and experience orbs; later
+    /// It only hears. 53 tells item entities and experience orbs; later
     /// APIs add other kinds, so check `kind`. Server-side.
     pub(super) fn native_entity_leave_level(&mut self, dimension: &str, entity: u32, kind: &str) {
         let _ = (dimension, entity, kind);
@@ -1265,7 +1305,7 @@ impl Game<'_> {
     /// an arrival through a portal). `entity` is its ID and `kind` its type
     /// (`minecraft:item`). It is already in the level's lists, so helpers that
     /// take an entity ID find it. Set `canceled` to keep it out: it is taken
-    /// back out as if never added, and a `/summon` of it fails. @API:entity_join_level@ tells
+    /// back out as if never added, and a `/summon` of it fails. 47 tells
     /// item entities and experience orbs; later APIs add other kinds, so check
     /// `kind`. Server-side.
     pub(super) fn native_entity_join_level(
@@ -1337,7 +1377,7 @@ impl Game<'_> {
     /// `effect` (`ruby:bleeding`), each tick a player or a mob has it, in
     /// `MobEffectInstance.tickServer` before it counts down: `tick_count` is
     /// the ticks left (the entity's tick count when infinite). Set `apply`
-    /// and `native_apply_effect_tick` follows. Server-side. API @API:mob_effect_hooks@.
+    /// and `native_apply_effect_tick` follows. Server-side. API 56.
     pub(super) fn native_should_apply_effect_tick_this_tick(
         &self,
         effect: &str,
@@ -1353,7 +1393,7 @@ impl Game<'_> {
     /// `Entity.getId`, None for a player (`native_acting_player` says who).
     /// It runs inside the entity's tick: a mob's world borrows the game
     /// there, so the game is read-only, and it does not hold the ticking
-    /// mobs, nor the player's effects. Server-side. API @API:mob_effect_hooks@.
+    /// mobs, nor the player's effects. Server-side. API 56.
     pub(super) fn native_apply_effect_tick(
         &self,
         effect: &str,
@@ -1366,7 +1406,7 @@ impl Game<'_> {
     }
     /// `MobEffect.onEffectAdded`: `LivingEntity.addEffect` gave `entity`
     /// (as in `native_apply_effect_tick`) the content mod's effect `effect`,
-    /// which it didn't have. Server-side. API @API:mob_effect_hooks@.
+    /// which it didn't have. Server-side. API 56.
     pub(super) fn native_on_effect_added(
         &mut self,
         effect: &str,
@@ -1378,7 +1418,7 @@ impl Game<'_> {
     /// NeoForge's `MobEffectEvent.Added`, vanilla's `MobEffect.onEffectStarted`:
     /// every `LivingEntity.addEffect` of the content mod's effect `effect`,
     /// new or not, changed or not, after `native_on_effect_added`.
-    /// Server-side. API @API:mob_effect_hooks@.
+    /// Server-side. API 56.
     pub(super) fn native_mob_effect_added(
         &mut self,
         effect: &str,
@@ -1393,13 +1433,13 @@ impl Game<'_> {
     /// (`minecraft:fall`), from the source's `causing` entity
     /// (`DamageSource.getEntity`: the shooter of an arrow) and `direct` one
     /// (`getDirectEntity`: the arrow), 0 for none or not known yet
-    /// (docs/native-mods.md, API @API:living_incoming_damage@). Change `amount`, or set `canceled`,
+    /// (docs/native-mods.md, API 50). Change `amount`, or set `canceled`,
     /// and nothing of `hurtServer` itself happens (no damage, hurt sound,
     /// knockback, invulnerable time, statistics or criteria); the caller acts
     /// as on a refused hit. Players and mobs, not the ender dragon yet. It runs
     /// on the thread that ticks the world (the server thread; the window's
     /// in-frame): state shared with render thread hooks needs synchronising.
-    /// No `self`: the game is in the middle of the hit. API @API:living_incoming_damage@.
+    /// No `self`: the game is in the middle of the hit. API 50.
     pub(super) fn native_living_incoming_damage(
         entity: i32,
         kind: &str,
@@ -1903,7 +1943,7 @@ impl Game<'_> {
     /// do (`ServerLevel.tick` broadcasts chunks before it ticks block
     /// entities). Call it when what clients show changed (a machine started),
     /// not for every tick's progress: a menu's data slots carry that. Nothing
-    /// happens for an unloaded block. API @API:native-block-entity-sync@.
+    /// happens for an unloaded block. API 52.
     pub(super) fn native_block_entity_sync(&mut self, pos: [i32; 3]) {
         if !self.world.loaded(pos[0], pos[2]) {
             return;
