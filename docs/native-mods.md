@@ -228,7 +228,7 @@ bucket is a thousand). `native_block_entity_fluids` declares the tanks, as `nati
 tanks each face reaches, and which a fill may reach and a drain may take; the tanks' contents live in the entity's saved compound under
 `fluids`, so they survive restarts, and the block's own tick reads them there. `native_fluid_tanks` reads them through a side, `native_fluid_insert`
 fills (first into tanks holding the same fluid, then into empty ones) and answers what did not fit, `native_fluid_extract` drains and answers what it
-took; both also work a cauldron, which holds thirds of a bucket, a lava one only whole, and powder snow none, as it is no fluid. Water and lava
+took; both also work a cauldron, which gives and takes whole thirds of a bucket and never more than was asked (less than its top third gives nothing), a lava one only whole, and powder snow none, as it is no fluid. Water and lava
 (`minecraft:water`, `minecraft:lava`) are the fluids; a tank holds one at a time. Bundles that use them need `"hooks": 41`.
 
 ## What the launcher does

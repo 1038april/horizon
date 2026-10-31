@@ -34,6 +34,35 @@ fn third(level: u8) -> i32 {
     i32::from(level) * 1000 / 3
 }
 
+/// The level a fill of `given` millibuckets raises `level` to: a level
+/// rises only while its whole third fits what is left of the give, so no
+/// sum ever grows past a bucket.
+fn fill_level(level: u8, given: i32) -> u8 {
+    let mut new = level;
+    while new < 3 && third(new + 1) - third(level) <= given {
+        new += 1;
+    }
+    new
+}
+
+/// What a drain of at most `amount` takes out of water level `level`, in
+/// whole thirds — never more than was asked, as `IFluidHandler.drain`'s
+/// `maxDrain`: less than the topmost whole third takes nothing. Answers
+/// what it took and the level it left.
+fn drain_take(level: u8, amount: i32) -> (i32, u8) {
+    let mut taken = 0;
+    let mut left = level;
+    while left > 0 {
+        let step = third(left) - third(left - 1);
+        if taken + step > amount {
+            break;
+        }
+        taken += step;
+        left -= 1;
+    }
+    (taken, left)
+}
+
 /// What holds fluids at a position: a mod block's tanks, or a cauldron
 /// (`CauldronFluids`). An empty cauldron is fillable; powder snow is not a
 /// fluid (`FluidKind` has none), so a powder snow cauldron holds none.
@@ -51,14 +80,17 @@ enum CauldronFluids {
 /// The saved state of one tank: its fluid and amount in millibuckets.
 type Tank = (Option<String>, i32);
 
-/// The tanks in `nbt`, each `n` long: missing entries read as empty.
+/// The tanks in `nbt`, each `n` long: missing entries read as empty, and a
+/// save with more tanks than the block now declares keeps the ones that
+/// still exist (a mod update that shrank its tanks loses nothing it kept).
 fn read_tanks(nbt: &Compound, n: usize) -> Vec<Tank> {
     let list = match nbt.get(&JavaString::from("fluids")) {
-        Some(Tag::List(list)) if list.len() <= n => list,
+        Some(Tag::List(list)) => list,
         _ => return vec![(None, 0); n],
     };
     let read: Vec<Tank> = list
         .iter()
+        .take(n)
         .map(|tag| match tag {
             Tag::Compound(map) => (
                 match map.get(&JavaString::from("Fluid")) {
@@ -237,13 +269,11 @@ impl Game<'_> {
                         CauldronFluids::Water(level) => level,
                         _ => 0,
                     };
-                    let total = third(level) + amount.max(0);
-                    let mut new_level = level;
-                    while new_level < 3 && third(new_level + 1) <= total {
-                        new_level += 1;
-                    }
+                    let given = amount.max(0);
+                    let new_level = fill_level(level, given);
+                    let consumed = third(new_level) - third(level);
                     if new_level > level && self.cauldron_set(pos, Some(new_level), false) {
-                        total - third(new_level)
+                        given - consumed
                     } else {
                         amount
                     }
@@ -383,14 +413,11 @@ impl Game<'_> {
                 Some((fluid?, taken))
             }
             FluidAt::Cauldron(CauldronFluids::Water(level)) => {
-                // A cauldron has no finer unit than its bottle's third.
-                let mut taken = 0;
-                let mut left = level;
-                while left > 0 && taken < amount {
-                    taken += third(left) - third(left - 1);
-                    left -= 1;
-                }
-                if left < level && self.cauldron_set(pos, (left > 0).then_some(left), false) {
+                // A cauldron has no finer unit than its bottle's third, and
+                // never hands out more than was asked: less than the topmost
+                // whole third gives nothing.
+                let (taken, left) = drain_take(level, amount);
+                if taken > 0 && self.cauldron_set(pos, (left > 0).then_some(left), false) {
                     Some(("minecraft:water".to_owned(), taken))
                 } else {
                     None
@@ -415,6 +442,33 @@ mod tests {
         assert_eq!(third(3), 1000);
     }
 
+    #[test]
+    fn a_cauldron_never_hands_out_more_than_was_asked() {
+        // The top third of a full cauldron is 334, then 333, 333.
+        assert_eq!(drain_take(3, 1), (0, 3));
+        assert_eq!(drain_take(3, 333), (0, 3));
+        assert_eq!(drain_take(3, 334), (334, 2));
+        assert_eq!(drain_take(3, 500), (334, 2));
+        assert_eq!(drain_take(3, 666), (334, 2));
+        assert_eq!(drain_take(3, 667), (667, 1));
+        assert_eq!(drain_take(3, 1000), (1000, 0));
+        assert_eq!(drain_take(1, 332), (0, 1));
+        assert_eq!(drain_take(1, 333), (333, 0));
+        assert_eq!(drain_take(1, i32::MAX), (333, 0));
+    }
+
+    #[test]
+    fn a_cauldron_fill_stays_within_a_bucket_whatever_the_amount() {
+        assert_eq!(fill_level(0, 332), 0);
+        assert_eq!(fill_level(0, 333), 1);
+        assert_eq!(fill_level(1, 332), 1);
+        assert_eq!(fill_level(1, 333), 2);
+        assert_eq!(fill_level(1, 666), 2);
+        assert_eq!(fill_level(1, 667), 3);
+        assert_eq!(fill_level(0, i32::MAX), 3);
+        assert_eq!(fill_level(2, i32::MAX), 3);
+    }
+
     fn tanks(list: &[(Option<&str>, i32)]) -> Vec<Tank> {
         list.iter()
             .map(|&(fluid, amount)| (fluid.map(str::to_owned), amount))
@@ -433,6 +487,23 @@ mod tests {
         // Anything else under `fluids` is the mod's own, not a tank list.
         nbt.insert(JavaString::from("fluids"), Tag::Int(0));
         assert_eq!(read_tanks(&nbt, 2), vec![(None, 0), (None, 0)]);
+    }
+
+    #[test]
+    fn a_shrunk_tank_table_keeps_the_tanks_that_still_exist() {
+        // A mod update that declares one tank where the save has two keeps
+        // the first tank's contents, instead of reading all as empty and
+        // writing the wipe back.
+        let mut nbt = Compound::new();
+        let saved = tanks(&[
+            (Some("minecraft:water"), 4000),
+            (Some("minecraft:lava"), 1000),
+        ]);
+        write_tanks(&mut nbt, &saved);
+        assert_eq!(
+            read_tanks(&nbt, 1),
+            tanks(&[(Some("minecraft:water"), 4000)])
+        );
     }
 
     #[test]
