@@ -308,6 +308,14 @@ would read the player's `~/.cargo/config.toml`, whose `[profile]`, `[build]` and
 workspace and the environment; no switch turns that search off. The source's own `.cargo/config.toml`, if it
 has one, is passed with `--config`.
 
+Every path the build's tools see — the toolchain, the Cargo home, `native/` and the tools' temp dir (TMPDIR,
+TMP and TEMP, where gcc, the assembler, `ld` and `cargo install` put their scratch files) — comes from
+`backend::build_dir`: the launcher's data folder, resolved (never through a link, which horizon-mixins
+refuses). On Windows, when that path is not spelled in ASCII — a Cyrillic user name in `%APPDATA%`, which
+MinGW-w64's tools can't open — it is the folder's own short (8.3) name where the volume keeps one, else a
+folder under `ProgramData` named for it (`horizon-launcher-<id>`); a data folder that is itself a junction to
+a drive with an ASCII path resolves to that and needs neither.
+
 ## Install from GitHub
 
 An author can ship a native mod without a registry pull request per version: the player installs it from a
