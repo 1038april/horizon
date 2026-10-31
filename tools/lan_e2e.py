@@ -9904,13 +9904,17 @@ def check_creative_throw(host, guest, out):
         return sum((e.get('item') or {}).get('count', 0) for e in player.raw('entities', 8)['entities']
                    if e['type'] == 'minecraft:item' and (e.get('item') or {}).get('item') == item)
 
+    def clear():
+        player('command', command='kill @e[type=minecraft:item,distance=..16]')
+        player.wait(2)
+
     def hotbar(player):
         return {s['slot']: (s.get('item'), s.get('count')) for s in player('inventory')['hotbar'][:2]}
 
     for label, player in (('host', host), ('guest', guest)):
         player('command', command='gamemode creative')
         player('command', command='clear @s')
-        player('command', command='kill @e[type=minecraft:item,distance=..16]')
+        clear()
         player('command', command='item replace entity @s hotbar.0 with minecraft:stone 10')
         player('command', command='item replace entity @s hotbar.1 with minecraft:dirt 5')
         player.wait(10)
@@ -9926,6 +9930,8 @@ def check_creative_throw(host, guest, out):
             player.raw('key', 'q', 'tap')
             player.wait(5)
             one = (hotbar(player)[0], dropped(player, 'minecraft:stone'))
+            # Each step's drops go before the next, so none is picked up again (40 ticks' delay).
+            clear()
             # Carrying a picked display stack: Q over the dirt drops one dirt, the hand keeps its stack.
             player.raw('click', 'slot-900')
             player.wait(2)
@@ -9934,6 +9940,7 @@ def check_creative_throw(host, guest, out):
             player.raw('key', 'q', 'tap')
             player.wait(5)
             carrying = (hotbar(player)[1], dropped(player, 'minecraft:dirt'), player('inventory').get('carried'))
+            clear()
             # Control+Q: the rest of the dirt.
             player.raw('key', 'ctrl', 'down')
             player.raw('key', 'q', 'tap')
@@ -9948,8 +9955,8 @@ def check_creative_throw(host, guest, out):
         assert one == (('minecraft:stone', 9), 1), seen
         assert carried and carrying[2] == carried, seen
         assert carrying[:2] == (('minecraft:dirt', 4), 1), seen
-        assert whole == ((None, None), 5), seen
-        player('command', command='kill @e[type=minecraft:item,distance=..16]')
+        assert whole == ((None, None), 4), seen
+        clear()
     return seen
 
 
