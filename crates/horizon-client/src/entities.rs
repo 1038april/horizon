@@ -563,7 +563,7 @@ impl ExperienceOrb {
     ) -> Option<Vec3> {
         let bounds = Self::box_at(at);
         let size = bounds.average_size();
-        let (lo, hi) = (bounds.min_position(), bounds.max_position());
+        let lo = bounds.min_position();
         let cells = |v: f64| (v - 1.0e-7).floor() as i32 - 1..=(v + 1.0e-7).floor() as i32 + 1;
         // noCollision(box): a block shape reaching into it leaves the orb stuck.
         let mut stuck = false;
