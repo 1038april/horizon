@@ -2,7 +2,7 @@
 //! `ItemFrame.survives`, `interact` (put an item in, then rotate it),
 //! `hurtServer` (take the item out, then break the frame) and
 //! `ItemFrameRenderer` (the frame model and the item at a 45 degree step).
-use super::{Game, Hit};
+use super::{Game, Hit, InteractTarget};
 use horizon_assets::{bake::bake_model, model::CuboidModel, resolve::ModelLibrary};
 use horizon_client::{entities::ItemFrame, items::ItemStack, mesher::Vertex};
 use horizon_core::{
@@ -210,12 +210,17 @@ impl Game<'_> {
                 > distance
         })
     }
-    /// `ItemFrame.interact` for the frame under the crosshair.
-    pub(super) fn interact_frame(&mut self) -> bool {
-        let Some((i, d)) = self.frame_hit() else {
+    /// `ItemFrame.interact` for the frame under the crosshair, or the one a
+    /// guest's interact packet named.
+    pub(super) fn interact_frame(&mut self, target: Option<InteractTarget>) -> bool {
+        let Some((i, d)) = (match target {
+            Some(t) => Self::named_entity(&self.item_frames, t.id, |f| f.id).map(|i| (i, 0.0)),
+            None => self.frame_hit(),
+        }) else {
             return false;
         };
-        if !self.before_block(d) || self.item_frames[i].fixed {
+        // Only a client's own pick is stopped by a block: the range check passed.
+        if (target.is_none() && !self.before_block(d)) || self.item_frames[i].fixed {
             return false;
         }
         let at = center(&self.item_frames[i]);
@@ -433,6 +438,7 @@ impl Game<'_> {
             };
             let frame_packed =
                 (u32::from(frame_light >> 4) * 16) | ((u32::from(frame_light & 15) * 16) << 8);
+            let frame_start = out.len();
             let mut quad =
                 |m: &glam::DMat4, corners: [[f64; 3]; 4], uv: [[f32; 2]; 4], light: u32| {
                     // The frame model is drawn with the entity shader, lit by its face normal.
@@ -478,6 +484,13 @@ impl Game<'_> {
                         map_uv(r, *uv),
                         frame_packed,
                     );
+                }
+            }
+            // HDR output: a glow frame shines softly (entity.wgsl fs_hdr_mark); the item in it
+            // is only lit, as vanilla draws it.
+            if f.glow {
+                for v in &mut out[frame_start..] {
+                    v.layer |= u32::from(horizon_client::mesher::INCANDESCENT) << 16;
                 }
             }
             self.cull_entity_vertices(out, entity_start);
