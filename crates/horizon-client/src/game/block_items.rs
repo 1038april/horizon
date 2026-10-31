@@ -65,7 +65,7 @@ impl Game<'_> {
                 Some(t) if t == "sticky" => "minecraft:sticky_piston",
                 _ => "minecraft:piston",
             });
-        let item = clone_item(&*facts.name, head.unwrap_or(&*facts.item));
+        let item = clone_item(&facts.name, head.unwrap_or(&facts.item));
         if item == "minecraft:air" {
             return None;
         }
