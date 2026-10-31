@@ -3622,6 +3622,7 @@ impl Game<'_> {
                 } else {
                     EntityHit::Refused
                 };
+                self.burning_arrow_primes(p, who);
                 self.finish_arrow_hit(trident, outcome);
             }
             // AbstractArrow.onHitBlock plays its sound itself (ArrowEvent).
@@ -3698,6 +3699,7 @@ impl Game<'_> {
                         hurt
                     }
                 };
+                self.burning_arrow_primes(p, who);
                 // doKnockback: Punch pushes along the flight, less the target's
                 // knockback resistance.
                 let flight = (p.velocity.x * p.velocity.x + p.velocity.z * p.velocity.z).sqrt();

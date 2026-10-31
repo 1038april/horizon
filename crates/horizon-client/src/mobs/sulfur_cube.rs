@@ -16,7 +16,8 @@ use std::sync::OnceLock;
 // Sulfur cube state (on top of `cube`'s `size`, `counter` jump delay,
 // `flag` aggressive, `flag2` was on ground, `vector[0]` direction):
 // `head` the swallowed block, `counter2` the fuse plus one (0 unprimed),
-// `ints[3]` the pickup timer, `scratch[1]` a fuse just lit (sound pending),
+// `ints[3]` the pickup timer, `scratch[1]` the sounds pending (1 a fuse just
+// lit, 2 a hit),
 // `scratch[2]` the push sound cooldown, `scratch[3]` from a bucket,
 // `point` the item it is after.
 pub const PICKUP_TIMER: i32 = 100;
@@ -264,6 +265,78 @@ pub fn fuse(m: &Mob) -> i32 {
 pub fn primed(m: &Mob) -> bool {
     fuse(m) >= 0
 }
+/// `hurtServer`'s priming by a hit whose direct entity is a burning
+/// `AbstractArrow` (an arrow or a trident): a cube with a block that can
+/// explode lights its fuse, the long one.
+pub fn burning_arrow_hit(m: &mut Mob) -> bool {
+    has_body(m) && can_explode(m) && prime(m, false)
+}
+
+#[cfg(test)]
+mod burning_arrow_tests {
+    use super::*;
+    use crate::mobs::{Mob, Species};
+    use std::sync::Arc;
+
+    fn cube(head: Option<&str>) -> Mob {
+        load_archetype_items(&HashMap::from([(
+            "minecraft:sulfur_cube_archetype/explosive".to_owned(),
+            HashSet::from(["minecraft:tnt".to_owned()]),
+        )]));
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.species = Species::SulfurCube;
+        let mut m = Mob::new(1, Arc::new(kind), Vec3::ZERO, 0.0);
+        m.extra.head = head.map(Into::into);
+        m
+    }
+
+    #[test]
+    fn a_burning_arrow_lights_the_long_fuse() {
+        let mut m = cube(Some("minecraft:tnt"));
+        assert!(burning_arrow_hit(&mut m));
+        let (fuse_ticks, _, _) = archetype(&m).and_then(|a| a.explosion).unwrap();
+        assert_eq!(fuse(&m), fuse_ticks);
+        assert!(m.invulnerable_flag);
+        // lit once: a second arrow leaves the fuse alone.
+        m.extra.counter2 -= 5;
+        assert!(!burning_arrow_hit(&mut m));
+        assert_eq!(fuse(&m), fuse_ticks - 5);
+    }
+
+    #[test]
+    fn a_burning_arrow_lights_only_an_explosive_block() {
+        for head in [None, Some("minecraft:dirt")] {
+            let mut m = cube(head);
+            assert!(!burning_arrow_hit(&mut m), "{head:?}");
+            assert!(!primed(&m) && !m.invulnerable_flag, "{head:?}");
+        }
+    }
+
+    /// the arrow's knock, then the fuse lit: the next tick plays
+    /// `entity.tnt.primed`, then the archetype's hit sound.
+    #[test]
+    fn a_knock_and_a_lit_fuse_both_sound() {
+        let mut events = Vec::new();
+        let ran = crate::mobs::world::with_test_world(&[], |w, _| {
+            let mut m = cube(Some("minecraft:tnt"));
+            m.damage(5.0, Damage::player([2.0, 0.0, 0.0]));
+            assert!(burning_arrow_hit(&mut m));
+            ai_step(&mut m, w, &mut events);
+        });
+        if !ran {
+            return; // needs the prepared 26.3 data
+        }
+        let sounds: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                MobEvent::Sound(id, ..) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        let hit = archetype_of("minecraft:tnt").unwrap().hit_sound;
+        assert_eq!(sounds, ["entity.tnt.primed", hit]);
+    }
+}
 /// Client copy of `tickFuse`: count the fuse down for the renderer. The
 /// server alone explodes (`ai_step`); a guest never fires `Explode` here.
 pub fn client_tick(m: &mut Mob) {
@@ -357,7 +430,7 @@ pub fn prime(m: &mut Mob, imminent: bool) -> bool {
     };
     m.invulnerable_flag = true;
     m.extra.counter2 = t + 1;
-    m.extra.scratch[1] = 1;
+    m.extra.scratch[1] |= 1;
     true
 }
 /// `hurtServer`: fire or explosions light an explosive cube; with a block
@@ -441,14 +514,15 @@ pub fn knockback(m: &mut Mob, from: [f64; 3], damage: f32) -> bool {
 /// own: the fuse, the timers, a swallowed block's stillness, buoyancy and
 /// facing, growing up, and players pushing it.
 pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
-    match m.extra.scratch[1] {
-        1 => events.push(MobEvent::Sound("entity.tnt.primed", m.center(), 1.0, 1.0)),
-        2 => {
-            if let Some(a) = archetype(m) {
-                events.push(MobEvent::Sound(a.hit_sound, m.center(), 1.0, 1.0));
-            }
-        }
-        _ => {}
+    // primeTime's sound, then knockback's: a burning arrow plays both.
+    let pending = m.extra.scratch[1];
+    if pending & 1 != 0 {
+        events.push(MobEvent::Sound("entity.tnt.primed", m.center(), 1.0, 1.0));
+    }
+    if pending & 2 != 0
+        && let Some(a) = archetype(m)
+    {
+        events.push(MobEvent::Sound(a.hit_sound, m.center(), 1.0, 1.0));
     }
     m.extra.scratch[1] = 0;
     // tickFuse.
