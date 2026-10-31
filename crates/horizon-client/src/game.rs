@@ -6061,7 +6061,7 @@ impl Game<'_> {
         if self.destroy_delay > 0 {
             self.destroy_delay -= 1;
         }
-        if !self.left || self.screen != Screen::Playing {
+        if !self.left || self.screen != Screen::Playing || self.dialog_open() {
             self.mining = None;
             return Ok(());
         }
@@ -6438,7 +6438,7 @@ impl Game<'_> {
         let camera_eye = self.camera_eye_height();
         let stick = self.pad_move();
         if self.riding.is_some() && self.player.is_some() {
-            let playing = self.screen == Screen::Playing;
+            let playing = self.screen == Screen::Playing && !self.dialog_open();
             let held = |k| playing && self.keys.contains(&k);
             let keys = Keys {
                 forward: held(KeyCode::KeyW),
@@ -6458,6 +6458,8 @@ impl Game<'_> {
         let spin_targets = self.spin_targets();
         let sprint_window = self.settings.sprint_window;
         self.sync_player_body();
+        // Read before `player` borrows `self` mutably.
+        let dialog = self.dialog_open();
         let Some(player) = self.player.as_mut() else {
             // A dedicated server has no local player: the world still runs.
             if self.options.dedicated.is_some() {
@@ -6473,7 +6475,7 @@ impl Game<'_> {
         if !self.streaming.is_lit(cx, cz) {
             return Ok(());
         }
-        let playing = self.screen == Screen::Playing && self.sleeping.is_none();
+        let playing = self.screen == Screen::Playing && self.sleeping.is_none() && !dialog;
         let held = |k| playing && self.keys.contains(&k);
         let keys = Keys {
             forward: held(KeyCode::KeyW),
@@ -6900,6 +6902,7 @@ impl Game<'_> {
             && self.use_delay == 0
             && self.using.is_none()
             && self.screen == Screen::Playing
+            && !self.dialog_open()
             && self.sleeping.is_none()
         {
             self.use_with_hand()?;
@@ -6979,7 +6982,8 @@ impl Game<'_> {
                 (_, false) => KeyAction::Press,
                 (_, true) => KeyAction::Repeat,
             };
-            let screen_open = self.screen != Screen::Playing || self.title.is_some();
+            let screen_open =
+                !gameplay_has_keyboard(self.screen, self.title.is_some(), self.dialog_open());
             self.toggles.key(slot, action, screen_open, option);
             self.sync_toggle(slot);
             if !pressed {
@@ -7002,7 +7006,9 @@ impl Game<'_> {
     /// `KeyMapping.releaseAll` when a screen opens and
     /// `restoreToggleStatesOnScreenClosed` when it closes.
     fn track_toggle_screens(&mut self) {
-        let playing = self.screen == Screen::Playing && self.title.is_none();
+        let dialog = self.dialog_open();
+        drop_held_behind_dialog(dialog, &mut self.keys, &mut self.left, &mut self.right);
+        let playing = gameplay_has_keyboard(self.screen, self.title.is_some(), dialog);
         if playing == self.was_playing {
             return;
         }
@@ -15820,9 +15826,14 @@ impl ApplicationHandler for Game<'_> {
                                     (_, false) => KeyAction::Press,
                                     (_, true) => KeyAction::Repeat,
                                 };
-                                if let Some(pressed) =
-                                    keyboard_button(self.screen == Screen::Playing, action)
-                                {
+                                if let Some(pressed) = keyboard_button(
+                                    gameplay_has_keyboard(
+                                        self.screen,
+                                        self.title.is_some(),
+                                        self.dialog_open(),
+                                    ),
+                                    action,
+                                ) {
                                     self.play_mouse(button, pressed)?;
                                 }
                             }
@@ -15846,6 +15857,7 @@ impl ApplicationHandler for Game<'_> {
                         && self.title.is_none()
                         && self.sign_edit.is_none()
                         && self.book.is_none()
+                        && !self.dialog_open()
                     {
                         let turn = |k| f32::from(u8::from(self.keys.contains(&k)));
                         let secs = elapsed.as_secs_f32().min(0.1);
@@ -18537,6 +18549,26 @@ fn keyboard_button(playing: bool, action: KeyAction) -> Option<bool> {
     playing.then_some(action != KeyAction::Release)
 }
 
+/// Gameplay owns the keyboard: `Screen::Playing`, no title, no server dialog.
+/// Vanilla's `DialogScreen` is a screen, so `KeyMapping.releaseAll` runs.
+fn gameplay_has_keyboard(screen: Screen, title: bool, dialog: bool) -> bool {
+    screen == Screen::Playing && !title && !dialog
+}
+
+/// A dialog drops held keys and mouse buttons it does not see (#4974).
+fn drop_held_behind_dialog(
+    dialog: bool,
+    keys: &mut HashSet<KeyCode>,
+    left: &mut bool,
+    right: &mut bool,
+) {
+    if dialog {
+        keys.clear();
+        *left = false;
+        *right = false;
+    }
+}
+
 /// `VoxelShape.clip` of a fluid source's shape for a ray that starts in the
 /// source's own block `cell`: the face and point it hits, in `pick_fluid`'s
 /// `Hit` terms. `FlowingFluid.getShape` is the whole block under the same
@@ -18781,7 +18813,7 @@ mod tests {
         assert!(!equipment_modifier_applies("mainhand", "offhand"));
         assert!(!equipment_modifier_applies("offhand", "mainhand"));
     }
-    use horizon_client::keymapping::{KeyAction, SPRINT, ToggleKeys};
+    use horizon_client::keymapping::{KeyAction, SNEAK, SPRINT, ToggleKeys};
 
     /// A mod screen on a hopper or dispenser menu owns its slots: the stock
     /// grid stands back so `slot_position` reaches the mod's own slots
@@ -18855,6 +18887,34 @@ mod tests {
         for action in [KeyAction::Press, KeyAction::Repeat, KeyAction::Release] {
             assert_eq!(keyboard_button(false, action), None);
         }
+    }
+
+    /// A server dialog is a screen: held keys and the use button are released
+    /// (`KeyMapping.releaseAll`), and toggled sneak comes back when it closes (#4974).
+    #[test]
+    fn a_dialog_releases_held_keys_like_a_screen() {
+        assert!(gameplay_has_keyboard(Screen::Playing, false, false));
+        assert!(!gameplay_has_keyboard(Screen::Playing, false, true));
+        assert!(!gameplay_has_keyboard(Screen::Playing, true, false));
+        assert!(!gameplay_has_keyboard(Screen::Chat, false, false));
+
+        let mut keys = HashSet::from([KeyCode::KeyW]);
+        let mut left = true;
+        let mut right = true;
+        drop_held_behind_dialog(false, &mut keys, &mut left, &mut right);
+        assert!(keys.contains(&KeyCode::KeyW) && left && right);
+        drop_held_behind_dialog(true, &mut keys, &mut left, &mut right);
+        assert!(keys.is_empty() && !left && !right);
+
+        let options = [true, false, false, false];
+        let mut toggles = ToggleKeys::default();
+        toggles.key(SNEAK, KeyAction::Press, false, true);
+        toggles.key(SNEAK, KeyAction::Release, false, true);
+        assert!(toggles.is_down(SNEAK));
+        toggles.screen_opened(options);
+        assert!(!toggles.is_down(SNEAK));
+        toggles.screen_closed(options);
+        assert!(toggles.is_down(SNEAK));
     }
     #[test]
     fn sleep_fade_lasts_ten_ticks_after_waking() {
