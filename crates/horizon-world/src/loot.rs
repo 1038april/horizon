@@ -11,7 +11,7 @@
 use horizon_core::random::{LegacyRandom, RandomSource};
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     fs, io,
     path::Path,
     sync::{Arc, Mutex, Weak},
@@ -475,8 +475,7 @@ impl LootData {
         let mut predicates = HashMap::new();
         load_kind(&all, "predicate", &mut predicates)?;
         overlay_map(overlay, "predicate", &mut predicates);
-        let raw: BTreeMap<String, Value> =
-            serde_json::from_slice(&fs::read(root.join("items.json"))?)?;
+        let raw = crate::item_defaults::read(root)?;
         let items = raw
             .iter()
             .map(|(name, c)| {

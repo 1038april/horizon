@@ -1227,21 +1227,11 @@ impl Game<'_> {
         static RARITY: std::sync::OnceLock<std::collections::HashMap<String, String>> =
             std::sync::OnceLock::new();
         let map = RARITY.get_or_init(|| {
-            let v: serde_json::Value = serde_json::from_slice(
-                &std::fs::read(self.options.resources.join("items.json")).unwrap_or_default(),
-            )
-            .unwrap_or_default();
-            v.as_object()
-                .map(|o| {
-                    o.iter()
-                        .filter_map(|(k, c)| {
-                            c["minecraft:rarity"]
-                                .as_str()
-                                .map(|r| (k.clone(), r.to_owned()))
-                        })
-                        .collect()
-                })
+            horizon_world::item_defaults::read(&self.options.resources)
                 .unwrap_or_default()
+                .into_iter()
+                .filter_map(|(k, c)| c["minecraft:rarity"].as_str().map(|r| (k, r.to_owned())))
+                .collect()
         });
         map.get(item).cloned().unwrap_or_else(|| "common".into())
     }

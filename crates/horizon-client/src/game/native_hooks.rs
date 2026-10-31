@@ -3390,6 +3390,11 @@ mod tests {
                 .lines()
                 .filter_map(|line| line.strip_prefix("pub fn native_")?.split('(').next())
                 .collect();
+        // Items' default components (`horizon_world::item_defaults`).
+        let item_hooks: BTreeSet<_> = include_str!("../../../horizon-world/src/item_defaults.rs")
+            .lines()
+            .filter_map(|line| line.strip_prefix("pub fn native_")?.split('(').next())
+            .collect();
         let declared: BTreeSet<_> = section
             .lines()
             .chain(level_section.lines())
@@ -3400,6 +3405,7 @@ mod tests {
                     .next()
             })
             .chain(render_hooks.iter().copied())
+            .chain(item_hooks.iter().copied())
             .collect();
         let mut names = BTreeSet::new();
         let mut contracts = BTreeSet::new();
@@ -3413,6 +3419,8 @@ mod tests {
             names.insert(name);
             let target = if render_hooks.contains(name) {
                 format!("horizon_client_render::gfx::native_render::native_{name}")
+            } else if item_hooks.contains(name) {
+                format!("horizon_world::item_defaults::native_{name}")
             } else if level_hooks.contains(name) {
                 format!("horizon_client::game::native_hooks::GameLevel<'_>::native_{name}")
             } else {

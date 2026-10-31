@@ -575,8 +575,7 @@ impl Items {
         block_for_item: &HashMap<&str, BlockStateId>,
         overlay: &PackOverlay,
     ) -> Result<Self> {
-        let raw: BTreeMap<String, Value> =
-            serde_json::from_slice(&fs::read(root.join("items.json"))?)?;
+        let raw = horizon_world::item_defaults::read(root)?;
         let entity_tags = load_tags(root, "entity_type", overlay)?;
         let path = root.join(MOD_CRAFT_REMAINDERS);
         let mod_remainders: HashMap<String, String> = match fs::read(&path) {
