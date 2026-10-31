@@ -1259,6 +1259,85 @@ fn world_with_nothing_to_recover_from_is_listed_but_never_opened() {
     assert!(matches!(f.title.mode, Mode::Select { .. }));
 }
 
+#[test]
+fn title_screen_keyboard_navigation_and_activation() {
+    let mut f = Fixture::new();
+    f.world("w1", "World 1");
+    let size = (480.0, 262.0);
+    assert_eq!(f.title.focused_button, None);
+
+    // Tab forwards focuses the first button (Singleplayer, id 1)
+    f.title.tab_dir(false, size);
+    assert_eq!(f.title.focused_button, Some(1));
+
+    // Tab again focuses Multiplayer (id 4)
+    f.title.tab_dir(false, size);
+    assert_eq!(f.title.focused_button, Some(4));
+
+    // Shift+Tab reverses focus to Singleplayer
+    f.title.tab_dir(true, size);
+    assert_eq!(f.title.focused_button, Some(1));
+
+    // Enter confirms focused button (Singleplayer opens world select) and triggers sound
+    let (action, sound) = f.title.confirm_key_size(size);
+    assert_eq!(action, Action::None);
+    assert!(sound);
+    assert!(matches!(f.title.mode, Mode::Select { .. }));
+    assert_eq!(f.title.focused_button, None);
+
+    // Navigate to Create New World button (id 11) on the select screen
+    f.title.focused_button = Some(11);
+    let (action, sound) = f.title.confirm_key_size(size);
+    assert_eq!(action, Action::None);
+    assert!(sound);
+    assert!(matches!(f.title.mode, Mode::Create { .. }));
+
+    // Focus and toggle Game Mode cycle button (id 20) from Survival to Hardcore
+    f.title.focused_button = Some(20);
+    let (action, sound) = f.title.confirm_key_size(size);
+    assert_eq!(action, Action::None);
+    assert!(sound);
+
+    // In Hardcore, Difficulty button (id 23) is disabled, so confirming it does not sound
+    f.title.focused_button = Some(23);
+    let (action, sound) = f.title.confirm_key_size(size);
+    assert_eq!(action, Action::None);
+    assert!(!sound);
+
+    // Toggle Game Mode cycle button again (Hardcore to Creative)
+    f.title.focused_button = Some(20);
+    let (action, sound) = f.title.confirm_key_size(size);
+    assert_eq!(action, Action::None);
+    assert!(sound);
+
+    // Now Difficulty button (id 23) is enabled in Creative, so confirming it sounds
+    f.title.focused_button = Some(23);
+    let (action, sound) = f.title.confirm_key_size(size);
+    assert_eq!(action, Action::None);
+    assert!(sound);
+}
+
+#[test]
+fn mouse_opening_singleplayer_does_not_steal_select_world_enter() {
+    let mut f = Fixture::new();
+    f.world("w1", "World 1");
+
+    assert_eq!(f.click("Singleplayer"), Action::None);
+    assert!(matches!(f.title.mode, Mode::Select { .. }));
+    assert_eq!(f.title.focused_button, None);
+
+    // Select the row, then press Enter as a keyboard user would.
+    f.title.click(240.0, 60.0, (480.0, 262.0));
+    let (action, sound) = f.title.confirm_key_size((480.0, 262.0));
+    assert_eq!(
+        action,
+        Action::Play {
+            folder: "w1".to_owned()
+        }
+    );
+    assert!(sound);
+}
+
 /// Rewrites a test world's `WorldGenSettings` (in level.dat, where `world_gen_settings` falls back).
 fn set_world_gen(f: &Fixture, folder: &str, change: impl FnOnce(&mut Tag)) {
     let path = f.title.saves.join(folder).join("level.dat");
