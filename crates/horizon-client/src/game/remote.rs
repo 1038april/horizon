@@ -2195,6 +2195,13 @@ impl Game<'_> {
                 t.on_ground = on_ground;
                 return;
             }
+            // ExperienceOrb has the same NO_OP handler; `ExperienceOrb.tick`
+            // moves it on between updates (`tick_remote_entities`).
+            if let Some(o) = self.orbs.iter_mut().find(|o| o.id == id as u32) {
+                o.position = at;
+                o.on_ground = on_ground;
+                return;
+            }
             if r.cart_lerps.contains_key(&id) {
                 // A minecart on NewMinecartBehavior keeps Entity's NO_OP
                 // InterpolationHandler: a teleport puts it there at once.
@@ -3503,6 +3510,12 @@ impl Game<'_> {
                 }
             }
             C::GameEvent(p) => match p.event {
+                // NO_RESPAWN_BLOCK_AVAILABLE: ClientPacketListener.handleGameEvent
+                // sends the player this system message.
+                0 => self.system_message(horizon_client::text::Text::translate(
+                    "block.minecraft.spawn.not_valid",
+                    &[],
+                )),
                 // LEVEL_CHUNKS_LOAD_START: the server has begun sending the level.
                 13 => {
                     if let Some(r) = self.remote.as_mut() {
@@ -4533,8 +4546,8 @@ impl Game<'_> {
         });
     }
     /// `Entity.lerpMotion` (and `recreateFromPacket`'s motion) for the
-    /// entities whose own tick moves them on a client: dropped items, falling
-    /// blocks and primed TNT.
+    /// entities whose own tick moves them on a client: dropped items, experience
+    /// orbs, falling blocks and primed TNT.
     fn remote_motion(&mut self, id: i32, velocity: [f64; 3]) {
         self.remote_dragon_motion(id, velocity);
         let v = Vec3::new(velocity[0], velocity[1], velocity[2]);
@@ -4547,6 +4560,8 @@ impl Game<'_> {
             f.velocity = v;
         } else if let Some(t) = self.tnts.iter_mut().find(|t| t.id == id as u32) {
             t.velocity = v;
+        } else if let Some(o) = self.orbs.iter_mut().find(|o| o.id == id as u32) {
+            o.velocity = v;
         } else if let Some(p) = self
             .creatures
             .projectiles
@@ -4942,9 +4957,19 @@ impl Game<'_> {
         // The server sends no passenger's position: they sit where their
         // vehicles are now.
         self.position_riders();
+        // Entity.getFluidInteractionBox asks the vehicle: a boat afloat shelters
+        // its passenger's eyes (AbstractBoat.modifyPassengerFluidInteractionBox).
+        let boat = self
+            .riding
+            .and_then(|id| self.boats.iter().find(|b| b.id == id))
+            .map(|b| horizon_client::motion::RiddenBoat {
+                under_water: b.under_water(),
+                max_y: b.bounds().max_position().y,
+            });
         let Some(player) = self.player.as_mut() else {
             return Ok(());
         };
+        player.fluids.boat = boat;
         if !riding {
             self.previous_position = player.position;
         }
@@ -5333,6 +5358,38 @@ impl Game<'_> {
         } else {
             Vec::new()
         };
+        // ExperienceOrb.followNearbyPlayer: the players an orb may go for,
+        // their feet and the point `eyeHeight / 2` above them.
+        let followed: Vec<([f64; 3], [f64; 3])> = {
+            let own = self
+                .player
+                .as_ref()
+                .filter(|p| !p.health.dead_or_dying() && !self.spectator())
+                .map(|p| {
+                    let feet = [p.position.x, p.position.y, p.position.z];
+                    let eye = f64::from(p.dimensions.eye_height);
+                    (feet, [feet[0], feet[1] + eye / 2.0, feet[2]])
+                });
+            let others = self.remote.as_ref().into_iter().flat_map(|r| {
+                self.mobs
+                    .iter()
+                    .filter(move |m| m.alive() && r.level_players.contains_key(&(m.id as i32)))
+                    .filter(move |m| {
+                        let listed = r.level_players.get(&(m.id as i32));
+                        !listed
+                            .and_then(|uuid| r.tab_players.get(uuid))
+                            .is_some_and(|t| t.game_mode == SPECTATOR)
+                    })
+                    .map(|m| {
+                        let feet = [m.position.x, m.position.y, m.position.z];
+                        (
+                            feet,
+                            [feet[0], feet[1] + (m.eye_y() - feet[1]) / 2.0, feet[2]],
+                        )
+                    })
+            });
+            own.into_iter().chain(others).collect()
+        };
         // The mount this client moves ticks in `remote_ride` instead, as its
         // authoritative side (LivingEntity.tick with travelRidden).
         let driven = self.driven_mount().map(|m| m.id);
@@ -5576,20 +5633,31 @@ impl Game<'_> {
                 _ => {}
             }
         }
-        for o in self.orbs.iter_mut().filter(|_| running) {
-            o.previous = o.position;
-            o.age += 1;
-            if let Some(l) = lerps.get_mut(&(o.id as i32))
-                && l.steps > 0
-            {
-                let n = f64::from(l.steps);
-                o.position = Vec3::new(
-                    o.position.x + (l.target[0] - o.position.x) / n,
-                    o.position.y + (l.target[1] - o.position.y) / n,
-                    o.position.z + (l.target[2] - o.position.z) / n,
-                );
-                l.steps -= 1;
-            }
+        // ExperienceOrb.tick runs on a client too (all but the merges and the
+        // push out of a block, which are the server's): gravity, buoyancy,
+        // collisions and the pull of the nearest player between the server's
+        // updates; the server removes it on pickup.
+        let (world, facts, collision) = (&self.world, self.res.facts(), self.collision);
+        let mut lava_random = None;
+        let mut next_float = || {
+            lava_random
+                .get_or_insert_with(super::dispenser::entity_random)
+                .next_float()
+        };
+        if running {
+            self.orbs.retain_mut(|o| {
+                let distance = |feet: &[f64; 3]| -> f64 {
+                    (feet[0] - o.position.x).powi(2)
+                        + (feet[1] - o.position.y).powi(2)
+                        + (feet[2] - o.position.z).powi(2)
+                };
+                let target = followed
+                    .iter()
+                    .filter(|(feet, _)| distance(feet) < 64.0)
+                    .min_by(|a, b| distance(&a.0).total_cmp(&distance(&b.0)))
+                    .map(|(_, target)| *target);
+                o.tick(world, facts, collision, target, &mut next_float)
+            });
         }
         // ItemEntity.tick runs on a client too: gravity, collisions and
         // friction move the item between the server's updates (every 20
@@ -6084,6 +6152,10 @@ impl Game<'_> {
             return;
         }
         self.use_delay = 4;
+        // Minecraft.startUseItem: nothing is used while the hands paddle a boat.
+        if self.hands_busy() {
+            return;
+        }
         // Resolve the crosshair once. A passing entity interaction keeps
         // that target and may only fall back to using the item itself.
         let entity = self.entity_targeted();
@@ -6680,6 +6752,11 @@ impl Game<'_> {
         let group = horizon_client::cooldowns::group(&held, info.use_cooldown.as_ref());
         if self.cooldowns.is_on_cooldown(&group) {
             return false;
+        }
+        // Item.use: Equippable.swapWithEquipmentSlot runs on this client too, so
+        // the armor slot and the hand change at once (the server confirms).
+        if info.equip_slot.is_some() && self.with_hand(hand, |g| g.equip_from_hand(&held)) {
+            return true;
         }
         // `ItemStack.use` runs on this client too: a bucket's own ray and its
         // pick/empty contents decide whether the click succeeds (a failed

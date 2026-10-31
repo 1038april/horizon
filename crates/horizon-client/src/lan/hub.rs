@@ -40,6 +40,7 @@ use std::sync::{Arc, Mutex, atomic::Ordering};
 pub mod chat;
 
 pub mod game_event {
+    pub const NO_RESPAWN_BLOCK_AVAILABLE: u8 = 0;
     pub const START_RAINING: u8 = 1;
     pub const STOP_RAINING: u8 = 2;
     pub const CHANGE_GAME_MODE: u8 = 3;
@@ -3198,6 +3199,19 @@ impl Hub {
                 g.send(&C::RemoveEntities(play::RemoveEntities { ids: vec![id] }));
             }
         }
+    }
+
+    /// A respawn point whose block is gone or blocked: the respawning player
+    /// is sent NO_RESPAWN_BLOCK_AVAILABLE and says
+    /// `block.minecraft.spawn.not_valid` in its chat.
+    pub fn missing_respawn_block(&self, conn: u32) {
+        self.send_to(
+            conn,
+            &C::GameEvent(play::GameEvent {
+                event: game_event::NO_RESPAWN_BLOCK_AVAILABLE,
+                param: 0.0,
+            }),
+        );
     }
 
     /// PlayerList.respawn: back to `at` with a fresh start. The vanilla client waits on its

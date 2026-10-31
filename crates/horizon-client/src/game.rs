@@ -5088,6 +5088,12 @@ impl Game<'_> {
             if entity && hand == Hand::Off && self.with_hand(hand, Game::interact_entity)? {
                 return Ok(Some(hand));
             }
+            // A client of a server never hits a fence knot with its crosshair:
+            // `LeadItem.useOn` and `LeashFenceKnotEntity.interact` reach the
+            // server as a click on the fence block.
+            if on_block && self.with_hand(hand, Game::interact_knot) {
+                return Ok(Some(hand));
+            }
             if self.with_hand(hand, |game| game.use_hand(block_hit.as_ref()))? {
                 return Ok(Some(hand));
             }
