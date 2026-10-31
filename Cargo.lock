@@ -1183,6 +1183,7 @@ dependencies = [
  "cpal",
  "flate2",
  "glam",
+ "half",
  "horizon-assets",
  "horizon-bench",
  "horizon-client-core",
@@ -1353,14 +1354,17 @@ dependencies = [
 name = "horizon-server"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "chrono",
  "horizon-anticheat",
  "horizon-bench",
+ "horizon-core",
  "horizon-release-sign",
  "horizon-server-files",
  "libc",
  "serde",
  "serde_json",
+ "sha1",
  "sha2",
  "toml",
  "toml_edit",
@@ -1398,8 +1402,10 @@ dependencies = [
 name = "horizon-shaders"
 version = "0.1.0"
 dependencies = [
+ "half",
  "horizon-core",
  "naga",
+ "png",
  "zip",
 ]
 

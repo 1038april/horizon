@@ -1329,9 +1329,10 @@ impl Game<'_> {
     ) -> Result<()> {
         let sync = sync_data(&self.options.resources, &self.pack_files())?;
         self.sync_dialog_ids(&sync);
-        let biome_names: Vec<String> = self
-            .res
-            .biomes()
+        // The table the world plays with (`world_biomes!`): a world with
+        // biome data packs sends their ids past the built-in list, as the
+        // encoder's `SectionCoder` expects.
+        let biome_names: Vec<String> = world_biomes!(self)
             .list
             .iter()
             .map(|b| b.name.clone())
@@ -1453,11 +1454,12 @@ impl Game<'_> {
     pub(super) fn save_guest(&mut self, host: &LanHost, guest: &horizon_client::lan::guest::Guest) {
         // The vehicle the guest rides, for the file that names it.
         let vehicle = self.root_vehicle_uuid(guest.vehicle);
-        if host.owner.as_ref().is_some_and(|o| o.uuid == guest.uuid) {
-            if guest.placed {
-                playerdata::store(guest, &mut self.level, vehicle);
-            }
-        } else {
+        if host.owner.as_ref().is_some_and(|o| o.uuid == guest.uuid) && guest.placed {
+            // The world's own player state rides in the level (`/data`).
+            playerdata::store(guest, &mut self.level, vehicle);
+        }
+        if guest.placed {
+            // PlayerList.save/remove: every player saves to their own file.
             playerdata::save(guest, &self.world_root, vehicle);
         }
         self.save_guest_records(host, guest);
@@ -1734,6 +1736,8 @@ impl Game<'_> {
             e.position = [d.position.x, d.position.y, d.position.z];
             e.on_ground = d.on_ground;
             e.velocity = [d.velocity.x, d.velocity.y, d.velocity.z];
+            e.precise = d.needs_sync;
+            e.needs_sync = d.needs_sync;
             // Entity.DATA_SHARED_FLAGS_ID: glowing 0x40 (the Glowing tag).
             if self.entity_glowing(d.id) {
                 e.meta.push((0, serializer::BYTE, Value::Byte(0x40)));
@@ -2025,6 +2029,9 @@ impl Game<'_> {
             for p in &mut self.creatures.projectiles {
                 p.needs_sync = false;
             }
+            for d in &mut self.dropped {
+                d.needs_sync = false;
+            }
             // `runBlockEvents`' broadcast precedes the tick's block changes
             // (`ChunkHolder.broadcastChanges` in `tick_level` below): the
             // guest re-runs a piston's `triggerEvent` while its level still
@@ -2101,6 +2108,7 @@ impl Game<'_> {
                 host.host_mode = state.game_mode;
                 host.hub.set_host_game_mode(state.uuid, state.game_mode);
             }
+            self.wake_woken_guests(&mut host);
             host = self.lan_process_events(host, events, state.as_ref(), entities, spawn);
             host.states = states;
         }
@@ -2180,19 +2188,28 @@ impl Game<'_> {
         let force = host.hub.config.force_game_mode;
         let root = self.world_root.clone();
         let in_place = host.hub.config.dimension.clone();
-        let owner = host.owner.as_mut();
+        let mut owner = host.owner.as_mut();
         let Some(g) = host.hub.guest_mut(conn) else {
             return;
         };
-        let saved = owner
-            .filter(|o| o.uuid == g.uuid)
-            .and_then(|o| o.saved.take());
-        let known = match saved {
-            Some(level) => {
-                playerdata::apply(g, &level);
-                level.position.is_some()
+        let is_owner = owner.as_ref().is_some_and(|o| o.uuid == g.uuid);
+        // PlayerDataStorage.load: the player's own file first; the world's
+        // own player state is the fallback for a first join.
+        let known = if is_owner && playerdata::load(g, &root) {
+            true
+        } else {
+            let saved = if is_owner {
+                owner.as_mut().and_then(|o| o.saved.take())
+            } else {
+                None
+            };
+            match saved {
+                Some(level) => {
+                    playerdata::apply(g, &level);
+                    level.position.is_some()
+                }
+                None => playerdata::load(g, &root),
             }
-            None => playerdata::load(g, &root),
         };
         if !known || force {
             g.game_mode = default_mode;
@@ -2729,11 +2746,12 @@ impl Game<'_> {
         let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
         for (conn, m) in &host.models {
             let entity_start = out.len();
-            let light = self.world.light(
-                m.position.x.floor() as i32,
-                (m.position.y + 1.62).floor() as i32,
-                m.position.z.floor() as i32,
+            let probe = super::perspective::entity_light_block(
+                m.position,
+                m.extra.crouching,
+                m.eye_height(),
             );
+            let light = self.world.light(probe[0], probe[1], probe[2]);
             let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
             horizon_client::mobs::render::render_with(
                 m,

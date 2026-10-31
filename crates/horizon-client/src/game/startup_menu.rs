@@ -386,7 +386,7 @@ impl Loading {
     fn open_menu_options(&mut self, page: Page) {
         self.menu.options.open_at(false, page);
         self.menu.options.languages = horizon_client::lang::available(&[&self.menu.root]);
-        self.menu.options.pack_infos = packs::pack_infos(&self.vanilla_root);
+        self.menu.options.pack_infos = packs::pack_infos(&self.vanilla_root, &[]);
         self.menu.options.pack_selection = self.settings.resource_packs.clone();
         self.menu.options.pack_screen = None;
         self.menu.options_open = true;
@@ -425,8 +425,9 @@ impl Loading {
                     packs::open_folder(&dir);
                 }
                 Event::DataPacks(ids) => {
+                    let resources = self.vanilla_root.clone();
                     if let Some(title) = &mut self.menu.title {
-                        title.set_data_packs(ids);
+                        title.offer_data_packs(&resources, ids);
                     }
                 }
                 Event::OpenDataPackFolder(dir) => {
@@ -553,6 +554,13 @@ impl Loading {
             }
             WindowEvent::RedrawRequested => self.draw(),
             WindowEvent::ModifiersChanged(modifiers) => self.menu.modifiers = modifiers.state(),
+            // `PackSelectionScreen.onFilesDrop`: a pack dropped on the window
+            // joins the Create New World screen's data packs.
+            WindowEvent::DroppedFile(path) => {
+                if let Some(title) = &mut self.menu.title {
+                    title.drop_file(path);
+                }
+            }
             WindowEvent::Focused(false) => {
                 self.menu.modifiers = ModifiersState::empty();
                 self.menu.physical_keys.clear();

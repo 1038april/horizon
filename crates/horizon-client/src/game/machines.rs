@@ -990,7 +990,7 @@ impl Game<'_> {
                 let stack = self.dropped[i].stack.clone();
                 match self.add_item(None, hopper, stack, None) {
                     None => {
-                        self.dropped.remove(i);
+                        self.remove_dropped(i);
                         return true;
                     }
                     Some(rest) => self.dropped[i].stack = rest,
@@ -1290,6 +1290,7 @@ mod item_column_tests {
             pickup_delay: 0,
             bob_offset: 0.0,
             ticks: 0,
+            needs_sync: false,
         }
     }
     /// `hopper_suck`'s test: some item box meets the hopper's SUCK_AABB.
