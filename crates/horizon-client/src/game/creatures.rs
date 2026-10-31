@@ -1755,8 +1755,14 @@ impl Game<'_> {
                     owner,
                 } => self.add_fangs(at, yaw, delay, owner),
                 MobEvent::Shoot(..) => {}
-                MobEvent::ExplosionSource { mob, charged, name } => {
+                MobEvent::ExplosionSource {
+                    mob,
+                    charged,
+                    name,
+                    in_water,
+                } => {
                     self.combat.explosion_source = Some(mob);
+                    self.combat.explosion_in_water = in_water;
                     // The creeper causes the blast's damage, but it is out of
                     // the mob list already: its name comes with the event.
                     self.combat.exploded.push((mob, name));
@@ -1809,6 +1815,7 @@ impl Game<'_> {
                     };
                     self.combat.explosion_source = None;
                     self.combat.explosion_source_named = false;
+                    self.combat.explosion_in_water = false;
                     self.combat.explosion_cause = None;
                     result?
                 }
@@ -4277,12 +4284,14 @@ impl Game<'_> {
                     }
                 }
                 self.combat.explosion_owner = owner;
+                self.combat.explosion_in_water = p.touching_water;
                 // The blast's source names the owner, so a dragon it kills
                 // remembers the player who shot it.
                 self.set_blast_by_player(p.owner == Some(Who::Player));
                 let result = self.explode(atp, *power as f32);
                 self.set_blast_by_player(false);
                 self.combat.explosion_owner = None;
+                self.combat.explosion_in_water = false;
                 result?;
             }
             (
@@ -4705,6 +4714,10 @@ impl Game<'_> {
             .get("minecraft:parrot_poisonous_food")
             .is_some_and(|t| t.contains(&*item));
         let player_at = self.eye_position();
+        let player_feet = self
+            .player
+            .as_ref()
+            .map(|p| [p.position.x, p.position.y, p.position.z]);
         let acting = self.acting_player_uuid();
         let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft)
             || self.keys.contains(&winit::keyboard::KeyCode::ShiftRight);
@@ -4726,6 +4739,9 @@ impl Game<'_> {
         let feet = [m.position.x, m.position.y, m.position.z];
         let mut handled = true;
         let mut drops: Vec<(String, u32)> = Vec::new();
+        // `Sheep.shear`'s drops add a spread on top of the ItemEntity's own
+        // motion; `MushroomCow.shear`'s do not.
+        let mut wool = false;
         let is_food = m.kind.food.contains(&item);
         let baby_turtle = species == Species::Turtle && m.is_baby();
         // MushroomCow.getEffectsFromItemStack: the item's block supplies them.
@@ -4738,6 +4754,8 @@ impl Game<'_> {
         // `Some(true)` for the four spell particles, `Some(false)` for the two
         // smoke puffs of a cow that already holds effects.
         let mut stew_particles: Option<bool> = None;
+        // `Ocelot.mobInteract`: whether the fish won its trust.
+        let mut ocelot_trust: Option<bool> = None;
         match species {
             Species::Cow | Species::Mooshroom if item == "minecraft:bucket" && !m.is_baby() => {
                 give = Some("minecraft:milk_bucket");
@@ -4817,6 +4835,7 @@ impl Game<'_> {
                     &mut self.world.random,
                 );
                 drops.extend(stacks.into_iter().map(|s| (s.item.to_string(), s.count)));
+                wool = true;
                 sound = Some("entity.sheep.shear");
                 self.damage_held_tool();
             }
@@ -5163,6 +5182,30 @@ impl Game<'_> {
                 }
                 consume = true;
             }
+            // Ocelot.mobInteract: raw fish from a hand within 3 blocks, while it comes for the
+            // food (`temptGoal.isRunning`), is used up; one time in three it trusts the player
+            // (entity event 41, hearts), otherwise smoke (event 40). Anything else is
+            // `Animal.mobInteract`.
+            Species::Ocelot
+                if is_food
+                    && !m.extra.trusting
+                    && m.ai.goals.is_running("OcelotTemptGoal")
+                    && player_feet.is_some_and(|p| {
+                        let d = [
+                            p[0] - m.position.x,
+                            p[1] - m.position.y,
+                            p[2] - m.position.z,
+                        ];
+                        d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < 9.0
+                    }) =>
+            {
+                consume = true;
+                let trusts = m.random.next_int_bound(3).unwrap_or(1) == 0;
+                if trusts {
+                    m.extra.trusting = true;
+                }
+                ocelot_trust = Some(trusts);
+            }
             // HappyGhast.canFallInLove: never, so only a ghastling takes food.
             _ if is_food
                 && m.kind.flags.animal
@@ -5197,6 +5240,10 @@ impl Game<'_> {
         }
         if !handled {
             return Ok(false);
+        }
+        if let Some(trusts) = ocelot_trust {
+            // `spawnTrustingParticles` on the clients: entity event 41 (hearts) or 40 (smoke).
+            self.mob_event_particles(self.mobs[index].id, if trusts { 41 } else { 40 });
         }
         if let Some(fresh) = stew_particles {
             // `SpellParticleOption.create(EFFECT, -1, 1)` is the plain white
@@ -5284,11 +5331,21 @@ impl Game<'_> {
         }
         for (item, count) in drops {
             for _ in 0..count {
-                let v = [
-                    (self.world.random.next_float() - self.world.random.next_float()) as f64 * 0.1,
-                    self.world.random.next_float() as f64 * 0.05,
-                    (self.world.random.next_float() - self.world.random.next_float()) as f64 * 0.1,
-                ];
+                // `spawnAtLocation(stack, 1.0)`: an ItemEntity a block above
+                // the feet that starts with the constructor's own motion, and
+                // `setDefaultPickUpDelay`. Sheep.shear adds its spread on top;
+                // MushroomCow.shear builds the entity by hand instead, so its
+                // mushrooms keep the constructor's motion and no pickup delay.
+                let mut v = dispenser::new_item_motion();
+                if wool {
+                    v[0] += (self.world.random.next_float() - self.world.random.next_float())
+                        as f64
+                        * 0.1;
+                    v[1] += self.world.random.next_float() as f64 * 0.05;
+                    v[2] += (self.world.random.next_float() - self.world.random.next_float())
+                        as f64
+                        * 0.1;
+                }
                 self.spawn_item(
                     ItemStack {
                         item: item.as_str().into(),
@@ -5296,9 +5353,9 @@ impl Game<'_> {
                         damage: 0,
                         extra: None,
                     },
-                    [center[0], center[1] + 0.5, center[2]],
+                    [feet[0], feet[1] + 1.0, feet[2]],
                     v,
-                    10,
+                    if wool { 10 } else { 0 },
                 );
             }
         }
@@ -5754,9 +5811,9 @@ impl Game<'_> {
                 }
             }
             if is_player {
-                // PlayerRenderer's CapeLayer, WingsLayer and SpinAttackEffectLayer.
-                // Only the cape hides with the body; WingsLayer and
-                // SpinAttackEffectLayer have no `isInvisible` check.
+                // PlayerRenderer's CapeLayer, WingsLayer, ParrotOnShoulderLayer
+                // and SpinAttackEffectLayer. Only the cape hides with the body;
+                // the others have no `isInvisible` check.
                 let chest = mob.extra.chest.as_deref();
                 if !layers_only {
                     self.player_cape_geometry(mob, chest, camera, alpha as f32, packed, out);
@@ -5769,6 +5826,7 @@ impl Game<'_> {
                     self.player_ears_geometry(mob, &name, camera, alpha as f32, packed, out);
                 }
                 self.player_elytra_geometry(mob, chest, camera, alpha as f32, packed, out);
+                self.shoulder_parrots_geometry(mob, camera, alpha as f32, packed, out);
                 self.spin_attack_geometry(mob, camera, alpha as f32, packed, out);
                 self.stuck_in_body_geometry(mob, mob.id as i32, camera, alpha as f32, packed, out);
             }

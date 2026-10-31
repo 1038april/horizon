@@ -54,6 +54,15 @@ pub(super) struct PackStack {
     pub packs: Vec<DataPack>,
     pub enabled: Vec<String>,
 }
+impl PackStack {
+    /// The enabled packs in `enabled` (the selected) order, later overriding
+    /// earlier: `PackRepository.openAllSelected` keeps the selected order.
+    fn enabled_packs(&self) -> impl Iterator<Item = &DataPack> {
+        self.enabled
+            .iter()
+            .filter_map(|id| self.packs.iter().find(|p| &p.id == id))
+    }
+}
 pub(super) fn pack_stack(
     world_root: &std::path::Path,
     resources: &std::path::Path,
@@ -80,11 +89,7 @@ pub(super) fn content_overlay(
     enabled_features: &[String],
 ) -> Vec<(String, Vec<Vec<u8>>)> {
     let stack = pack_stack(world_root, resources, vanilla_disabled, enabled_features);
-    let packs: Vec<&DataPack> = stack
-        .packs
-        .iter()
-        .filter(|p| stack.enabled.contains(&p.id))
-        .collect();
+    let packs: Vec<&DataPack> = stack.enabled_packs().collect();
     if packs.is_empty() {
         return Vec::new();
     }
@@ -145,16 +150,7 @@ impl Game<'_> {
             self.cmds.vanilla_disabled,
             &self.level.enabled_features,
         );
-        let packs: Vec<&DataPack> = stack
-            .builtin
-            .iter()
-            .chain(
-                stack
-                    .enabled
-                    .iter()
-                    .filter_map(|id| stack.packs.iter().find(|p| &p.id == id)),
-            )
-            .collect();
+        let packs: Vec<&DataPack> = stack.builtin.iter().chain(stack.enabled_packs()).collect();
         let store = DataStore::load(&packs);
         for (id, e) in &store.errors {
             log::warn!("Horizon: failed to load function {id}: {e}");
@@ -918,3 +914,38 @@ const FEATURE_PACKS: &[(&str, &str)] = &[
     ("redstone_experiments", "minecraft:redstone_experiments"),
     ("trade_rebalance", "minecraft:trade_rebalance"),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two packs override the same recipe: the later one in the selected
+    /// (`datapacks.json`) order wins, not the later one alphabetically.
+    #[test]
+    fn content_overlay_follows_enabled_order() {
+        for order in [["file/a", "file/b"], ["file/b", "file/a"]] {
+            let dir = std::env::temp_dir().join(format!(
+                "horizon-overlay-{}-{}",
+                std::process::id(),
+                order[0].replace('/', "_")
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            for name in ["a", "b"] {
+                let pack = dir.join("datapacks").join(name);
+                std::fs::create_dir_all(pack.join("data/x/recipe")).unwrap();
+                std::fs::write(pack.join("pack.mcmeta"), "{}").unwrap();
+                std::fs::write(pack.join("data/x/recipe/r.json"), name).unwrap();
+            }
+            let json = serde_json::json!({"enabled": order, "disabled": []});
+            std::fs::write(dir.join("datapacks.json"), json.to_string()).unwrap();
+            let files = content_overlay(&dir, std::path::Path::new(""), true, &[]);
+            let (_, versions) = files.iter().find(|(id, _)| id == "recipe/x:r").unwrap();
+            let last = versions.last().unwrap();
+            assert_eq!(
+                last.as_slice(),
+                order[1].trim_start_matches("file/").as_bytes()
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+}
