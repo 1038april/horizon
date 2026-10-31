@@ -145,11 +145,12 @@ uniform! {
         hide_gui: u32,
         /// Last frame's camera-relative world to clip space (its `projection * view`); a point
         /// at camera-relative `p` now was at `p + camera_motion` relative to last frame's camera.
-        /// This frame's on the first frame.
+        /// This frame's on the first frame and after a gap of over half a second (a pause, a
+        /// world load), when last frame's camera says nothing about this one.
         previous_view_projection: [[f32; 4]; 4],
-        /// How far the camera moved since last frame, in blocks.
+        /// How far the camera moved since last frame, in blocks (0 after such a gap).
         camera_motion: [f32; 3],
-        /// Seconds since last frame (0 on the first).
+        /// Seconds since last frame (0 on the first and after such a gap).
         delta_time: f32,
         /// `eye_light` eased with a half-life of 2 seconds: it follows the light levels' steps
         /// without stepping itself (for exposure and indoor fog).
