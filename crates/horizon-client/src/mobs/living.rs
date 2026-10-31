@@ -402,9 +402,16 @@ impl Mob {
     /// `Pose.LONG_JUMPING` (what `LongJumpUtil` checks an arc with).
     pub fn awake_dims_in(&self, long_jumping: bool) -> (f64, f64, f64) {
         let k = &self.kind;
-        // Avatar.POSES: a player's or mannequin's box follows its pose.
+        // Avatar.POSES: a player's or mannequin's box follows its pose, and
+        // LivingEntity.getDimensions scales it by `minecraft:scale`
+        // (`getScale`): a fake player's giant NPC is clickable on its body.
         if matches!(&*k.id, "minecraft:player" | "minecraft:mannequin") {
-            let d = self.extra.avatar_pose.dimensions(1.0);
+            let scale = if self.extra.model_scale > 0.0 {
+                self.extra.model_scale
+            } else {
+                1.0
+            };
+            let d = self.extra.avatar_pose.dimensions(scale);
             return (
                 f64::from(d.width),
                 f64::from(d.height),
@@ -443,6 +450,10 @@ impl Mob {
         }
         if self.kind.species == super::Species::Pufferfish {
             let s = super::aquatic::puff_scale(self.extra.size) as f32;
+            (w, h, e) = (w * s, h * s, e * s);
+        } else if self.kind.species == super::Species::Phantom {
+            // Phantom.getDefaultDimensions: 1 + 0.15 per size.
+            let s = 1.0 + 0.15 * self.extra.size as f32;
             (w, h, e) = (w * s, h * s, e * s);
         } else if self.extra.size > 0 {
             let s = self.extra.size as f32;
@@ -500,6 +511,12 @@ impl Mob {
     pub fn move_relative(&mut self, speed: f32, input: Vec3) {
         let len_sq = input.x * input.x + input.y * input.y + input.z * input.z;
         if len_sq < 1.0e-7 {
+            // `getInputVector` is `Vec3.ZERO`, still added to the motion: a -0.0 becomes 0.0.
+            self.velocity = Vec3::new(
+                self.velocity.x + 0.0,
+                self.velocity.y + 0.0,
+                self.velocity.z + 0.0,
+            );
             return;
         }
         let v = if len_sq > 1.0 {

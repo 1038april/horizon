@@ -311,6 +311,8 @@ pub fn reduced_far_detail_suggested() -> bool {
     REDUCED_SUGGESTED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The name the options screen waits on to bind `Graphics::hdr_key`.
+pub const HDR_KEY: &str = "horizon.hdrSettings";
 static HDR_OFFERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// Whether the display path offers HDR output (HDR10 or scRGB): set when the renderer
 /// opens its surface; the settings open HDR's screen only then.
@@ -332,7 +334,7 @@ pub fn lod_capped(info: &wgpu::AdapterInfo) -> bool {
 }
 /// A LOD distance as far terrain uses it on this adapter.
 pub fn lod_distance_capped(distance: u32, info: &wgpu::AdapterInfo) -> u32 {
-    let distance = distance.min(1024);
+    let distance = distance.min(crate::lod::MAX_CHUNKS);
     if lod_capped(info) {
         distance.min(INTEGRATED_LOD_DISTANCE)
     } else {
@@ -391,6 +393,8 @@ pub struct Graphics {
     /// HDR brightness of the HUD and menus, in percent of paper white (25..=100); the
     /// first-person hand stays at the world's.
     pub hdr_ui_brightness: u32,
+    /// A vanilla key name (`HDR_KEY`): opens HDR's settings from the game. Unbound by default.
+    pub hdr_key: String,
     /// Battery mode: at most 60 frames per second in a world and 30 in menus
     /// or behind other windows, and half the worker threads. Off by default;
     /// it changes when frames are drawn, never what they show or the ticks.
@@ -429,6 +433,7 @@ impl Default for Graphics {
             hdr_peak: 0,
             hdr_black_level: 0,
             hdr_ui_brightness: 100,
+            hdr_key: "key.keyboard.unknown".into(),
             battery: false,
             api: GraphicsApi::Auto,
             shader_pack: String::new(),
@@ -467,7 +472,9 @@ impl Graphics {
             let number = |d: u32| value.parse().unwrap_or(d);
             match key.trim() {
                 "preset" => g.preset = Preset::parse(value),
-                "lodDistance" => g.lod_distance = number(g.lod_distance).min(1024),
+                "lodDistance" => {
+                    g.lod_distance = number(g.lod_distance).min(crate::lod::MAX_CHUNKS)
+                }
                 "farDetail" => g.far_detail = FarDetail::parse(value),
                 "caveCulling" => g.cave_culling = flag(g.cave_culling),
                 "entityCulling" => g.entity_culling = flag(g.entity_culling),
@@ -494,7 +501,7 @@ impl Graphics {
                 "hdrPaperWhite" => {
                     g.hdr_paper_white = match number(g.hdr_paper_white) {
                         0 => 0,
-                        n => n.clamp(80, 480),
+                        n => n.clamp(10, 480),
                     }
                 }
                 "hdrPeak" => {
@@ -507,6 +514,7 @@ impl Graphics {
                 "hdrUiBrightness" => {
                     g.hdr_ui_brightness = number(g.hdr_ui_brightness).clamp(25, 100)
                 }
+                "hdrKey" if value.starts_with("key.") => g.hdr_key = value.to_owned(),
                 "batteryMode" => g.battery = flag(g.battery),
                 "graphicsApi" => g.api = GraphicsApi::from_name(value).unwrap_or_default(),
                 "pickedShaderPack" => g.shader_pack = value.to_owned(),
@@ -524,7 +532,7 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nbatteryMode:{}\ngraphicsApi:{}\npickedShaderPack:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrKey:{}\nbatteryMode:{}\ngraphicsApi:{}\npickedShaderPack:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -556,10 +564,19 @@ impl Graphics {
             self.hdr_peak,
             self.hdr_black_level,
             self.hdr_ui_brightness,
+            self.hdr_key,
             bool_text(self.battery),
             self.api.name(),
             self.shader_pack,
         )
+    }
+    /// Binds Horizon's graphics key `name` (`HDR_KEY`); false for another name.
+    pub fn set_key(&mut self, name: &str, value: String) -> bool {
+        match name {
+            HDR_KEY => self.hdr_key = value,
+            _ => return false,
+        }
+        true
     }
     pub fn save(&self, dir: &Path) {
         let _ = fs::write(dir.join(FILE), self.serialize());
@@ -691,6 +708,7 @@ mod tests {
             hdr_peak: 1400,
             hdr_black_level: 12,
             hdr_ui_brightness: 60,
+            hdr_key: "key.keyboard.h".into(),
             battery: true,
             api: GraphicsApi::Dx12,
             shader_pack: "Golden Hour".into(),
@@ -701,7 +719,7 @@ mod tests {
         assert_eq!(Graphics::parse("hdrPeak:0\n").hdr_peak, 0);
         assert_eq!(Graphics::parse("hdrPeak:50\n").hdr_peak, 200);
         assert_eq!(Graphics::parse("hdrPaperWhite:0\n").hdr_paper_white, 0);
-        assert_eq!(Graphics::parse("hdrPaperWhite:5\n").hdr_paper_white, 80);
+        assert_eq!(Graphics::parse("hdrPaperWhite:5\n").hdr_paper_white, 10);
         // The old menus' Simple / Advanced choice is ignored, and so is the
         // shader pack older versions saved.
         assert_eq!(Graphics::parse("level:advanced\n"), Graphics::default());
@@ -758,12 +776,15 @@ mod tests {
     #[test]
     fn lod_distance_is_opt_in_and_bounded() {
         assert_eq!(Graphics::default().lod_distance, 0);
-        for distance in [0, 64, 128, 256, 512, 1024] {
+        for distance in [0, 64, 128, 256, 512, 1024, 65_536, crate::lod::MAX_CHUNKS] {
             let g = Graphics::parse(&format!("lodDistance:{distance}\n"));
             assert_eq!(g.lod_distance, distance);
             assert_eq!(Graphics::parse(&g.serialize()), g);
         }
-        assert_eq!(Graphics::parse("lodDistance:10000\n").lod_distance, 1024);
+        assert_eq!(
+            Graphics::parse("lodDistance:99999999\n").lod_distance,
+            crate::lod::MAX_CHUNKS
+        );
         assert_eq!(Graphics::parse("lodDistance:-1\n").lod_distance, 0);
         assert_eq!(Graphics::parse("lodDistance:invalid\n").lod_distance, 0);
     }

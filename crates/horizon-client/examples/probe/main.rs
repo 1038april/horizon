@@ -48,6 +48,7 @@ mod frame_limiter_probe;
 mod game_loop_probe;
 mod ghost_recipe_fixture;
 mod held_drop_fixture;
+mod held_item_stack_probe;
 mod hotbar_fixture;
 mod hud_fixture;
 mod input_probe;
@@ -76,6 +77,7 @@ mod recipe_book_fixture;
 mod recipe_book_render_fixture;
 mod recipe_book_view_fixture;
 mod recipe_fixture;
+mod remote_attack_probe;
 mod scene_collision_probe;
 mod scene_motion_probe;
 mod scoreboard_fixture;
@@ -100,6 +102,7 @@ mod tooltip_display_fixture;
 mod trading_fixture;
 mod translucency_fixture;
 mod trident_probe;
+mod vehicle_container_fixture;
 mod weather_fixture;
 mod world_border_render_fixture;
 mod world_options_fixture;
@@ -143,6 +146,7 @@ probes! {
     game_loop_probe,
     ghost_recipe_fixture,
     held_drop_fixture,
+    held_item_stack_probe,
     hotbar_fixture,
     hud_fixture,
     input_probe,
@@ -171,6 +175,7 @@ probes! {
     recipe_book_render_fixture,
     recipe_book_view_fixture,
     recipe_fixture,
+    remote_attack_probe,
     scene_collision_probe,
     scene_motion_probe,
     scoreboard_fixture,
@@ -194,6 +199,7 @@ probes! {
     trading_fixture,
     trident_probe,
     translucency_fixture,
+    vehicle_container_fixture,
     weather_fixture,
     world_border_render_fixture,
     world_options_fixture,

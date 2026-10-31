@@ -34,6 +34,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub(super) mod events;
 mod report;
 mod status;
 
@@ -165,6 +166,65 @@ pub(super) fn player_joined(id: u128, name: &str) {
     }
 }
 
+/// `server.toml`'s `[anticheat]`, beside server.properties when horizon-server runs the game; the
+/// default (on) without the file or the section, off (with an error logged) when the section is wrong.
+fn load_anticheat() -> horizon_anticheat::Config {
+    let Ok(text) = std::fs::read_to_string("server.toml") else {
+        return Default::default();
+    };
+    match horizon_anticheat::Config::from_server_toml(&text) {
+        Ok(config) => {
+            if config.enabled {
+                log(
+                    "INFO",
+                    "Anticheat on (server.toml [anticheat]; enabled = false turns it off)",
+                );
+            }
+            config
+        }
+        Err(e) => {
+            log(
+                "ERROR",
+                &format!("server.toml: {e}; the anticheat stays off"),
+            );
+            horizon_anticheat::Config {
+                enabled: false,
+                ..Default::default()
+            }
+        }
+    }
+}
+
+/// The secret for Velocity's player information forwarding, from `forwarding.secret` beside server.properties.
+/// No file means no forwarding. A file that is empty or can't be read stops the start, because an empty secret
+/// would let anyone sign a login, and a typo must not leave a server open that was meant to be behind a proxy.
+fn forwarding_secret(online: bool) -> Result<Option<Vec<u8>>> {
+    const FILE: &str = "forwarding.secret";
+    if !std::path::Path::new(FILE).exists() {
+        return Ok(None);
+    }
+    if online {
+        log(
+            "WARN",
+            "forwarding.secret is ignored: the proxy authenticates the players, so set \"online-mode\" to \"false\".",
+        );
+        return Ok(None);
+    }
+    let text = std::fs::read(FILE).map_err(|e| format!("{FILE}: {e}"))?;
+    let secret = text.trim_ascii().to_vec();
+    if secret.is_empty() {
+        return Err(format!(
+            "{FILE} is empty: put the proxy's forwarding secret in it, or remove the file"
+        )
+        .into());
+    }
+    log(
+        "INFO",
+        "Velocity player information forwarding is on (forwarding.secret)",
+    );
+    Ok(Some(secret))
+}
+
 /// Log4j's console pattern: `[HH:mm:ss] [thread/LEVEL]: message`.
 pub(super) fn log(level: &str, message: &str) {
     log_from("Server thread", level, message);
@@ -252,6 +312,9 @@ pub(super) fn preflight(options: &mut Options) -> Result<bool> {
     for w in &props.warnings {
         log("WARN", w);
     }
+    // A dedicated server's tree: /op, /ban, /whitelist... (single player's
+    // server thread is an integrated one and never gets here).
+    horizon_client::command::vanilla::set_dedicated_commands(true);
     // Horizon's own commands are the owner's choice, off as on vanilla.
     if props
         .raw
@@ -312,6 +375,8 @@ pub(super) struct Lists {
     pub ip_bans: IpBanList,
     pub use_whitelist: bool,
     pub enforce_whitelist: bool,
+    /// `op-permission-level`: what `/op` grants (operatorUserPermissions).
+    pub op_level: i32,
 }
 impl Lists {
     fn load() -> Self {
@@ -322,6 +387,7 @@ impl Lists {
             ip_bans: IpBanList::new("banned-ips.json"),
             use_whitelist: false,
             enforce_whitelist: false,
+            op_level: 4,
         };
         // DedicatedPlayerList's constructor order and its LOGGER.warn lines.
         let warn = |what: &str, r: std::result::Result<(), String>| {
@@ -401,6 +467,9 @@ const LEGACY_PRESET_NAMES: [(&str, horizon_client::save::WorldPreset); 2] = [
         horizon_client::save::WorldPreset::LargeBiomes,
     ),
 ];
+
+/// server.properties' line for `server.toml`'s `max_view_distance` (horizon-server writes it).
+const FAR_PROPERTY: &str = "horizon-max-view-distance";
 
 /// Identifier.tryParse: `namespace:path`, or a path in `minecraft`.
 fn parse_identifier(text: &str) -> Option<String> {
@@ -660,10 +729,16 @@ impl Game<'_> {
         let mut lists = Lists::load();
         lists.use_whitelist = props.white_list;
         lists.enforce_whitelist = props.enforce_whitelist;
+        lists.op_level = props.op_permission_level;
         let lists = Arc::new(Mutex::new(lists));
+        self.server_lists = Some(lists.clone());
         log("INFO", &format!("Preparing level \"{level_name}\""));
         let folder = world_dir.to_string_lossy().into_owned();
+        // MinecraftServer.loadLevel's start: nothing is loaded yet.
+        self.native_server_about_to_start(true);
         self.native_lifecycle_open_started();
+        // The registries the server sends are read while the world prepares.
+        let sync = super::lan::preload_sync_data(&self.options.resources);
         self.load_world(WorldRequest::new(
             &folder,
             Some(&level_name),
@@ -677,8 +752,20 @@ impl Game<'_> {
         // The single-player host's state is not used: players have their own files.
         self.level.position = None;
         // DedicatedServer.initServer: worldData.setGameType; forceDifficulty.
+        // `load_world` restored difficulty from level.dat; server.properties wins
+        // (vanilla's forceDifficulty), including health_rules used for despawn (#4694).
         self.set_default_game_mode(game_mode);
-        self.ui.difficulty = props.difficulty as u8;
+        // MinecraftServer.setDifficulty: a hardcore world is always hard.
+        self.ui.difficulty = if self.level.hardcore {
+            3
+        } else {
+            props.difficulty as u8
+        };
+        self.level.set_difficulty(self.ui.difficulty);
+        self.sync_rules();
+        if self.ui.difficulty == 0 {
+            self.mobs.retain(|m| !m.hostile());
+        }
         // DedicatedServer.initServer: a legacy `announce-player-achievements`
         // sets the show_advancement_messages rule once, as the file is read.
         if let Some(announce) = props.announce_player_achievements {
@@ -701,9 +788,18 @@ impl Game<'_> {
             gate_lists.lock().unwrap().can_login(address, &user)
         });
         let bypass_lists = lists.clone();
+        // DedicatedServer's constructor: `enable-code-of-conduct` reads the
+        // `codeofconduct` folder, and a folder it can't read stops the start.
+        let code_of_conducts = if props.code_of_conduct {
+            horizon_client::lan::code_of_conduct::read(std::path::Path::new("codeofconduct"))?
+        } else {
+            Vec::new()
+        };
         let favicon = std::fs::read("server-icon.png")
             .ok()
             .filter(|b| png_size(b) == Some((64, 64)));
+        // Behind a Velocity proxy: `forwarding.secret` in the server folder, like the proxy's own file.
+        let forwarding_secret = forwarding_secret(online.is_some())?;
         let net = NetConfig {
             bind: (!props.server_ip.is_empty())
                 .then(|| props.server_ip.parse().ok())
@@ -731,12 +827,14 @@ impl Game<'_> {
             })),
             gate: Some(gate),
             online,
+            forwarding_secret,
             log: Some(NetLog {
                 write: Arc::new(log_from),
                 lang: Arc::new(horizon_client::net::load_language(&self.options.resources)),
                 log_ips: props.log_ips,
             }),
             resource_pack: props.resource_pack.clone(),
+            code_of_conducts,
             // DedicatedServer.serverLinks: `bug-report-link` as the only link
             // (ServerLinks.KnownLinkType.BUG_REPORT is id 0).
             levels: self.level_shapes,
@@ -758,8 +856,10 @@ impl Game<'_> {
                 );
                 Vec::new()
             },
+            owner_profile: None,
         };
         let config = HubConfig {
+            allow_flight: props.allow_flight,
             default_game_mode: game_mode,
             guest_commands: true,
             force_game_mode: props.force_game_mode,
@@ -778,6 +878,9 @@ impl Game<'_> {
             guest_commands: true,
             force_game_mode: props.force_game_mode,
         };
+        if let Some(sync) = sync {
+            sync.adopt(&self.pack_files());
+        }
         if let Err(e) = self.lan_host(settings, net, config, None) {
             log("WARN", "**** FAILED TO BIND TO PORT!");
             log("WARN", &format!("The exception was: {e}"));
@@ -785,7 +888,24 @@ impl Game<'_> {
             return Ok(());
         }
         self.sync_ops(&lists);
+        let anticheat = load_anticheat();
+        // Horizon's far ring (docs/hosting.md): server.toml's `max_view_distance`.
+        let far = props
+            .raw
+            .get(FAR_PROPERTY)
+            .and_then(|v| v.trim().parse::<i32>().ok())
+            .unwrap_or(0)
+            .clamp(0, 32);
+        let (registry, biomes) = (self.pack.assets.registry, self.res.biomes().clone());
         if let Some(host) = self.lan.as_mut() {
+            if far > host.hub.config.view_distance {
+                host.hub.far = Some(horizon_client::lan::far::Far::new(far, registry, biomes));
+                log(
+                    "INFO",
+                    &format!("Sending saved chunks up to {far} chunks away (max_view_distance)"),
+                );
+            }
+            host.hub.set_anticheat(anticheat);
             host.hub.spawn_protection = props.spawn_protection;
             host.hub.chat_spam_threshold = props.chat_spam_threshold_seconds.wrapping_mul(20);
             host.hub.command_spam_threshold = props.command_spam_threshold_seconds.wrapping_mul(20);
@@ -827,6 +947,7 @@ impl Game<'_> {
         let mut next = Instant::now();
         self.fns.permission = Some(props.function_permission_level.clamp(0, 4) as u8);
         let watchdog = Watchdog::start(props.max_tick_time);
+        let mut braked = Instant::now();
         while !state.stop {
             let tick_start = Instant::now();
             if let Some(watchdog) = &watchdog {
@@ -874,11 +995,27 @@ impl Game<'_> {
             {
                 self.finish_report(recording, state.view, state.max_players);
             }
+            // DedicatedServer.sendLowDiskSpaceWarning: the operators hear of it
+            // (no window drains the toasts here).
+            if horizon_client::chunk_io::take().low_disk_space
+                && let Some(host) = self.lan.as_ref()
+            {
+                host.hub.send_low_disk_space_warning();
+            }
             if idle_timeout > 0 {
                 self.kick_idle(idle_timeout);
             }
             // MinecraftServer.tickServer records each tick's time, for /tick query (and the status).
             self.clock.record(tick_start.elapsed());
+            // The far ring's brake, once a second on the average tick.
+            if braked.elapsed() >= Duration::from_secs(1)
+                && let Some(host) = self.lan.as_mut()
+                && let Some(far) = host.hub.far.as_mut()
+            {
+                braked = Instant::now();
+                let mspt = self.clock.average_nanos() as f64 / 1e6;
+                far.brake(mspt, host.hub.config.view_distance);
+            }
             state.ticked(Instant::now());
             self.wait_for_next_server_tick(&mut next, paused);
         }
@@ -937,11 +1074,12 @@ impl Game<'_> {
     /// nobody is online a dedicated server keeps none (vanilla has no spawn
     /// ticket), an integrated one the spawn chunk's.
     pub(super) fn update_dedicated_streaming(&mut self) {
+        let rule = self.ui.rules.bool("spectators_generate_chunks");
         let guest = self.lan.as_ref().and_then(|h| {
             h.hub
                 .guests
                 .iter()
-                .find(|g| h.hub.here(g))
+                .find(|g| h.hub.here(g) && super::game_mode::loads_chunks(rule, g.spectator()))
                 .map(|g| g.chunk())
         });
         if self.standalone_server() {
@@ -980,7 +1118,7 @@ impl Game<'_> {
     }
 
     /// Ops' permission levels for the hub (PlayerList.getProfilePermissions).
-    fn sync_ops(&mut self, lists: &Arc<Mutex<Lists>>) {
+    pub(super) fn sync_ops(&mut self, lists: &Arc<Mutex<Lists>>) {
         let Some(host) = self.lan.as_mut() else {
             return;
         };
@@ -996,7 +1134,7 @@ impl Game<'_> {
     }
 
     /// A player on the server, by name.
-    fn online_player(&self, name: &str) -> Option<NameAndId> {
+    pub(super) fn online_player(&self, name: &str) -> Option<NameAndId> {
         let hub = &self.lan.as_ref()?.hub;
         let g = hub
             .guests
@@ -1012,7 +1150,18 @@ impl Game<'_> {
     /// service, else (offline) the offline player. None, told to the console:
     /// no such player.
     fn resolve(&self, name: &str) -> Option<NameAndId> {
-        let found = USER_CACHE.lock().unwrap().as_mut().and_then(|cache| {
+        let found = self.resolve_name(name);
+        if found.is_none() {
+            let unknown = Text::translate("argument.player.unknown", &[]);
+            log("INFO", &format!("System chat: {}", unknown.plain()));
+        }
+        found
+    }
+
+    /// `Services.nameToIdCache().get(name)`: the user cache, else the profile
+    /// service, else (offline) the offline player.
+    pub(super) fn resolve_name(&self, name: &str) -> Option<NameAndId> {
+        USER_CACHE.lock().unwrap().as_mut().and_then(|cache| {
             cache.get_by_name(name, |lower| {
                 let found = profiles::find_by_name(&profiles::discovery_url(), lower);
                 if found.is_none() {
@@ -1020,12 +1169,7 @@ impl Game<'_> {
                 }
                 found
             })
-        });
-        if found.is_none() {
-            let unknown = Text::translate("argument.player.unknown", &[]);
-            log("INFO", &format!("System chat: {}", unknown.plain()));
-        }
-        found
+        })
     }
 
     /// MinecraftServer.sendSystemMessage: what the console is told; while
@@ -1475,8 +1619,15 @@ impl Game<'_> {
         }
     }
 
+    /// `DedicatedServer.setUsingWhitelist`: the flag, and `white-list` in
+    /// server.properties.
+    pub(super) fn set_using_whitelist(&mut self, lists: &Arc<Mutex<Lists>>, on: bool) {
+        lists.lock().unwrap().use_whitelist = on;
+        self.store_property("white-list", on.to_string());
+    }
+
     /// DedicatedServerSettings.update: change one key and store the file.
-    fn store_property(&mut self, key: &str, value: String) {
+    pub(super) fn store_property(&mut self, key: &str, value: String) {
         let path = PathBuf::from("server.properties");
         if let Ok(p) = ServerProperties::from_file(&path, &mut SystemEntropy::default())
             && let Ok(p) = p.update(key, value)
@@ -1488,7 +1639,7 @@ impl Game<'_> {
     /// MinecraftServer.kickUnlistedPlayers: with `enforce-whitelist` and the
     /// whitelist on, whoever is online and not on the whitelist file is
     /// disconnected (operators are not spared here).
-    fn kick_unlisted_players(&mut self, lists: &Arc<Mutex<Lists>>) {
+    pub(super) fn kick_unlisted_players(&mut self, lists: &Arc<Mutex<Lists>>) {
         let unlisted: Vec<u128> = {
             let l = lists.lock().unwrap();
             let Some(host) = self.lan.as_ref() else {
@@ -1517,7 +1668,7 @@ impl Game<'_> {
         }
     }
 
-    fn kick_uuid(&mut self, uuid: u128, reason: Tag) {
+    pub(super) fn kick_uuid(&mut self, uuid: u128, reason: Tag) {
         if let Some(h) = self.lan.as_mut() {
             let conns: Vec<u32> = h
                 .hub
@@ -1528,6 +1679,14 @@ impl Game<'_> {
                 .collect();
             for conn in conns {
                 h.hub.kick(conn, reason.clone());
+                if let Some(g) = h.hub.guest(conn) {
+                    events::record(
+                        "kick",
+                        &g.name,
+                        uuid,
+                        serde_json::json!({ "reason": g.left_reason }),
+                    );
+                }
             }
         }
     }
@@ -1554,6 +1713,8 @@ impl Game<'_> {
     fn stop_dedicated(&mut self) -> Result<()> {
         // The close request starts before player and world saves.
         self.native_lifecycle.begin_close();
+        // MinecraftServer.stopServer's start: everyone is still here.
+        self.native_server_stopping(true);
         log("INFO", "Stopping server");
         log("INFO", "Saving players");
         if let Some(host) = self.lan.take() {
