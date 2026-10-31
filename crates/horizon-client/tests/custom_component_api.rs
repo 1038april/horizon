@@ -135,6 +135,13 @@ fn registration_limits_and_defaults_are_bound_to_the_connection() {
     );
     assert!(items["good:thing"].get("minecraft:repairable").is_none());
     assert!(items.get("bad:thing").is_none());
+    let catalog =
+        horizon_client::items::Items::catalog(&out, &horizon_world::loot::PackOverlay::NONE)
+            .unwrap();
+    assert_eq!(
+        catalog.get("good:thing").unwrap().custom_components["sample:a"],
+        Tag::compound([("value", Tag::Int(5))])
+    );
     fs::remove_dir_all(scratch).unwrap();
     std::fs::remove_dir_all(dir).unwrap();
 }
