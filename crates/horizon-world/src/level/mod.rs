@@ -394,6 +394,31 @@ pub trait LevelAccess {
         _new: &mut Option<BlockStateId>,
     ) {
     }
+    /// `BlockState.canSurvive(level, pos)` for `state` at `pos`, before the
+    /// block answers it: placing it (`BlockItem.canPlace`), a plant's or an
+    /// attached block's shape update, and every other rule that asks. `state`
+    /// may not be in the level yet (it is being placed). An answer put in
+    /// `survives` is the result, and the block's own rule doesn't run. The
+    /// default does nothing.
+    fn before_can_survive(
+        &self,
+        _pos: BlockPos,
+        _state: BlockStateId,
+        _survives: &mut Option<bool>,
+    ) {
+    }
+    /// `VegetationBlock.mayPlaceOn(ground, level, groundPos)` for the plant
+    /// `state`, before the plant answers it: the blocks a plant can stand on,
+    /// which its `canSurvive` asks. An answer put in `may` is the result. The
+    /// default does nothing.
+    fn before_may_place_on(
+        &self,
+        _state: BlockStateId,
+        _ground: BlockStateId,
+        _ground_pos: BlockPos,
+        _may: &mut Option<bool>,
+    ) {
+    }
     /// `Level.isClientSide`: this level is a client's copy (false on a
     /// server, a host or the test harness).
     fn is_client_side(&self) -> bool {

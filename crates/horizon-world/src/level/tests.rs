@@ -2857,3 +2857,143 @@ fn update_shape_hook_can_answer_for_the_block() {
         |e| matches!(e, LevelEvent::DropResources { pos: p, state } if *p == pos && *state == fence)
     ));
 }
+
+#[test]
+fn survive_hooks_answer_for_the_block() {
+    use std::cell::Cell;
+
+    struct Rules {
+        inner: TestLevel,
+        b: &'static Behaviours,
+        /// A plant and the one block it may stand on, by `mayPlaceOn`.
+        ground: Option<(BlockId, BlockId)>,
+        /// A block and its `canSurvive` answer.
+        survive: Option<(BlockId, bool)>,
+        asked: Cell<usize>,
+    }
+    impl LevelAccess for Rules {
+        fn block_state(&self, pos: BlockPos) -> BlockStateId {
+            self.inner.block_state(pos)
+        }
+        fn set_raw(&mut self, pos: BlockPos, state: BlockStateId) -> Option<BlockStateId> {
+            self.inner.set_raw(pos, state)
+        }
+        fn is_loaded(&self, pos: BlockPos) -> bool {
+            self.inner.is_loaded(pos)
+        }
+        fn random(&mut self) -> &mut LegacyRandom {
+            self.inner.random()
+        }
+        fn game_time(&self) -> i64 {
+            self.inner.game_time()
+        }
+        fn emit(&mut self, event: LevelEvent) {
+            self.inner.emit(event);
+        }
+        fn before_can_survive(
+            &self,
+            _pos: BlockPos,
+            state: BlockStateId,
+            survives: &mut Option<bool>,
+        ) {
+            self.asked.set(self.asked.get() + 1);
+            if let Some((block, answer)) = self.survive
+                && self.b.block(state) == block
+            {
+                *survives = Some(answer);
+            }
+        }
+        fn before_may_place_on(
+            &self,
+            state: BlockStateId,
+            ground: BlockStateId,
+            _ground_pos: BlockPos,
+            may: &mut Option<bool>,
+        ) {
+            if let Some((plant, on)) = self.ground
+                && self.b.block(state) == plant
+            {
+                *may = Some(self.b.block(ground) == on);
+            }
+        }
+    }
+    let Some(f) = fixture() else { return };
+    let b = &f.behaviours;
+    let state = |name: &str| f.registry.default_state(name).unwrap();
+    let (dandelion, stone, cobblestone) = (
+        state("minecraft:dandelion"),
+        state("minecraft:stone"),
+        state("minecraft:cobblestone"),
+    );
+    let mut level = Rules {
+        inner: TestLevel::new(b),
+        b,
+        ground: None,
+        survive: None,
+        asked: Cell::new(0),
+    };
+    let mut ticks = Ticks::new(0);
+    ticks.add_empty_chunk(ChunkPos::new(0, 0)).unwrap();
+    let ground = BlockPos::new(1, 1, 1);
+    let pos = BlockPos::new(1, 2, 1);
+    let place = |level: &mut Rules, ticks: &mut Ticks, item: &str| {
+        let ctx = PlaceContext {
+            clicked_pos: ground,
+            face: Direction::Up,
+            hit: horizon_core::geometry::Vec3::new(1.5, 2.0, 1.5),
+            inside: false,
+            yaw: 0.0,
+            pitch: 0.0,
+            sneaking: false,
+            item: item.into(),
+            can_use_game_master_blocks: false,
+        };
+        b.place_block(level, ticks, &ctx)
+    };
+    level.set_raw(ground, stone);
+
+    // A dandelion doesn't stand on stone in vanilla, so it can't be placed there.
+    assert!(!b.can_survive(&mut level, &mut ticks, pos, dandelion));
+    assert_eq!(
+        place(&mut level, &mut ticks, "minecraft:dandelion"),
+        PlaceOutcome::Failed
+    );
+    // A mod's mayPlaceOn names stone: placed, through the dandelion's own canSurvive.
+    level.ground = Some((b.block(dandelion), b.block(stone)));
+    assert!(matches!(
+        place(&mut level, &mut ticks, "minecraft:dandelion"),
+        PlaceOutcome::Placed { pos: p, .. } if p == pos
+    ));
+    assert_eq!(level.block_state(pos), dandelion);
+    // Its ground turns to cobblestone: its shape update asks again and it pops off, with its drops.
+    b.set_block(
+        &mut level,
+        &mut ticks,
+        ground,
+        cobblestone,
+        flags::UPDATE_ALL,
+    );
+    assert_eq!(level.block_state(pos), b.air());
+    assert!(level.inner.events.iter().any(
+        |e| matches!(e, LevelEvent::DropResources { pos: p, state } if *p == pos && *state == dandelion)
+    ));
+
+    // canSurvive answered for the block itself wins over its own rule, either way.
+    level.survive = Some((b.block(dandelion), true));
+    assert!(b.can_survive(&mut level, &mut ticks, pos, dandelion));
+    level.set_raw(ground, stone);
+    level.survive = Some((b.block(stone), false));
+    assert_eq!(
+        place(&mut level, &mut ticks, "minecraft:stone"),
+        PlaceOutcome::Failed
+    );
+    assert_eq!(level.block_state(pos), b.air());
+    // Without an answer the block's own rule runs: stone survives anywhere.
+    level.survive = None;
+    let asked = level.asked.get();
+    assert!(matches!(
+        place(&mut level, &mut ticks, "minecraft:stone"),
+        PlaceOutcome::Placed { .. }
+    ));
+    assert!(level.asked.get() > asked);
+}

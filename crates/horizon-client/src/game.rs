@@ -1157,6 +1157,22 @@ impl LevelAccess for GameLevel<'_> {
             );
         }
     }
+    fn before_can_survive(&self, pos: BlockPos, state: BlockStateId, survives: &mut Option<bool>) {
+        if self.native_authoritative {
+            self.native_can_survive(self.dimension, pos, state, survives);
+        }
+    }
+    fn before_may_place_on(
+        &self,
+        state: BlockStateId,
+        ground: BlockStateId,
+        ground_pos: BlockPos,
+        may: &mut Option<bool>,
+    ) {
+        if self.native_authoritative {
+            self.native_may_place_on(self.dimension, state, ground, ground_pos, may);
+        }
+    }
     fn is_client_side(&self) -> bool {
         self.client_side
     }

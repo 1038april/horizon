@@ -410,6 +410,45 @@ impl GameLevel<'_> {
         );
     }
 
+    /// On an authoritative server, `BlockState.canSurvive` for `state` at
+    /// `pos` (`BlockBehaviour.canSurvive`), before the block answers it: as
+    /// it is placed (`BlockItem.canPlace`), from a shape update of a block
+    /// whose template checks it (a plant, a torch, a sign: false breaks the
+    /// block with its drops), and wherever else vanilla asks. `state` may not
+    /// be in the world yet, so decide from `state`. Answer only for your own
+    /// blocks: `Some(false)` refuses the spot, `Some(true)` allows it, and
+    /// the block's own rule doesn't run. The level is read-only. Asked on
+    /// every shape update of such a block: keep it short. API @API:can_survive@.
+    #[inline(always)]
+    pub(super) fn native_can_survive(
+        &self,
+        dimension: LevelDimension,
+        pos: BlockPos,
+        state: BlockStateId,
+        survives: &mut Option<bool>,
+    ) {
+        let _ = (dimension, pos, state, survives);
+    }
+
+    /// On an authoritative server, `VegetationBlock.mayPlaceOn` for the
+    /// plant `state` on `ground` at `ground_pos`, before the plant answers
+    /// it: the blocks a mod plant (one whose template is a vanilla plant,
+    /// such as a crop) can stand on. Its template's `canSurvive` asks it, so
+    /// the plant is refused there and pops off when its ground changes to
+    /// one it can't stand on. Answer only for your own blocks. The level is
+    /// read-only. API @API:can_survive@.
+    #[inline(always)]
+    pub(super) fn native_may_place_on(
+        &self,
+        dimension: LevelDimension,
+        state: BlockStateId,
+        ground: BlockStateId,
+        ground_pos: BlockPos,
+        may: &mut Option<bool>,
+    ) {
+        let _ = (dimension, state, ground, ground_pos, may);
+    }
+
     /// An authoritative server's `ServerLevel.tickBlock` is about to run a
     /// due scheduled tick of the block `state` at `pos` (`BlockState.tick`):
     /// the block is still the one the tick was scheduled for. Change the
