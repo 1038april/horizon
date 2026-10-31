@@ -279,6 +279,7 @@ pub(super) fn rewrite(pp: &Preprocessed) -> Option<Preprocessed> {
         extensions: pp.extensions.clone(),
         comments: pp.comments.clone(),
         diagnostics: pp.diagnostics.clone(),
+        warnings: pp.warnings.clone(),
     })
 }
 
@@ -295,6 +296,7 @@ mod tests {
             extensions: Vec::new(),
             comments: Vec::new(),
             diagnostics: Vec::new(),
+            warnings: Vec::new(),
         };
         let out = rewrite(&pp).expect("rewritten").code;
         assert_eq!(out.lines().count(), code.lines().count(), "{out}");
@@ -339,6 +341,7 @@ mod tests {
             extensions: Vec::new(),
             comments: Vec::new(),
             diagnostics: Vec::new(),
+            warnings: Vec::new(),
         };
         assert!(rewrite(&pp("shared ivec4 v;\nvoid f() { v.x = 1; }\n")).is_none());
         assert!(rewrite(&pp("shared int n;\nvoid f() { atomicAdd(n, 1); }\n")).is_none());
