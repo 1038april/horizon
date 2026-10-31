@@ -970,7 +970,7 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         }
         freeze_tick(m, w);
     }
-    tick_effects(m);
+    tick_effects(m, w.mod_effects);
     if m.species() == Species::Illusioner {
         super::illusioner::tick(m, events);
     }
@@ -1068,7 +1068,8 @@ fn play_ambient(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         // Nautilus/ZombieNautilus.getAmbientSound: by age, under water or on land.
         Species::Nautilus | Species::ZombieNautilus => super::nautilus::sounds(m)[0],
         Species::Enderman if m.ai.target.is_some() => "entity.enderman.scream",
-        Species::Wolf if m.ai.target.is_some() => {
+        // Wolf.isAngry reads the persistent anger timer, not the current target.
+        Species::Wolf if super::tame::angry(m) => {
             super::finalize::variant_sound(m, "growl").unwrap_or("entity.wolf.growl")
         }
         Species::Wolf if m.random.next_int_bound(3).unwrap_or(1) == 0 => {
@@ -1226,7 +1227,8 @@ fn ai_step(m: &mut Mob, w: &MobWorld, level_random: &mut LegacyRandom, events: &
         // LivingEntity.travelRidden: the rider's client moves it
         // (handleMoveVehicle), so the server only stops it.
         m.velocity = Vec3::ZERO;
-    } else {
+    } else if !(m.species() == Species::Mannequin && m.extra.immovable) {
+        // Mannequin.isEffectiveAi: an immovable one never travels.
         m.travel(w, input, events);
     }
     push_entities(m, w, events);
@@ -1726,7 +1728,9 @@ fn check_despawn(m: &mut Mob, w: &MobWorld) -> bool {
     // zombie villagers being cured and ridden mobs stay.
     let creature = m.kind.category == "creature";
     let removable = !(never_removed_when_far(m.species())
-        || creature && m.kind.flags.animal && !m.extra.jockey
+        || creature && m.kind.flags.animal && !m.extra.jockey && m.species() != Species::Ocelot
+        // Ocelot.removeWhenFarAway: `!isTrusting() && tickCount > 2400`.
+        || m.species() == Species::Ocelot && (m.extra.trusting || m.age <= 2400)
         || super::raider::keeps_alive(m, d)
         || super::zombie_villager::keeps_alive(m)
         || super::riders::keeps_alive(m));
@@ -2431,8 +2435,9 @@ fn flower_contact_effects(m: &mut Mob, w: &MobWorld) {
     }
 }
 
-/// MobEffect ticking for the effects mobs receive (poison, wither, regeneration).
-fn tick_effects(m: &mut Mob) {
+/// MobEffect ticking for the effects mobs receive (poison, wither,
+/// regeneration), and a content mod's on a server.
+fn tick_effects(m: &mut Mob, mods: Option<&dyn super::ModEffectTicks>) {
     let mut effects = std::mem::take(&mut m.extra.effects);
     for (effect, ticks, amp) in &mut effects {
         let interval = |base: i32| (base >> (*amp).max(0)).max(1);
@@ -2453,6 +2458,19 @@ fn tick_effects(m: &mut Mob) {
                 if count % interval(50) == 0 && !m.kind.flags.undead && m.alive() =>
             {
                 m.health = (m.health + 1.0).min(m.attrs.max_health);
+            }
+            id if horizon_client_core::potions::is_mod_effect(id) => {
+                // tickServer: one with no ticks left goes unasked.
+                if !infinite && *ticks <= 0 {
+                    continue;
+                }
+                if let Some(mods) = mods
+                    && !mods.tick_mod_effect(id, m.id, count, *amp)
+                {
+                    // Removed before it counts down.
+                    *ticks = 0;
+                    continue;
+                }
             }
             _ => {}
         }
@@ -2700,7 +2718,7 @@ mod poison_effect_tests {
         pig.add_effect("poison", 100, 0);
         assert_eq!(pig.extra.effects[0].0, "minecraft:poison");
         let initial_pig_health = pig.health;
-        tick_effects(&mut pig);
+        tick_effects(&mut pig, None);
         assert_eq!(
             pig.health,
             initial_pig_health - 1.0,
@@ -2712,7 +2730,7 @@ mod poison_effect_tests {
         let mut zombie = Mob::new(2, zombie_kind, Vec3::new(0.0, 4.0, 0.0), 0.0);
         zombie.add_effect("poison", 100, 0);
         let initial_zombie_health = zombie.health;
-        tick_effects(&mut zombie);
+        tick_effects(&mut zombie, None);
         assert_eq!(
             zombie.health, initial_zombie_health,
             "undead mobs are immune to poison"
