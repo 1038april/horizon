@@ -14,6 +14,45 @@ use horizon_client::gfx::pack_draw::EntitySpan;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+// A native mod can bundle a pack as `native-<mod-id>`; its Mods toggle controls it too.
+fn active_pack<'a>(picked: &'a str, mods: &horizon_client::mod_list::ModList) -> &'a str {
+    if picked.strip_prefix("native-").is_some_and(|id| {
+        mods.installed
+            .iter()
+            .any(|m| m.id == id && m.native.is_some() && mods.disabled.contains(id))
+    }) {
+        ""
+    } else {
+        picked
+    }
+}
+
+#[cfg(test)]
+mod native_pack_tests {
+    use super::active_pack;
+    use horizon_client::mod_list::{Installed, ModList, NativePage};
+
+    #[test]
+    fn native_shader_follows_its_mod_without_affecting_other_packs() {
+        let mut mods = ModList::default();
+        mods.installed.push(Installed {
+            id: "horizon_better_visuals".into(),
+            title: "Better Visuals".into(),
+            description: String::new(),
+            problem: None,
+            dev: false,
+            native: Some(NativePage::default()),
+        });
+        let owned = "native-horizon_better_visuals";
+        assert_eq!(active_pack(owned, &mods), owned);
+        mods.disabled.insert("horizon_better_visuals".into());
+        assert_eq!(active_pack(owned, &mods), "");
+        assert_eq!(active_pack("golden_hour", &mods), "golden_hour");
+        mods.installed[0].native = None;
+        assert_eq!(active_pack(owned, &mods), owned);
+    }
+}
+
 /// The ids a pack gives entities and block entities (4.1, 5.3), for the spans of the entity
 /// geometry.
 pub(super) struct PackIds {
@@ -38,7 +77,10 @@ impl Game<'_> {
     pub(super) fn shader_pack_inputs(&mut self, camera: glam::DVec3, partial: f32) -> PackInputs {
         static DEV_PACK: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
         let dev = DEV_PACK.get_or_init(|| std::env::var("HORIZON_SHADER_PACK").ok());
-        let picked = dev.as_deref().unwrap_or(&self.settings.horizon.shader_pack);
+        let picked = active_pack(
+            dev.as_deref().unwrap_or(&self.settings.horizon.shader_pack),
+            &self.settings.mods,
+        );
         if self.native_shaders.picked != picked {
             // Another pack, or none: drop what ran.
             self.native_shaders = super::native_shaders::NativeShaders::picking(picked);

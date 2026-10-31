@@ -239,6 +239,9 @@ base unchanged; opaque pixels are drawn full-bright without changing gameplay
 light or the surrounding rock. The source pack must supply the overlay texture
 under `assets/<namespace>/textures/emissive/`. When no mod requests overlays,
 the terrain shader skips the lookup. Bundles using these hooks need `"hooks": 41`.
+When a native mod bundles a Horizon shader pack, naming its folder
+`native-<mod-id>` makes the Mods On/Off control pause that pack too (without
+changing the player's saved shader selection); other packs are unaffected.
 
 ## What the launcher does
 
