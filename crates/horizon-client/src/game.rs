@@ -13252,6 +13252,24 @@ impl Game<'_> {
         self.store_owner();
         if self.options.dedicated.is_some() {
             self.level.write_without_player(&self.world_root)?;
+            // The integrated server owns the world's player (`Owner`): its
+            // state rides in `self.level` (`sync_level`, and
+            // `playerdata::store` when it leaves) and saves with the level
+            // under the world's own player file, as single player does
+            // (`PlayerDataStorage.save`). A real dedicated server saves its
+            // players on their own instead.
+            if self.options.execution_role == execution_role::ExecutionRole::IntegratedServer
+                && let Some(uuid) = self.level.player_uuid
+            {
+                let file = horizon_client::lan::playerdata::path(
+                    &self.world_root,
+                    horizon_client::lan::playerdata::ints_uuid(uuid),
+                );
+                if let Some(dir) = file.parent() {
+                    let _ = std::fs::create_dir_all(dir);
+                }
+                let _ = horizon_client::save::write_dat(&file, self.level.player_tag());
+            }
         } else {
             self.level.write(&self.world_root)?;
         }
