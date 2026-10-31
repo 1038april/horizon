@@ -383,11 +383,26 @@ pub fn mob_to_nbt(
             put(&mut tag, "angry_at", Tag::IntArray(player_uuid().to_vec()));
         }
     }
-    // `Mannequin.addAdditionalSaveData`: the profile whose skin it wears.
-    if m.species() == crate::mobs::Species::Mannequin
-        && let Some(profile) = &m.profile
-    {
-        put(&mut tag, "profile", profile_nbt(profile));
+    // `Mannequin.addAdditionalSaveData`: the profile whose skin it wears, whether it
+    // is `immovable`, and its description (the default is not written; none is `hide_description`).
+    if m.species() == crate::mobs::Species::Mannequin {
+        if let Some(profile) = &m.profile {
+            put(&mut tag, "profile", profile_nbt(profile));
+        }
+        put(
+            &mut tag,
+            "immovable",
+            Tag::Byte(i8::from(m.extra.immovable)),
+        );
+        match &m.extra.description {
+            crate::mobs::MannequinDescription::Default => {}
+            crate::mobs::MannequinDescription::Hidden => {
+                put(&mut tag, "hide_description", Tag::Byte(1));
+            }
+            crate::mobs::MannequinDescription::Custom(component) => {
+                put(&mut tag, "description", component.clone());
+            }
+        }
     }
     // `Entity.saveWithoutId` writes the flag only when set.
     if m.name_visible {
@@ -577,6 +592,10 @@ pub fn mob_to_nbt(
             }
             map.insert("powered".into(), Tag::Byte(i8::from(m.extra.charged)));
             map.insert("ignited".into(), Tag::Byte(i8::from(m.extra.flag)));
+        }
+        // `Ocelot.addAdditionalSaveData`.
+        "minecraft:ocelot" => {
+            map.insert("Trusting".into(), Tag::Byte(i8::from(m.extra.trusting)));
         }
         "minecraft:cat" => {
             if let Some(owner) = m.extra.owner {
@@ -1408,9 +1427,21 @@ pub fn mob_from_nbt(
             m.extra.angry_at = Some(crate::mobs::Who::Player);
         }
     }
-    // `Mannequin.readAdditionalSaveData`: the profile comes back with the skin.
+    // `Mannequin.readAdditionalSaveData`: the profile comes back with the skin, then
+    // `immovable`, `hide_description` and `description` (`updateDescription`).
     if m.species() == crate::mobs::Species::Mannequin {
         m.profile = tag.get("profile").and_then(profile_from_nbt);
+        m.extra.immovable = flag(tag, "immovable");
+        m.extra.description = if flag(tag, "hide_description") {
+            crate::mobs::MannequinDescription::Hidden
+        } else {
+            crate::mobs::MannequinDescription::from_component(Some(
+                &tag.get("description")
+                    .cloned()
+                    .or_else(|| crate::mobs::MannequinDescription::Default.component())
+                    .unwrap_or(Tag::End),
+            ))
+        };
     }
     m.extra.pick_up_loot = flag(tag, "CanPickUpLoot");
     m.custom_name = custom_name(tag);
@@ -1601,6 +1632,10 @@ pub fn mob_from_nbt(
             m.extra.lost_horns = [horn("HasLeftHorn"), horn("HasRightHorn")];
         }
         _ => {}
+    }
+    // `Ocelot.readAdditionalSaveData`.
+    if m.species() == crate::mobs::Species::Ocelot {
+        m.extra.trusting = flag(tag, "Trusting");
     }
     if m.species() == crate::mobs::Species::Cat {
         m.extra.owner = crate::save::uuid_from_tag(tag.get("Owner"));
@@ -3482,6 +3517,88 @@ mod sheep_nbt_tests {
             .collect();
         let back = mob_from_nbt(&tag, &types, 2, None).unwrap();
         assert_eq!((back.extra.color, back.extra.sheared), (14, true));
+    }
+
+    /// `Ocelot.addAdditionalSaveData` and `readAdditionalSaveData`: `Trusting`.
+    #[test]
+    fn an_ocelot_keeps_its_trust() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let data = crate::mobs::MobTypes::load(&root).unwrap();
+        let types: HashMap<String, Arc<MobType>> = data
+            .types
+            .iter()
+            .map(|(k, v)| (k.clone(), Arc::new(v.clone())))
+            .collect();
+        let mut m = Mob::new(
+            1,
+            Arc::new(data.types["minecraft:ocelot"].clone()),
+            Vec3::new(0.0, 4.0, 0.0),
+            0.0,
+        );
+        let tag = mob_to_nbt(&m, [1, 2, 3, 4], None, None);
+        assert_eq!(number(tag.get("Trusting")), Some(0));
+        m.extra.trusting = true;
+        let tag = mob_to_nbt(&m, [1, 2, 3, 4], None, None);
+        assert_eq!(number(tag.get("Trusting")), Some(1));
+        let back = mob_from_nbt(&tag, &types, 2, None).unwrap();
+        assert!(back.extra.trusting);
+    }
+
+    /// `Mannequin.addAdditionalSaveData` and `readAdditionalSaveData`: `immovable`, and the
+    /// description (the default is not written, `hide_description` hides it, a component stays).
+    #[test]
+    fn a_mannequin_keeps_its_immovable_flag_and_description() {
+        use crate::mobs::MannequinDescription as D;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let data = crate::mobs::MobTypes::load(&root).unwrap();
+        let types: HashMap<String, Arc<MobType>> = data
+            .types
+            .iter()
+            .map(|(k, v)| (k.clone(), Arc::new(v.clone())))
+            .collect();
+        let mut m = Mob::new(
+            1,
+            Arc::new(data.types["minecraft:mannequin"].clone()),
+            Vec3::new(0.0, 4.0, 0.0),
+            0.0,
+        );
+        let save = |m: &Mob| mob_to_nbt(m, [1, 2, 3, 4], None, None);
+        // The default description is not written; it comes back.
+        let tag = save(&m);
+        assert!(tag.get("description").is_none() && tag.get("hide_description").is_none());
+        assert_eq!(number(tag.get("immovable")), Some(0));
+        let back = mob_from_nbt(&tag, &types, 2, None).unwrap();
+        assert_eq!(
+            (back.extra.immovable, back.extra.description),
+            (false, D::Default)
+        );
+        // Hidden, and immovable.
+        m.extra.immovable = true;
+        m.extra.description = D::Hidden;
+        let tag = save(&m);
+        assert_eq!(number(tag.get("hide_description")), Some(1));
+        let back = mob_from_nbt(&tag, &types, 2, None).unwrap();
+        assert_eq!(
+            (back.extra.immovable, back.extra.description),
+            (true, D::Hidden)
+        );
+        // A component of the world's own.
+        let own = Tag::compound([("text", string("Guard")), ("color", string("red"))]);
+        m.extra.description = D::Custom(own.clone());
+        let tag = save(&m);
+        assert_eq!(tag.get("description"), Some(&own));
+        let back = mob_from_nbt(&tag, &types, 2, None).unwrap();
+        assert_eq!(back.extra.description, D::Custom(own));
     }
 
     /// The only lib test that registers mod effects (once per process).
