@@ -3397,7 +3397,6 @@ impl Renderer {
         };
         let stride = std::mem::size_of::<TerrainVertex>() as u64;
         let mut budget = BUDGET;
-        let mut left = false;
         let encoder = self.section_copies.get_or_insert_with(|| {
             self.device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -3411,10 +3410,9 @@ impl Renderer {
         for s in meshes.filter(|s| s.page == page) {
             let vertices = u64::from(s.solid + s.translucent) * 4;
             if vertices * stride > budget {
-                left = true;
                 break;
             }
-            let Some(to) = self.arena.alloc_existing(vertices) else {
+            let Some(to) = self.arena.alloc_moved(vertices) else {
                 // The other pages have no room after all.
                 self.arena.reopen();
                 return;
@@ -3435,11 +3433,8 @@ impl Renderer {
             (s.page, s.start) = to;
             budget -= vertices * stride;
         }
-        // Nothing left in it that could not be moved: `trim` returns the page
-        // (or, if it was never used, the next call chooses another).
-        if !left {
-            self.arena.reopen();
-        }
+        // With every mesh moved off, the page stays closed so this frame's
+        // uploads can't refill it: `trim` returns it and clears `closing`.
     }
     /// Block-entity blocks of every meshed section (see `SectionMesh::block_entities`).
     pub fn block_entities(&self) -> impl Iterator<Item = &([i32; 3], u32)> {
