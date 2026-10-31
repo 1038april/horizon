@@ -87,6 +87,7 @@ mod creatures;
 mod crossbow;
 pub(crate) mod cushions;
 mod debug_keys;
+mod debug_options;
 mod debug_stick;
 mod decorated_pot;
 mod dedicated;
@@ -706,6 +707,8 @@ enum Screen {
     DialogWarning,
     /// WinScreen: the end poem and the credits (game/win.rs).
     Win,
+    /// DebugOptionsScreen, F3+F6 (game/debug_options.rs).
+    DebugOptions,
 }
 struct Mining {
     pos: [i32; 3],
@@ -2387,8 +2390,11 @@ struct Game<'a> {
     debug_keys: horizon_client::debug_keys::DebugKeys,
     /// The F3 overlay's charts (F3+2, F3+3).
     debug_charts: horizon_client::debug_chart::DebugCharts,
-    show_hitboxes: bool,
-    show_chunk_borders: bool,
+    /// `Minecraft.debugEntries`: what the overlay and the debug renderers
+    /// show (`debug-profile.json`, F3+F6).
+    debug_entries: horizon_client::debug_entries::DebugEntries,
+    /// `DebugOptionsScreen` while it is open (game/debug_options.rs).
+    debug_options: Option<debug_options::DebugOptionsUi>,
     /// PauseScreen.showPauseMenu (false after F3+Escape).
     pause_menu: bool,
     /// MultiPlayerGameMode.previousLocalPlayerMode (F3+N goes back to it).
@@ -2841,8 +2847,8 @@ impl Game<'_> {
     /// item in use (LocalPlayer.modifyInput), the helmet's Respiration
     /// (decreaseAirSupply), the wings, leather boots on powder snow
     /// (PowderSnowBlock.canEntityWalkOnPowderSnow), freeze-immune wear
-    /// (LivingEntity.canFreeze), the dimension's FAST_LAVA and the sleeping
-    /// pose.
+    /// (LivingEntity.canFreeze), the dimension's FAST_LAVA, the sleeping
+    /// pose and blindness (Player.isMobilityRestricted, which stops a sprint).
     pub(crate) fn sync_player_body(&mut self) {
         let glider = self.glider_worn();
         let sleeping = self.sleeping.is_some();
@@ -2867,10 +2873,12 @@ impl Game<'_> {
         let freeze_immune = self.wears_freeze_immune();
         let burn_immune = self.wears_burn_from_stepping_immunity();
         let nudge = self.closest_space_nudge();
+        let blind = self.potions.effects.get("blindness").is_some();
         let Some(player) = self.player.as_mut() else {
             return;
         };
         player.nudge = nudge;
+        player.mobility_restricted = blind;
         player.yaw = self.yaw;
         player.pitch = self.pitch;
         player.auto_jump_enabled = self.settings.auto_jump;
@@ -5449,6 +5457,7 @@ impl Game<'_> {
                 || self.place_painting(hit, &stack)
                 || self.place_item_frame(hit, &stack)
                 || self.use_lodestone_compass(hit, &stack)
+                || self.use_map_on_banner(hit, &stack)
                 || self.place_armor_stand(hit, &stack)
                 || self.place_cushion(hit, &stack)
                 || self.place_end_crystal(hit, &stack))
@@ -6799,6 +6808,7 @@ impl Game<'_> {
                     | Screen::ConfirmLink
                     | Screen::DialogWarning
                     | Screen::CommandBlock
+                    | Screen::DebugOptions
             ) || self.book.is_some()
                 || self.win_screen_pauses())
     }
@@ -7155,6 +7165,10 @@ impl Game<'_> {
     }
     fn hud_layers(&mut self, size: [u32; 2]) -> HudBatch {
         let mut batch = HudBatch::new(size);
+        // GlobalSettingsUniform's GameTime, for a resource pack's text shader.
+        batch.game_time = ((self.world.game_time.rem_euclid(24000)) as f32
+            + self.clock.fraction() as f32)
+            / 24000.0;
         let (w, h) = (batch.width, batch.height);
         if self.screen == Screen::Win {
             self.draw_win_screen(&mut batch);
@@ -7455,6 +7469,7 @@ impl Game<'_> {
             Screen::DialogWarning => self.draw_dialog_warning(&mut batch),
             Screen::CommandBlock => self.draw_command_block(&mut batch),
             Screen::BlockEditor => self.draw_block_editor(&mut batch),
+            Screen::DebugOptions => self.draw_debug_options(&mut batch),
             Screen::Inventory => {
                 self.draw_inventory(&mut batch);
                 self.draw_mod_browser(&mut batch);
@@ -13970,6 +13985,7 @@ impl Game<'_> {
                 Screen::BlockEditor => self.close_block_editor(),
                 Screen::Chat => self.close_chat(chat::ChatExit::Intentional),
                 Screen::Win => self.close_win_screen()?,
+                Screen::DebugOptions => self.close_debug_options(),
             },
             KeyCode::Digit1
             | KeyCode::Digit2
@@ -14182,7 +14198,7 @@ impl Game<'_> {
             Some(renderer) => {
                 horizon_client::graphics::lod_distance_capped(distance, &renderer.info)
             }
-            None => distance.min(1024),
+            None => distance.min(horizon_client::lod::MAX_CHUNKS),
         }
     }
     /// Only enabled LOD worlds extend the renderer's range, never simulation.
@@ -14843,6 +14859,9 @@ impl ApplicationHandler for Game<'_> {
                     if self.screen == Screen::ServerLinks && d != 0.0 {
                         self.server_links_scroll(d);
                     }
+                    if self.screen == Screen::DebugOptions && d != 0.0 {
+                        self.debug_options_scroll(d);
+                    }
                     if self.screen == Screen::Advancements {
                         self.advancements_scroll(scaled(raw_x) as f32, d);
                     }
@@ -15040,6 +15059,9 @@ impl ApplicationHandler for Game<'_> {
                         Screen::ServerLinks if pressed && button == MouseButton::Left => {
                             self.server_links_click()?
                         }
+                        Screen::DebugOptions if pressed && button == MouseButton::Left => {
+                            self.debug_options_click()
+                        }
                         Screen::ConfirmLink if pressed && button == MouseButton::Left => {
                             self.confirm_link_click()
                         }
@@ -15209,6 +15231,9 @@ impl ApplicationHandler for Game<'_> {
                 }
                 WindowEvent::KeyboardInput { event, .. } if self.screen == Screen::CommandBlock => {
                     self.command_block_key(&event)
+                }
+                WindowEvent::KeyboardInput { event, .. } if self.screen == Screen::DebugOptions => {
+                    self.debug_options_key(&event)
                 }
                 WindowEvent::KeyboardInput { event, .. } if self.screen == Screen::BlockEditor => {
                     self.block_editor_key(&event)
@@ -16045,8 +16070,10 @@ impl<'a> Game<'a> {
             friends: None,
             debug_keys: Default::default(),
             debug_charts: Default::default(),
-            show_hitboxes: false,
-            show_chunk_borders: false,
+            debug_entries: horizon_client::debug_entries::DebugEntries::load(
+                &std::env::current_dir().unwrap_or_default(),
+            ),
+            debug_options: None,
             pause_menu: true,
             previous_mode: None,
             gamemode_switcher: None,
@@ -17085,6 +17112,9 @@ fn build_renderer(
         .iter()
         .map(|(rect, animation)| (*rect, animation.clone(), (usize::MAX, 0, 0)))
         .collect();
+    renderer
+        .hud
+        .set_text_shader(&renderer.device, atlas.text_shader.as_deref());
     Ok(renderer)
 }
 

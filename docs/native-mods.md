@@ -37,6 +37,8 @@ mod was tested on. In its own copy of the mod it sets `horizon_revision` to the 
 own native mods (Zoom, FPS counter, Keystrokes, Minimap; horizon-rust/horizon-mods, `native/<name>/`) are made this way, so any of them build together
 with no re-release for each Nightly.
 
+Hook and helper authors use [API fragments](../tools/native-hook-fragments/README.md) to request a number.
+
 API 2 adds the item panel beside container screens and its recipe pages (`native_panel_items`,
 `native_panel_recipes`, and the hook `native_panel_event` for the player's clicks, searches and keys over items), and
 the game's items and recipes (`native_recipes`, `native_known_recipes`, `native_place_recipe`, `native_give`): what a
@@ -226,6 +228,19 @@ need `"hooks": 40`.
 
 API 41 adds bundles' data files (`native_data!`, `native_built_data`; "Data files" below). Bundles that use them need
 `"hooks": 41`.
+
+API 42 adds the item entities near a block, for machines that pick up items as a hopper does:
+`native_item_entities(dimension, min, max)` lists those whose box meets `min`..`max` (vanilla's
+`Level.getEntitiesOfClass(ItemEntity.class, box)`), each with its entity ID, position, stack and pickup delay, and
+`native_set_item_entity(dimension, id, stack)` changes one's stack, or removes it when the stack is empty, as a hopper
+does with what it takes. Both act on the level in place, as `native_set_block` does. Bundles that use them need
+`"hooks": 42`.
+
+API 43 adds `native_level_random(dimension)`, the server level's own random (vanilla's `Level.random`, NeoForge mods'
+`level.getRandom()`): a mod draws from the stream vanilla's explosions and block drops use, so its draws shift theirs
+as a Java mod's would. It is `None` on a client of a server and for a level that isn't open: the Nether and the End
+open when someone first goes there and close after 300 ticks with nobody in them. Bundles
+that use it need `"hooks": 43`.
 
 ## A bundle
 
