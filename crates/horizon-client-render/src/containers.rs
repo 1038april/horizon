@@ -2,8 +2,9 @@
 //! kinds, ticking as `AbstractFurnaceBlockEntity.serverTick` with fuel times
 //! from the data-driven `context_int_provider`/`context_float_provider` files.
 pub use crate::chunk::block_entity::{
-    Banner, Beacon, BlockEntity, Campfire, ChiseledBookshelf, Crafter, CreakingHeart, EndGateway,
-    Furnace, FurnaceKind, Jukebox, Lectern, Skull, SkullSkin,
+    Banner, Beacon, BlockEntity, Brushable, Campfire, ChiseledBookshelf, Crafter, CreakingHeart,
+    EndGateway, Furnace, FurnaceKind, Jukebox, Lectern, MOD_MENUS, ModBlockEntity, ModContainer,
+    PotentSulfur, Shelf, Skull, SkullSkin,
 };
 use crate::items::ItemStack;
 use std::collections::HashMap;
@@ -230,6 +231,14 @@ impl BlockEntity {
                 recipes_used: HashMap::new(),
             }));
         }
+        if matches!(
+            name,
+            "minecraft:suspicious_sand"
+                | "minecraft:suspicious_gravel"
+                | "minecraft:brushable_block"
+        ) {
+            return Some(Self::Brushable(Box::default()));
+        }
         if name == "minecraft:creaking_heart" {
             return Some(Self::CreakingHeart(Box::default()));
         }
@@ -292,8 +301,35 @@ impl BlockEntity {
         if name == "minecraft:campfire" || name == "minecraft:soul_campfire" {
             return Some(Self::Campfire(Box::default()));
         }
+        if name == "minecraft:shelf" || name.ends_with("_shelf") {
+            return Some(Self::Shelf(Box::default()));
+        }
         if name == "minecraft:chiseled_bookshelf" {
             return Some(Self::ChiseledBookshelf(Box::default()));
+        }
+        if name == "minecraft:structure_block" {
+            // The entity's mode is the state's (`StructureBlock.MODE`); the block's
+            // state is not known here, so a new one starts in its default, SAVE.
+            return Some(Self::StructureBlock(Box::new(
+                crate::structure_block::StructureBlock::new(
+                    crate::structure_block::StructureMode::Save,
+                ),
+            )));
+        }
+        if name == "minecraft:test_block" {
+            // The mode is the state's, which is not known here.
+            return Some(Self::TestBlock(Box::new(
+                crate::test_block::TestBlock::new(crate::test_block::TestBlockMode::Fail),
+            )));
+        }
+        if name == "minecraft:test_instance_block" {
+            return Some(Self::TestInstanceBlock(Box::default()));
+        }
+        if name == "minecraft:jigsaw" {
+            return Some(Self::JigsawBlock(Box::default()));
+        }
+        if name == "minecraft:potent_sulfur" {
+            return Some(Self::PotentSulfur(PotentSulfur::default()));
         }
         let size = match name {
             "minecraft:chest" | "minecraft:trapped_chest" | "minecraft:barrel" => 27,
@@ -305,7 +341,7 @@ impl BlockEntity {
         };
         Some(Self::Chest(vec![None; size]))
     }
-    pub fn id(&self) -> &'static str {
+    pub fn id(&self) -> &str {
         match self {
             Self::Chest(items) => match items.len() {
                 HOPPER_SLOTS => "minecraft:hopper",
@@ -334,8 +370,16 @@ impl BlockEntity {
             Self::Skull(_) => "minecraft:skull",
             Self::EndGateway(_) => "minecraft:end_gateway",
             Self::DaylightDetector => "minecraft:daylight_detector",
+            Self::Brushable(_) => "minecraft:brushable_block",
             Self::Campfire(_) => "minecraft:campfire",
             Self::ChiseledBookshelf(_) => "minecraft:chiseled_bookshelf",
+            Self::Shelf(_) => "minecraft:shelf",
+            Self::Mod(m) => &m.id,
+            Self::PotentSulfur(_) => "minecraft:potent_sulfur",
+            Self::StructureBlock(_) => "minecraft:structure_block",
+            Self::JigsawBlock(_) => "minecraft:jigsaw",
+            Self::TestBlock(_) => "minecraft:test_block",
+            Self::TestInstanceBlock(_) => "minecraft:test_instance_block",
         }
     }
     pub fn contents(&self) -> Vec<ItemStack> {
@@ -354,13 +398,21 @@ impl BlockEntity {
             | Self::CommandBlock(_)
             | Self::EndGateway(_)
             | Self::Skull(_)
-            | Self::DaylightDetector => Vec::new(),
+            | Self::PotentSulfur(_)
+            | Self::StructureBlock(_)
+            | Self::JigsawBlock(_)
+            | Self::TestBlock(_)
+            | Self::TestInstanceBlock(_)
+            | Self::DaylightDetector
+            | Self::Brushable(_) => Vec::new(),
+            Self::Mod(m) => m.items.iter().flatten().cloned().collect(),
             Self::Lectern(l) => l.book.iter().cloned().collect(),
             Self::Sculk(_) => Vec::new(),
             Self::Banner(_) => Vec::new(),
             Self::Crafter(c) => c.items.iter().flatten().cloned().collect(),
             Self::Campfire(c) => c.items.iter().flatten().cloned().collect(),
             Self::ChiseledBookshelf(b) => b.items.iter().flatten().cloned().collect(),
+            Self::Shelf(b) => b.items.iter().flatten().cloned().collect(),
         }
     }
     pub fn slots(&self) -> &[Option<ItemStack>] {
@@ -376,9 +428,17 @@ impl BlockEntity {
             | Self::Banner(_)
             | Self::EndGateway(_)
             | Self::Skull(_)
-            | Self::DaylightDetector => &[],
+            | Self::PotentSulfur(_)
+            | Self::StructureBlock(_)
+            | Self::JigsawBlock(_)
+            | Self::TestBlock(_)
+            | Self::TestInstanceBlock(_)
+            | Self::DaylightDetector
+            | Self::Brushable(_) => &[],
             Self::Crafter(c) => &c.items,
             Self::ChiseledBookshelf(b) => &b.items,
+            Self::Shelf(b) => &b.items,
+            Self::Mod(m) => &m.items,
             Self::CreakingHeart(_)
             | Self::Spawner(_)
             | Self::TrialSpawner(_)
@@ -402,9 +462,17 @@ impl BlockEntity {
             | Self::Banner(_)
             | Self::EndGateway(_)
             | Self::Skull(_)
-            | Self::DaylightDetector => &mut [],
+            | Self::PotentSulfur(_)
+            | Self::StructureBlock(_)
+            | Self::JigsawBlock(_)
+            | Self::TestBlock(_)
+            | Self::TestInstanceBlock(_)
+            | Self::DaylightDetector
+            | Self::Brushable(_) => &mut [],
             Self::Crafter(c) => &mut c.items,
             Self::ChiseledBookshelf(b) => &mut b.items,
+            Self::Shelf(b) => &mut b.items,
+            Self::Mod(m) => &mut m.items,
             Self::CreakingHeart(_)
             | Self::Spawner(_)
             | Self::TrialSpawner(_)

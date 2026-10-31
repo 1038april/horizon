@@ -339,19 +339,16 @@ impl Game<'_> {
                         self.debug_key(key, KeyAction::Release);
                     }
                 }
-                // Mods' keys (capability `input`) see the key as the keyboard
-                // hook does.
+                // Native mods see the key as the keyboard hook does.
                 let action = arg(2)?;
-                self.mod_key(physical, action != "up", action == "repeat");
                 self.native_key_event(physical, action != "up", action == "repeat");
                 if action == "tap" {
-                    self.mod_key(physical, false, false);
                     self.native_key_event(physical, false, false);
                 }
                 // Text screens consume raw presses; releases follow key binds.
                 let typing = matches!(
                     self.screen,
-                    Screen::Chat | Screen::Options | Screen::CommandBlock
+                    Screen::Chat | Screen::Options | Screen::CommandBlock | Screen::BlockEditor
                 );
                 let key = if typing && arg(2)? != "up" {
                     key
@@ -425,19 +422,15 @@ impl Game<'_> {
                 match arg(2)? {
                     "down" => {
                         self.extras_mouse(button, true);
-                        self.mod_mouse_key(button, true);
                         self.play_mouse(button, true)?
                     }
                     "up" => {
                         self.extras_mouse(button, false);
-                        self.mod_mouse_key(button, false);
                         self.play_mouse(button, false)?
                     }
                     "click" => {
                         self.extras_mouse(button, true);
-                        self.mod_mouse_key(button, true);
                         self.extras_mouse(button, false);
-                        self.mod_mouse_key(button, false);
                         self.play_mouse(button, true)?;
                         self.play_mouse(button, false)?;
                     }
@@ -455,8 +448,10 @@ impl Game<'_> {
                 ok()
             }
             "turn" => {
-                self.yaw += arg(1)?.parse::<f32>()?;
-                self.pitch = (self.pitch + arg(2)?.parse::<f32>()?).clamp(-90.0, 90.0);
+                let yaw = arg(1)?.parse::<f32>()?;
+                let pitch = arg(2)?.parse::<f32>()?;
+                // Degrees, as `Entity.turn` degrees.
+                self.turn_player(f64::from(yaw / 0.15), f64::from(pitch / 0.15));
                 ok()
             }
             "tp" => {
@@ -634,6 +629,7 @@ impl Game<'_> {
                 match self.screen {
                     Screen::Chat => self.chat_type(text),
                     Screen::CommandBlock => self.command_block_type(text),
+                    Screen::BlockEditor => self.block_editor_type(text),
                     Screen::Options => self.ui.options.type_text(&self.gui.atlas, text),
                     // The port, or the game rules' search and number boxes.
                     Screen::WorldOptions if text == "\\b" => self.world_options_text(None),
@@ -824,7 +820,13 @@ impl Game<'_> {
             "dragon-hurt" => {
                 // Test hook: damage the dragon's head as the player would.
                 let amount: f32 = arg(1)?.parse()?;
-                self.hit_special(super::dragon::SPECIAL, amount, true, false);
+                self.hit_special(
+                    super::dragon::SPECIAL,
+                    amount,
+                    true,
+                    horizon_client::mobs::DamageKind::PlayerAttack,
+                    None,
+                );
                 ok()
             }
             "quit" => {
@@ -856,6 +858,10 @@ impl Game<'_> {
 
     fn control_key_down(&mut self, key: KeyCode) -> Result<()> {
         self.physical_keys.insert(key);
+        // The window's shortcuts come before any screen, here too.
+        if self.screenshot_shortcut(key, false) {
+            return Ok(());
+        }
         if self.screen == Screen::Chat {
             self.chat_key_code(key, None);
             return Ok(());
@@ -865,6 +871,10 @@ impl Game<'_> {
         }
         if self.screen == Screen::CommandBlock {
             self.command_block_key_code(key, None, None);
+            return Ok(());
+        }
+        if self.screen == Screen::BlockEditor {
+            self.block_editor_key_code(key, None, None);
             return Ok(());
         }
         if self.keys.insert(key) {
@@ -897,8 +907,8 @@ impl Game<'_> {
             Screen::ConfirmLink => "confirm-link",
             Screen::DialogWarning => "dialog-warning",
             Screen::CommandBlock => "command-block",
+            Screen::BlockEditor => "block-editor",
             Screen::Win => "win",
-            Screen::Mod => "mod",
         }
     }
 
@@ -1107,6 +1117,8 @@ impl Game<'_> {
         status["maps"] = json!(self.maps_status());
         // The particles made so far, by type.
         status["particles"] = json!(self.particles.made());
+        // The pickup particles made so far, by what was taken.
+        status["pickups"] = json!(self.pickups.made());
         // The world border this side knows of.
         status["border"] = json!({ "center": self.border.center(), "size": self.border.size() });
         // The scoreboard sidebar the HUD shows.

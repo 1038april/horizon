@@ -74,8 +74,99 @@ pub enum BlockEntity {
     /// `DaylightDetectorBlockEntity`: no data, only the ticker
     /// (`DaylightDetectorBlock.tickEntity`).
     DaylightDetector,
+    /// Suspicious sand and gravel: saved loot and the transient brushed face.
+    Brushable(Box<Brushable>),
+    /// A shelf holds three displayed item stacks.
+    Shelf(Box<Shelf>),
     /// `ChiseledBookShelfBlockEntity`: a `Container` of six one-book slots.
     ChiseledBookshelf(Box<ChiseledBookshelf>),
+    /// A block entity of a mod (`native_block_entity`), kept as its saved
+    /// compound for the mod to read and change.
+    Mod(Box<ModBlockEntity>),
+    /// `PotentSulfurBlockEntity` (`game/potent_sulfur.rs`).
+    PotentSulfur(PotentSulfur),
+    /// `StructureBlockEntity` (`structure_block.rs`).
+    StructureBlock(Box<crate::structure_block::StructureBlock>),
+    /// `JigsawBlockEntity` (`jigsaw_block.rs`).
+    JigsawBlock(Box<crate::jigsaw_block::JigsawBlock>),
+    /// `TestBlockEntity` (`test_block.rs`).
+    TestBlock(Box<crate::test_block::TestBlock>),
+    /// `TestInstanceBlockEntity` (`test_instance_block.rs`).
+    TestInstanceBlock(Box<crate::test_instance_block::TestInstanceBlock>),
+}
+/// A mod's block entity: its type id (`mymod:machine`), its saved
+/// compound without `id`, `x`, `y`, `z` and `Items`, its item slots
+/// (`Items`) when its block has a container (`ModContainer`), and the data
+/// slots its menu shows (`ContainerData`: a furnace menu's flame and arrow),
+/// which the mod sets and nothing saves.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ModBlockEntity {
+    pub id: String,
+    pub nbt: Compound,
+    pub items: Vec<Option<ItemStack>>,
+    pub data: Vec<i32>,
+}
+/// The container of a mod block's block entity, as a `WorldlyContainer`
+/// says it: its slot count, the slots each face reaches
+/// (`getSlotsForFace`, by `Direction`: down, up, north, south, west, east),
+/// and the slots hoppers may put into (`canPlaceItemThroughFace`) and take
+/// from (`canTakeItemThroughFace`); and the vanilla menu that shows its
+/// slots when the block is used, if any (`MOD_MENUS`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModContainer {
+    pub slots: usize,
+    pub faces: [Vec<usize>; 6],
+    pub inputs: Vec<usize>,
+    pub outputs: Vec<usize>,
+    pub menu: Option<String>,
+}
+/// The vanilla menus a mod container can open, with the slot count each
+/// shows: slot grids, and the furnaces' (input, fuel, result), whose four
+/// data slots draw the flame (`data[0]` of `data[1]`) and the arrow
+/// (`data[2]` of `data[3]`), as `AbstractFurnaceBlockEntity.dataAccess`.
+pub const MOD_MENUS: [(&str, usize); 11] = [
+    ("minecraft:furnace", 3),
+    ("minecraft:blast_furnace", 3),
+    ("minecraft:smoker", 3),
+    ("minecraft:hopper", 5),
+    ("minecraft:generic_3x3", 9),
+    ("minecraft:generic_9x1", 9),
+    ("minecraft:generic_9x2", 18),
+    ("minecraft:generic_9x3", 27),
+    ("minecraft:generic_9x4", 36),
+    ("minecraft:generic_9x5", 45),
+    ("minecraft:generic_9x6", 54),
+];
+/// `PotentSulfurBlockEntity`: the seconds left to the geyser's next change of
+/// state (`waitingCountdown`, saved as `countdown`) and the game time of its
+/// last eruption block event, which the client's plume counts from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PotentSulfur {
+    pub waiting_countdown: i32,
+    pub eruption_tick: i64,
+}
+impl Default for PotentSulfur {
+    fn default() -> Self {
+        Self {
+            waiting_countdown: -1,
+            eruption_tick: -1,
+        }
+    }
+}
+/// `BrushableBlockEntity`: the loot table is resolved on the first brush.
+#[derive(Clone, Debug, Default)]
+pub struct Brushable {
+    pub loot_table: Option<horizon_world::nbt::Tag>,
+    pub loot_seed: Option<horizon_world::nbt::Tag>,
+    pub item: Option<ItemStack>,
+    /// Direction's legacy network id; not saved to disk by vanilla.
+    pub hit_direction: Option<i32>,
+}
+/// `ShelfBlockEntity`'s displayed slots and alignment flag.
+#[derive(Clone, Debug, Default)]
+pub struct Shelf {
+    pub items: [Option<ItemStack>; 3],
+    pub align_to_bottom: bool,
 }
 /// `ChiseledBookShelfBlockEntity`: six slots and `lastInteractedSlot`.
 #[derive(Clone, Debug, PartialEq)]
@@ -209,6 +300,8 @@ pub struct SignText {
     /// `DyeColor` id.
     pub color: u8,
     pub glowing: bool,
+    /// The `click_event` in each line's component style, as saved.
+    pub click: [Option<Tag>; 4],
 }
 /// `SignBlockEntity` / `HangingSignBlockEntity` data.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -217,6 +310,8 @@ pub struct SignData {
     pub front: SignText,
     pub back: SignText,
     pub waxed: bool,
+    /// `allow_op_features`: the sign's click events may run commands.
+    pub allow_op_features: bool,
 }
 /// `VibrationInfo`.
 #[derive(Clone, Copy, Debug, PartialEq)]

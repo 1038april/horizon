@@ -47,6 +47,12 @@ struct Mixer {
     listener_yaw: f32,
     listener_pitch: f32,
     limiter_peak: f32,
+    /// The output device the stream was opened on (`Library.currentDeviceName`).
+    #[cfg(feature = "audio")]
+    device_name: String,
+    /// The stream reported its device gone (`Library.isCurrentDeviceDisconnected`).
+    #[cfg(feature = "audio")]
+    device_lost: bool,
 }
 /// A sound the player could have heard (`SoundEventListener.onPlaySound`):
 /// what the subtitle overlay needs.
@@ -144,6 +150,7 @@ type Stream = cpal::Stream;
 type Stream = std::convert::Infallible;
 pub struct Audio {
     _stream: Option<Stream>,
+    device_name: String,
     pub engine: SoundEngine,
     backend: MixerBackend,
     /// Record `Heard` sounds (the subtitle overlay is listening).
@@ -164,6 +171,17 @@ pub struct Audio {
     /// How many times each selection was stopped ("record *", "* minecraft:…", `*` for
     /// any), with or without an audio device, as `heard`.
     pub stopped: std::collections::BTreeMap<String, u32>,
+    /// The volume sliders' `SoundPreviewHandler`.
+    preview: crate::sound_preview::SoundPreview,
+    /// `SoundEngine.lastSeenDevices`: the system default output last seen.
+    #[cfg(feature = "audio")]
+    default_seen: Option<String>,
+    /// The other half of `lastSeenDevices`: every output device last seen.
+    #[cfg(feature = "audio")]
+    devices_seen: Vec<String>,
+    /// Ticks since the output devices were last looked at (`DeviceTracker.tick`).
+    #[cfg(feature = "audio")]
+    device_ticks: u32,
 }
 fn decode(path: &Path) -> Option<(Vec<f32>, u32)> {
     use symphonia::core::{
@@ -503,18 +521,29 @@ fn open_device(
     use cpal::SampleFormat as F;
     let config = device.default_output_config()?;
     let stream = match config.sample_format() {
-        F::F32 => build_stream::<f32>(device, &config, mixer),
-        F::F64 => build_stream::<f64>(device, &config, mixer),
-        F::I16 => build_stream::<i16>(device, &config, mixer),
-        F::I32 => build_stream::<i32>(device, &config, mixer),
-        F::I8 => build_stream::<i8>(device, &config, mixer),
-        F::U16 => build_stream::<u16>(device, &config, mixer),
-        F::U32 => build_stream::<u32>(device, &config, mixer),
-        F::U8 => build_stream::<u8>(device, &config, mixer),
+        F::F32 => build_stream::<f32>(device, &config, mixer.clone()),
+        F::F64 => build_stream::<f64>(device, &config, mixer.clone()),
+        F::I16 => build_stream::<i16>(device, &config, mixer.clone()),
+        F::I32 => build_stream::<i32>(device, &config, mixer.clone()),
+        F::I8 => build_stream::<i8>(device, &config, mixer.clone()),
+        F::U16 => build_stream::<u16>(device, &config, mixer.clone()),
+        F::U32 => build_stream::<u32>(device, &config, mixer.clone()),
+        F::U8 => build_stream::<u8>(device, &config, mixer.clone()),
         other => Err(format!("unsupported sample format {other}").into()),
     }?;
     stream.play()?;
+    if let Ok(mut m) = mixer.lock() {
+        m.device_name = device.name().unwrap_or_default();
+        m.device_lost = false;
+    }
     Ok((stream, config))
+}
+/// The name of the system's default output device.
+#[cfg(feature = "audio")]
+fn default_output_name() -> Option<String> {
+    cpal::default_host()
+        .default_output_device()
+        .and_then(|d| d.name().ok())
 }
 #[cfg(feature = "audio")]
 fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
@@ -525,6 +554,7 @@ fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
     let rate = config.sample_rate().0;
     let channels = config.channels() as usize;
     let mut scratch = Vec::new();
+    let on_error = mixer.clone();
     let stream = device.build_output_stream(
         &config.config(),
         move |data: &mut [T], _| {
@@ -538,20 +568,60 @@ fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
                 *out = T::from_sample(*s);
             }
         },
-        |e| log::warn!("Horizon: audio stream error: {e}"),
+        move |e| {
+            log::warn!("Horizon: audio stream error: {e}");
+            if matches!(e, cpal::StreamError::DeviceNotAvailable)
+                && let Ok(mut m) = on_error.lock()
+            {
+                m.device_lost = true;
+            }
+        },
         None,
     )?;
     Ok(stream)
 }
+/// Available audio output device names.
+#[cfg(feature = "audio")]
+pub fn output_devices() -> Vec<String> {
+    if output_disabled(|name| std::env::var_os(name)).is_some() {
+        return Vec::new();
+    }
+    let host = cpal::default_host();
+    let mut names = Vec::new();
+    if let Ok(devices) = host.output_devices() {
+        for device in devices {
+            if let Ok(name) = device.name()
+                && !names.contains(&name)
+            {
+                names.push(name);
+            }
+        }
+    }
+    names
+}
+
+#[cfg(not(feature = "audio"))]
+pub fn output_devices() -> Vec<String> {
+    Vec::new()
+}
+
 impl Audio {
     pub fn new(root: &Path) -> Self {
-        Self::with_output(root, true)
+        Self::with_device(root, "")
+    }
+    pub fn with_device(root: &Path, device_name: &str) -> Self {
+        Self::with_output(root, true, device_name)
     }
     /// No output device: the dedicated server.
     pub fn silent(root: &Path) -> Self {
-        Self::with_output(root, false)
+        Self::with_output(root, false, "")
     }
-    fn with_output(root: &Path, output: bool) -> Self {
+    /// The output device asked for (`soundDevice`), empty for the system's default; the
+    /// default plays when that one can't be opened, as in vanilla.
+    pub fn device(&self) -> &str {
+        &self.device_name
+    }
+    fn with_output(root: &Path, output: bool, target_device: &str) -> Self {
         let registry = SoundRegistry::load(root);
         if output && registry.is_empty() {
             // The game then plays nothing on a working output (#1035, #1076).
@@ -564,7 +634,7 @@ impl Audio {
         }
         let mixer = Arc::new(Mutex::new(Mixer::default()));
         let opened = if output {
-            Self::open(mixer.clone())
+            Self::open_named(mixer.clone(), target_device)
         } else {
             Err("no output on a dedicated server".into())
         };
@@ -581,6 +651,7 @@ impl Audio {
         engine.loaded = live;
         Self {
             _stream: stream,
+            device_name: target_device.to_owned(),
             engine,
             backend: MixerBackend {
                 mixer,
@@ -599,11 +670,69 @@ impl Audio {
             capture: None,
             heard: Default::default(),
             stopped: Default::default(),
+            preview: Default::default(),
+            #[cfg(feature = "audio")]
+            default_seen: if live { default_output_name() } else { None },
+            #[cfg(feature = "audio")]
+            devices_seen: if live { output_devices() } else { Vec::new() },
+            #[cfg(feature = "audio")]
+            device_ticks: 0,
         }
     }
     #[cfg(not(feature = "audio"))]
-    fn open(_: Arc<Mutex<Mixer>>) -> Result<Stream> {
+    fn open_named(_: Arc<Mutex<Mixer>>, _: &str) -> Result<Stream> {
         Err("this build has no sound output (built without the `audio` feature)".into())
+    }
+    #[cfg(feature = "audio")]
+    fn open_named(mixer: Arc<Mutex<Mixer>>, target: &str) -> Result<Stream> {
+        if let Some(reason) = output_disabled(|name| std::env::var_os(name)) {
+            return Err(reason.into());
+        }
+        let host = cpal::default_host();
+        if !target.is_empty()
+            && let Ok(devices) = host.output_devices()
+        {
+            for device in devices {
+                let name = device.name().unwrap_or_else(|_| "unnamed device".into());
+                if name == target {
+                    match open_device(&device, mixer.clone()) {
+                        Ok((stream, config)) => {
+                            log::info!(
+                                "Horizon: audio output {name} ({} Hz, {} channels, {})",
+                                config.sample_rate().0,
+                                config.channels(),
+                                config.sample_format()
+                            );
+                            return Ok(stream);
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "Horizon: could not open audio device '{target}': {e}; falling back to default"
+                            );
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        Self::open(mixer)
+    }
+    #[cfg(feature = "audio")]
+    pub fn set_device(&mut self, name: &str) -> Result<()> {
+        if !self.backend.live && self._stream.is_none() && !self.engine.loaded {
+            self.device_name = name.to_owned();
+            return Ok(());
+        }
+        self._stream = Some(Self::open_named(self.backend.mixer.clone(), name)?);
+        self.device_name = name.to_owned();
+        self.backend.live = true;
+        self.engine.loaded = true;
+        Ok(())
+    }
+    #[cfg(not(feature = "audio"))]
+    pub fn set_device(&mut self, name: &str) -> Result<()> {
+        self.device_name = name.to_owned();
+        Ok(())
     }
     #[cfg(feature = "audio")]
     fn open(mixer: Arc<Mutex<Mixer>>) -> Result<Stream> {
@@ -675,8 +804,64 @@ impl Audio {
         }
         self.engine.listening = self.record_heard;
     }
+    /// `SoundEngine.shouldChangeDevice`: the open device was lost, the system
+    /// default changed (with no device chosen in the options), or the chosen
+    /// device came back; the output is then opened again. The devices are looked
+    /// at once a second.
+    #[cfg(feature = "audio")]
+    fn should_change_device(&mut self) -> bool {
+        let (current, lost) = match self.backend.mixer.lock() {
+            Ok(mut m) => (m.device_name.clone(), std::mem::take(&mut m.device_lost)),
+            Err(_) => return false,
+        };
+        if lost {
+            log::info!("Horizon: audio device was lost");
+            self.default_seen = default_output_name();
+            self.devices_seen = output_devices();
+            return true;
+        }
+        self.device_ticks += 1;
+        if self._stream.is_none() || self.device_ticks < 20 {
+            return false;
+        }
+        self.device_ticks = 0;
+        let default = default_output_name();
+        let devices = output_devices();
+        // Only a change in the device lists is looked at, as in vanilla: a
+        // preferred device that is listed but cannot open is not retried.
+        if default == self.default_seen && devices == self.devices_seen {
+            return false;
+        }
+        self.default_seen = default.clone();
+        let wanted = self.device_name.clone();
+        let available = devices.contains(&wanted);
+        self.devices_seen = devices;
+        if wanted.is_empty() {
+            let changed = default.as_deref().is_some_and(|d| d != current);
+            if changed {
+                log::info!("Horizon: system default audio device has changed");
+            }
+            return changed;
+        }
+        let changed = current != wanted && available;
+        if changed {
+            log::info!("Horizon: preferred audio device has become available");
+        }
+        changed
+    }
     /// `SoundManager.tick(paused)`, once per client tick.
     pub fn tick(&mut self, paused: bool, ctx: &TickContext) {
+        #[cfg(feature = "audio")]
+        {
+            if self.should_change_device() {
+                // SoundEngine.reload: stop every sound, open the output again.
+                self.stop_all();
+                let device = self.device_name.clone();
+                if let Err(e) = self.set_device(&device) {
+                    log::warn!("Horizon: could not reopen the audio output: {e}");
+                }
+            }
+        }
         self.sync_volumes();
         self.engine.tick(paused, ctx, &mut self.backend);
     }
@@ -712,6 +897,37 @@ impl Audio {
         let seed = self.random.next_long();
         self.play_seeded(event, at, volume, pitch, seed);
     }
+    /// `ClientLevel.playLocalSound` with `distanceDelay`: a sound more than 10
+    /// blocks from the camera starts `sqrt(distance) / 40` seconds later.
+    pub fn play_distance_delayed(
+        &mut self,
+        event: &str,
+        at: [f64; 3],
+        volume: f32,
+        pitch: f32,
+        camera: [f64; 3],
+    ) {
+        let distance_sqr: f64 = (0..3).map(|i| (at[i] - camera[i]).powi(2)).sum();
+        if distance_sqr <= 100.0 {
+            self.play(event, Some(at), volume, pitch);
+            return;
+        }
+        let seed = self.random.next_long();
+        if let Some(capture) = self.capture.as_mut() {
+            capture.push((event.to_owned(), at, volume, pitch));
+        }
+        *self.heard.entry(event.to_owned()).or_default() += 1;
+        self.sync_volumes();
+        let event = crate::sound_events::normalize(event);
+        let source = self
+            .source_override
+            .unwrap_or_else(|| crate::settings::sound_source(&event));
+        let instance =
+            SoundInstance::at(&event, source, volume, pitch, LegacyRandom::new(seed), at);
+        let id = self.engine.add(instance, false);
+        self.engine
+            .play_delayed(id, (distance_sqr.sqrt() / 40.0 * 20.0) as i32);
+    }
     /// `play` for this client only: a sound a packet's handler plays
     /// (`playLocalSound`), which the guests play from that packet themselves.
     pub fn play_unshared(&mut self, event: &str, at: Option<[f64; 3]>, volume: f32, pitch: f32) {
@@ -730,6 +946,13 @@ impl Audio {
             ),
             false,
         );
+    }
+    /// `SoundPreviewHandler.preview`: a category volume slider moved to
+    /// `volume` on the title screen's options.
+    pub fn preview(&mut self, source: usize, volume: f32) {
+        let mut preview = std::mem::take(&mut self.preview);
+        preview.preview(self, source, volume);
+        self.preview = preview;
     }
     /// `play` with the seed a sound packet carries.
     pub fn play_seeded(
