@@ -6,7 +6,10 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
-//! API 41 adds the server level's random (`native_level_random`).
+//! API 42 adds the server level's random (`native_level_random`).
+//!
+//! API 41 adds bundles' data files: `horizon_client::native_data!` compiles a file of a
+//! bundle's `data/` folder in, and `native_built_data` is the folder its post-build step wrote.
 //!
 //! API 40 adds mod messages between a mod's server and client halves
 //! (`native_net_from_client`, `native_net_from_server`, and
@@ -193,7 +196,7 @@ pub(super) use horizon_world::level::flags;
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 41;
+pub(crate) const NATIVE_HOOKS_API: u32 = 42;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -1383,7 +1386,7 @@ impl Game<'_> {
     /// mod's do. Draw with `horizon_core::random::RandomSource` (`next_int_bound`,
     /// `next_float`...). `None` on a client of a server, and for a level not
     /// open: the Nether and the End open when someone first goes there and
-    /// close after 300 ticks with nobody in them (`close_idle_levels`). API 41.
+    /// close after 300 ticks with nobody in them (`close_idle_levels`). API 42.
     pub(super) fn native_level_random(
         &mut self,
         dimension: &str,
@@ -1696,6 +1699,12 @@ impl Game<'_> {
     pub(super) fn native_data_dir(&self, mod_id: &str) -> PathBuf {
         let mods = Self::options_path().with_file_name(mod_list::DIR);
         mods.join(".horizon-mod-data").join(mod_id)
+    }
+    /// The folder mod `mod_id`'s post-build step wrote into when the launcher built the game
+    /// (`native-data/<id>/` in the build's version folder); None when the game's own path is
+    /// unknown. API 41.
+    pub(super) fn native_built_data(&self, mod_id: &str) -> Option<PathBuf> {
+        horizon_client::native_data::built(mod_id)
     }
     /// A mod's setting `key` (one file per key in `native_data_dir`).
     pub(super) fn native_setting(&self, mod_id: &str, key: &str) -> Option<String> {
