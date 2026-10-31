@@ -576,6 +576,13 @@ pub(super) fn make_streaming(
         horizon_client::save::dimension_dir(world_root, dim.id()),
         shape,
     ));
+    if dim == Dim::End {
+        // Migrate before any chunk reader can cache the old block entities. A side file it
+        // can't read stays where it is and costs only its old exits: the End still opens.
+        if let Err(e) = save.migrate_end_gateway_exits() {
+            log::warn!("Horizon: End gateway exits not migrated: {e}");
+        }
+    }
     // The world's packs over the game's biomes (`RegistryDataLoader`
     // layering): the generator names the ids and the client draws them.
     let biomes = packed_biomes(
