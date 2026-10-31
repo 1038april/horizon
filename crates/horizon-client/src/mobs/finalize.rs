@@ -628,6 +628,29 @@ pub fn add_modifier(m: &mut Mob, a: Attr, id: &'static str, amount: f64, op: Op)
     }
     refresh(m, a);
 }
+/// `AttributeInstance.removeModifier`.
+pub fn remove_modifier(m: &mut Mob, a: Attr, id: &str) {
+    if let Some(s) = m.extra.attributes.as_mut() {
+        s.modifiers.retain(|x| x.attr != a || x.id != id);
+    }
+    refresh(m, a);
+}
+/// `Mob.finalizeSpawn`, which every mob's own `finalizeSpawn` reaches
+/// through `super`: the `random_spawn_bonus` follow range modifier (once)
+/// and `setLeftHanded(nextFloat() < 0.05F)`.
+pub fn mob_spawn(m: &mut Mob, random: &mut impl RandomSource) {
+    if !has_modifier(m, Attr::FollowRange, "minecraft:random_spawn_bonus") {
+        let bonus = random.triangle(0.0, 0.114_850_000_000_000_01);
+        add_modifier(
+            m,
+            Attr::FollowRange,
+            "minecraft:random_spawn_bonus",
+            bonus,
+            Op::AddMultipliedBase,
+        );
+    }
+    m.extra.left_handed = random.next_float() < 0.05;
+}
 /// `Zombie.handleAttributes`, from the zombie's own random.
 pub fn zombie_attributes(m: &mut Mob, special: f32, reason: Reason) {
     let r = &mut m.random;
@@ -867,6 +890,10 @@ pub fn spawn_egg_offspring(child: &mut Mob, species: Species, variant: u8, color
     if species == Species::Sheep {
         child.extra.color = color;
     }
+    // `SulfurCube.getBreedOffspring`: `setSize(1, true)`.
+    if species == Species::SulfurCube {
+        sulfur_size(child, 1);
+    }
 }
 /// `setBaby`: AgeableMob through its age, zombies, piglins and zoglins.
 pub fn set_baby(m: &mut Mob, baby: bool) {
@@ -999,6 +1026,35 @@ pub fn stored_drop_chance(m: &Mob, slot: usize) -> f32 {
         .map_or(super::drops::DEFAULT_DROP_CHANCE, |c| c[slot])
 }
 
+/// `SpecialDates.isHalloween`: October 31.
+pub fn halloween_date(month: u32, day: u32) -> bool {
+    (month, day) == (10, 31)
+}
+
+/// `SpecialDates.isHalloween` from the local calendar.
+pub fn is_halloween() -> bool {
+    use chrono::Datelike;
+    let today = chrono::Local::now();
+    halloween_date(today.month(), today.day())
+}
+
+/// `Zombie` / `AbstractSkeleton` halloween pumpkin: 25% of empty heads, 10%
+/// of those a jack o'lantern, drop chance 0.
+pub fn halloween_head(m: &mut Mob, random: &mut impl RandomSource, halloween: bool) {
+    if !(zombie(m.species()) || skeleton(m.species())) {
+        return;
+    }
+    if m.extra.head.is_none() && halloween && random.next_float() < 0.25 {
+        let head = if random.next_float() < 0.1 {
+            "minecraft:jack_o_lantern"
+        } else {
+            "minecraft:carved_pumpkin"
+        };
+        set_item(m, HEAD, head);
+        set_drop_chance(m, HEAD, 0.0);
+    }
+}
+
 impl<L: FinalizeLevel + ?Sized, R: RandomSource> Ctx<'_, L, R> {
     fn float(&mut self) -> f32 {
         self.random.next_float()
@@ -1020,17 +1076,7 @@ impl<L: FinalizeLevel + ?Sized, R: RandomSource> Ctx<'_, L, R> {
 
     /// `Mob.finalizeSpawn`: the follow range spawn bonus and left-handedness.
     fn mob(&mut self, m: &mut Mob, g: Option<Group>) -> Option<Group> {
-        if !has_modifier(m, Attr::FollowRange, "minecraft:random_spawn_bonus") {
-            let bonus = self.random.triangle(0.0, 0.114_850_000_000_000_01);
-            add_modifier(
-                m,
-                Attr::FollowRange,
-                "minecraft:random_spawn_bonus",
-                bonus,
-                Op::AddMultipliedBase,
-            );
-        }
-        m.extra.left_handed = self.float() < 0.05;
+        mob_spawn(m, self.random);
         g
     }
     /// `AgeableMob.finalizeSpawn`.
@@ -1219,15 +1265,7 @@ impl<L: FinalizeLevel + ?Sized, R: RandomSource> Ctx<'_, L, R> {
         }
     }
     fn halloween(&mut self, m: &mut Mob) {
-        if m.extra.head.is_none() && self.level.halloween() && self.float() < 0.25 {
-            let head = if self.float() < 0.1 {
-                "minecraft:jack_o_lantern"
-            } else {
-                "minecraft:carved_pumpkin"
-            };
-            set_item(m, HEAD, head);
-            set_drop_chance(m, HEAD, 0.0);
-        }
+        halloween_head(m, self.random, self.level.halloween());
     }
 
     // ---- jockeys ------------------------------------------------------
@@ -2281,5 +2319,12 @@ mod tests {
         assert_eq!(villager_type("minecraft:badlands"), 1);
         assert_eq!(villager_type("minecraft:grove"), 4);
         assert_eq!(villager_type("minecraft:plains"), 0);
+    }
+    #[test]
+    fn october_31_is_halloween() {
+        assert!(halloween_date(10, 31));
+        assert!(!halloween_date(10, 30));
+        assert!(!halloween_date(11, 1));
+        assert!(!halloween_date(1, 1));
     }
 }

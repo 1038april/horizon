@@ -144,7 +144,7 @@ impl Game<'_> {
                 .filter_map(|e| effect_particle(e.id, e.ambient))
                 .collect();
             let ambient = effects.iter().filter(|e| e.visible).all(|e| e.ambient);
-            let invisible = effects.iter().any(|e| e.id == "invisibility");
+            let invisible = self.own_invisible();
             let size = (
                 f64::from(p.dimensions.width),
                 f64::from(p.dimensions.height),
@@ -175,7 +175,7 @@ impl Game<'_> {
                     .effects
                     .iter()
                     .filter(|e| !m.extra.hidden_effects.contains(&e.0))
-                    .filter_map(|e| effect_particle(e.0, false))
+                    .filter_map(|e| effect_particle(e.0, m.extra.ambient_effects.contains(&e.0)))
                     .collect();
                 swirl(
                     &mut self.particles,

@@ -22,6 +22,9 @@ pub(super) struct Env<'a, 'g> {
     game: &'a Game<'g>,
 }
 impl ItemEnv for Env<'_, '_> {
+    fn enchantment_in_tag(&self, enchantment: &str, tag: &str) -> bool {
+        self.game.stations().enchantments.in_tag(tag, enchantment)
+    }
     fn potion_effect_color(&self, contents: &Value) -> Option<i32> {
         // `PotionContents.getColorOr`: the effect mix when any effect is visible.
         let id = contents["potion"].as_str();
@@ -309,32 +312,28 @@ impl Game<'_> {
             batch,
             x,
             y,
-            self.started.elapsed().as_secs_f32(),
-            self.settings.file.double("glintSpeed") as f32,
-            self.settings.file.double("glintStrength") as f32,
+            self.glint_frame.millis / 1000.0,
+            self.glint_frame.speed,
+            self.glint_frame.alpha,
         );
     }
-    /// The `GLINT_TEXTURING` inputs the atlas and options provide.
-    pub(super) fn glint(&self) -> Option<item_render::Glint> {
-        self.gui
-            .atlas
-            .sprites
-            .get("misc/enchanted_glint_item")
-            .copied()
-            .map(|_| item_render::Glint {
-                speed: self.settings.file.double("glintSpeed") as f32,
-                alpha: self.settings.file.double("glintStrength") as f32,
-                millis: self.started.elapsed().as_secs_f32() * 1000.0,
-                scale: 0.5,
-            })
+    /// The glint clock, options and sprite for this frame: read once per
+    /// frame, not per item (`GameRenderer.extractOptions`).
+    pub(super) fn capture_glint_frame(&self) -> item_render::GlintFrame {
+        item_render::GlintFrame {
+            millis: self.started.elapsed().as_secs_f32() * 1000.0,
+            speed: self.settings.file.double("glintSpeed") as f32,
+            alpha: self.settings.file.double("glintStrength") as f32,
+            sprite: self
+                .gui
+                .atlas
+                .sprites
+                .contains_key("misc/enchanted_glint_item"),
+        }
     }
-    /// The glint scroll phase shared by world items and armour
-    /// (`item_render::Glint::scroll_ticks`).
-    pub(super) fn glint_ticks(&self) -> f32 {
-        item_render::Glint::scroll_ticks(
-            self.started.elapsed().as_secs_f32() * 1000.0,
-            self.settings.file.double("glintSpeed") as f32,
-        )
+    /// The `ENTITY_GLINT_TEXTURING` inputs of this frame.
+    pub(super) fn glint(&self) -> Option<item_render::Glint> {
+        self.glint_frame.glint(0.5)
     }
     /// Submit a resolved item under `pose` (camera-relative) at `light`
     /// (packed lightmap coordinates).
