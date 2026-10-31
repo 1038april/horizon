@@ -5341,6 +5341,8 @@ impl Game<'_> {
                 let cake = self.world.block(hit.pos[0], hit.pos[1], hit.pos[2]);
                 let adds_candle =
                     self.with_level(|b, _, _| b.cake_candle_state(cake, item.as_deref()).is_some());
+                let pots_flower = self
+                    .with_level(|b, _, _| b.potted_flower_state(cake, item.as_deref()).is_some());
                 let (result, branch) = self.with_level(|b, level, ticks| {
                     b.use_item_on_branch(
                         level,
@@ -5359,6 +5361,15 @@ impl Game<'_> {
                     && let Some(used) = held.as_ref()
                 {
                     self.stats.add("used", &used.item, 1);
+                    self.consume_held();
+                }
+                // FlowerPotBlock.useItemOn: the plant is potted, used up, and counted.
+                if pots_flower
+                    && result == horizon_world::level::InteractionResult::Success
+                    && let Some(used) = held.as_ref()
+                {
+                    self.stats.add("used", &used.item, 1);
+                    self.stats.custom("pot_flower", 1);
                     self.consume_held();
                 }
                 // NoteBlock.useWithoutItem (tuned) and BellBlock.onHit (rung).
