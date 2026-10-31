@@ -66,7 +66,7 @@ impl ShaderOptions {
     }
 
     fn set(&mut self, name: &str, value: String) {
-        let Some(option) = self.options.get(name) else {
+        let Some(option) = self.options.get(name).filter(|o| o.values.contains(&value)) else {
             return;
         };
         if value == option.default {
@@ -204,7 +204,7 @@ mod tests {
                 },
             ),
         ]);
-        let text = "screen = <profile> [more]\nscreen.more = AO LEVEL\n\
+        let text = "screen = <profile> [more]\nscreen.more = AO LEVEL\nprofile.gone = OLD=1\n\
                     profile.low = !AO LEVEL=1\nprofile.high = AO LEVEL=3\n";
         let screens = Screens::parse(&Properties::parse(text, &Macros::standard()), &options);
         ShaderOptions::new(
@@ -212,7 +212,10 @@ mod tests {
             options,
             screens,
             Lang::default(),
-            BTreeMap::from([("LEVEL".to_owned(), "2".to_owned())]),
+            BTreeMap::from([
+                ("LEVEL".to_owned(), "2".to_owned()),
+                ("AO".to_owned(), "maybe".to_owned()),
+            ]),
         )
     }
 

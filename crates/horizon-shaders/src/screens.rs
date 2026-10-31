@@ -98,9 +98,11 @@ impl Screens {
             .iter()
             .map(|(n, v)| (n.as_str(), v.as_str()))
             .collect();
+        // A profile naming none of the pack's options sets nothing: it would match any values.
         let profiles = profiles
             .iter()
             .map(|(name, _)| (name.clone(), profile_values(name, &texts, options)))
+            .filter(|(_, values)| !values.is_empty())
             .collect();
         Self {
             screens,
@@ -189,7 +191,7 @@ mod tests {
         ]);
         let text = "screen = <profile> <empty> [post] LEVEL GONE\nscreen.post = BLOOM *\n\
                     screen.post.columns = 1\nsliders = LEVEL\n\
-                    profile.low = !AO LEVEL=1\nprofile.high = profile.low AO BLOOM LEVEL:2\n";
+                    profile.empty = GONE\nprofile.low = !AO LEVEL=1\nprofile.high = profile.low AO BLOOM LEVEL:2\n";
         let screens = Screens::parse(&Properties::parse(text, &Macros::standard()), &options);
         let (main, columns) = screens.screen("").unwrap();
         assert_eq!(columns, 2);

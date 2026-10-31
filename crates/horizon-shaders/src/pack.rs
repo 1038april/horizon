@@ -106,9 +106,14 @@ impl Pack {
     }
 
     /// The pack with options at the values in `chosen` (name to value, `true` or `false` for a
-    /// switch) instead of their defaults.
+    /// switch) instead of their defaults. A value the option doesn't list (a file edited by
+    /// hand) is left out.
     pub fn with_chosen(mut self, chosen: BTreeMap<String, String>) -> Self {
-        self.chosen = chosen;
+        let options = crate::options(&self);
+        self.chosen = chosen
+            .into_iter()
+            .filter(|(name, value)| options.get(name).is_some_and(|o| o.values.contains(value)))
+            .collect();
         self
     }
 

@@ -172,8 +172,11 @@ pub fn options(pack: &Pack) -> BTreeMap<String, PackOption> {
     let mut out: BTreeMap<String, PackOption> = BTreeMap::new();
     let (mut on, mut off, mut tested) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
     for text in option_texts(pack) {
+        // `#ifndef NAME` just before `#define NAME`: an include guard, not an option.
+        let mut guard: Option<&str> = None;
         for line in text.lines() {
             let trimmed = line.trim();
+            let opened = guard_name(trimmed);
             for directive in ["#ifdef", "#ifndef"] {
                 if let Some(name) = trimmed.strip_prefix(directive).map(str::trim) {
                     tested.insert(name.split_whitespace().next().unwrap_or("").to_owned());
@@ -182,7 +185,15 @@ pub fn options(pack: &Pack) -> BTreeMap<String, PackOption> {
             if trimmed.starts_with("#if") || trimmed.starts_with("#elif") {
                 tested.extend(defined_names(trimmed));
             }
-            let Some(d) = declaration(line) else { continue };
+            let Some(d) = declaration(line) else {
+                if opened.is_some() || !(trimmed.is_empty() || trimmed.starts_with("//")) {
+                    guard = opened;
+                }
+                continue;
+            };
+            if guard.take() == Some(d.name) && d.value.is_none() && !d.commented {
+                continue;
+            }
             match (d.value, d.values) {
                 (None, _) => {
                     let set = if d.commented { &mut off } else { &mut on };
@@ -219,6 +230,24 @@ pub fn options(pack: &Pack) -> BTreeMap<String, PackOption> {
         );
     }
     out
+}
+
+/// The name an `#ifndef NAME` or `#if !defined NAME` line tests.
+fn guard_name(line: &str) -> Option<&str> {
+    let rest = match line.strip_prefix("#ifndef") {
+        Some(rest) => rest,
+        None => line
+            .strip_prefix("#if")?
+            .trim_start()
+            .strip_prefix('!')?
+            .trim_start()
+            .strip_prefix("defined")?,
+    };
+    let rest = rest.trim_start().trim_start_matches('(').trim_start();
+    let end = rest
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(rest.len());
+    (end > 0).then(|| &rest[..end])
 }
 
 /// The names `defined NAME` and `defined(NAME)` test in an `#if` line.
@@ -366,6 +395,11 @@ mod tests {
                 (
                     "shaders/final.fsh",
                     "#ifdef AO\n#endif\n#if defined(BLOOM) && LEVEL > 1\n#endif\n",
+                ),
+                (
+                    "shaders/lib/common.glsl",
+                    "#ifndef COMMON_GLSL\n#define COMMON_GLSL\n#endif\n\
+                     #if !defined(INCLUDE_SKY)\n\n#define INCLUDE_SKY\n#endif\n",
                 ),
             ]),
         )
