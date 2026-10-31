@@ -319,7 +319,12 @@ impl Hub {
             return None;
         }
         let ticks = self.ticks;
-        if stands || self.ground_holds(i, to, ctx)? {
+        // Entity.move resolves Y first, where the body starts, then X and Z: on the tick a player
+        // walks off an edge (or lands on one and slides off it), the client stands on what is under
+        // the move's start. A vanilla client did that once a step down every slope and staircase.
+        let from = self.guests[i].position;
+        let held_at_start = || self.ground_holds(i, [from[0], to[1], from[2]], ctx) != Some(false);
+        if stands || self.ground_holds(i, to, ctx)? || held_at_start() {
             self.guests[i].anticheat.ground = Some((ticks, to[1]));
             return None;
         }
