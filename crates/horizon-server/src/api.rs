@@ -48,7 +48,7 @@ pub struct Route {
 }
 
 /// Every endpoint `start` and [`route`] answer; a test checks the two agree.
-pub const ROUTES: [Route; 27] = [
+pub const ROUTES: [Route; 28] = [
     Route {
         method: "GET",
         path: "/api/v1/status",
@@ -69,6 +69,13 @@ pub const ROUTES: [Route; 27] = [
         takes: "`?since=N`",
         answers: "`{\"next\": N, \"lines\": [...]}`",
         what: "The log lines after the Nth (the last 2000 are kept)",
+    },
+    Route {
+        method: "GET",
+        path: "/api/v1/events",
+        takes: "`?since=N` (or `Last-Event-ID`), `?types=join,leave,kick,chat,death,log,phase` (all by default)",
+        answers: "with `Accept: text/event-stream`, server-sent events as they happen (`id`, `event`: the type, `data`: JSON); otherwise `{\"next\": N, \"events\": [...]}`",
+        what: "Log lines, the supervisor's phase, and the game's joins, leaves, kicks, chat and deaths (the last 2000 kept)",
     },
     Route {
         method: "POST",
@@ -251,7 +258,7 @@ pub enum Phase {
 }
 
 impl Phase {
-    fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Self::Starting => "starting",
             Self::Running => "running",
@@ -332,6 +339,9 @@ pub struct Shared {
     /// The installer's folder this program runs from (none for a build of your own: no updates).
     pub install: Option<Install>,
     pub update: Mutex<Updates>,
+    /// The event stream's events (events.rs), and the streams' wake-up.
+    pub events: Mutex<crate::events::Events>,
+    pub event_added: std::sync::Condvar,
 }
 
 impl Shared {
@@ -360,6 +370,8 @@ impl Shared {
             panel: Mutex::new(panel::Auth::default()),
             install,
             update: Mutex::new(Updates::default()),
+            events: Mutex::default(),
+            event_added: std::sync::Condvar::new(),
         })
     }
 
@@ -447,6 +459,7 @@ impl Shared {
     }
     pub fn set_phase(&self, phase: Phase) {
         self.state.lock().unwrap().phase = phase;
+        self.emit("phase", json!({ "phase": phase.name() }));
     }
     fn phase(&self) -> Phase {
         self.state.lock().unwrap().phase
@@ -639,6 +652,7 @@ pub fn route(shared: &Arc<Shared>, request: &Request) -> Response {
             let (next, lines) = shared.log.lock().unwrap().since(since);
             Response::json(200, &json!({ "next": next, "lines": lines }))
         }
+        ("GET", "/api/v1/events") => crate::events::route(shared, request),
         ("POST", "/api/v1/command") => {
             let line = serde_json::from_slice::<Value>(&request.body)
                 .ok()
@@ -844,6 +858,40 @@ impl Client {
 
     pub fn call(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value, String> {
         self.call_within(method, path, body, Duration::from_secs(60))
+    }
+
+    /// Reads a server-sent event stream (`GET /api/v1/events`), one event at a time, until the server ends
+    /// it (`Ok`) or stops answering.
+    pub fn follow(&self, path: &str, mut each: impl FnMut(&Value)) -> Result<(), String> {
+        use std::io::BufRead;
+        let mut stream =
+            std::net::TcpStream::connect_timeout(&self.address, Duration::from_secs(5))
+                .map_err(|e| e.to_string())?;
+        // The stream sends a comment every 15 s: a minute of silence is a server gone.
+        stream
+            .set_read_timeout(Some(Duration::from_secs(60)))
+            .map_err(|e| e.to_string())?;
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\nAccept: text/event-stream\r\nConnection: close\r\n\r\n",
+            self.address, self.token
+        )
+        .map_err(|e| e.to_string())?;
+        let mut lines = std::io::BufReader::new(stream).lines();
+        let status = lines.next().and_then(Result::ok).unwrap_or_default();
+        if status.split_whitespace().nth(1) != Some("200") {
+            return Err(format!("the server answered {status:?}"));
+        }
+        for line in lines {
+            let line = line.map_err(|e| e.to_string())?;
+            if let Some(event) = line
+                .strip_prefix("data: ")
+                .and_then(|d| serde_json::from_str(d).ok())
+            {
+                each(&event);
+            }
+        }
+        Ok(())
     }
 
     /// A call that may take long (a backup of a big world).
