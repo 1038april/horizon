@@ -56,8 +56,10 @@ fn base_attachment(v: &Mob) -> [f64; 3] {
         Species::Hoglin => [0.0, 1.49375, 0.0],
         Species::Nautilus | Species::ZombieNautilus => [0.0, 1.1375, 0.0],
         Species::Camel | Species::CamelHusk => super::camel::passenger_attachment(v),
-        // The default attachments: the top of the bounding box.
-        _ => [0.0, f64::from(v.height()), 0.0],
+        // The default attachments: the top of the bounding box, before
+        // `passenger_attachment`'s scale — a player's or mannequin's
+        // `height()` carries `minecraft:scale` since `getDimensions` grew it.
+        _ => [0.0, f64::from(v.height()) / scale(v), 0.0],
     }
 }
 /// The rider's own `VEHICLE` attachment height (`ridingOffset`): how far
