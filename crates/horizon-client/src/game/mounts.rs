@@ -17,6 +17,15 @@ use horizon_core::{
     random::RandomSource,
 };
 
+fn steering_item(species: Species, main: Option<&str>, offhand: Option<&str>) -> bool {
+    let item = match species {
+        Species::Pig => "minecraft:carrot_on_a_stick",
+        Species::Strider => "minecraft:warped_fungus_on_a_stick",
+        _ => return false,
+    };
+    main == Some(item) || offhand == Some(item)
+}
+
 /// `passengerAttachments` minus the player's 0.6 vehicle attachment.
 fn seat(s: Species) -> f64 {
     let attach = match s {
@@ -367,12 +376,11 @@ impl Game<'_> {
         let strafe = f32::from(u8::from(keys.left)) - f32::from(u8::from(keys.right));
         let forward = f32::from(u8::from(keys.forward)) - f32::from(u8::from(keys.backward));
         // LocalPlayer.aiStep: the riding jump charges while space is held.
-        let held = self.held().map(|s| s.item.clone());
-        let steer = match self.mobs[i].species() {
-            Species::Pig => held.as_deref() == Some("minecraft:carrot_on_a_stick"),
-            Species::Strider => held.as_deref() == Some("minecraft:warped_fungus_on_a_stick"),
-            _ => false,
-        };
+        let steer = steering_item(
+            self.mobs[i].species(),
+            self.held().map(|s| s.item.as_ref()),
+            self.offhand.as_ref().map(|s| s.item.as_ref()),
+        );
         let jump = self.charge_mount_jump(i, keys);
         let m = &mut self.mobs[i];
         if jump > 0.0 {
