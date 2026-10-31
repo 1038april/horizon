@@ -293,7 +293,7 @@ pub struct CustomImage {
     pub name: String,
     pub sampler: Option<String>,
     pub format: crate::Format,
-    /// Relative to the render size (width and height), or in pixels with a depth for 3D.
+    /// Relative to the render size (width and height), or in pixels.
     pub size: ImageSize,
     /// Cleared to zero before each frame.
     pub clear: bool,
@@ -302,7 +302,9 @@ pub struct CustomImage {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ImageSize {
     Relative([f32; 2]),
-    Absolute([u32; 3]),
+    Absolute([u32; 2]),
+    /// Three sizes: a 3D image, whatever its depth.
+    Volume([u32; 3]),
 }
 
 impl CustomImage {
@@ -313,9 +315,9 @@ impl CustomImage {
         };
         let size = match (*relative, rest) {
             ("true", [x, y, ..]) => ImageSize::Relative([x.parse().ok()?, y.parse().ok()?]),
-            ("false", [x, y]) => ImageSize::Absolute([x.parse().ok()?, y.parse().ok()?, 1]),
+            ("false", [x, y]) => ImageSize::Absolute([x.parse().ok()?, y.parse().ok()?]),
             ("false", [x, y, z]) => {
-                ImageSize::Absolute([x.parse().ok()?, y.parse().ok()?, z.parse().ok()?])
+                ImageSize::Volume([x.parse().ok()?, y.parse().ok()?, z.parse().ok()?])
             }
             _ => return None,
         };
@@ -335,13 +337,14 @@ impl CustomImage {
                 let [w, h] = [0, 1].map(|k| ((render[k] as f32 * s[k]) as u32).max(1));
                 [w, h, 1]
             }
-            ImageSize::Absolute(s) => s.map(|n| n.max(1)),
+            ImageSize::Absolute([w, h]) => [w.max(1), h.max(1), 1],
+            ImageSize::Volume(s) => s.map(|n| n.max(1)),
         }
     }
 
     /// A 3D image (`image3D`), not a 2D one.
     pub fn is_3d(&self) -> bool {
-        matches!(self.size, ImageSize::Absolute([_, _, z]) if z > 1)
+        matches!(self.size, ImageSize::Volume(_))
     }
 }
 
@@ -1040,7 +1043,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(voxels.sampler.as_deref(), Some("voxelSampler"));
-        assert_eq!(voxels.size, ImageSize::Absolute([64, 32, 16]));
+        assert_eq!(voxels.size, ImageSize::Volume([64, 32, 16]));
         assert!(voxels.clear);
         let half =
             CustomImage::parse("half", "none RGBA RGBA16F HALF_FLOAT false true 0.5 0.5").unwrap();
@@ -1053,6 +1056,14 @@ mod tests {
             CustomImage::parse("bad", "none RGBA RGBA17Q HALF_FLOAT false true 0.5 0.5").is_none()
         );
         assert!(CustomImage::parse("short", "none RGBA RGBA16F HALF_FLOAT false").is_none());
+        let flat = CustomImage::parse("flat", "none RGBA RGBA8 BYTE false false 8 8 1").unwrap();
+        assert!(flat.is_3d());
+        assert_eq!(flat.extent([1, 1]), [8, 8, 1]);
+        assert!(
+            !CustomImage::parse("plain", "none RGBA RGBA8 BYTE false false 8 8")
+                .unwrap()
+                .is_3d()
+        );
     }
 
     #[test]

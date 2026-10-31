@@ -4,12 +4,7 @@
 use std::collections::BTreeMap;
 
 /// The Iris feature flags (`iris.features.*`) Horizon has.
-const FEATURES: [&str; 4] = [
-    "COMPUTE_SHADERS",
-    "CUSTOM_IMAGES",
-    "ENTITY_TRANSLUCENT",
-    "SSBO",
-];
+const FEATURES: [&str; 2] = ["COMPUTE_SHADERS", "ENTITY_TRANSLUCENT"];
 
 /// `MC_VERSION` of the version Horizon plays: 26.3 → 260300.
 pub const MC_VERSION: u32 = mc_version(horizon_core::version::VERSION_ID);
@@ -333,7 +328,7 @@ mod tests {
     fn iris_features_are_defined_or_noted() {
         let properties = crate::Properties::parse(
             "iris.features.optional = COMPUTE_SHADERS NOT_A_FEATURE\n\
-             iris.features.required = SSBO NOT_A_FEATURE\n",
+             iris.features.required = ENTITY_TRANSLUCENT NOT_A_FEATURE\n",
             &Macros::standard(),
         );
         let mut m = Macros::standard();
