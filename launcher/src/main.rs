@@ -215,6 +215,11 @@ struct Launcher {
     native_mismatch: Option<String>,
     confirm_remove: Option<String>,
     picker_open: bool,
+    /// Where the accent picker's hue strip is on screen (`themes_page.rs`), to map a click to a
+    /// hue.
+    hue_area: std::rc::Rc<std::cell::Cell<Option<Bounds<gpui::Pixels>>>>,
+    /// A drag on that strip is in flight, so a release anywhere writes the accent down.
+    hue_dragging: bool,
     /// Settings > Language's dropdown (`language_page.rs`).
     language_menu: bool,
     /// The top bar's quick switch of who plays (`switch_page.rs`).
@@ -373,7 +378,7 @@ impl Launcher {
             }
         })
         .detach();
-        // Counts the time the sidebar's partner banner is on screen, until it may be hidden.
+        // Counts the time a partner banner is on screen, until it may be hidden.
         cx.spawn(async move |this, cx| loop {
             cx.background_executor()
                 .timer(Duration::from_secs(10))
@@ -383,14 +388,12 @@ impl Launcher {
                 if s.partner_hidden || s.partner_seen_secs >= partner::SEEN_BEFORE_HIDE {
                     return false;
                 }
-                if this.page != Page::Servers {
-                    s.partner_seen_secs += 10;
-                    if s.partner_seen_secs % 60 == 0
-                        || s.partner_seen_secs >= partner::SEEN_BEFORE_HIDE
-                    {
-                        s.save();
-                        cx.notify();
-                    }
+                // On screen on every page: the card in the sidebar, the banner on Servers.
+                s.partner_seen_secs += 10;
+                if s.partner_seen_secs % 60 == 0 || s.partner_seen_secs >= partner::SEEN_BEFORE_HIDE
+                {
+                    s.save();
+                    cx.notify();
                 }
                 true
             });
@@ -466,6 +469,8 @@ impl Launcher {
             native_mismatch: None,
             confirm_remove: None,
             picker_open: false,
+            hue_area: std::rc::Rc::new(std::cell::Cell::new(None)),
+            hue_dragging: false,
             language_menu: false,
             account_menu: false,
             menu_closed_at: None,
@@ -2275,24 +2280,14 @@ impl Launcher {
                 &t,
             ));
             if self.settings.partner_seen_secs >= partner::SEEN_BEFORE_HIDE {
-                let hide = div()
-                    .id("partner-hide")
-                    .absolute()
-                    .top(px(0.))
-                    .right(px(0.))
-                    .cursor_pointer()
-                    .child(
-                        text(theme::MICRO)
-                            .text_color(t.muted)
-                            .hover(move |s| s.text_color(t.ink))
-                            .child(tr("HIDE")),
-                    )
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                let hide = partner::hide_button("partner-hide", &t).on_click(cx.listener(
+                    |this, _: &ClickEvent, _, cx| {
                         this.settings.partner_hidden = true;
                         this.settings.save();
                         cx.notify();
-                    }));
-                side = side.child(keyboard(hide, &t));
+                    },
+                ));
+                side = side.child(hide);
             }
             foot = foot.child(side);
         }
@@ -4347,6 +4342,8 @@ fn main() {
     }
     perf::process_started();
     backend::exe_path();
+    #[cfg(windows)]
+    backend::remove_replaced_binaries();
     // What the launcher downloads goes through the player's proxy, if they set one: the parts
     // that build their own agents (`horizon-port-pack`) are told before anything starts.
     horizon_launcher::proxy::announce(horizon_launcher::backend::Settings::load().proxy);
