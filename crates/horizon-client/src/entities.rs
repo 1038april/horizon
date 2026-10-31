@@ -582,9 +582,9 @@ impl ExperienceOrb {
         if !stuck {
             return None;
         }
-        // The search cube: the box grown by its own size on every side, since
-        // `find_free_position` bounds where the box's centre may go.
-        let allowed = bounds.inflate(Vec3::new(size, size, size));
+        // `AABB.ofSize(center, size, size, size)`: where the box's centre may
+        // go, a cube of the box's mean size around its centre.
+        let allowed = Aabb::of_size(bounds.center(), Vec3::new(size, size, size));
         find_free_position(allowed, bounds.center(), bounds.size(), border, shape)
             .map(|p| p.subtract(Vec3::new(0.0, bounds.size().y / 2.0, 0.0)))
     }
