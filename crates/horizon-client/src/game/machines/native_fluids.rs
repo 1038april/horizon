@@ -134,10 +134,6 @@ fn write_tanks(nbt: &mut Compound, tanks: &[Tank]) {
 // Native mods use these; nothing in Horizon does.
 #[allow(dead_code)]
 impl Game<'_> {
-    /// Whether this game simulates a world, as `native_set_block` asks.
-    fn native_simulates(&self) -> bool {
-        self.serving.is_some() || self.options.dedicated.is_some()
-    }
     /// What holds fluids at `pos` in the level in place, `dimension`: a mod
     /// block's tanks (its block entity's, and not the placeholder standing in
     /// while it ticks), or a cauldron.
