@@ -743,8 +743,20 @@ fn set_pieces(items: &dyn Items, key: &str, secret: &str) -> Result<(), String> 
     }
     // Pieces left over from a longer secret would be read back as part of this one.
     for n in pieces.len().. {
-        if !items.remove(&piece_key(key, n))? {
-            break;
+        match items.remove(&piece_key(key, n)) {
+            Ok(true) => {}
+            Ok(false) => break,
+            Err(e) => {
+                // Some leftovers are already gone, some are still there: the old secret goes back
+                // whole, as on a refused write above.
+                let _ = delete_pieces(items, key);
+                if let Some(before) = &before {
+                    for (n, piece) in split_secret(before).iter().enumerate() {
+                        let _ = items.write(&piece_key(key, n), piece);
+                    }
+                }
+                return Err(e);
+            }
         }
     }
     Ok(())
@@ -785,13 +797,36 @@ fn get_item(items: &dyn Items, key: &str) -> Result<Option<String>, String> {
 }
 
 /// Writes `secret` to `key` and removes `key.1`, `key.2`, ... pieces an older, split secret left:
-/// they would read back as part of this one.
+/// they would read back as part of this one. A removal the keychain refuses puts the old items
+/// back: the merged secret beside the pieces left would read as a longer, unparseable one, and
+/// pieces removed before the failure can't be had again except from here.
 #[cfg(any(target_os = "macos", test))]
 fn set_item(items: &dyn Items, key: &str, secret: &str) -> Result<(), String> {
+    let mut before = Vec::new();
+    if let Some(piece) = items.read(key)? {
+        before.push((key.to_string(), piece));
+        for n in 1.. {
+            match items.read(&piece_key(key, n))? {
+                Some(piece) => before.push((piece_key(key, n), piece)),
+                None => break,
+            }
+        }
+    }
     items.write(key, secret)?;
     for n in 1.. {
-        if !items.remove(&piece_key(key, n))? {
-            break;
+        match items.remove(&piece_key(key, n)) {
+            Ok(true) => {}
+            Ok(false) => break,
+            Err(e) => {
+                if before.is_empty() {
+                    let _ = items.remove(key);
+                } else {
+                    for (key, piece) in &before {
+                        let _ = items.write(key, piece);
+                    }
+                }
+                return Err(e);
+            }
         }
     }
     Ok(())

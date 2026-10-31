@@ -764,6 +764,74 @@ fn a_split_secret_folds_into_one_item() {
     assert_eq!(get_item(&items, UUID).unwrap(), None);
 }
 
+/// Items that answer `left` removals, then refuse them, as a keychain denying a delete does.
+struct RefusedDeletes {
+    items: Mutex<HashMap<String, String>>,
+    left: Mutex<usize>,
+}
+impl Items for RefusedDeletes {
+    fn read(&self, key: &str) -> Result<Option<String>, String> {
+        Ok(self.items.lock().unwrap().get(key).cloned())
+    }
+    fn write(&self, key: &str, piece: &str) -> Result<(), String> {
+        self.items.lock().unwrap().insert(key.into(), piece.into());
+        Ok(())
+    }
+    fn remove(&self, key: &str) -> Result<bool, String> {
+        let mut left = self.left.lock().unwrap();
+        if *left == 0 {
+            return Err("the keychain refused the delete".into());
+        }
+        *left -= 1;
+        Ok(self.items.lock().unwrap().remove(key).is_some())
+    }
+}
+
+#[test]
+fn a_refused_delete_puts_the_split_secret_back() {
+    // The layout launchers before #4912 wrote, in memory.
+    let old = "o".repeat(2 * PIECE + 1);
+    let pieces: Vec<String> = split_secret(&old).iter().map(|p| p.to_string()).collect();
+    for left in [0, 1] {
+        let items = RefusedDeletes {
+            items: Mutex::new(
+                pieces
+                    .iter()
+                    .enumerate()
+                    .map(|(n, p)| (piece_key(UUID, n), p.clone()))
+                    .collect(),
+            ),
+            left: Mutex::new(left),
+        };
+        // The fold's clean-up is refused, halfway or at once: the read still answers the whole
+        // secret, and every old item is back behind it.
+        assert_eq!(get_item(&items, UUID).unwrap(), Some(old.clone()));
+        assert_eq!(items.items.lock().unwrap().len(), pieces.len());
+        assert_eq!(get_item(&items, UUID).unwrap(), Some(old.clone()));
+        // A writer's set over the split layout fails the same way, and reads back the same.
+        *items.left.lock().unwrap() = left;
+        assert_eq!(
+            set_item(&items, UUID, "new").unwrap_err(),
+            "the keychain refused the delete"
+        );
+        assert_eq!(get_item(&items, UUID).unwrap(), Some(old.clone()));
+        assert_eq!(items.items.lock().unwrap().len(), pieces.len());
+    }
+    // Windows' set_pieces rolls a refused leftover delete back the same way.
+    let items = RefusedDeletes {
+        items: Mutex::new(
+            pieces
+                .iter()
+                .enumerate()
+                .map(|(n, p)| (piece_key(UUID, n), p.clone()))
+                .collect(),
+        ),
+        left: Mutex::new(0),
+    };
+    assert!(set_pieces(&items, UUID, "shorter").is_err());
+    assert_eq!(get_pieces(&items, UUID).unwrap(), Some(old));
+}
+
 /// The keys `has_owner` asked for, in order (each read can ask for the keychain on macOS).
 struct Reading<'a>(&'a MemoryStore, Mutex<Vec<String>>);
 impl SecretStore for Reading<'_> {
