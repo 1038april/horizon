@@ -5388,8 +5388,20 @@ impl Game<'_> {
                 mob.position.z.floor() as i32,
             );
             let mut packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
-            if mob.fire_ticks > 0 || matches!(mob.species(), Species::Blaze | Species::MagmaCube) {
-                packed = (15 * 16) | ((15 * 16) << 8);
+            // EntityRenderer.getBlockLightLevel: a burning mob has 15 block
+            // light, and so do the Allay, Blaze, Magma Cube, Vex and Wither
+            // renderers' overrides; the sky light stays the level's.
+            if mob.fire_ticks > 0
+                || matches!(
+                    mob.species(),
+                    Species::Allay
+                        | Species::Blaze
+                        | Species::MagmaCube
+                        | Species::Vex
+                        | Species::Wither
+                )
+            {
+                packed = (packed & 0xFF) | ((15 * 16) << 8);
             }
             // GlowSquidRenderer.getBlockLightLevel: the body brightens as the
             // dark ticks run out (the block light is the second byte).

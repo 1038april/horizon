@@ -726,6 +726,13 @@ fn mob_meta(
                 ));
             }
         }
+        // Phantom.ID_SIZE (after Mob's flags).
+        "minecraft:phantom" => {
+            if e.size > 0 {
+                meta.push((16, serializer::INT, Value::Int(e.size)));
+            }
+            defaults.push((16, serializer::INT, Value::Int(0)));
+        }
         // AbstractCubeMob.ID_SIZE; SulfurCube also syncs FROM_BUCKET and
         // MAX_FUSE (clients tick the fuse for the swell / white flash).
         "minecraft:slime" | "minecraft:magma_cube" | "minecraft:sulfur_cube" => {
