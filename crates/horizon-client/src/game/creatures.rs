@@ -230,7 +230,12 @@ pub(super) fn seen(m: &Mob, player: Option<[i32; 4]>) -> Seen {
 /// vehicle) and the camera entity the pick starts from, so a packet that names
 /// one of those does nothing rather than reaching the feed, shear, leash or
 /// name paths the pick path refuses.
-pub(super) fn named_mob_pickable(alive: bool, id: u32, riding: Option<u32>, camera: Option<u32>) -> bool {
+pub(super) fn named_mob_pickable(
+    alive: bool,
+    id: u32,
+    riding: Option<u32>,
+    camera: Option<u32>,
+) -> bool {
     alive && Some(id) != riding && Some(id) != camera
 }
 
