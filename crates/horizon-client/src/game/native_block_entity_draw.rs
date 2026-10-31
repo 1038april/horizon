@@ -7,12 +7,14 @@ use super::{Dim, Game};
 use glam::{DVec3, Mat4, Quat, Vec3};
 use horizon_assets::{
     bake::{bake_flat_face, default_uv},
+    item_model::DisplayContext,
     model::{Direction, Material},
 };
 use horizon_client::{
     block_entity_render::{diffuse, diffuse_lights, vertex_light},
     containers::BlockEntity,
     hud::Rect,
+    items::ItemStack,
     mesher::Vertex,
 };
 use horizon_world::registry::BlockStateId;
@@ -176,10 +178,11 @@ impl Game<'_> {
             else {
                 continue;
             };
-            let block = &*self.res.facts().get(BlockStateId(state)).name;
+            let id = BlockStateId(state);
+            let block = &*self.res.facts().get(id).name;
             let origin = (corner - camera).as_vec3();
             let mut bounds = DEFAULT_BOUNDS;
-            self.native_block_entity_render_bounding_box(pos, block, entity, &mut bounds);
+            self.native_block_entity_render_bounding_box(pos, block, id, entity, &mut bounds);
             if !in_frustum(self.view_frustum.as_ref(), origin, bounds) {
                 continue;
             }
@@ -188,7 +191,7 @@ impl Game<'_> {
             draw.poses.clear();
             draw.poses.push(Mat4::from_translation(origin));
             draw.light = vertex_light(self.world.light(pos[0], pos[1], pos[2]));
-            self.native_block_entity_submit(pos, block, entity, &mut draw);
+            self.native_block_entity_submit(pos, block, id, entity, &mut draw);
             self.cull_entity_vertices(&mut draw.vertices, start);
         }
         *out = draw.vertices;
@@ -291,6 +294,46 @@ impl Game<'_> {
         let pose = draw.pose();
         self.block_model_vertices(id, 42, pose, draw.light, true, &mut draw.vertices);
         true
+    }
+
+    /// Draws `stack` under `draw`'s pose as an item is drawn in the world
+    /// (`ItemModelResolver.updateForTopItem` and `submitItem`), centred on the
+    /// pose's origin, in its model's `display` transform: `Fixed` as a
+    /// campfire's or an item frame's, `Ground` as a dropped item's. `seed`
+    /// picks among random models (a campfire passes its slot plus its
+    /// position's hash). False for an empty stack or one with no model.
+    /// API @API:block_entity_submit@.
+    pub(super) fn native_draw_item(
+        &self,
+        draw: &mut BlockEntityDraw,
+        stack: &ItemStack,
+        display: DisplayContext,
+        seed: i32,
+    ) -> bool {
+        let item = self.resolve_item(stack, display, None, seed);
+        if item.is_empty() {
+            return false;
+        }
+        let pose = draw.pose();
+        self.submit_item_world(&item, pose, draw.light, &mut draw.vertices);
+        true
+    }
+
+    /// Property `key` of block state `state` (a machine's `facing`, from the
+    /// `state` `native_block_entity_submit` gets), if it has one: no lookup in
+    /// the world, so cheap each frame. API @API:block_entity_submit@.
+    pub(super) fn native_block_state_property(
+        &self,
+        state: BlockStateId,
+        key: &str,
+    ) -> Option<&str> {
+        self.pack
+            .assets
+            .registry
+            .state(state)?
+            .properties
+            .get(key)
+            .map(String::as_str)
     }
 }
 

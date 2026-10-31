@@ -1033,20 +1033,23 @@ impl Game<'_> {
     /// (`mymod:machine`), on this client: once a frame while it is in view
     /// (vanilla's `BlockEntityRenderer.submit`: within 64 blocks, its chunk
     /// faded in, and its bounds, `native_block_entity_render_bounding_box`,
-    /// in the frustum), when its `id` is yours. `entity` holds
-    /// what the server sent (`native_block_entity_update_tag`). Add geometry
-    /// with `native_draw_quad`, `native_draw_cube` and `native_draw_block`
-    /// under `draw`'s pose stack, which starts at the block's lower north-west
-    /// corner, in blocks; `draw` also has the partial tick, the game time and
-    /// the block's light. API @API:block_entity_submit@.
+    /// in the frustum), when its `id` is yours. `state` is the block's state
+    /// (`blockEntity.getBlockState()`: read its `facing` with
+    /// `native_block_state_property`), `entity` holds what the server sent
+    /// (`native_block_entity_update_tag`). Add geometry with
+    /// `native_draw_quad`, `native_draw_cube`, `native_draw_block` and
+    /// `native_draw_item` under `draw`'s pose stack, which starts at the
+    /// block's lower north-west corner, in blocks; `draw` also has the partial
+    /// tick, the game time and the block's light. API @API:block_entity_submit@.
     pub(super) fn native_block_entity_submit(
         &self,
         pos: [i32; 3],
         block: &str,
+        state: BlockStateId,
         entity: &ModBlockEntity,
         draw: &mut BlockEntityDraw,
     ) {
-        let _ = (pos, block, entity, draw);
+        let _ = (pos, block, state, entity, draw);
     }
     /// Where the mod block entity at `pos` draws, for culling
     /// (NeoForge's `getRenderBoundingBox`): `bounds` is min x, y, z then max
@@ -1059,10 +1062,11 @@ impl Game<'_> {
         &self,
         pos: [i32; 3],
         block: &str,
+        state: BlockStateId,
         entity: &ModBlockEntity,
         bounds: &mut [f32; 6],
     ) {
-        let _ = (pos, block, entity, bounds);
+        let _ = (pos, block, state, entity, bounds);
     }
     /// A menu opens on this client for block `block`, a mod's: set `screen`
     /// when the block is yours, to lay its screen out (`native_screen_draw`
