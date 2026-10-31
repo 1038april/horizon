@@ -810,12 +810,14 @@ mod tests {
     /// The services' key (the 1024-bit test key) signing a player's chat
     /// key as the certificates endpoint's publicKeySignatureV2 does.
     fn services() -> RsaPrivateKey {
-        let n = RsaPublicKey::from_der(&hex(TEST_SPKI)).unwrap().modulus;
+        let n = RsaPublicKey::from_der(&crate::rsa::tests::hex(TEST_SPKI))
+            .unwrap()
+            .modulus;
         let body = [
             crate::rsa::der_integer(&[0]),
             crate::rsa::der_integer(&n),
             crate::rsa::der_integer(&[1, 0, 1]),
-            crate::rsa::der_integer(&hex(TEST_D)),
+            crate::rsa::der_integer(&crate::rsa::tests::hex(TEST_D)),
         ]
         .concat();
         RsaPrivateKey::from_der(&crate::rsa::der_element(0x30, &body)).unwrap()
@@ -838,7 +840,7 @@ mod tests {
     /// link, and refuses once a message is tampered with.
     #[test]
     fn encoder_signs_what_the_chain_accepts() {
-        let player = RsaPrivateKey::from_der(&hex(CHAT_KEY_PKCS8)).unwrap();
+        let player = RsaPrivateKey::from_der(&crate::rsa::tests::hex(CHAT_KEY_PKCS8)).unwrap();
         let (profile, id) = (0x1234u128, 0x9876u128);
         let mut chain = Chain::keyed(session(&player, profile, id));
         let mut encoder = Encoder::new(profile, id);
