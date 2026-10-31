@@ -518,6 +518,9 @@ pub fn patch_skin(
     atlas: impl Fn(&str) -> bool,
 ) -> Option<String> {
     let (namespace, path) = texture.split_once(':').unwrap_or(("minecraft", texture));
+    if !valid_texture_id(namespace, path) {
+        return None;
+    }
     if namespace == "minecraft" && atlas(path) {
         return Some(path.to_owned());
     }
@@ -528,6 +531,22 @@ pub fn patch_skin(
     }
     downloads.resource(&location, namespace, path);
     None
+}
+
+/// `Identifier`'s characters (`isValidNamespace`, `isValidPath`), and no
+/// `.`, `..` or empty segment (`FileUtil.decomposePath`, as the packs read
+/// it): a server's `texture` never names a file outside the packs.
+fn valid_texture_id(namespace: &str, path: &str) -> bool {
+    let segment = |s: &str| !s.is_empty() && s != "." && s != "..";
+    !namespace.is_empty()
+        && namespace
+            .chars()
+            .all(|c| matches!(c, 'a'..='z' | '0'..='9' | '_' | '-' | '.'))
+        && path
+            .chars()
+            .all(|c| matches!(c, 'a'..='z' | '0'..='9' | '_' | '-' | '.' | '/'))
+        && segment(namespace)
+        && path.split('/').all(segment)
 }
 
 /// A `width`x`height` RGBA image as the 64x64 skin it maps onto: each texel
@@ -1067,6 +1086,21 @@ pub fn sha1(data: &[u8]) -> [u8; 20] {
 
 #[cfg(test)]
 mod tests {
+    /// A profile's `texture` names a pack texture, never a file outside the
+    /// packs: bad characters and `..` segments draw nothing.
+    #[test]
+    fn a_texture_patch_stays_inside_the_packs() {
+        use super::valid_texture_id;
+        assert!(valid_texture_id("ethereal", "entity/plush_blank"));
+        assert!(valid_texture_id("minecraft", "entity/player/wide/steve"));
+        assert!(!valid_texture_id("ethereal", "../../../secret"));
+        assert!(!valid_texture_id("..", "entity/x"));
+        assert!(!valid_texture_id("ethereal", "entity//x"));
+        assert!(!valid_texture_id("Ethereal", "entity/x"));
+        assert!(!valid_texture_id("ethereal", "entity\\x"));
+        assert!(!valid_texture_id("", "entity/x"));
+    }
+
     /// A pack reload swaps the atlas: its skin slots are blank, so a forgotten
     /// table holds nothing and hands out slots from the start again, even for
     /// skins drawn in the last frame.
