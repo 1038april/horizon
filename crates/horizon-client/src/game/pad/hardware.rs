@@ -95,6 +95,8 @@ impl Pads {
 
     /// Splitscreen reads the pads for every player (`PadRouter`): this game's own gilrs closes, or
     /// its events would queue up unread. It opens again if this game reads the pads itself.
+    /// While several play, nobody gets rumble, adaptive triggers or the lightbar: the router
+    /// has no output path yet.
     pub(in crate::game) fn release_hardware(&mut self) {
         if self.devices.started {
             self.devices.gilrs = None;

@@ -70,7 +70,7 @@ pub(super) fn options_path() -> Option<PathBuf> {
 impl Game<'_> {
     /// An error stops the event loop, as ever, but not in another splitscreen player's game:
     /// that player drops out (`Split::drop_out`), the others play on.
-    pub(in crate::game) fn exit_on_error(&self, event_loop: &ActiveEventLoop) {
+    pub(in crate::game) fn exit_on_error(&self, event_loop: &dyn super::event_loop::EventLoopCtl) {
         if !self.options.split_guest {
             event_loop.exit();
         }
@@ -463,7 +463,7 @@ impl<'a> Split<'a> {
 
     /// The pads' players who accepted, and the testing players (`HORIZON_SPLIT`, one a frame),
     /// join: whether anyone did.
-    fn admit(&mut self, event_loop: &ActiveEventLoop, pad_joins: Vec<PadId>) -> bool {
+    fn admit(&mut self, _event_loop: &ActiveEventLoop, pad_joins: Vec<PadId>) -> bool {
         let mut changed = false;
         for pad in pad_joins {
             match self.join(Some(pad)) {
@@ -478,8 +478,9 @@ impl<'a> Split<'a> {
                     changed = true;
                 }
                 Err(e) => {
-                    self.host.error = Some(e);
-                    event_loop.exit();
+                    // One player failing doesn't stop the others: P1 keeps playing.
+                    log::warn!("Horizon: splitscreen player couldn't join: {e}");
+                    self.test_players = 0;
                 }
             }
         }

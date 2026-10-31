@@ -63,9 +63,15 @@ impl Game<'_> {
                     .map(str::trim)
                     .filter(|v| !v.is_empty())
                     .ok_or("options-set KEY VALUE: missing the value")?;
+                let narrator = self.settings.narrator();
                 self.settings = self.settings.with_option(key, value)?;
-                // As the options screen applies a change.
-                self.handle_option_events(vec![Event::Changed])?;
+                // As the options screen applies a change (OptionInstance.set
+                // runs the narrator's onValueUpdate for a new value only).
+                let mut events = vec![Event::Changed];
+                if self.settings.narrator() != narrator {
+                    events.push(Event::Narrator);
+                }
+                self.handle_option_events(events)?;
                 match *key {
                     "lang" => self.load_language(&self.settings.language.clone()),
                     "resourcePacks" | "incompatibleResourcePacks" => self.reload_packs(),
@@ -152,7 +158,7 @@ impl Game<'_> {
             .is_some_and(|(_, seen)| *seen != signature);
         self.pack_folder = Some((now, signature));
         if changed {
-            let infos = super::packs::pack_infos(&self.vanilla_root());
+            let infos = super::packs::pack_infos(&self.vanilla_root(), &self.server_packs.active);
             self.ui.options.update_pack_infos(infos);
         }
     }
@@ -215,6 +221,7 @@ impl Game<'_> {
             [r.config.width as i32, r.config.height as i32]
         });
         let mut ui = std::mem::take(&mut self.ui.options);
+        ui.shift = self.modifiers.shift_key();
         let events = ui.click(
             &mut self.settings,
             &self.gui.atlas,
@@ -248,8 +255,15 @@ impl Game<'_> {
         self.handle_option_events(events)
     }
     pub(super) fn options_key(&mut self, key: KeyCode, text: Option<&str>) -> Result<()> {
+        let size = self.gui_size();
+        let shift = self.has_shift_down();
+        let framebuffer = self.renderer.as_ref().map_or([1280, 720], |r| {
+            [r.config.width as i32, r.config.height as i32]
+        });
+        self.ui.options.size = size;
+        self.ui.options.framebuffer = framebuffer;
         let mut ui = std::mem::take(&mut self.ui.options);
-        let events = ui.key(&mut self.settings, &self.gui.atlas, key, text);
+        let events = ui.key_modifiers(&mut self.settings, &self.gui.atlas, key, text, shift);
         self.ui.options = ui;
         self.handle_option_events(events)
     }
@@ -343,8 +357,9 @@ impl Game<'_> {
                     super::packs::open_folder(&dir);
                 }
                 Event::DataPacks(ids) => {
+                    let resources = self.vanilla_root();
                     if let Some(title) = &mut self.title {
-                        title.set_data_packs(ids);
+                        title.offer_data_packs(&resources, ids);
                     }
                 }
                 Event::OpenDataPackFolder(dir) => {
@@ -362,6 +377,8 @@ impl Game<'_> {
                 }
                 // Saved; the next frame's `shader_pack_inputs` loads the pick.
                 Event::ShaderPack => self.settings.save(&Self::options_path()),
+                Event::OpenShaderOptions => self.open_shader_options(),
+                Event::ShaderOptions => self.save_shader_options(),
                 Event::OpenShaderPackFolder => {
                     let dir = Self::shader_packs_dir();
                     let _ = std::fs::create_dir_all(&dir);
@@ -370,6 +387,7 @@ impl Game<'_> {
                 Event::NativeSettings(i) => self.native_settings_refresh(i),
                 Event::NativeButton(i, b) => self.native_settings_event(i, b),
                 Event::Credits => self.open_win_screen(false, super::win::Finish::Options),
+                Event::Narrator => self.narrator_status_changed(),
             }
         }
         Ok(())
@@ -391,11 +409,13 @@ impl Game<'_> {
             return;
         }
         if let Some(w) = self.window.clone() {
-            let modes = w
-                .current_monitor()
-                .or_else(|| w.primary_monitor())
-                .map(|m| horizon_client::window::monitor_video_modes(&m))
-                .unwrap_or_default();
+            let monitor = w.current_monitor().or_else(|| w.primary_monitor());
+            if let Some(modes) = self
+                .video_modes
+                .refresh(monitor, horizon_client::window::monitor_video_modes)
+            {
+                self.settings.video_modes = modes;
+            }
             let in_video_screen = self.screen == Screen::Options
                 && self.ui.options.page() == horizon_client::options_ui::Page::Video;
             let wanted = self.settings.fullscreen;
@@ -412,7 +432,6 @@ impl Game<'_> {
             if leaving {
                 windowed_again(&w);
             }
-            self.settings.video_modes = modes;
         }
     }
     /// Settings that Horizon applies beyond render distance, volume and GUI scale.
@@ -451,6 +470,7 @@ impl Game<'_> {
         if !self.options.split_guest {
             horizon_client::settings::set_source_volumes(volumes);
         }
+        super::narrator::sync(s);
         let chat = s.chat_options();
         let rescale = {
             let o = &self.ui.chat.options;
