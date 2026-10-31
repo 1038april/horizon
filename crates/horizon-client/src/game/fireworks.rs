@@ -466,7 +466,7 @@ impl Game<'_> {
     fn rocket_hurt_mobs(&mut self, hits: &[(u32, f32)], attacker: Option<Who>, at: [f64; 3]) {
         for &(id, amount) in hits {
             if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
-                m.damage(
+                let hurt = m.damage(
                     amount,
                     Damage {
                         kind: DamageKind::Explosion,
@@ -474,6 +474,12 @@ impl Game<'_> {
                         from: Some(at),
                     },
                 );
+                // LivingEntity.hurtServer: a player's rocket makes them the
+                // last player to hurt it (`setLastHurtByPlayer`), so its death
+                // message names them and their item.
+                if hurt && attacker == Some(Who::Player) {
+                    self.last_hurt_by_player.insert(id, self.lan_acting);
+                }
             }
         }
     }
