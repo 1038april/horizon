@@ -2193,8 +2193,9 @@ impl Renderer {
             CRUMBLING_BLEND,
             false,
         );
-        // RenderPipelines.ENTITY_SHADOW: translucent, depth test without
-        // writes. The quads lie exactly on the block tops like vanilla's, but
+        // RenderPipelines.ENTITY_SHADOW: translucent, back-face culled, depth
+        // test without writes. The quads lie exactly on the block tops like
+        // vanilla's, facing +Y so looking up from below culls them, but
         // terrain and shadows are separate draw paths, so their fp32 depth
         // interpolations disagree by a few dozen ulps of the fragment depth
         // and the shadow's rim z-fights with the block top (speckle that
@@ -2204,7 +2205,7 @@ impl Renderer {
         // the feet.
         let shadow_blob_pipeline = entity_pipeline_with(
             "Entity shadows",
-            None,
+            Some(wgpu::Face::Back),
             false,
             wgpu::CompareFunction::GreaterEqual,
             wgpu::DepthBiasState {
