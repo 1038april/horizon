@@ -60,7 +60,7 @@ pub(super) fn options_path() -> Option<PathBuf> {
 impl Game<'_> {
     /// An error stops the event loop, as ever, but not in another splitscreen player's game:
     /// that player drops out (`Split::drop_out`), the others play on.
-    pub(in crate::game) fn exit_on_error(&self, event_loop: &ActiveEventLoop) {
+    pub(in crate::game) fn exit_on_error(&self, event_loop: &dyn super::event_loop::EventLoopCtl) {
         if !self.options.split_guest {
             event_loop.exit();
         }

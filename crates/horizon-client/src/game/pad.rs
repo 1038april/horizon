@@ -3,6 +3,7 @@
 //! the vanilla key mappings they are bound to, the left stick as an analog
 //! move vector and the right stick turning the view. `horizon-ctl pad`
 //! injects a virtual pad on top of the real one.
+use super::event_loop::EventLoopCtl;
 use super::{Game, Screen};
 use horizon_client::{
     Result,
@@ -12,7 +13,7 @@ use horizon_client::{
 };
 use serde_json::{Value, json};
 use std::time::Instant;
-use winit::{event_loop::ActiveEventLoop, keyboard::KeyCode};
+use winit::keyboard::KeyCode;
 
 pub(super) const HELP: &[&str] = &[
     "pad BUTTON down|up|tap         a virtual controller button (south east west north lb rb lt rt select start ls rs up down left right)",
@@ -122,6 +123,13 @@ mod hardware {
 }
 
 impl Pads {
+    /// Include releases delayed until the next simulation tick.
+    pub(super) fn holds_action(&self, settings: &gamepad::PadSettings, action: &str) -> bool {
+        settings.binding(action).is_some_and(|button| {
+            self.edges.is_held(button) || self.late_releases.contains(&button)
+        })
+    }
+
     /// A new player entity took over (spawn, respawn, a server joined, a
     /// dimension change): its health is not compared with the old one's.
     pub(super) fn player_replaced(&mut self) {
@@ -131,7 +139,7 @@ impl Pads {
 
 impl Game<'_> {
     /// Once per loop iteration: read the pads and act on button changes.
-    pub(super) fn poll_pads(&mut self, event_loop: &ActiveEventLoop) {
+    pub(super) fn poll_pads(&mut self, event_loop: &dyn EventLoopCtl) {
         let settings = &self.settings.controller;
         if !settings.enabled {
             self.pad_output_off();
@@ -141,6 +149,8 @@ impl Game<'_> {
                     self.pad_edge(event_loop, button, down);
                 }
             }
+            // The keyboard's menu focus follows its widget all the same.
+            self.pad_menu_frame(event_loop);
             return;
         }
         let hardware = match self.pad.feed {
@@ -185,7 +195,7 @@ impl Game<'_> {
         self.pad_menu_frame(event_loop);
     }
 
-    fn pad_edge(&mut self, event_loop: &ActiveEventLoop, button: Button, down: bool) {
+    fn pad_edge(&mut self, event_loop: &dyn EventLoopCtl, button: Button, down: bool) {
         let ticking = self.title.is_none() && self.screen == Screen::Playing && !self.pause;
         if down {
             // Pressed again before its held-back release went out.
@@ -201,7 +211,7 @@ impl Game<'_> {
         self.pad_button_logged(event_loop, button, down);
     }
 
-    fn pad_button_logged(&mut self, event_loop: &ActiveEventLoop, button: Button, down: bool) {
+    fn pad_button_logged(&mut self, event_loop: &dyn EventLoopCtl, button: Button, down: bool) {
         if let Err(e) = self.pad_button(event_loop, button, down) {
             log::warn!("Horizon: controller {}: {e}", button.name());
         }
@@ -215,7 +225,7 @@ impl Game<'_> {
 
     fn pad_button(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn EventLoopCtl,
         button: Button,
         down: bool,
     ) -> Result<()> {
