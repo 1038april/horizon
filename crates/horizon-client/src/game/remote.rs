@@ -6823,18 +6823,10 @@ impl Game<'_> {
     /// `causeExtraKnockback`: the 0.6 horizontal speed cut and the sprint
     /// stop. Without it the next move outruns the server's player.
     fn remote_player_attack(&mut self, mob: usize) {
-        let id = self.mobs[mob].id as i32;
-        if !self
-            .remote
-            .as_ref()
-            .is_some_and(|r| r.level_players.contains_key(&id))
-        {
-            return;
-        }
-        if self
-            .held()
-            .is_some_and(|s| horizon_client::spear::Kinetic::of(&s.item).is_some())
-        {
+        // Java dispatches this through the target's RemotePlayer type. The
+        // level_players map is profile bookkeeping and can lag the entity;
+        // mobs must stay out because their hurtClient returns false.
+        if self.mobs[mob].kind.id != "minecraft:player" {
             return;
         }
         // `getAttackStrengthScale(0.5)`: here the ticker is `hand_strength`'s
@@ -6862,25 +6854,15 @@ impl Game<'_> {
         ) {
             return;
         }
-        if strength > 0.9 && sprinting {
-            let from = self
-                .player
-                .as_ref()
-                .map(|p| [p.position.x, p.position.y, p.position.z]);
-            self.audio
-                .play("minecraft:entity.player.attack.knockback", from, 1.0, 1.0);
+        if let Some(p) = self.player.as_mut() {
+            let slowdown = horizon_client::attack_strength::ATTACKER_SLOWDOWN;
+            p.velocity = Vec3::new(
+                p.velocity.x * slowdown,
+                p.velocity.y,
+                p.velocity.z * slowdown,
+            );
         }
         self.stop_sprint_after_extra_knockback();
-        if let Some(r) = self.remote.as_mut() {
-            r.was_sprinting = false;
-        }
-        if let Some(entity_id) = self.remote.as_ref().map(|r| r.entity_id) {
-            self.send(S::PlayerCommand(play::PlayerCommand {
-                id: entity_id,
-                action: 2,
-                data: 0,
-            }));
-        }
     }
 
     /// An attribute's value on this client's player, if its map has the attribute.
