@@ -8989,6 +8989,33 @@ impl Game<'_> {
         }
         done
     }
+    /// The pick block key bound to a keyboard key, over a slot of the open
+    /// menu (`AbstractContainerScreen.keyPressed`): `CLONE` with button 0. The
+    /// search tab's box takes the key instead.
+    fn inventory_pick_key(&mut self) {
+        let menu = (self.screen == Screen::Inventory
+            || (self.screen == Screen::Creative && !self.creative_screen.tab().search))
+            && !self.dialog_open();
+        let Some(size) = self
+            .renderer
+            .as_ref()
+            .map(|r| [r.config.width, r.config.height])
+        else {
+            return;
+        };
+        let batch = HudBatch::new(size);
+        let Some(slot) = self
+            .slot_at(&batch, self.cursor.0, self.cursor.1)
+            .filter(|_| menu)
+        else {
+            return;
+        };
+        if self.menu_click(Some(slot), 0, horizon_client::menu::Input::Clone)
+            && let Some(key) = self.container
+        {
+            self.container_changed(key);
+        }
+    }
     /// The plain inventory mouse press: starts a quick craft drag when a
     /// stack is held, gathers on a double click, else the normal click.
     fn inventory_press(&mut self, right: bool) {
@@ -15896,6 +15923,8 @@ impl ApplicationHandler for Game<'_> {
                                     action,
                                 ) {
                                     self.play_mouse(button, pressed)?;
+                                } else if container_key_clones(button, action) {
+                                    self.inventory_pick_key();
                                 }
                             }
                         }
@@ -18682,6 +18711,13 @@ fn drop_held_behind_dialog(
     }
 }
 
+/// `AbstractContainerScreen.keyPressed` for a key bound to a mouse mapping: a press or repeat of
+/// key.pickItem's key clones the hovered slot; keys bound to key.attack and key.use do nothing
+/// there (#5378).
+fn container_key_clones(button: MouseButton, action: KeyAction) -> bool {
+    button == MouseButton::Middle && action != KeyAction::Release
+}
+
 /// `VoxelShape.clip` of a fluid source's shape for a ray that starts in the
 /// source's own block `cell`: the face and point it hits, in `pick_fluid`'s
 /// `Hit` terms. `FlowingFluid.getShape` is the whole block under the same
@@ -19028,6 +19064,20 @@ mod tests {
         assert!(!toggles.is_down(SNEAK));
         toggles.screen_closed(options);
         assert!(toggles.is_down(SNEAK));
+    }
+    /// A key bound to key.pickItem clones over a container screen, as the
+    /// middle button does; a key bound to attack or use does nothing there (#5378).
+    #[test]
+    fn a_key_bound_to_pick_block_clones_behind_a_container_screen() {
+        assert!(container_key_clones(MouseButton::Middle, KeyAction::Press));
+        assert!(container_key_clones(MouseButton::Middle, KeyAction::Repeat));
+        assert!(!container_key_clones(
+            MouseButton::Middle,
+            KeyAction::Release
+        ));
+        for button in [MouseButton::Left, MouseButton::Right] {
+            assert!(!container_key_clones(button, KeyAction::Press));
+        }
     }
     #[test]
     fn sleep_fade_lasts_ten_ticks_after_waking() {
