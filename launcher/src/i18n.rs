@@ -76,28 +76,28 @@ impl Language {
         }
     }
 
-/// Parses a language code (e.g. `fr`, `fr-CH`, `pt-BR`, or `pt_BR.UTF-8`)
-/// if the launcher supports it.
-///
-/// Underscores are normalized to hyphens to support locale formats commonly
-/// returned by operating systems. Brazilian Portuguese (`pt-BR`) is matched
-/// explicitly, while other Portuguese variants (such as `pt-PT`) are not
-/// mapped to it.
-   pub fn parse(code: &str) -> Option<Self> {
-    let lower = code.trim().to_ascii_lowercase();
-    let clean = lower.split(['.', '@']).next().unwrap_or("");
-    let normalized = clean.replace('_', "-");
+    /// Parses a language code (e.g. `fr`, `fr-CH`, `pt-BR`, or `pt_BR.UTF-8`)
+    /// if the launcher supports it.
+    ///
+    /// Underscores are normalized to hyphens to support locale formats commonly
+    /// returned by operating systems. Brazilian Portuguese (`pt-BR`) is matched
+    /// explicitly, while other Portuguese variants (such as `pt-PT`) are not
+    /// mapped to it.
+    pub fn parse(code: &str) -> Option<Self> {
+        let lower = code.trim().to_ascii_lowercase();
+        let clean = lower.split(['.', '@']).next().unwrap_or("");
+        let normalized = clean.replace('_', "-");
 
-    if normalized == "pt-br" {
-        return Some(Self::PortugueseBrazil);
+        if normalized == "pt-br" {
+            return Some(Self::PortugueseBrazil);
+        }
+
+        let base = normalized.split('-').next().unwrap_or("");
+
+        Self::ALL
+            .into_iter()
+            .find(|language| language.code() == base)
     }
-
-    let base = normalized.split('-').next().unwrap_or("");
-
-    Self::ALL
-        .into_iter()
-        .find(|language| language.code() == base)
-}
 
     /// The first of the system's preferred languages the launcher has, else English.
     pub fn pick<'a>(preferred: impl IntoIterator<Item = &'a str>) -> Self {
