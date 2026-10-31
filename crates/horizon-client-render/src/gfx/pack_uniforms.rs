@@ -370,7 +370,7 @@ impl FrameUniforms {
                 "eyePosition" => v3(frame.eye.as_vec3()),
                 "relativeEyePosition" => v3((frame.camera - frame.eye).as_vec3()),
                 "playerLookVector" | "playerBodyVector" => v3(look),
-                "firstPersonCamera" => Value::i(&[1]),
+                "firstPersonCamera" => Value::i(&[i32::from(frame.first_person)]),
                 "eyeAltitude" => Value::f(&[frame.camera.y as f32]),
                 "upPosition" => v3(to_view(Vec3::new(0.0, 100.0, 0.0))),
                 "sunPosition" => v3(sun),

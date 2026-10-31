@@ -284,6 +284,8 @@ pub struct Frame<'a> {
     /// third-person view.
     pub eye: DVec3,
     pub eye_rotation: [f32; 2],
+    /// The camera is the entity's eye: no third-person view.
+    pub first_person: bool,
     /// The `GameRenderer.bobHurt`/`bobView` pose multiplied into the
     /// projection (`crate::camera::bob_matrix`).
     pub bob: Mat4,

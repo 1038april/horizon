@@ -467,12 +467,9 @@ fn combine(
     ours(&mut code, &mut out.lines, &main);
     out.code = code.trim_end_matches('\n').to_owned();
     out.lines.truncate(out.code.split('\n').count());
-    // A strip of n vertices is n - 2 triangles; each `EndPrimitive` ends a strip, which took at
-    // least three of the vertices.
-    let strips = gs_tokens.iter().filter(|t| **t == "EndPrimitive").count() as u32;
-    let triangles = max_vertices
-        .saturating_sub(2 * strips.min(max_vertices / 3).max(1))
-        .max(1);
+    // A strip of n vertices is n - 2 triangles: at most `max_vertices - 2`, whichever of the
+    // stage's paths runs.
+    let triangles = max_vertices.saturating_sub(2).max(1);
     Ok((out, triangles))
 }
 

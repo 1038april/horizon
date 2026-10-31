@@ -65,10 +65,17 @@ pub(super) fn snapshots(code: &str, images: &[(String, bool)]) -> Vec<String> {
                     .iter()
                     .any(|&s| repeats.around(s).iter().any(|r| around.contains(r)))
             });
+            // The text gives the order they run in only within one function.
+            let function = loads.first().map(|&l| repeats.function(l));
+            let together = loads
+                .iter()
+                .chain(&stores)
+                .all(|&i| Some(repeats.function(i)) == function);
             !loads.is_empty()
                 && !stores.is_empty()
                 && atomics.is_empty()
                 && !shared
+                && together
                 && loads.iter().max() < stores.iter().min()
         })
         .map(|(name, _)| name.clone())
@@ -178,6 +185,11 @@ impl Repeats {
             })
             .collect();
         Self { loops, functions }
+    }
+
+    /// The function token `i` is in, by its place among the functions.
+    fn function(&self, i: usize) -> Option<usize> {
+        self.functions.iter().position(|(r, _)| r.contains(&i))
     }
 
     /// What repeats token `i`.
@@ -402,6 +414,9 @@ mod tests {
         let once = "void step() { vec4 a = imageLoad(v, p + o); imageStore(v, p, a); }\n\
                     void hz_main() { for (int i = 0; i < 2; i++) { o += i; } step(); }";
         assert_eq!(snapshots(once, &images), ["v"]);
+        let helper = "vec4 get(ivec2 p) { return imageLoad(v, p); }\n\
+                      void hz_main() { imageStore(v, c, x); vec4 y = get(c); }";
+        assert!(snapshots(helper, &images).is_empty());
     }
 
     #[test]
