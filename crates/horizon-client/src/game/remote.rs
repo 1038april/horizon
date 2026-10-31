@@ -663,6 +663,9 @@ impl Game<'_> {
     ) -> Result<()> {
         self.reset_tutorial();
         self.perf.world_opening();
+        // A server's own biomes come over the connection; the last local
+        // world's packed table must not name its ids.
+        self.world_biomes = None;
         let root = self.options.resources.clone();
         let builtin = Builtin::find(&root)
             .and_then(|p| Builtin::load(&p).ok())
@@ -1107,8 +1110,15 @@ impl Game<'_> {
     /// are, so tooltips and models see every field.
     pub(super) fn to_stack(&self, s: &Option<Stack>) -> Option<ItemStack> {
         let r = self.remote.as_ref()?;
+        let stack = s.as_ref()?;
+        if !horizon_protocol::item::custom::permitted(stack, r.registries.custom_components)
+            .unwrap_or(false)
+        {
+            log::warn!("Dropping a stack with unnegotiated custom components");
+            return None;
+        }
         Some(horizon_client::item_sync::from_network(
-            s.as_ref()?,
+            stack,
             &r.builtin,
             &r.registries,
         ))
@@ -1122,8 +1132,23 @@ impl Game<'_> {
         // components go back, as a vanilla client keeps them.
         if let Some((stack, patch)) = s.as_ref().and_then(|s| Some((s, s.wire_patch()?))) {
             let mut out = Stack::new(self.item_id(&stack.item), stack.count as i32);
-            out.wire = horizon_protocol::item::WirePatch(Some(patch));
-            return Some(out);
+            let safe = r.registries.custom_components
+                || horizon_protocol::item::custom::entries().next().is_none()
+                || horizon_protocol::item::WirePatch::decode(&patch)
+                    .and_then(|(added, removed)| {
+                        let decoded = Stack {
+                            added,
+                            removed,
+                            ..Stack::new(out.item, out.count)
+                        };
+                        horizon_protocol::item::custom::permitted(&decoded, false)
+                    })
+                    .unwrap_or(false);
+            if safe {
+                out.wire = horizon_protocol::item::WirePatch(Some(patch));
+                return Some(out);
+            }
+            log::warn!("Cannot send cached custom components to this peer");
         }
         horizon_client::lan::guest::stack_to_network(
             |name| self.item_id(name),
@@ -1133,6 +1158,12 @@ impl Game<'_> {
                     .get(registry)
                     .and_then(|ids| ids.id(name))
                     .or_else(|| r.registries.id(registry, name))
+                    .or_else(|| {
+                        (r.registries.custom_components
+                            && registry == "minecraft:data_component_type")
+                            .then(|| horizon_protocol::item::custom::id(name))
+                            .flatten()
+                    })
             },
             s,
         )
@@ -1745,7 +1776,7 @@ impl Game<'_> {
             .get("minecraft:worldgen/biome")
             .map(|list| {
                 list.iter()
-                    .map(|(name, _)| self.res.biomes().id(name))
+                    .map(|(name, _)| world_biomes!(self).id(name))
                     .collect()
             })
             .unwrap_or_default();
@@ -4538,7 +4569,7 @@ impl Game<'_> {
     /// `PlayerInfo.getSkin` for every player entity, including NPCs that are
     /// never in the tab list: resolve each profile's textures and give the
     /// level's player models their skin.
-    fn update_remote_skins(&mut self) {
+    pub(super) fn update_remote_skins(&mut self) {
         let local = self.remote.as_ref().map(|r| r.profile);
         self.poll_own_profile();
         let Some(r) = self.remote.as_mut() else {
@@ -4603,7 +4634,7 @@ impl Game<'_> {
             && let Some((rgba, is_slim)) = horizon_client::skins::offline_skin()
         {
             const OFFLINE: &str = "horizon/offline_skin";
-            if !self.skin_slots.contains(OFFLINE) {
+            if !self.skin_slots.contains(OFFLINE) || !self.gui.atlas.sprites.contains_key(OFFLINE) {
                 self.store_skin(OFFLINE.into(), rgba.clone());
             }
             if *is_slim {
@@ -4616,7 +4647,7 @@ impl Game<'_> {
             && let Some(rgba) = horizon_client::skins::offline_cape()
         {
             const OFFLINE: &str = "capes/offline";
-            if !self.skin_slots.contains(OFFLINE) {
+            if !self.skin_slots.contains(OFFLINE) || !self.gui.atlas.sprites.contains_key(OFFLINE) {
                 self.store_skin(OFFLINE.into(), rgba.to_vec());
             }
             capes.insert(local, OFFLINE.into());
@@ -4800,7 +4831,8 @@ impl Game<'_> {
         uuid: u128,
         (skin, slim): (String, bool),
     ) -> (String, bool) {
-        if skin.starts_with("skins/") && !self.again_skin(&skin) {
+        if (skin.starts_with("skins/") || skin == "horizon/offline_skin") && !self.again_skin(&skin)
+        {
             let skin = horizon_client::tab_list::default_skin(uuid);
             return (skin.to_owned(), skin.contains("/slim/"));
         }
@@ -4888,6 +4920,7 @@ impl Game<'_> {
             pickup_delay: 0,
             bob_offset,
             ticks: 0,
+            needs_sync: false,
         });
     }
     /// `Entity.lerpMotion` (and `recreateFromPacket`'s motion) for the
@@ -5270,7 +5303,7 @@ impl Game<'_> {
             .remote
             .as_ref()
             .is_some_and(|r| r.level_load.is_active());
-        let playing = self.screen == Screen::Playing && !loading;
+        let playing = self.screen == Screen::Playing && !loading && !self.dialog_open();
         let held = |k| playing && self.keys.contains(&k);
         let mut keys = Keys {
             forward: held(KeyCode::KeyW),
@@ -7588,7 +7621,10 @@ impl Game<'_> {
         };
         let mut input = std::mem::take(&mut r.input);
         let stop = std::mem::take(&mut r.stop_mining);
-        let ready = r.loaded_sent && self.screen == Screen::Playing && self.sleeping.is_none();
+        let ready = r.loaded_sent
+            && self.screen == Screen::Playing
+            && self.sleeping.is_none()
+            && !self.dialog_open();
         if stop || !ready {
             self.stop_remote_mining();
         }

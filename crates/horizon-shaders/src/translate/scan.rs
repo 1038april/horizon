@@ -40,6 +40,8 @@ pub(super) struct Stage<'p> {
     pub(super) uniforms: Vec<(String, String, usize)>,
     pub(super) samplers: Vec<(String, String)>,
     pub(super) images: Vec<ImageDecl>,
+    /// The bindings of the SSBOs (`buffer` blocks), in set 4.
+    pub(super) buffers: BTreeSet<u32>,
     pub(super) ins: Vec<Var>,
     pub(super) outs: Vec<Var>,
     /// Vertex inputs, now private globals, and the value our `main` gives each.
@@ -140,6 +142,35 @@ pub(super) const VERTEX_INPUTS: [&str; 6] = [
     "gl_FogCoord",
     "gl_MultiTexCoord",
 ];
+/// Built-in functions naga's constant evaluator lacks: a `const` that calls one is evaluated
+/// where the program runs instead (GL drivers fold them; naga fails the program).
+pub(super) const NOT_CONSTANT: [&str; 25] = [
+    "mix",
+    "smoothstep",
+    "reflect",
+    "refract",
+    "faceforward",
+    "transpose",
+    "determinant",
+    "inverse",
+    "outerProduct",
+    "matrixCompMult",
+    "modf",
+    "frexp",
+    "ldexp",
+    "packUnorm2x16",
+    "packSnorm2x16",
+    "packUnorm4x8",
+    "packSnorm4x8",
+    "packHalf2x16",
+    "unpackUnorm2x16",
+    "unpackSnorm2x16",
+    "unpackUnorm4x8",
+    "unpackSnorm4x8",
+    "unpackHalf2x16",
+    "bitfieldExtract",
+    "bitfieldInsert",
+];
 /// Words that became keywords after GLSL 1.x and that old packs use as names.
 pub(super) const LATER_KEYWORDS: [&str; 17] = [
     "sample",
@@ -214,6 +245,7 @@ impl<'p> Stage<'p> {
             uniforms: Vec::new(),
             samplers: Vec::new(),
             images: Vec::new(),
+            buffers: BTreeSet::new(),
             ins: Vec::new(),
             outs: Vec::new(),
             attributes: Vec::new(),
@@ -364,6 +396,9 @@ impl<'p> Stage<'p> {
             .position(|&i| matches!(self.tokens[i], "(" | "="));
         let prototype = paren.is_some_and(|p| self.tokens[words[p]] == "(")
             && !words.iter().any(|&i| STORAGE.contains(&self.tokens[i]));
+        if body && words.iter().any(|&i| self.tokens[i] == "buffer") {
+            return self.buffer_block(&words);
+        }
         if body || prototype {
             return self.function(&words);
         }
@@ -553,9 +588,16 @@ impl<'p> Stage<'p> {
         }
         declarators.push((begin, assign, words.len()));
         let constant = words[..eq].iter().any(|&i| text(i) == "const");
-        let conditional =
-            |d: &(usize, Option<usize>, usize)| words[d.0..d.2].iter().any(|&i| text(i) == "?");
-        if constant && !declarators.iter().any(conditional) {
+        // What naga cannot evaluate at global scope: a conditional, or a call to a built-in its
+        // constant evaluator lacks.
+        let runtime = |d: &(usize, Option<usize>, usize)| {
+            (d.0..d.2).any(|n| {
+                text(words[n]) == "?"
+                    || (NOT_CONSTANT.contains(&text(words[n]))
+                        && words.get(n + 1).is_some_and(|&j| text(j) == "("))
+            })
+        };
+        if constant && !declarators.iter().any(runtime) {
             return;
         }
         // The first declarator's name ends the type.
@@ -572,7 +614,10 @@ impl<'p> Stage<'p> {
                     Some(n) => write!(ty, "{n}]").unwrap(),
                     None => return,
                 },
-                t if ty.is_empty() || t == "[" => ty.push_str(t),
+                // `T[6]`: the size and its `]` belong to the type.
+                t if ty.is_empty() || t == "[" || ty.contains('[') && !ty.ends_with(']') => {
+                    ty.push_str(t)
+                }
                 // Qualifiers before the type (`highp`...): the type is the last word.
                 t => ty = t.to_owned(),
             }
@@ -634,6 +679,34 @@ impl<'p> Stage<'p> {
         }
         self.replaced.extend(replaced);
         self.inits.extend(names);
+    }
+
+    /// `layout(std430, binding = n) buffer Name {`: an SSBO, in set 4 at its binding. Its
+    /// access qualifiers go, so that every stage binds it alike (read and write).
+    fn buffer_block(&mut self, words: &[usize]) {
+        let mut binding = None;
+        for (k, &i) in words.iter().enumerate() {
+            match self.tokens[i] {
+                "binding" => {
+                    binding = words
+                        .get(k + 2)
+                        .and_then(|&n| self.tokens[n].parse::<u32>().ok());
+                    self.replaced.insert(i, "set = 4, binding".into());
+                }
+                "readonly" | "writeonly" | "restrict" | "coherent" | "volatile" => {
+                    self.removed.push(i..i + 1)
+                }
+                _ => {}
+            }
+        }
+        match binding {
+            Some(b) => _ = self.buffers.insert(b),
+            None => {
+                let at = words.first().copied().unwrap_or(0);
+                self.errors
+                    .push(self.error(at, "a buffer block needs a binding"));
+            }
+        }
     }
 
     /// `struct Name {` at token `open`, whose words start at `from`: its members, to `}`.

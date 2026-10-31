@@ -2,8 +2,8 @@
 //! `management-server-*` in server.properties (`[properties]` in server.toml) turns on, as vanilla 26.3's
 //! `net.minecraft.server.jsonrpc` serves it: the same authentication (`AuthenticationHandler`), the same
 //! errors and parameter checks (`Connection`, `IncomingRpcMethod`, `JsonRPCErrors`). The supervisor serves it,
-//! so it answers while the game restarts. What `rpc.discover` lists is in `management_schema.rs`; the other
-//! methods answer that they aren't in Horizon yet.
+//! so it answers while the game restarts. What `rpc.discover` lists is in `management_schema.rs`, the methods
+//! that answer in `management_methods.rs`.
 
 use crate::{
     api::{Phase, Shared},
@@ -304,8 +304,11 @@ fn dispatch(shared: &Shared, method: &str, params: Option<&Value>) -> Result<Val
             .ok_or_else(not_found)?;
         (found.0, found.2)
     };
-    // Only `rpc.discover` answers before vanilla's server is up; here, while the game isn't running.
-    if short != "rpc.discover" && shared.state.lock().unwrap().phase != Phase::Running {
+    // Only `rpc.discover` answers before vanilla's server is up. The game restarts under this server, so
+    // `server/status` answers then too: `started` false, as vanilla's heartbeat says before it is up.
+    if !matches!(short, "rpc.discover" | "server/status")
+        && shared.state.lock().unwrap().phase != Phase::Running
+    {
         return Err((
             INVALID_REQUEST,
             Some(format!(
@@ -313,7 +316,7 @@ fn dispatch(shared: &Shared, method: &str, params: Option<&Value>) -> Result<Val
             )),
         ));
     }
-    let _argument = match (param, params) {
+    let argument = match (param, params) {
         (None, None) => Value::Null,
         (None, Some(Value::Array(a))) if a.is_empty() => Value::Null,
         (None, Some(_)) => return Err(invalid_params("Expected no params, or an empty array")),
@@ -335,10 +338,7 @@ fn dispatch(shared: &Shared, method: &str, params: Option<&Value>) -> Result<Val
     if short == "rpc.discover" {
         return Ok(schema::discover());
     }
-    Err((
-        INTERNAL_ERROR,
-        Some(format!("minecraft:{short} isn't in Horizon yet")),
-    ))
+    crate::management_methods::call(shared, short, &argument)
 }
 
 #[cfg(test)]
