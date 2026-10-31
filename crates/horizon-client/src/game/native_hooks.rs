@@ -232,8 +232,8 @@ use horizon_core::{
     ticks::{ScheduleResult, TickPriority},
 };
 use horizon_world::{
-    fluid::FluidKind,
-    level::{BlockId, LevelAccess, Ticks},
+    fluid::{FluidKind, FluidState},
+    level::{BlockId, LevelAccess, PlacementContext, Ticks},
     nbt::Compound,
     registry::{BlockRegistry, BlockStateId},
 };
@@ -426,6 +426,34 @@ impl GameLevel<'_> {
         handled: &mut bool,
     ) {
         let _ = (ticks, dimension, pos, state, handled);
+    }
+
+    /// A block is about to take the state it is placed in
+    /// (`Block.getStateForPlacement(BlockPlaceContext)`), `state` the block's
+    /// own default state. Answer only for your blocks: put the state you want
+    /// in `answer` as `Some(Some(state))`, or refuse the placement with
+    /// `Some(None)`: the block goes nowhere and the stack is kept, as vanilla's
+    /// `null`. Left empty, the block's own placement runs. `context` is
+    /// vanilla's `BlockPlaceContext` (the clicked face, the placer's rotation,
+    /// the clicked position, whether the clicked block is being replaced, the
+    /// item in hand) and `fluid` the fluid in the position the block would go
+    /// in, which a waterlogged block reads. Build the state from `state` with
+    /// `native_state_with_property`. It is asked for every placer that goes
+    /// through vanilla's placement (a player's `BlockItem.place`, a
+    /// dispenser's `DirectionalPlaceContext`), and the answer still takes its
+    /// survival and entity obstruction checks. Authoritative servers only.
+    /// @API:placement_state@.
+    #[inline(always)]
+    #[allow(clippy::option_option)]
+    pub(super) fn native_state_for_placement(
+        &self,
+        dimension: LevelDimension,
+        state: BlockStateId,
+        context: &PlacementContext,
+        fluid: FluidState,
+        answer: &mut Option<Option<BlockStateId>>,
+    ) {
+        let _ = (dimension, state, context, fluid, answer);
     }
 }
 
@@ -1701,6 +1729,21 @@ impl GameLevel<'_> {
         let at = BlockPos::new(pos[0], pos[1], pos[2]);
         let time = self.game_time();
         ticks.schedule_fluid(time, at, kind, delay) != ScheduleResult::MissingChunk
+    }
+    /// The state `state` with its property `key` set to `value`, as a mod block
+    /// builds the state it is placed in: `native_state_with_property(cable,
+    /// "facing", "east")` (`BlockState.setValue`). A block's own declared
+    /// properties (`state_properties` in its block file) are set the same way.
+    /// `state` itself when the property already has that value; None when the
+    /// block has no such property, or the property no such value. API
+    /// @API:placement_state@.
+    pub(super) fn native_state_with_property(
+        &self,
+        state: BlockStateId,
+        key: &str,
+        value: &str,
+    ) -> Option<BlockStateId> {
+        with_property(self.registry, state, key, value)
     }
 }
 
@@ -3210,6 +3253,37 @@ mod tests {
         );
         assert_eq!(super::property_change(&registry, age0, "age", "9"), None);
         assert_eq!(super::property_change(&registry, age0, "lit", "true"), None);
+    }
+
+    /// The state a mod block is placed in is built from its own default state
+    /// and one of its properties, its declared ones (`state_properties` in its
+    /// block file) included, and keeps the properties it already had.
+    #[test]
+    fn a_placement_state_is_built_from_a_blocks_own_properties() {
+        let facts = br#"{"defaults":{"minecraft:air":0,"test:pipe":1},"states":[
+            ["air",true,false,"","minecraft:air"],
+            ["north_gas",false,false,"",{"id":"test:pipe","properties":{"carries":"gas","facing":"north"}}],
+            ["east_gas",false,false,"",{"id":"test:pipe","properties":{"carries":"gas","facing":"east"}}],
+            ["north_items",false,false,"",{"id":"test:pipe","properties":{"carries":"items","facing":"north"}}],
+            ["east_items",false,false,"",{"id":"test:pipe","properties":{"carries":"items","facing":"east"}}]
+        ]}"#;
+        let registry = horizon_world::registry::BlockRegistry::from_facts_json(&facts[..]).unwrap();
+        use horizon_world::registry::BlockStateId;
+        let (north_gas, east_gas, east_items) = (BlockStateId(1), BlockStateId(2), BlockStateId(4));
+        // The declared property changes, and `carries` stays as it was.
+        assert_eq!(
+            super::with_property(&registry, north_gas, "facing", "east"),
+            Some(east_gas)
+        );
+        assert_eq!(
+            super::with_property(&registry, east_gas, "carries", "items"),
+            Some(east_items)
+        );
+        // A value the property does not have builds nothing.
+        assert_eq!(
+            super::with_property(&registry, east_gas, "facing", "up"),
+            None
+        );
     }
     /// Both property setters return false for a write that changes nothing:
     /// each goes through `property_change`, none returns true on its own.

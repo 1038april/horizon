@@ -2857,3 +2857,194 @@ fn update_shape_hook_can_answer_for_the_block() {
         |e| matches!(e, LevelEvent::DropResources { pos: p, state } if *p == pos && *state == fence)
     ));
 }
+
+#[test]
+fn the_level_chooses_the_state_a_block_is_placed_in() {
+    use crate::fluid::{FluidKind, FluidState};
+    use horizon_core::geometry::Vec3;
+    use std::cell::RefCell;
+
+    /// What one call of the hook was asked.
+    struct Asked {
+        state: BlockStateId,
+        pos: BlockPos,
+        clicked: BlockPos,
+        face: Direction,
+        item: String,
+        sneaking: bool,
+        replace_clicked: bool,
+        fluid: FluidState,
+    }
+    struct Placer {
+        inner: TestLevel,
+        b: &'static Behaviours,
+        /// The block the hook answers for.
+        block: BlockId,
+        /// What it answers for that block.
+        answer: Option<Option<BlockStateId>>,
+        asked: RefCell<Vec<Asked>>,
+    }
+    impl LevelAccess for Placer {
+        fn block_state(&self, pos: BlockPos) -> BlockStateId {
+            self.inner.block_state(pos)
+        }
+        fn set_raw(&mut self, pos: BlockPos, state: BlockStateId) -> Option<BlockStateId> {
+            self.inner.set_raw(pos, state)
+        }
+        fn is_loaded(&self, pos: BlockPos) -> bool {
+            self.inner.is_loaded(pos)
+        }
+        fn random(&mut self) -> &mut LegacyRandom {
+            self.inner.random()
+        }
+        fn game_time(&self) -> i64 {
+            self.inner.game_time()
+        }
+        fn emit(&mut self, event: LevelEvent) {
+            self.inner.emit(event);
+        }
+        fn before_state_for_placement(
+            &self,
+            state: BlockStateId,
+            context: &PlacementContext,
+            fluid: FluidState,
+            answer: &mut Option<Option<BlockStateId>>,
+        ) {
+            self.asked.borrow_mut().push(Asked {
+                state,
+                pos: context.pos,
+                clicked: context.hit_pos,
+                face: context.face,
+                item: context.item.clone(),
+                sneaking: context.sneaking,
+                replace_clicked: context.replace_clicked,
+                fluid,
+            });
+            if self.b.block(state) == self.block {
+                *answer = self.answer;
+            }
+        }
+    }
+    /// One call of the hook, as owned values (the level is mutable again after).
+    fn asked(
+        level: &Placer,
+    ) -> (
+        BlockStateId,
+        BlockPos,
+        BlockPos,
+        Direction,
+        String,
+        bool,
+        bool,
+        FluidState,
+    ) {
+        let asked = level.asked.borrow();
+        let first = &asked[0];
+        (
+            first.state,
+            first.pos,
+            first.clicked,
+            first.face,
+            first.item.clone(),
+            first.sneaking,
+            first.replace_clicked,
+            first.fluid,
+        )
+    }
+    let Some(f) = fixture() else { return };
+    let b = &f.behaviours;
+    let stone = f.registry.default_state("minecraft:stone").unwrap();
+    let furnace = f.registry.default_state("minecraft:furnace").unwrap();
+    let furnace_block = b.block(furnace);
+    // The same block facing another way: what a mod block's hook answers.
+    let facing = |direction: &str| {
+        let mut s = f.registry.state(furnace).unwrap().clone();
+        s.properties.insert("facing".into(), direction.into());
+        f.registry.resolve(&s).unwrap()
+    };
+    let mut level = Placer {
+        inner: TestLevel::new(b),
+        b,
+        block: furnace_block,
+        answer: Some(Some(facing("east"))),
+        asked: RefCell::new(Vec::new()),
+    };
+    let mut ticks = Ticks::new(0);
+    ticks.add_empty_chunk(ChunkPos::new(0, 0)).unwrap();
+    let ground = BlockPos::new(0, 0, 0);
+    level.set_raw(ground, stone);
+    // Looking south (yaw 0) at the top of the floor, holding a furnace.
+    let mut ctx = PlaceContext {
+        clicked_pos: ground,
+        face: Direction::Up,
+        hit: Vec3::new(0.5, 1.0, 0.5),
+        inside: false,
+        yaw: 0.0,
+        pitch: 0.0,
+        sneaking: false,
+        item: "minecraft:furnace".into(),
+        can_use_game_master_blocks: false,
+    };
+    // The hook's state, not the one vanilla's furnace placement computes.
+    assert_eq!(
+        b.state_for_placement(&mut level, &mut ticks, furnace_block, &ctx),
+        Some(facing("east"))
+    );
+    // It was asked with the block it decides for, where the block would go
+    // (above the stone), the block clicked, the face clicked, the item in
+    // hand, and the fluid of the position it goes in (none: dry stone).
+    let (state, pos, clicked, face, item, sneaking, replace_clicked, fluid) = asked(&level);
+    assert_eq!(state, furnace);
+    assert_eq!(pos, BlockPos::new(0, 1, 0));
+    assert_eq!(clicked, ground);
+    assert_eq!(face, Direction::Up);
+    assert_eq!(item, "minecraft:furnace");
+    assert!(!replace_clicked);
+    assert!(!sneaking);
+    assert_eq!(fluid, FluidState::EMPTY);
+    // Clicking a block that can be replaced: the block goes into it, and the
+    // fluid already there (water) reaches the hook, which a waterlogged block
+    // reads. Sneaking reaches it too, as `isSecondaryUseActive`.
+    level.asked.borrow_mut().clear();
+    let water = f.registry.default_state("minecraft:water").unwrap();
+    level.set_raw(BlockPos::new(0, 1, 0), water);
+    ctx.clicked_pos = BlockPos::new(0, 1, 0);
+    ctx.sneaking = true;
+    assert_eq!(
+        b.state_for_placement(&mut level, &mut ticks, furnace_block, &ctx),
+        Some(facing("east"))
+    );
+    let (_, pos, _, _, _, sneaking, replace_clicked, fluid) = asked(&level);
+    assert_eq!(pos, BlockPos::new(0, 1, 0));
+    assert!(replace_clicked);
+    assert!(sneaking);
+    assert_eq!(fluid.kind(), FluidKind::Water);
+    // Refused (vanilla's `null` return): there is no state, so the placement
+    // fails and the stack is kept.
+    level.answer = Some(None);
+    assert_eq!(
+        b.state_for_placement(&mut level, &mut ticks, furnace_block, &ctx),
+        None
+    );
+    // Without an answer the block's own `getStateForPlacement` runs: a furnace
+    // placed with yaw 0 faces north, which is its default state.
+    level.answer = None;
+    assert_eq!(
+        b.state_for_placement(&mut level, &mut ticks, furnace_block, &ctx),
+        Some(furnace)
+    );
+    // And a block the hook does not answer for is unaffected.
+    let stairs = b.block(f.registry.default_state("minecraft:oak_stairs").unwrap());
+    let vanilla = b.state_for_placement(&mut level, &mut ticks, stairs, &ctx);
+    level.answer = Some(Some(facing("west")));
+    assert_eq!(
+        b.state_for_placement(&mut level, &mut ticks, stairs, &ctx),
+        vanilla
+    );
+    // A made-up id is not trusted: the block places as vanilla's would.
+    level.answer = Some(Some(BlockStateId(u32::MAX)));
+    assert_eq!(
+        b.state_for_placement(&mut level, &mut ticks, furnace_block, &ctx),
+        Some(furnace)
+    );
+}

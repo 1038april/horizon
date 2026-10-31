@@ -140,7 +140,7 @@ pub use data::{BlockData, ItemBinding, ItemKind, Named, Props, PushReaction, Sta
 pub use falling::Landing;
 pub use interact::{InteractionResult, PlayerContext, PlayerEffect, UseBranch, hit_slot};
 pub use pistons::{BlockEventData, MovingPiston};
-pub use place::{PlaceContext, PlaceOutcome};
+pub use place::{PlaceContext, PlaceOutcome, PlacementContext};
 pub use states::{BlockId, PropKey, StateTable};
 pub use tick::{Precipitation, PrecipitationKind};
 pub use ticks::Ticks;
@@ -392,6 +392,25 @@ pub trait LevelAccess {
         _neighbour_pos: BlockPos,
         _neighbour: BlockStateId,
         _new: &mut Option<BlockStateId>,
+    ) {
+    }
+    /// `Block.getStateForPlacement(BlockPlaceContext)` for the block whose
+    /// default state is `state`, before the block computes the state it is
+    /// placed in: a native mod chooses it for its own blocks (a block that
+    /// faces the player, sits on the clicked face, or comes waterlogged).
+    /// `context` is vanilla's `BlockPlaceContext`, `fluid` the fluid in the
+    /// position the block would go in. `answer` starts empty: `Some(Some(s))`
+    /// places `s`, `Some(None)` refuses the placement (vanilla's `null`
+    /// return: the block goes nowhere and nothing is consumed), and `None`
+    /// leaves the block's own `getStateForPlacement` to run. The default does
+    /// nothing.
+    #[allow(clippy::option_option)]
+    fn before_state_for_placement(
+        &self,
+        _state: BlockStateId,
+        _context: &PlacementContext,
+        _fluid: FluidState,
+        _answer: &mut Option<Option<BlockStateId>>,
     ) {
     }
     /// `Level.isClientSide`: this level is a client's copy (false on a
