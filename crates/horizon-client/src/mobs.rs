@@ -792,6 +792,8 @@ pub fn anger_left(anger_end: i64, game_time: i64) -> i32 {
 pub struct Extra {
     /// `Rabbit.moreCarrotTicks`: how long it is full of carrots (saved as `MoreCarrotTicks`).
     pub more_carrot_ticks: i32,
+    /// `Ocelot.DATA_TRUSTING`: it no longer runs from players.
+    pub trusting: bool,
     /// `Mannequin.DATA_IMMOVABLE`: it neither moves nor falls (`isEffectiveAi` is false).
     pub immovable: bool,
     /// `Mannequin.DATA_DESCRIPTION`: the text under its name.
