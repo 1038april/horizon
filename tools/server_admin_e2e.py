@@ -8,8 +8,13 @@ players join. Through the control API, with the token from .horizon/api.json, th
 ops and deops, whitelists, bans and pardons by name and by address, kicks, and turns the whitelist on and off,
 checking each reply (`changed`, the console's lines), vanilla's files, the server's log and `GET players`.
 It also checks the Prometheus text, and that a call without the token is refused and a name with a space is
-not run; then reads the settings and changes the difficulty live, and backs up, downloads and deletes a backup.
+not run; then reads the settings and changes the difficulty live, and backs up, downloads and deletes a backup,
+and runs the same moderation from the `horizon-server` CLI.
 The API listens on the address and with the token server.toml's [api] fixes, as a moderation bot's would.
+An event stream (server-sent events) opened before the bots join must see them join, Kim0's chat (sent as a raw
+chat packet), Lou0's death, the kick and the leaves, typed, with the same events polled as JSON. Last,
+`horizon-server mcp` bans and pardons, reads events and refuses an unconfirmed stop, and `horizon-server
+console` attaches through a pipe, runs two commands and shows what they log.
 
 Everything runs in a fresh temporary folder with fresh HORIZON_HOME and XDG folders and no audio. Logs go
 to --out. Build first:
@@ -24,6 +29,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -69,10 +75,47 @@ class Api:
         return json.loads(text)
 
 
-def bot(bins, port, name):
+CHAT = 'hello from Kim0'
+
+
+def chat_packet(message):
+    """ServerboundChatPacket, unsigned: the message, the time, salt 0, no signature, nothing seen, checksum 0."""
+    text = message.encode()
+    return (bytes([len(text)]) + text + int(time.time() * 1000).to_bytes(8, 'big') + bytes(8) + bytes([0])
+            + bytes([0]) + bytes(3) + bytes([0])).hex()
+
+
+def bot(bins, port, name, *extra):
     return subprocess.Popen([bins / f'horizon-bots{EXE}', '--server', f'127.0.0.1:{port}', '--bots', '1',
-                             '--behaviour', 'stand', '--seconds', '600', '--name', name],
+                             '--behaviour', 'stand', '--seconds', '600', '--name', name, *extra],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+class Stream:
+    """`GET /api/v1/events` as server-sent events, read on a thread."""
+
+    def __init__(self, api, types):
+        self.events = []
+        self.conn = http.client.HTTPConnection(api.host, api.port, timeout=600)
+        self.conn.request('GET', f'/api/v1/events?types={types}',
+                          headers={'Authorization': f'Bearer {api.token}', 'Accept': 'text/event-stream'})
+        self.response = self.conn.getresponse()
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self):
+        kind = None
+        for raw in self.response:
+            line = raw.decode().rstrip('\n')
+            if line.startswith('event: '):
+                kind = line[7:]
+            elif line.startswith('data: '):
+                event = json.loads(line[6:])
+                if event['type'] != kind:
+                    raise Failed(f'event {kind} carries {event}')
+                self.events.append(event)
+
+    def seen(self, kind, name):
+        return [e for e in self.events if e['type'] == kind and e.get('name') == name]
 
 
 def wait_until(what, test, timeout=120):
@@ -97,9 +140,14 @@ def scenario(bins, folder, server, port):
     api = Api(folder)
     wait_until('the supervisor says running', lambda: api('GET', '/api/v1/status')['phase'] == 'running')
     check(api.call('GET', '/api/v1/players', token='nope')[0] == 401, 'a call without the token is refused')
-    bots = [bot(bins, port, name) for name in ('Kim', 'Lou')]
+    stream = Stream(api, 'join,leave,kick,chat,death')
+    bots = [bot(bins, port, 'Kim', '--raw', f'60:9:{chat_packet(CHAT)}'), bot(bins, port, 'Lou')]
     try:
         wait_until('Kim0 and Lou0 online', lambda: online(api) == ['Kim0', 'Lou0'])
+        wait_until('both joins streamed', lambda: stream.seen('join', 'Kim0') and stream.seen('join', 'Lou0'), 30)
+        check(stream.seen('join', 'Kim0')[0]['address'] == '127.0.0.1', 'the join event has the address')
+        wait_until("Kim0's chat streamed", lambda: stream.seen('chat', 'Kim0'), 30)
+        check(stream.seen('chat', 'Kim0')[0]['message'] == CHAT, f'the chat event has the message ({stream.events})')
         players = api('GET', '/api/v1/players')
         check(players['max_players'] == 20 and players['ops'] == [] and players['bans'] == [],
               f'players: 20 slots, no operators, no bans ({players})')
@@ -135,6 +183,14 @@ def scenario(bins, folder, server, port):
         act('/api/v1/players/kick', {'name': 'Nobody'}, False, 'No player was found')
         act('/api/v1/players/kick', {'name': 'Kim0', 'reason': 'spamming chat'}, True, 'Kicked Kim0: spamming chat')
         server.wait_for(r'Kim0 lost connection: spamming chat', 30)
+        wait_until('the kick and the leave streamed', lambda: stream.seen('kick', 'Kim0') and stream.seen('leave', 'Kim0'), 30)
+        check(stream.seen('kick', 'Kim0')[0]['reason'] == 'spamming chat' == stream.seen('leave', 'Kim0')[0]['reason'],
+              'kick and leave events give the reason')
+        api('POST', '/api/v1/command', {'line': 'kill Lou0'})
+        wait_until("Lou0's death streamed", lambda: stream.seen('death', 'Lou0'), 30)
+        check(stream.seen('death', 'Lou0')[0]['message'] == 'Lou0 was killed', f'the death message ({stream.events})')
+        polled = api('GET', '/api/v1/events?since=0&types=death')['events']
+        check([(e['type'], e['name']) for e in polled] == [('death', 'Lou0')], f'events polled as JSON ({polled})')
         act('/api/v1/players/ban', {'name': 'Lou0', 'reason': 'cheating'}, True, 'Banned Lou0: cheating')
         server.wait_for(r'Lou0 lost connection', 30)
         bans = api('GET', '/api/v1/players')['bans']
@@ -167,6 +223,61 @@ def scenario(bins, folder, server, port):
               f'the download is the zip ({len(data)} bytes)')
         api('DELETE', f'/api/v1/backups?name={name}')
         check(not (folder / 'backups' / name).exists(), 'the backup is deleted')
+
+        cli = [bins / f'horizon-server{EXE}', '--dir', folder]
+
+        def run(*words):
+            return subprocess.run([str(w) for w in cli + list(words)], capture_output=True, text=True,
+                                  env=lab.game_env(), timeout=120)
+        out = run('ban', 'Kim0', 'griefing', 'again')
+        check(out.returncode == 0 and 'Banned Kim0: griefing again' in out.stdout,
+              f'horizon-server ban ({out.stdout!r} {out.stderr!r})')
+        out = run('players')
+        check('Banned: Kim0 (griefing again)' in out.stdout, f'horizon-server players ({out.stdout!r})')
+        out = run('pardon', 'Kim0')
+        check(out.returncode == 0 and 'Unbanned Kim0' in out.stdout, f'horizon-server pardon ({out.stdout!r})')
+        out = run('players', '--json')
+        check(out.returncode == 0 and json.loads(out.stdout)['bans'] == [], 'horizon-server players --json')
+
+        mcp = subprocess.Popen([str(bins / f'horizon-server{EXE}'), '--dir', str(folder), 'mcp'],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=lab.game_env())
+
+        def rpc(i, method, params):
+            mcp.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': i, 'method': method, 'params': params}) + '\n')
+            mcp.stdin.flush()
+            reply = json.loads(mcp.stdout.readline())
+            check(reply['id'] == i and 'result' in reply, f'mcp {method} answers ({reply})')
+            return reply['result']
+
+        def tool(i, tool_name, **args):
+            result = rpc(i, 'tools/call', {'name': tool_name, 'arguments': args})
+            return result['isError'], json.loads(result['content'][0]['text'])
+
+        rpc(1, 'initialize', {'protocolVersion': '2025-06-18', 'capabilities': {}, 'clientInfo': {'name': 'e2e'}})
+        names = [t['name'] for t in rpc(2, 'tools/list', {})['tools']]
+        check({'players', 'kick', 'ban', 'events', 'set_config', 'restore'} <= set(names), f'mcp tools ({names})')
+        error, banned = tool(3, 'ban', name='Kim0', reason='an agent decided')
+        check(not error and banned['changed'] and 'Banned Kim0: an agent decided' in banned['output'],
+              f'mcp ban ({banned})')
+        error, _ = tool(4, 'pardon', name='Kim0')
+        check(not error and listed(folder, 'banned-players.json') == [], 'mcp pardon')
+        error, deaths = tool(5, 'events', since=0, types='death')
+        check(not error and [e['name'] for e in deaths['events']] == ['Lou0'], f'mcp events ({deaths})')
+        error, refused = tool(6, 'stop')
+        check(error and 'confirm' in refused['error'], f'mcp stop without confirm is refused ({refused})')
+        mcp.stdin.close()
+        mcp.wait(timeout=30)
+
+        console = subprocess.Popen([str(bins / f'horizon-server{EXE}'), '--dir', str(folder), 'console'],
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                   text=True, env=lab.game_env())
+        console.stdin.write('say hello from the console\nlist\n')
+        console.stdin.flush()
+        time.sleep(3)  # the lines come back through the event stream
+        out, _ = console.communicate('', timeout=60)
+        check(console.returncode == 0 and 'Attached' in out and 'Detached' in out, f'console attaches and detaches ({out!r})')
+        check('[Server] hello from the console' in out and 'There are 0 of a max of 20 players online' in out,
+              f'console commands run and their lines show ({out[-600:]!r})')
     finally:
         for b in bots:
             b.kill()
@@ -227,7 +338,8 @@ token = "{TOKEN}"
     finally:
         server.stop()
         shutil.rmtree(work, ignore_errors=True)
-    print('server_admin_e2e: the admin API listed, opped, whitelisted, banned, pardoned and kicked as vanilla does')
+    print('server_admin_e2e: the admin API listed, opped, whitelisted, banned, pardoned and kicked as vanilla does, '
+          'changed settings and backups, and streamed what happened')
 
 
 if __name__ == '__main__':
