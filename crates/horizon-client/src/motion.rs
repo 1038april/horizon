@@ -287,6 +287,9 @@ pub struct PlayerMotion {
     pub jump_trigger_time: i32,
     /// Abilities.mayfly / flying (creative flight).
     pub may_fly: bool,
+    /// `Player.isMobilityRestricted`: blindness, which keeps a sprint from
+    /// starting and stops one (`LocalPlayer.isSprintingPossible`).
+    pub mobility_restricted: bool,
     /// Abilities.invulnerable (creative): only damage bypassing invulnerability hurts.
     pub invulnerable: bool,
     /// Spectator mode: no physics, always flying (`Player.tick`).
@@ -514,6 +517,7 @@ impl PlayerMotion {
             no_jump_delay: 0,
             jump_trigger_time: 0,
             may_fly: false,
+            mobility_restricted: false,
             invulnerable: false,
             spectator: false,
             flying: false,
@@ -809,8 +813,8 @@ impl PlayerMotion {
         Ok(())
     }
     /// Local input sprint phase (`LocalPlayer.aiStep`'s sprint decisions).
-    /// Vehicle, item-use and effect bindings remain separate; hunger, flight,
-    /// water and collision conditions use this actor's actual state.
+    /// Vehicle bindings remain separate; hunger, flight, water, collision, the
+    /// item in use and blindness use this actor's actual state.
     pub fn sprint_input_tick(&mut self, keys: crate::sprint::Keys) -> Result<()> {
         self.sprint_input_tick_with_window(keys, 7)
     }
@@ -822,6 +826,7 @@ impl PlayerMotion {
     ) -> Result<()> {
         let conditions = crate::sprint::Conditions {
             sprinting: self.sprinting,
+            mobility_restricted: self.mobility_restricted,
             enough_food: self.health.food.has_enough_food(),
             may_fly: self.may_fly,
             flying: self.flying,
@@ -4824,6 +4829,53 @@ mod tests {
         w.player.item_use_slows_sprint = false;
         w.controlled_simulation_tick(sprint_key).unwrap();
         assert!(w.player.sprinting, "an item that can_sprint lets it start");
+    }
+
+    /// Vanilla `LocalPlayer.isSprintingPossible`: blindness
+    /// (`Player.isMobilityRestricted`) keeps the sprint key from starting a
+    /// sprint and stops a running one (`shouldStopRunSprinting`).
+    #[test]
+    fn blindness_stops_a_sprint_and_keeps_one_from_starting() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let binding = crate::collisions::load(&root, assets.registry).unwrap();
+        let resources = MotionResources::load(&root, &assets).unwrap();
+        let mut scene = World::test_scene(&assets, &render, 3).unwrap();
+        let mut player = PlayerMotion::new(&resources, Vec3::new(20.5, 4.0, 20.5)).unwrap();
+        let mut w = MotionWorld {
+            entities: &[],
+            player: &mut player,
+            scene: &mut scene,
+            assets: &assets,
+            collision_binding: &binding,
+            resources: &resources,
+        };
+        let sprint_key = crate::sprint::Keys {
+            forward: true,
+            sprint: true,
+            ..Default::default()
+        };
+        w.controlled_simulation_tick(sprint_key).unwrap();
+        assert!(w.player.sprinting);
+        w.player.mobility_restricted = true;
+        w.controlled_simulation_tick(sprint_key).unwrap();
+        assert!(!w.player.sprinting, "blindness stops a running sprint");
+        for _ in 0..10 {
+            w.controlled_simulation_tick(sprint_key).unwrap();
+        }
+        assert!(
+            !w.player.sprinting,
+            "blindness keeps the sprint key from starting one"
+        );
+        w.player.mobility_restricted = false;
+        w.controlled_simulation_tick(sprint_key).unwrap();
+        assert!(w.player.sprinting);
     }
 
     /// Vanilla `Player.getFlyingSpeed`: a flying player moves at the ability
