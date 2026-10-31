@@ -3180,6 +3180,12 @@ impl Game<'_> {
             self.spawn_item(stack, at, v, 40);
         }
     }
+    /// The item entity `spawn_item` just added, unless a native mod kept it
+    /// out of the level (`native_entity_join_level`).
+    pub(super) fn just_spawned_item(&mut self) -> Option<&mut ItemEntity> {
+        let id = self.next_entity;
+        self.dropped.last_mut().filter(|d| d.id == id)
+    }
     fn spawn_item(
         &mut self,
         stack: ItemStack,
@@ -3207,6 +3213,10 @@ impl Game<'_> {
             bob_offset: bob,
             ticks: 0,
         });
+        // ServerLevel.addFreshEntity.
+        if !self.native_entity_joins(self.next_entity, "minecraft:item", position, false) {
+            self.dropped.pop();
+        }
     }
     /// `Block.getDrops` for a block a player breaks: the block's loot table
     /// with the player as `this`, drawing from its server random sequence
@@ -3292,9 +3302,12 @@ impl Game<'_> {
             yaw.cos() * pitch.cos() * 0.3 + spread.sin() * strength,
         ];
         self.spawn_item(thrown, [eye[0], eye[1] - 0.3, eye[2]], v, 40);
+        // A native mod can keep the item out of the level (native_entity_join_level).
         if thrown_from_hand {
             let uuid = self.acting_player_uuid();
-            self.dropped.last_mut().unwrap().thrower = Some(uuid);
+            if let Some(item) = self.just_spawned_item() {
+                item.thrower = Some(uuid);
+            }
         }
     }
     /// The UUID of the player acting: the guest whose turn it is, else the host.
@@ -11897,6 +11910,10 @@ impl Game<'_> {
             count: 1,
             ticks: 0,
         });
+        // ServerLevel.addFreshEntity.
+        if !self.native_entity_joins(self.next_entity, "minecraft:experience_orb", at, false) {
+            self.orbs.pop();
+        }
     }
     fn can_place_used_fire(&mut self, target: [i32; 3]) -> bool {
         let pos = BlockPos::new(target[0], target[1], target[2]);

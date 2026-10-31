@@ -1140,6 +1140,27 @@ impl Game<'_> {
     ) {
         let _ = (dimension, kind, pos, natural);
     }
+    /// An entity joins the server level `dimension` (NeoForge's
+    /// `EntityJoinLevelEvent`): vanilla's `PersistentEntitySectionManager.addEntity`.
+    /// `loaded_from_disk` is true for an entity coming back with its chunk,
+    /// false for one added fresh (`addFreshEntity`: a drop, an orb, `/summon`,
+    /// an arrival through a portal). `entity` is its ID and `kind` its type
+    /// (`minecraft:item`). It is already in the level's lists, so helpers that
+    /// take an entity ID find it. Set `canceled` to keep it out: it is taken
+    /// back out as if never added, and a `/summon` of it fails. @API:entity_join_level@ tells
+    /// item entities and experience orbs; later APIs add other kinds, so check
+    /// `kind`. Server-side.
+    pub(super) fn native_entity_join_level(
+        &mut self,
+        dimension: &str,
+        entity: u32,
+        kind: &str,
+        pos: [f64; 3],
+        loaded_from_disk: bool,
+        canceled: &mut bool,
+    ) {
+        let _ = (dimension, entity, kind, pos, loaded_from_disk, canceled);
+    }
     /// `player`'s melee blow killed the mob `entity` of `kind` (other deaths
     /// aren't told yet). It only hears, after the blow landed. Server-side.
     /// API 40.
@@ -1972,6 +1993,34 @@ impl Game<'_> {
             let (kind, pos) = (mob_kind(m), [m.position.x, m.position.y, m.position.z]);
             self.native_mob_spawned(self.dim.id(), &kind, pos, natural);
         }
+    }
+    /// `native_entity_join_level` for `entity`, just put at the end of its
+    /// list: false when a mod canceled, and the caller takes it back out.
+    /// A client of a server tells nothing.
+    pub(super) fn native_entity_joins(
+        &mut self,
+        entity: u32,
+        kind: &str,
+        pos: [f64; 3],
+        loaded_from_disk: bool,
+    ) -> bool {
+        if self.remote.is_some() {
+            return true;
+        }
+        let mut canceled = false;
+        let dimension = self.dim.id();
+        self.native_entity_join_level(
+            dimension,
+            entity,
+            kind,
+            pos,
+            loaded_from_disk,
+            &mut canceled,
+        );
+        if canceled {
+            self.persist.joins_canceled += 1;
+        }
+        !canceled
     }
     /// The acting player's blow killed mob `index`.
     pub(super) fn native_kill_event(&mut self, index: usize) {
