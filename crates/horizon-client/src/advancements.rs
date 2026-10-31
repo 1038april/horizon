@@ -824,9 +824,6 @@ fn input(p: &Value, e: &EntityView) -> bool {
     p["sneak"]
         .as_bool()
         .is_none_or(|want| want == e.input_sneak)
-        && ["forward", "backward", "left", "right", "jump", "sprint"]
-            .iter()
-            .all(|k| p[*k].as_bool().is_none_or(|_| true))
 }
 /// `KilledByArrowTrigger.TriggerInstance.matches`: the weapon, each listed
 /// victim condition matched by a distinct victim, and the count of entity types.
