@@ -14696,7 +14696,22 @@ impl ApplicationHandler for Game<'_> {
                         self.keys.clear();
                         // Latched sneak/sprint live in `toggles`, not in the
                         // physical keys: put them back so a short alt-tab
-                        // (no pause screen) does not drop them.
+                        // (no pause screen) does not drop them. Only a mapping
+                        // whose toggle option is on is latched; a held one has
+                        // no state to keep, and an unfocused window never gets
+                        // its key release, so leaving it down would keep the
+                        // player sneaking or sprinting until the key is tapped.
+                        for (slot, needs_toggle) in [
+                            self.settings.toggle_crouch,
+                            self.settings.toggle_sprint,
+                            self.settings.toggle_attack,
+                            self.settings.toggle_use,
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        {
+                            self.toggles.0[slot].set_down(false, needs_toggle);
+                        }
                         self.sync_toggle(0);
                         self.sync_toggle(1);
                         self.left = false;
