@@ -202,7 +202,10 @@ address. The script then checks, from both sides, what a guest's game used to ge
 - mounts:    the host and the guest each open a tamed horse's, donkey's and llama's inventory
              (shift + right click, then the inventory key while riding), put on a saddle, armour
              or a carpet and fill the chest by shift-clicking.
-- riding:    the host and the guest each saddle and ride a horse (walk, jump), a pig and a strider
+- mount_other_level: with a Nether chunk force-loaded (a second level ticking), the host's and the
+             guest's horse inventories stay open, opened by shift + right click and by the inventory
+             key while riding (#5331).
+- riding:   the host and the guest each saddle and ride a horse (walk, jump), a pig and a strider
              (with their sticks), a camel and a donkey, sit on a llama and fly a happy ghast, and
              get off by sneaking; the other side sees the animal move.
 - portal_rider: (--server-thread) a survival guest rides a horse into a Nether portal: the horse goes
@@ -10470,6 +10473,68 @@ def check_arrow_pickup(host, guest, out):
 
 CHECKS += ['arrow_pickup']
 CHECK_FNS['arrow_pickup'] = check_arrow_pickup
+
+
+def check_mount_other_level(host, guest, out):
+    """#5331: ServerPlayer.tick checks the open menu's stillValid in the player's own level. With a
+    Nether chunk force-loaded, the server ticks a second level that has none of the Overworld's
+    mobs; a tamed horse's inventory, opened with shift + right click or with the inventory key while
+    riding, must stay open through those ticks instead of closing at once."""
+    spots = apart(host, guest)
+    host('command', command='execute in minecraft:the_nether run forceload add 0 0')
+    host.wait(10)
+    result = {}
+    try:
+        for label, player in (('host', host), ('guest', guest)):
+            x, y, z = spots[label]
+            player('command', command='gamemode survival')
+            player('command', command='clear @s')
+            player('command', command=f'summon minecraft:horse {x + 0.5} {y} {z + 2.5} {{Tame:1b,NoAI:1b}}')
+            player.wait(5)
+            mob = next(m for m in player.raw('mobs', 16).get('near', [])
+                       if m['kind'] == 'minecraft:horse' and m['health'] > 0)
+            p = mob['pos']
+            aim = (f'{p[0]:.2f}', f'{p[1] + HEIGHTS["horse"] / 2:.2f}', f'{p[2]:.2f}')
+            opened = {}
+            try:
+                player.raw('look-at', *aim)
+                player.raw('key', 'shift', 'down')
+                player.wait(3)
+                player.raw('mouse', 'right', 'click')
+                player.wait(2)
+                player.raw('key', 'shift', 'up')
+                assert mount_screen(player) is not None, f"the {label}'s shift + right click opened no horse inventory"
+                player.wait(20)
+                opened['use'] = mount_screen(player, ticks=2) is not None
+                assert opened['use'], f"the {label}'s horse inventory (shift + right click) closed by itself"
+                player.raw('key', 'esc', 'tap')
+                player.wait(5)
+                player.raw('look-at', *aim)
+                player.raw('mouse', 'right', 'click')
+                player.wait(8)
+                riding = player('status').get('riding')
+                assert riding == mob['id'], f'the {label} right-clicked its horse: riding {riding}'
+                player.raw('key', 'e', 'tap')
+                assert mount_screen(player) is not None, f"the inventory key on the {label}'s horse opened no inventory"
+                player.wait(20)
+                opened['key'] = mount_screen(player, ticks=2) is not None
+                assert opened['key'], f"the {label}'s horse inventory (inventory key) closed by itself"
+                player.raw('key', 'esc', 'tap')
+                player.wait(3)
+                hold(player, 'shift', 10)
+                result[label] = opened
+            finally:
+                back_to_game(player)
+                player('command', command=f'kill @e[type=minecraft:horse,x={x},y={y},z={z},distance=..16]')
+                player('command', command=f'tp @s {x + 0.5} {y} {z + 0.5} 0 0')
+                player.wait(5)
+    finally:
+        host('command', command='execute in minecraft:the_nether run forceload remove 0 0')
+    return result
+
+
+CHECKS += ['mount_other_level']
+CHECK_FNS['mount_other_level'] = check_mount_other_level
 
 
 if __name__ == '__main__':
