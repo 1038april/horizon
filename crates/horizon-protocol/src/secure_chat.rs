@@ -805,7 +805,7 @@ mod tests {
         );
     }
 
-    use crate::rsa::tests::{CHAT_KEY_PKCS8, TEST_D, TEST_SPKI, hex};
+    use crate::rsa::tests::{CHAT_KEY_PKCS8, TEST_D, TEST_SPKI};
 
     /// The services' key (the 1024-bit test key) signing a player's chat
     /// key as the certificates endpoint's publicKeySignatureV2 does.
