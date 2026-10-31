@@ -303,7 +303,7 @@ impl StructureState {
         if context.is_old_chunk(chunk) {
             // What the old chunk saved, without pieces: a start its own
             // version made is found by `/locate` and maps, but not rebuilt.
-            return Arc::new(
+            return Some(Arc::new(
                 context
                     .saved_starts(chunk)
                     .into_iter()
@@ -333,7 +333,7 @@ impl StructureState {
                         }))
                     })
                     .collect(),
-            );
+            ));
         }
         // Ring searches enlist other workers and wait for them: never hold a
         // chunk-work lock while helping, even when this chunk has no starts.

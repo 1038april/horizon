@@ -435,3 +435,55 @@ fn saved_proto_block_entities_keep_their_id() {
     drop(save);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// What the game's generator, `Persistent`, passes on of beside-final decoration: the block
+/// entities a decoration made in a chunk saved by an older version reach `World` only if
+/// `Persistent` forwards `final_block_entities` (the trait default is none).
+#[test]
+fn persistent_forwards_the_block_entities_decoration_made_in_a_final_chunk() {
+    use horizon_client::{
+        chunk::block_entity::BlockEntity,
+        save::{Persistent, SaveDir},
+    };
+    struct Marked;
+    impl ChunkGenerator for Marked {
+        type Worker = ();
+        fn worker(&self) {}
+        fn proto(&self, _: &mut (), _: i32, _: i32) -> Proto {
+            Box::new(())
+        }
+        fn finish(&self, _: Proto) -> Chunk {
+            Chunk::empty(0, 0)
+        }
+        fn final_block_entities(
+            &self,
+            _: &Proto,
+            writes: &[([i32; 3], u32)],
+        ) -> Vec<((i32, i32, i32), BlockEntity)> {
+            writes
+                .iter()
+                .map(|([x, y, z], _)| ((*x, *y, *z), BlockEntity::Chest(Vec::new())))
+                .collect()
+        }
+    }
+    let Some(root) = resources() else {
+        return;
+    };
+    let assets = Arc::new(Assets::load(&root).unwrap());
+    let biomes = Arc::new(Biomes::load(&root).unwrap());
+    let dir = std::env::temp_dir().join(format!("horizon-final-be-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let generator = Persistent {
+        inner: Arc::new(Marked),
+        save: Arc::new(SaveDir::new(
+            dir.clone(),
+            horizon_client::save::LevelShape::OVERWORLD,
+        )),
+        registry: assets,
+        biomes,
+    };
+    let made = generator.final_block_entities(&(Box::new(()) as Proto), &[([1, 64, 2], 5)]);
+    assert_eq!(made.len(), 1, "Persistent drops the block entities");
+    assert_eq!(made[0].0, (1, 64, 2));
+    let _ = std::fs::remove_dir_all(&dir);
+}
