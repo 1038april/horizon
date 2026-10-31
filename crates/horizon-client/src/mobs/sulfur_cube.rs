@@ -390,8 +390,9 @@ pub fn accepts_damage(m: &mut Mob, source: &Damage, amount: f32) -> bool {
             | DamageKind::HotFloor
     );
     if immune {
-        if let Some(from) = source.from {
-            knockback(m, from, amount);
+        // `dealDefaultKnockback`, unless the damage type is tagged no_knockback.
+        if !source.no_knockback() {
+            deal_default_knockback(m, source, amount);
         }
         return false;
     }
@@ -467,13 +468,15 @@ fn vertical_hit_angle_power_transfer(
 }
 /// What `SulfurCube.knockback` adds to the cube's movement for a blow of `damage`: the
 /// archetype's `powers` (horizontal, vertical) turned by where the blow came from (`from`, the
-/// attacker's feet) and, with the attacker's `aim` (eye, view direction), by where it points.
+/// direct entity: the direction of the knock) and, with the causing entity's `aim` (eye, view
+/// direction), by where it points; the rotation by height uses its feet (`attacker_feet`).
 #[allow(clippy::too_many_arguments)]
 fn launch(
     powers: (f32, f32),
     resistance: f32,
     damage: f32,
     from: [f64; 3],
+    attacker_feet: [f64; 3],
     position: [f64; 3],
     center: [f64; 3],
     height: f32,
@@ -492,9 +495,9 @@ fn launch(
     }
     // applyVerticalPositionAnglePowerRotation from feet to feet.
     let d = [
-        position[0] - from[0],
-        position[1] - from[1],
-        position[2] - from[2],
+        position[0] - attacker_feet[0],
+        position[1] - attacker_feet[1],
+        position[2] - attacker_feet[2],
     ];
     let angle = horizon_core::jmath::atan2(-d[1], (d[0] * d[0] + d[2] * d[2]).sqrt()) as f32;
     let (mut h, mut v) = rotate(h, v, f64::from(-angle * 0.8));
@@ -521,22 +524,38 @@ fn launch(
     };
     [-kx, f64::from(v) * 1.2, -kz]
 }
-/// `SulfurCube.knockback` with a block: the archetype's powers, turned by where the blow came
-/// from and, when the attacker's aim is known (`Mob::attacker_aim`), by where it points.
-pub fn knockback(m: &mut Mob, from: [f64; 3], damage: f32) -> bool {
+/// `LivingEntity.dealDefaultKnockback` for a cube with a block: from where the blow came
+/// (`source.getSourcePosition()`) with `knockback(0.4, ...)`. A source with a causing entity goes
+/// through `SulfurCube.knockback`; one with none (a cactus, a fall) through `super.knockback`.
+fn deal_default_knockback(m: &mut Mob, source: &Damage, damage: f32) {
+    let (xd, zd) = source
+        .from
+        .map_or((0.0, 0.0), |f| (f[0] - m.position.x, f[2] - m.position.z));
+    if source.attacker.is_some() {
+        knockback(m, source.from, damage);
+    } else {
+        m.knockback(f64::from(0.4_f32), xd, zd);
+    }
+}
+/// `SulfurCube.knockback` with a block and a causing entity: the archetype's powers, turned by
+/// where the blow came from and by the entity's aim (`Mob::attacker_aim`, from the game).
+pub fn knockback(m: &mut Mob, from: Option<[f64; 3]>, damage: f32) -> bool {
     let Some(a) = archetype(m) else {
         return false;
     };
     let aim = m.attacker_aim.take();
+    // No position to knock from (xd and zd of 0): nothing horizontal.
+    let from = from.unwrap_or([m.position.x, m.position.y, m.position.z]);
     let delta = launch(
         (a.horizontal_power, a.vertical_power),
         a.knockback_resistance.clamp(0.0, 1.0) as f32,
         damage,
         from,
+        aim.map_or(from, |a| a.feet),
         [m.position.x, m.position.y, m.position.z],
         m.center(),
         m.height(),
-        aim,
+        aim.map(|a| (a.eye, a.look)),
     );
     m.velocity = Vec3::new(
         m.velocity.x + delta[0],
@@ -857,91 +876,108 @@ mod launch_tests {
     use super::launch;
 
     /// What vanilla 26.3's `SulfurCube.knockback` adds to the movement, computed by running its
-    /// three private helpers' bodies on the real `Vec2`, `Vec3` and `Mth` classes: the last case
-    /// has no attacker aim (a blow from an attacker that gives none).
+    /// three private helpers' bodies on the real `Vec2`, `Vec3` and `Mth` classes: four blows
+    /// with the attacker at the blow's position (a melee hit), one with no aim (an attacker that
+    /// gives none) and two from an arrow, whose position is where the knock comes from while
+    /// the owner's feet give the rotation by height.
     #[test]
     fn the_launch_follows_the_vanilla_helpers() {
-        // (powers, resistance, damage, from, position, centre y, height, aim eye/look)
-        type Case = (
-            (f32, f32),
-            f32,
-            f32,
-            [f64; 3],
-            [f64; 3],
-            f64,
-            f32,
-            Option<([f64; 3], [f64; 3])>,
-        );
-        let cases: [(Case, [f64; 3]); 4] = [
-            (
-                (
-                    (1.0, 0.6),
-                    0.0,
-                    5.0,
-                    [0.5, 64.0, 0.5],
-                    [3.5, 64.0, 0.5],
-                    64.25,
-                    0.5,
-                    Some(([0.5, 65.62, 0.5], [1.0, -0.1, 0.0])),
-                ),
-                [0.8944272398948669, 0.536656379699707, -0.0],
-            ),
-            (
-                (
-                    (1.0, 0.6),
-                    0.25,
-                    8.0,
-                    [0.5, 64.0, 0.5],
-                    [3.5, 64.0, 1.5],
-                    64.25,
-                    0.5,
-                    Some(([0.5, 65.62, 0.5], [0.95, -0.3, 0.2])),
-                ),
-                [0.7428210177564502, 0.5091168880462646, 0.41014247554144134],
-            ),
-            (
-                (
-                    (2.0, 1.0),
-                    0.0,
-                    6.0,
-                    [10.5, 70.0, -3.5],
-                    [7.5, 64.0, -2.0],
-                    64.25,
-                    0.5,
-                    Some(([10.5, 71.62, -3.5], [-0.5, -0.7, 0.4])),
-                ),
-                [-1.1930282398964365, -2.939387798309326, 0.15109800367878837],
-            ),
-            (
-                (
-                    (1.5, 0.8),
-                    0.5,
-                    4.0,
-                    [0.5, 64.0, 0.5],
-                    [2.5, 64.0, 0.5],
-                    64.25,
-                    0.5,
-                    None,
-                ),
-                [0.6000000238418579, 0.9600000143051147, -0.0],
-            ),
+        struct Case {
+            powers: (f32, f32),
+            resistance: f32,
+            damage: f32,
+            from: [f64; 3],
+            attacker_feet: [f64; 3],
+            position: [f64; 3],
+            aim: Option<([f64; 3], [f64; 3])>,
+            expected: [f64; 3],
+        }
+        let height = 0.5;
+        let cases = [
+            Case {
+                powers: (1.0, 0.6),
+                resistance: 0.0,
+                damage: 5.0,
+                from: [0.5, 64.0, 0.5],
+                attacker_feet: [0.5, 64.0, 0.5],
+                position: [3.5, 64.0, 0.5],
+                aim: Some(([0.5, 65.62, 0.5], [1.0, -0.1, 0.0])),
+                expected: [0.8944272398948669, 0.536656379699707, -0.0],
+            },
+            Case {
+                powers: (1.0, 0.6),
+                resistance: 0.25,
+                damage: 8.0,
+                from: [0.5, 64.0, 0.5],
+                attacker_feet: [0.5, 64.0, 0.5],
+                position: [3.5, 64.0, 1.5],
+                aim: Some(([0.5, 65.62, 0.5], [0.95, -0.3, 0.2])),
+                expected: [0.7428210177564502, 0.5091168880462646, 0.41014247554144134],
+            },
+            Case {
+                powers: (2.0, 1.0),
+                resistance: 0.0,
+                damage: 6.0,
+                from: [10.5, 70.0, -3.5],
+                attacker_feet: [10.5, 70.0, -3.5],
+                position: [7.5, 64.0, -2.0],
+                aim: Some(([10.5, 71.62, -3.5], [-0.5, -0.7, 0.4])),
+                expected: [-1.1930282398964365, -2.939387798309326, 0.15109800367878837],
+            },
+            Case {
+                powers: (1.5, 0.8),
+                resistance: 0.5,
+                damage: 4.0,
+                from: [0.5, 64.0, 0.5],
+                attacker_feet: [0.5, 64.0, 0.5],
+                position: [2.5, 64.0, 0.5],
+                aim: None,
+                expected: [0.6000000238418579, 0.9600000143051147, -0.0],
+            },
+            Case {
+                powers: (1.0, 0.6),
+                resistance: 0.0,
+                damage: 6.0,
+                from: [1.5, 64.9, 0.5],
+                attacker_feet: [-6.5, 64.0, 0.5],
+                position: [3.5, 64.0, 0.5],
+                aim: Some(([-6.5, 65.62, 0.5], [1.0, -0.05, 0.1])),
+                expected: [0.9673684563243138, 0.5878775954246521, -0.15555815498040762],
+            },
+            Case {
+                powers: (2.0, 1.0),
+                resistance: 0.25,
+                damage: 5.0,
+                from: [-2.5, 66.0, 3.5],
+                attacker_feet: [-9.5, 64.0, 6.5],
+                position: [1.5, 64.0, -0.5],
+                aim: Some(([-9.5, 65.62, 6.5], [0.8, -0.2, -0.5])),
+                expected: [0.3121084870810207, 2.012461280822754, -0.320294105719234],
+            },
         ];
-        for (i, ((powers, resistance, damage, from, position, _centre_y, height, aim), expected)) in
-            cases.into_iter().enumerate()
-        {
+        for (i, c) in cases.into_iter().enumerate() {
             // The box centre: the feet position plus half the height.
             let center = [
-                position[0],
-                position[1] + f64::from(height) / 2.0,
-                position[2],
+                c.position[0],
+                c.position[1] + f64::from(height) / 2.0,
+                c.position[2],
             ];
             let got = launch(
-                powers, resistance, damage, from, position, center, height, aim,
+                c.powers,
+                c.resistance,
+                c.damage,
+                c.from,
+                c.attacker_feet,
+                c.position,
+                center,
+                height,
+                c.aim,
             );
             for axis in 0..3 {
                 assert!(
-                    (got[axis] - expected[axis]).abs() < 1.0e-9,
-                    "case {i} axis {axis}: {got:?} against {expected:?}"
+                    (got[axis] - c.expected[axis]).abs() < 1.0e-9,
+                    "case {i} axis {axis}: {got:?} against {:?}",
+                    c.expected
                 );
             }
         }

@@ -593,15 +593,17 @@ impl Game<'_> {
                     );
                     t.dealt_damage = true;
                     let mut hurt_at = None;
+                    let aim = self.attacker_aim(Some(Who::Player));
                     if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
                         let from = Some([t.position.x, t.position.y, t.position.z]);
-                        let hurt = m.damage(
+                        let hurt = m.damage_aimed(
                             damage,
                             Damage {
                                 kind: DamageKind::Arrow,
                                 attacker: Some(Who::Player),
                                 from,
                             },
+                            aim,
                         );
                         if hurt {
                             hurt_at = Some([m.position.x, m.position.y, m.position.z]);

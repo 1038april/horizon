@@ -584,6 +584,14 @@ impl DamageKind {
         matches!(self, DamageKind::OutOfWorld | DamageKind::GenericKill)
     }
 }
+/// `source.getEntity()` of a blow, as `SulfurCube.knockback` reads it: `getEyePosition()`,
+/// `getLookAngle()` and `position()`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Aim {
+    pub eye: [f64; 3],
+    pub look: [f64; 3],
+    pub feet: [f64; 3],
+}
 /// A damage source: its type, the attacking entity and where it came from.
 #[derive(Clone, Copy, Debug)]
 pub struct Damage {
@@ -1101,10 +1109,10 @@ pub struct Mob {
     pub silent: bool,
     /// `Invulnerable`: immune to damage (but not to `/kill`).
     pub invulnerable_flag: bool,
-    /// The attacker's eye and view direction while its blow is being dealt (`source.getEntity()`'s
-    /// `getEyePosition` and `getLookAngle`): what `SulfurCube.knockback` turns the launch by.
-    /// Set by whoever deals the blow and cleared once it is, none for an attacker that gives none.
-    pub attacker_aim: Option<([f64; 3], [f64; 3])>,
+    /// The entity that causes the blow being dealt (`source.getEntity()`): its eye, view
+    /// direction and feet, which `SulfurCube.knockback` turns the launch by. Set by whoever deals
+    /// the blow (`Game::attacker_aim`) and cleared once it is dealt.
+    pub attacker_aim: Option<Aim>,
     pub climbing: bool,
     pub fire_ticks: i32,
     pub ticks_frozen: i32,
@@ -2420,6 +2428,13 @@ impl Mob {
         .flatten()
         .map(|i| spawning::armor_stats(i))
         .fold((0.0, 0.0), |(a, t), (x, y)| (a + x, t + y))
+    }
+    /// `damage` of a blow whose causing entity is `aim` (`SulfurCube.knockback` reads it).
+    pub fn damage_aimed(&mut self, amount: f32, source: Damage, aim: Option<Aim>) -> bool {
+        self.attacker_aim = aim;
+        let hurt = self.damage(amount, source);
+        self.attacker_aim = None;
+        hurt
     }
     pub fn damage(&mut self, amount: f32, source: Damage) -> bool {
         self.damage_with(amount, source, None)
