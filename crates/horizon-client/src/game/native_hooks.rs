@@ -433,10 +433,11 @@ impl GameLevel<'_> {
     /// `state` the block's own state at `pos`. Answer `valid` for your own
     /// blocks: the meal is used up on one as vanilla uses it up (the growth
     /// particles and the sound follow, whether or not the roll below grows
-    /// it), from a player's `BoneMealItem.useOn`, from a dispenser and from a
-    /// villager. Asked on both sides, as vanilla asks it on both, so a client
-    /// predicts the use with your answer: say no where you can only grow on a
-    /// server (`is_client_side`). A block that says no keeps the
+    /// it), from a player's `BoneMealItem.useOn`, from a dispenser and, on a
+    /// crop (a villager bonemeals only a `CropBlock`), from a villager. Asked
+    /// on both sides, as vanilla asks it on both, so a client predicts the
+    /// use with your answer: say no where you can only grow on a server
+    /// (`is_client_side`). A block that says no keeps the
     /// `BonemealableBlock` its template gives it, or takes no bone meal.
     /// @API:bonemeal@.
     #[inline(always)]
