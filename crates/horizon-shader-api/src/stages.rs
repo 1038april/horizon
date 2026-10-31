@@ -124,15 +124,16 @@ fn view_position(uv: vec2<f32>, depth: f32) -> vec3<f32> {
 /// surface's normal and tangent from the derivatives of its position and uv.
 const MATERIAL_HELPERS: &str = "\
 // Block faces are flat: the derivatives of the position give the face's normal, turned
-// toward the camera. Far away they lose precision, so a normal within a few degrees of an
-// axis (every full block face) is that axis exactly: no shimmer on distant faces.
+// toward the camera. Far away they lose precision, so a normal within about 3.6 degrees of
+// an axis (every full block face) is that axis exactly: no shimmer on distant faces. The
+// gentlest slope of flowing water, one level over a block, tilts about 6 degrees.
 fn horizon_material_normal(position: vec3<f32>) -> vec3<f32> {
     let n = normalize(cross(dpdx(position), dpdy(position)));
     let a = abs(n);
     let m = max(a.x, max(a.y, a.z));
     let axis = select(select(vec3(0.0, 0.0, sign(n.z)), vec3(0.0, sign(n.y), 0.0), a.y == m),
         vec3(sign(n.x), 0.0, 0.0), a.x == m);
-    let flat_n = select(n, axis, m > 0.99);
+    let flat_n = select(n, axis, m > 0.998);
     return select(flat_n, -flat_n, dot(flat_n, position) > 0.0);
 }
 // The direction `uv.x` grows along on the surface, and the sign of the one `uv.y` grows
