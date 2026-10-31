@@ -741,12 +741,15 @@ impl Game<'_> {
             quiet_commands: false,
             mod_net: false,
             builtin: Arc::new(builtin),
+            status: lang
+                .get("connect.connecting")
+                .cloned()
+                .unwrap_or_else(|| "Connecting to the server...".into()),
             lang,
             registries: Arc::new(Dynamic::default()),
             joined: false,
             reconfiguring: None,
             logged_in: false,
-            status: "Connecting to the server...".into(),
             entity_id: 0,
             camera: None,
             use_item: None,
@@ -8187,7 +8190,8 @@ impl Game<'_> {
         let title = horizon_client::text::Text::translate("connect.reconfiguring", &[]);
         let ((tx, ty), (bx, by)) = self.reconfigure_layout((w, h));
         batch.text_styled(atlas, &title, tx, ty, u32::MAX, true);
-        let label = horizon_client::text::Text::translate("gui.disconnect", &[]);
+        // CommonComponents.GUI_DISCONNECT
+        let label = horizon_client::text::Text::translate("menu.disconnect", &[]);
         let active = self.ticks.saturating_sub(since) >= 600;
         let hover = horizon_client::ui::hovered(self.cursor, bx, by, 150.0, 20.0);
         horizon_client::ui::button(batch, atlas, bx, by, 150.0, 20.0, &label, active, hover);

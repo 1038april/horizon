@@ -341,12 +341,12 @@ pub fn save_friends_relay(relay: &str) {
 
 /// Reach the friend's world from the code (directly, or through a relay)
 /// and open the tunnel: the loopback address to connect to.
-fn join_friend(code: &str, send: &Sender<Event>) -> Result<(String, u16), String> {
+fn join_friend(code: &str, lang: &Language, send: &Sender<Event>) -> Result<(String, u16), String> {
     use horizon_friends::{
         PathMode,
         guest::{self, GuestConfig},
     };
-    status(send, "Finding your friend's world...");
+    status(send, &tr(lang, "horizon.multiplayer.finding_friend"));
     let tunnel = guest::join(&GuestConfig {
         code: code.to_owned(),
         relay: friends_relay_setting(),
@@ -447,12 +447,12 @@ fn run(
         (address.to_owned(), 0, Connection::local(pipe))
     } else {
         let (host, port) = match address.strip_prefix(FRIEND) {
-            Some(code) => join_friend(code, send)?,
+            Some(code) => join_friend(code, lang, send)?,
             None => {
                 let Some(target) = parse_address(address) else {
                     return Ok(format!("Invalid server address: {address}"));
                 };
-                status(send, "Connecting to the server...");
+                status(send, &tr(lang, "connect.connecting"));
                 target
             }
         };
@@ -556,7 +556,7 @@ fn run(
             login::Clientbound::Unknown(..) => {}
         }
     };
-    status(send, "Joining world...");
+    status(send, &tr(lang, "connect.joining"));
     c.send(&cfg::Serverbound::ClientInformation(info).encode())
         .map_err(e)?;
     c.send(

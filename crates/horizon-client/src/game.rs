@@ -13356,10 +13356,16 @@ impl Game<'_> {
                 horizon_client::level_loading::draw_progress(
                     &mut hud,
                     &self.gui.atlas,
-                    if loader.cancelled {
-                        "Cancelling world"
+                    &if loader.cancelled {
+                        horizon_client::lang::get_or(
+                            "horizon.loading.cancelling_world",
+                            "Cancelling world",
+                        )
                     } else {
-                        "Opening world"
+                        horizon_client::lang::get_or(
+                            "horizon.loading.opening_world",
+                            "Opening world",
+                        )
                     },
                     0.0,
                 );
