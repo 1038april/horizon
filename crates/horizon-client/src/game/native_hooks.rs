@@ -3116,7 +3116,8 @@ mod tests {
     /// each goes through `property_change`, none returns true on its own.
     #[test]
     fn property_setters_refuse_no_change() {
-        let source = include_str!("native_hooks.rs");
+        // A Windows checkout has CRLF line ends: the searches below look for "\n".
+        let source = include_str!("native_hooks.rs").replace("\r\n", "\n");
         let code = source.split("#[cfg(test)]").next().unwrap_or_default();
         for head in [
             "    pub(super) fn native_set_block_property(\n        &mut self,\n        ticks:",
