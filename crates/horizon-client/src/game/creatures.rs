@@ -4735,6 +4735,9 @@ impl Game<'_> {
         let feet = [m.position.x, m.position.y, m.position.z];
         let mut handled = true;
         let mut drops: Vec<(String, u32)> = Vec::new();
+        // `Sheep.shear`'s drops add a spread on top of the ItemEntity's own
+        // motion; `MushroomCow.shear`'s do not.
+        let mut wool = false;
         let is_food = m.kind.food.contains(&item);
         let baby_turtle = species == Species::Turtle && m.is_baby();
         // MushroomCow.getEffectsFromItemStack: the item's block supplies them.
@@ -4826,6 +4829,7 @@ impl Game<'_> {
                     &mut self.world.random,
                 );
                 drops.extend(stacks.into_iter().map(|s| (s.item.to_string(), s.count)));
+                wool = true;
                 sound = Some("entity.sheep.shear");
                 self.damage_held_tool();
             }
@@ -5293,11 +5297,21 @@ impl Game<'_> {
         }
         for (item, count) in drops {
             for _ in 0..count {
-                let v = [
-                    (self.world.random.next_float() - self.world.random.next_float()) as f64 * 0.1,
-                    self.world.random.next_float() as f64 * 0.05,
-                    (self.world.random.next_float() - self.world.random.next_float()) as f64 * 0.1,
-                ];
+                // `spawnAtLocation(stack, 1.0)`: an ItemEntity a block above
+                // the feet that starts with the constructor's own motion, and
+                // `setDefaultPickUpDelay`. Sheep.shear adds its spread on top;
+                // MushroomCow.shear builds the entity by hand instead, so its
+                // mushrooms keep the constructor's motion and no pickup delay.
+                let mut v = dispenser::new_item_motion();
+                if wool {
+                    v[0] += (self.world.random.next_float() - self.world.random.next_float())
+                        as f64
+                        * 0.1;
+                    v[1] += self.world.random.next_float() as f64 * 0.05;
+                    v[2] += (self.world.random.next_float() - self.world.random.next_float())
+                        as f64
+                        * 0.1;
+                }
                 self.spawn_item(
                     ItemStack {
                         item: item.as_str().into(),
@@ -5305,9 +5319,9 @@ impl Game<'_> {
                         damage: 0,
                         extra: None,
                     },
-                    [center[0], center[1] + 0.5, center[2]],
+                    [feet[0], feet[1] + 1.0, feet[2]],
                     v,
-                    10,
+                    if wool { 10 } else { 0 },
                 );
             }
         }
