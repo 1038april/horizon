@@ -7860,7 +7860,7 @@ impl Game<'_> {
             let key = target.filter(holds).unwrap_or((i32::MIN, 0, 0));
             self.world.block_entities.insert(key, entity);
             self.container = Some(key);
-            self.open_native_screen(key, target, p.container);
+            self.open_native_screen(key, target, p.container, &menu);
         }
         self.screen = Screen::Inventory;
         self.capture(false);

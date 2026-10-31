@@ -1985,12 +1985,18 @@ impl Game<'_> {
     }
     /// A menu opened on this client with its slots under `key`, on block
     /// `target`: a mod block's is laid out by its mod (`native_screen`).
-    pub(super) fn open_native_screen(&mut self, key: Pos, target: Option<Pos>, window: i32) {
+    pub(super) fn open_native_screen(
+        &mut self,
+        key: Pos,
+        target: Option<Pos>,
+        window: i32,
+        menu: &str,
+    ) {
         self.mod_screen = None;
-        // Only when the clicked block holds this menu: `target` outlives the use
-        // that set it, so another menu opened later (a command's, another mod's)
-        // would otherwise get the last clicked machine's screen.
-        let Some(t) = target.filter(|t| *t == key) else {
+        // Only when this is the menu the clicked block opens: `target` outlives the
+        // use that set it, so another menu opened later (a command's, another
+        // mod's) would otherwise get the last clicked machine's screen.
+        let Some(t) = target.filter(|t| self.mod_menu_at(*t) == Some(menu)) else {
             return;
         };
         let block = self
