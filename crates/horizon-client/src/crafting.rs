@@ -44,9 +44,60 @@ impl Ingredient {
         match v {
             Value::String(s) => add(s),
             Value::Array(a) => a.iter().filter_map(Value::as_str).for_each(&mut add),
+            Value::Object(o) => return Self::parse_object(o, items),
             _ => return None,
         }
         (!list.is_empty()).then(|| Self::of(list))
+    }
+    /// NeoForge's ingredient types (`NeoForgeRegistries.Keys.INGREDIENT_TYPES`),
+    /// the standard shapes mods' recipes carry, each resolved to the flat item
+    /// list it matches. A kind outside these still fails the file: a mod's
+    /// own ingredient types come with their own hook, not the loader.
+    fn parse_object(o: &serde_json::Map<String, Value>, items: &Items) -> Option<Self> {
+        let kept = match o.get("type")?.as_str()? {
+            // All the sub-ingredients match the same stack: the items every
+            // one of them names, in the first's order.
+            "neoforge:compound" | "neoforge:intersection" => {
+                let subs = o.get("ingredients")?.as_array()?;
+                let subs: Vec<Self> = subs
+                    .iter()
+                    .map(|s| Self::parse(s, items))
+                    .collect::<Option<_>>()?;
+                subs.first()?
+                    .1
+                    .iter()
+                    .filter(|i| subs[1..].iter().all(|s| s.0.contains(*i)))
+                    .cloned()
+                    .collect()
+            }
+            // The base's items without the subtracted's.
+            "neoforge:difference" => {
+                let base = Self::parse(o.get("base")?, items)?;
+                let gone = Self::parse(o.get("subtracted")?, items)?;
+                base.1
+                    .iter()
+                    .filter(|i| !gone.0.contains(*i))
+                    .cloned()
+                    .collect()
+            }
+            // A fluid in an item slot: the fluid's own item form, its full
+            // bucket (a water or lava tag names the same still fluid).
+            "neoforge:fluid" => {
+                let fluid = o
+                    .get("fluid")
+                    .and_then(Value::as_str)
+                    .or_else(|| o.get("tag").and_then(Value::as_str))?;
+                let bucket = match fluid.trim_start_matches('#') {
+                    "minecraft:water" => "minecraft:water_bucket",
+                    "minecraft:lava" => "minecraft:lava_bucket",
+                    "minecraft:powder_snow" => "minecraft:powder_snow_bucket",
+                    _ => return None,
+                };
+                vec![bucket.to_owned()]
+            }
+            _ => return None,
+        };
+        (!kept.is_empty()).then(|| Self::of(kept))
     }
     pub fn test(&self, stack: &ItemStack) -> bool {
         self.0.contains(&*stack.item)
@@ -1776,6 +1827,88 @@ mod tests {
             let json = format!(r#"{{"id":"minecraft:stone","count":{bad}}}"#);
             assert!(parse(&json).is_none(), "count {bad} must be rejected");
         }
+    }
+
+    /// A mod's recipe whose ingredient is one of NeoForge's standard shapes
+    /// loads and carries the resolved items, where the plain string parser
+    /// used to drop the file whole.
+    #[test]
+    fn a_neoforge_ingredient_recipe_loads() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-neo-ingredient-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("data/minecraft/recipe")).unwrap();
+        fs::create_dir_all(root.join("data/mymod/recipe")).unwrap();
+        fs::write(
+            root.join(horizon_items::content_namespaces::MARKER),
+            br#"["mymod"]"#,
+        )
+        .unwrap();
+        let recipe = r##"{
+            "type": "minecraft:crafting_shapeless",
+            "ingredients": [
+                {"type": "neoforge:fluid", "fluid": "minecraft:water"},
+                {"type": "neoforge:difference",
+                 "base": ["minecraft:oak_planks", "minecraft:birch_planks"],
+                 "subtracted": "minecraft:birch_planks"}
+            ],
+            "result": {"id": "minecraft:stick", "count": 4}
+        }"##;
+        fs::write(root.join("data/mymod/recipe/treated.json"), recipe).unwrap();
+        let items = Items::for_tests(HashMap::new());
+        let recipes = Recipes::load(&root, &items, &PackOverlay::NONE).unwrap();
+        assert_eq!(recipes.crafting.len(), 1);
+        assert_eq!(recipes.crafting[0].0, "mymod:treated");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// NeoForge's standard ingredient shapes resolve to their flat item
+    /// lists; a kind the loader doesn't know still fails the file.
+    #[test]
+    fn neoforge_ingredient_shapes_parse() {
+        let mut tags = HashMap::new();
+        tags.insert(
+            "minecraft:planks".to_owned(),
+            ["minecraft:oak_planks", "minecraft:birch_planks"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<HashSet<_>>(),
+        );
+        let items = Items::for_tests(tags);
+        let json = |s: &str| serde_json::from_str::<Value>(s).unwrap();
+        // Compound: the items every sub-ingredient names, a tag beside an item.
+        let both = Ingredient::parse(
+            &json(r##"{"type":"neoforge:compound","ingredients":["#minecraft:planks","minecraft:oak_planks"]}"##),
+            &items,
+        )
+        .unwrap();
+        assert_eq!(both.1, ["minecraft:oak_planks"]);
+        // Difference: the base without the subtracted.
+        let no_oak = Ingredient::parse(
+            &json(r##"{"type":"neoforge:difference","base":"#minecraft:planks","subtracted":"minecraft:oak_planks"}"##),
+            &items,
+        )
+        .unwrap();
+        assert_eq!(no_oak.1, ["minecraft:birch_planks"]);
+        // A fluid in an item slot is its bucket, a tag naming the still fluid too.
+        for shape in [
+            r#"{"type":"neoforge:fluid","fluid":"minecraft:water"}"#,
+            r#"{"type":"neoforge:fluid","tag":"minecraft:water"}"#,
+        ] {
+            let bucket = Ingredient::parse(&json(shape), &items).unwrap();
+            assert_eq!(bucket.1, ["minecraft:water_bucket"]);
+        }
+        // An empty intersection and an unknown kind fail the file, as today.
+        let empty = Ingredient::parse(
+            &json(
+                r#"{"type":"neoforge:compound","ingredients":["minecraft:oak_planks","minecraft:birch_planks"]}"#,
+            ),
+            &items,
+        );
+        assert!(empty.is_none());
+        let unknown =
+            Ingredient::parse(&json(r#"{"type":"mymod:aspect","aspect":"fire"}"#), &items);
+        assert!(unknown.is_none());
     }
 
     fn ingredient(items: &[&str]) -> Ingredient {
