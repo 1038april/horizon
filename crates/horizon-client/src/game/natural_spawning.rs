@@ -435,6 +435,7 @@ impl<'a> Game<'a> {
             let id = mob.id;
             self.mobs.push(mob);
             self.enchant_spawn_equipment(id);
+            self.halloween_spawn_head(id);
             if !persistent {
                 self.spawn_jockeys(id, true);
             }

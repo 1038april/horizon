@@ -136,6 +136,7 @@ impl Game<'_> {
                     let id = mob.id;
                     self.mobs.push(mob);
                     self.enchant_spawn_equipment(id);
+                    self.halloween_spawn_head(id);
                     self.spawn_jockeys(id, true);
                     Some((id, equipment))
                 }
