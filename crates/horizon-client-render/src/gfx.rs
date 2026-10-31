@@ -1182,10 +1182,11 @@ async fn open_backend(
         Ok(adapter) => adapter,
         Err(e) => return Err(NoDevice::NoAdapter(format!("{name}: {e}"))),
     };
-    // Failed, not NoAdapter: asking again with the non-conformant adapters
-    // shown would pick the same software adapter.
+    // NoAdapter, so `open_with_retry` asks again: with the non-conformant
+    // adapters shown, wgpu ranks a real GPU (hasvk on Ivy Bridge or Haswell)
+    // above a software one. The second try's error is final either way.
     if !allow_cpu && is_software(adapter.get_info().device_type) {
-        return Err(NoDevice::Failed(format!(
+        return Err(NoDevice::NoAdapter(format!(
             "{name}: only a software adapter ({})",
             adapter.get_info().name
         )));
