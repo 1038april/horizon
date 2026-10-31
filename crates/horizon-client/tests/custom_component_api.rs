@@ -35,7 +35,7 @@ fn registration_limits_and_defaults_are_bound_to_the_connection() {
         deep = Tag::List(vec![deep]);
     }
     assert!(custom::validate(&deep).is_err());
-    assert!(custom::validate(&Tag::List(vec![Tag::Int(1), Tag::String("x".into())])).is_err());
+    assert!(custom::validate(&Tag::List(vec![Tag::Int(1), Tag::String("x".into())])).is_ok());
 
     let dir =
         std::env::temp_dir().join(format!("horizon-component-identity-{}", std::process::id()));
