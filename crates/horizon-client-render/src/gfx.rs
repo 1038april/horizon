@@ -585,6 +585,8 @@ pub struct Renderer {
     screen_buffer: wgpu::Buffer,
     screen_capacity: u64,
     entity_group: wgpu::BindGroup,
+    /// The layout of `entity_group`, for the native shadow pass.
+    entity_bindings: wgpu::BindGroupLayout,
     /// The entity resources with the hand's projection (`hand_globals`).
     hand_group: wgpu::BindGroup,
     hand_globals: wgpu::Buffer,
@@ -3054,6 +3056,7 @@ impl Renderer {
             screen_buffer,
             screen_capacity,
             entity_group,
+            entity_bindings,
             hand_group,
             hand_globals,
             entity_buffer,
@@ -4006,6 +4009,7 @@ impl Renderer {
             sprites: self.terrain_sprites,
             format: self.config.format.remove_srgb_suffix(),
             sprite_tags: &sprite_tags,
+            entities: &self.entity_bindings,
         };
         let (pack, labels) =
             native_pack::NativePack::new(&self.device, &terrain, report, &constants)?;
@@ -5661,6 +5665,19 @@ impl Renderer {
                     shadow_first + shadow_solid,
                     shadow_translucent,
                 );
+            }
+            drop(pass);
+            if entity_quads > 0 {
+                let mut pass = native
+                    .frame
+                    .shadow_map
+                    .begin_entities(&mut encoder, "Native shader pack entity shadow");
+                pass.set_pipeline(&shadow.entity);
+                pass.set_bind_group(0, &self.entity_group, &[]);
+                pass.set_bind_group(horizon_shader_api::stages::GROUP, &shadow.group, &[]);
+                pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
+                pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..entity_quads * 6, 0, 0..1);
             }
         }
         if native_sky_pass
