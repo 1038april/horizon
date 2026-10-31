@@ -316,6 +316,7 @@ impl Game<'_> {
             &self.world_root,
             &self.options.resources,
             self.cmds.vanilla_disabled,
+            &self.level.enabled_features,
         );
         self.adv.pending_tree = std::thread::Builder::new()
             .name("horizon-advancements".into())

@@ -58,10 +58,11 @@ pub(super) fn pack_stack(
     world_root: &std::path::Path,
     resources: &std::path::Path,
     vanilla_disabled: bool,
+    enabled_features: &[String],
 ) -> PackStack {
     let builtin = (!vanilla_disabled).then(|| DataPack::builtin(resources));
     let packs = datapack::discover_with_features(world_root, resources);
-    let enabled = datapack::enabled_ids(world_root, &packs);
+    let enabled = datapack::enabled_ids(world_root, &packs, enabled_features);
     PackStack {
         builtin,
         packs,
@@ -76,8 +77,9 @@ pub(super) fn content_overlay(
     world_root: &std::path::Path,
     resources: &std::path::Path,
     vanilla_disabled: bool,
+    enabled_features: &[String],
 ) -> Vec<(String, Vec<Vec<u8>>)> {
-    let stack = pack_stack(world_root, resources, vanilla_disabled);
+    let stack = pack_stack(world_root, resources, vanilla_disabled, enabled_features);
     let packs: Vec<&DataPack> = stack
         .packs
         .iter()
@@ -117,6 +119,7 @@ impl Game<'_> {
             &self.world_root,
             &self.options.resources,
             self.cmds.vanilla_disabled,
+            &self.level.enabled_features,
         );
         self.fns.packs = stack.packs;
         self.fns.enabled = stack.enabled;
@@ -140,6 +143,7 @@ impl Game<'_> {
             &self.world_root,
             &self.options.resources,
             self.cmds.vanilla_disabled,
+            &self.level.enabled_features,
         );
         let packs: Vec<&DataPack> = stack
             .builtin
@@ -194,7 +198,11 @@ impl Game<'_> {
             &self.world_root,
             &self.options.resources,
         );
-        let enabled = horizon_client::datapack::enabled_ids(&self.world_root, &packs);
+        let enabled = horizon_client::datapack::enabled_ids(
+            &self.world_root,
+            &packs,
+            &self.level.enabled_features,
+        );
         let enabled: Vec<_> = enabled
             .iter()
             .filter_map(|id| packs.iter().find(|p| &p.id == id))

@@ -516,9 +516,7 @@ impl Game<'_> {
                     let drops = match world_items!(self).loot_sequence(&table) {
                         Some(seq) => {
                             let random = self.rand_sequences.get(&seq, self.level.seed);
-                            self.res
-                                .items()
-                                .loot_table(&table, false, held.as_ref(), random)
+                            world_items!(self).loot_table(&table, false, held.as_ref(), random)
                         }
                         None => world_items!(self).loot_table(
                             &table,
@@ -551,9 +549,7 @@ impl Game<'_> {
                 let drops = match world_items!(self).loot_sequence(&table) {
                     Some(seq) => {
                         let random = self.rand_sequences.get(&seq, self.level.seed);
-                        self.res
-                            .items()
-                            .entity_drops(&ty, by_player, held.as_ref(), random)
+                        world_items!(self).entity_drops(&ty, by_player, held.as_ref(), random)
                     }
                     None => world_items!(self).entity_drops(
                         &ty,

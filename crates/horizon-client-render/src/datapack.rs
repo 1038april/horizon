@@ -347,7 +347,11 @@ pub fn install(dir: &Path, world: &Path, selected: &[String]) -> Result<(), Stri
 /// The built-in pack is selected unless the world turned it off.
 pub fn for_recreate(world: &Path) -> (Option<PathBuf>, Vec<String>) {
     let packs = discover(world);
-    let mut selected = enabled_ids(world, &packs);
+    // No flags here: the recreated world keeps the original's
+    // `enabled_features`, and the flag-aware load re-adds the feature packs
+    // it asks for (`for_recreate`'s selection only seeds the new world's
+    // `datapacks.json`).
+    let mut selected = enabled_ids(world, &packs, &[]);
     let vanilla_off = std::fs::read(world.join("datapacks.json"))
         .ok()
         .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
@@ -578,14 +582,15 @@ pub struct DataStore {
     pub errors: Vec<(String, String)>,
 }
 /// `<kind-dir>/<ns>:<path>` for a pack file the content tables read:
-/// `recipe/`, `loot_table/`, `advancement/` or `tags/<sub>/`, where the id
-/// keeps the sub path so a nested tag kind stays addressable.
+/// `recipe/`, `loot_table/`, `advancement/`, `trade_set/`,
+/// `villager_trade/` or `tags/<sub>/`, where the id keeps the sub path so a
+/// nested tag kind stays addressable.
 fn content_id(file: &str) -> Option<String> {
     let rest = file.strip_prefix("data/")?;
     let (ns, rest) = rest.split_once('/')?;
     let (kind, rest) = rest.split_once('/')?;
     let kind = match kind {
-        "recipe" | "loot_table" | "advancement" => kind,
+        "recipe" | "loot_table" | "advancement" | "trade_set" | "villager_trade" => kind,
         // A tag id is `{ns}:{path-under-tags}` (`tags/worldgen/biome/
         // test:sub/mytag`), the whole path after the namespace, so nested
         // registries keep their directory (`TagLoader`'s id shape).
@@ -622,6 +627,8 @@ impl DataStore {
                 "predicate",
                 "recipe",
                 "tags",
+                "trade_set",
+                "villager_trade",
             ]) {
                 if !seen.insert(f.clone()) {
                     continue;
@@ -735,10 +742,25 @@ fn hash_normalize(s: &str) -> String {
     }
 }
 
+/// Whether every flag `pack` asks for (`Pack.getRequestedFeatures`) is among
+/// the world's `enabled_features`.
+fn features_enabled(pack: &DataPack, enabled_features: &[String]) -> bool {
+    pack.features()
+        .iter()
+        .all(|f| enabled_features.iter().any(|e| e == f))
+}
+
 /// The ids of `packs` (a world's, from `discover`) that are enabled, lowest
 /// priority first: those `<world>/datapacks.json` lists as enabled, in its
 /// order, then every pack it lists neither way, in name order.
-pub fn enabled_ids(world: &Path, packs: &[DataPack]) -> Vec<String> {
+///
+/// `enabled_features` are the world's feature flags
+/// (`WorldDataConfiguration.enabledFeatures`): a pack a pack file selected
+/// while asking for missing features comes off
+/// (`MinecraftServer.configurePackRepository`), and a feature pack whose
+/// features the world enables is forced on however the world's selection
+/// feels about it (`MinecraftServer.enableForcedFeaturePacks`).
+pub fn enabled_ids(world: &Path, packs: &[DataPack], enabled_features: &[String]) -> Vec<String> {
     let saved: Option<serde_json::Value> = std::fs::read(world.join("datapacks.json"))
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok());
@@ -757,12 +779,32 @@ pub fn enabled_ids(world: &Path, packs: &[DataPack]) -> Vec<String> {
     let mut enabled: Vec<String> = list("enabled")
         .into_iter()
         .filter(|id| packs.iter().any(|p| &p.id == id))
+        .filter(|id| {
+            packs
+                .iter()
+                .find(|p| &p.id == id)
+                .is_none_or(|p| features_enabled(p, enabled_features))
+        })
         .collect();
     for p in packs {
         // A pack nobody mentions comes on (`PackRepository.reload` selects
         // every new pack), but a feature pack stays off until the world
-        // enabled it (`PackSource.FEATURE` starts unselected).
-        if !enabled.contains(&p.id) && !disabled.contains(&p.id) && p.id.starts_with("file/") {
+        // enabled its flag (`PackSource.FEATURE` starts unselected).
+        if !enabled.contains(&p.id)
+            && !disabled.contains(&p.id)
+            && p.id.starts_with("file/")
+            && features_enabled(p, enabled_features)
+        {
+            enabled.push(p.id.clone());
+        }
+    }
+    for p in packs {
+        let feature_pack = !p.id.starts_with("file/") && p.id != "vanilla";
+        if feature_pack
+            && !p.features().is_empty()
+            && features_enabled(p, enabled_features)
+            && !enabled.contains(&p.id)
+        {
             enabled.push(p.id.clone());
         }
     }
@@ -873,7 +915,7 @@ mod tests {
         )
         .unwrap();
         let packs = discover(&dir);
-        let enabled = enabled_ids(&dir, &packs);
+        let enabled = enabled_ids(&dir, &packs, &[]);
         assert_eq!(enabled, ["file/b", "file/a"]);
         let enabled: Vec<&DataPack> = enabled
             .iter()

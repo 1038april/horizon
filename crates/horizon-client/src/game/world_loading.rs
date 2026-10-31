@@ -182,7 +182,15 @@ impl WorldRequest {
         let shapes = level_shapes(&save_root, res.biomes());
         let shape = shapes.get(dim.id());
         let (mut streaming, save, locator) = make_streaming(
-            res, pack, options, settings, &save_root, dim, shape, level.seed,
+            res,
+            pack,
+            options,
+            settings,
+            &save_root,
+            dim,
+            shape,
+            level.seed,
+            &level.enabled_features,
         )?;
         streaming.radius = settings.render_distance;
         let mut world = World::new(res.facts().air, level.seed);
@@ -389,8 +397,13 @@ pub(super) fn preload_launch_world(
         .spawn(move || {
             // Not behind the server: the world's opening waits for it.
             let started = std::time::Instant::now();
-            // Errors are left for the world opening to report.
-            let (overrides, _) = worldgen_overrides_of(&world_root, &resources, &biomes);
+            // Errors are left for the world opening to report. The world's
+            // flags from its level.dat: the feature packs a flag forces on.
+            let enabled_features = horizon_client::save::Level::read(&world_root)
+                .map(|l| l.enabled_features)
+                .unwrap_or_default();
+            let (overrides, _) =
+                worldgen_overrides_of(&world_root, &resources, &biomes, &enabled_features);
             if let Ok(data) = horizon_client::vanillagen::shared_data_with(
                 &resources.join("worldgen"),
                 &overrides,
@@ -451,9 +464,10 @@ pub(super) fn packed_biomes(
     world_root: &std::path::Path,
     resources: &std::path::Path,
     base: &Arc<horizon_client::biome::Biomes>,
+    enabled_features: &[String],
 ) -> Arc<horizon_client::biome::Biomes> {
     let packs = horizon_client::datapack::discover_with_features(world_root, resources);
-    let enabled = horizon_client::datapack::enabled_ids(world_root, &packs);
+    let enabled = horizon_client::datapack::enabled_ids(world_root, &packs, enabled_features);
     let enabled: Vec<_> = enabled
         .iter()
         .filter_map(|id| packs.iter().find(|p| &p.id == id))
@@ -474,8 +488,10 @@ fn world_worldgen_overrides(
     world_root: &std::path::Path,
     resources: &std::path::Path,
     biomes: &horizon_client::biome::Biomes,
+    enabled_features: &[String],
 ) -> horizon_world::worldgen::overrides::WorldgenOverrides {
-    let (overrides, warnings) = worldgen_overrides_of(world_root, resources, biomes);
+    let (overrides, warnings) =
+        worldgen_overrides_of(world_root, resources, biomes, enabled_features);
     for warning in warnings {
         log::warn!("Horizon: data pack worldgen: {warning}");
     }
@@ -488,12 +504,13 @@ fn worldgen_overrides_of(
     world_root: &std::path::Path,
     resources: &std::path::Path,
     biomes: &horizon_client::biome::Biomes,
+    enabled_features: &[String],
 ) -> (
     horizon_world::worldgen::overrides::WorldgenOverrides,
     Vec<String>,
 ) {
     let packs = horizon_client::datapack::discover_with_features(world_root, resources);
-    let enabled = horizon_client::datapack::enabled_ids(world_root, &packs);
+    let enabled = horizon_client::datapack::enabled_ids(world_root, &packs, enabled_features);
     let enabled: Vec<_> = enabled
         .iter()
         .filter_map(|id| packs.iter().find(|p| &p.id == id))
@@ -510,7 +527,10 @@ pub(super) fn level_shapes(
 ) -> horizon_client::chunk::LevelShapes {
     use horizon_client::chunk::{LevelShape, LevelShapes};
     let packs = horizon_client::datapack::discover(world_root);
-    let enabled = horizon_client::datapack::enabled_ids(world_root, &packs);
+    let enabled_features = horizon_client::save::Level::read(world_root)
+        .map(|l| l.enabled_features)
+        .unwrap_or_default();
+    let enabled = horizon_client::datapack::enabled_ids(world_root, &packs, &enabled_features);
     let enabled: Vec<_> = enabled
         .iter()
         .filter_map(|id| packs.iter().find(|p| &p.id == id))
@@ -550,6 +570,7 @@ pub(super) fn make_streaming(
     dim: Dim,
     shape: horizon_client::chunk::LevelShape,
     seed: i64,
+    enabled_features: &[String],
 ) -> Result<(Streaming, Arc<SaveDir>, Option<Arc<VanillaTerrain>>)> {
     let save = Arc::new(SaveDir::new(
         horizon_client::save::dimension_dir(world_root, dim.id()),
@@ -557,7 +578,12 @@ pub(super) fn make_streaming(
     ));
     // The world's packs over the game's biomes (`RegistryDataLoader`
     // layering): the generator names the ids and the client draws them.
-    let biomes = packed_biomes(world_root, &options.resources, res.biomes());
+    let biomes = packed_biomes(
+        world_root,
+        &options.resources,
+        res.biomes(),
+        enabled_features,
+    );
     let mut locator = None;
     let flat = (dim == Dim::Overworld)
         .then(|| horizon_client::save::world_gen_settings(world_root))
@@ -598,7 +624,8 @@ pub(super) fn make_streaming(
         let structures =
             horizon_client::save::WorldGen::read(world_root).is_none_or(|w| w.structures);
         let preset = horizon_client::save::WorldGen::preset(world_root);
-        let overrides = world_worldgen_overrides(world_root, &options.resources, &biomes);
+        let overrides =
+            world_worldgen_overrides(world_root, &options.resources, &biomes, enabled_features);
         let inner = Arc::new(VanillaTerrain::for_world_with(&options.resources.join("worldgen"), &overrides, pack.assets.registry, &biomes, seed, preset, dim.id(), structures).map_err(|e| {
                 if overrides.is_empty() {
                     format!("{e}\nPrepare the worldgen bundle with the launcher, or: horizon-prepare --prepare")

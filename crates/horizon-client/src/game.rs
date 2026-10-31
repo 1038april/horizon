@@ -10719,6 +10719,7 @@ impl Game<'_> {
             dim,
             self.level_shapes.get(dim.id()),
             seed,
+            &self.level.enabled_features,
         )?;
         self.end.set_locator(locator);
         self.share_spawn_conditions();
@@ -16478,6 +16479,7 @@ impl Game<'_> {
             &self.world_root,
             &self.options.resources,
             self.res.biomes(),
+            &self.level.enabled_features,
         );
         (!Arc::ptr_eq(&table, self.res.biomes())).then_some(table)
     }
@@ -16492,6 +16494,7 @@ impl Game<'_> {
             &self.world_root,
             &self.options.resources,
             self.cmds.vanilla_disabled,
+            &self.level.enabled_features,
         );
         if files.is_empty() {
             return None;

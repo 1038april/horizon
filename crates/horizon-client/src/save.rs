@@ -346,7 +346,10 @@ fn json_tag(value: &serde_json::Value) -> Tag {
 /// `datapackDimensions`.
 fn datapack_dimensions(world: &Path) -> Vec<(String, Tag)> {
     let packs = crate::datapack::discover(world);
-    let enabled = crate::datapack::enabled_ids(world, &packs);
+    let enabled_features = Level::read(world)
+        .map(|l| l.enabled_features)
+        .unwrap_or_default();
+    let enabled = crate::datapack::enabled_ids(world, &packs, &enabled_features);
     let enabled: Vec<&crate::datapack::DataPack> = enabled
         .iter()
         .filter_map(|id| packs.iter().find(|p| &p.id == id))

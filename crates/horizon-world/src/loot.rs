@@ -43,11 +43,11 @@ impl PackOverlay<'_> {
     /// tag id `<ns>:<path>` the game's own tags are keyed by
     /// (`TagLoader`'s ids).
     pub fn tag_kind(&self, registry: &str) -> impl Iterator<Item = (String, &Vec<Vec<u8>>)> {
-        let tail = format!(":{registry}/");
+        let prefix = format!("{registry}/");
         self.files.iter().filter_map(move |(key, files)| {
             let rest = key.strip_prefix("tags/")?;
             let (ns, path) = rest.split_once(':')?;
-            let path = path.strip_prefix(&tail)?;
+            let path = path.strip_prefix(&prefix)?;
             Some((format!("{ns}:{path}"), files))
         })
     }
