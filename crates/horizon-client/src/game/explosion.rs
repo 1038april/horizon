@@ -329,6 +329,9 @@ impl Game<'_> {
     /// whole, this push in it, once their server copy has travelled
     /// (Entity.markHurt, then ServerEntity.sendChanges), and replaces what the
     /// packet would add.
+    ///
+    /// `cause` is the blast's source as predicates see it, read before the
+    /// guests' turns swap their own combat state in.
     pub(super) fn explosion_hurt_player(
         &mut self,
         center: [f64; 3],
@@ -336,6 +339,7 @@ impl Game<'_> {
         damage_type: &str,
         exploding: Option<u32>,
         attacker: Option<&(u32, Text)>,
+        cause: Option<&horizon_client::advancements::EntityView>,
     ) -> Option<[f64; 3]> {
         let diameter = f64::from(radius * 2.0);
         // Blast protection: `EXPLOSION_KNOCKBACK_RESISTANCE` (0.15 per level and
@@ -356,7 +360,7 @@ impl Game<'_> {
             return None;
         }
         // ServerPlayer.onExplosionHit: the blast that hit the player is theirs.
-        self.adv.marks.blast = Some((feet, self.combat.explosion_cause.clone()));
+        self.adv.marks.blast = Some((feet, cause.cloned()));
         let w = f64::from(p.dimensions.width) / 2.0;
         let h = f64::from(p.dimensions.height);
         let eye = [
@@ -408,6 +412,8 @@ impl Game<'_> {
                     amount,
                     blocking,
                     attacker.is_some(),
+                    // The blast's causing entity.
+                    attacker.map_or(0, |(id, _)| *id as i32),
                 )
             {
                 outcome = o;
@@ -480,10 +486,18 @@ impl Game<'_> {
         };
         // The player, then every other player in the level (LAN guests),
         // each swapped in as the player. In a guest's turn (their hit on an
-        // end crystal) the player is that guest.
+        // end crystal) the player is that guest. The blast's source is the
+        // same for all of them (`onExplosionHit(this.source)`).
         let attacker = self.blast_attacker();
-        let own =
-            self.explosion_hurt_player(center, radius, damage_type, exploding, attacker.as_ref());
+        let blast_source = self.combat.explosion_cause.clone();
+        let own = self.explosion_hurt_player(
+            center,
+            radius,
+            damage_type,
+            exploding,
+            attacker.as_ref(),
+            blast_source.as_ref(),
+        );
         let mut pushed: Vec<_> = self.lan_acting.zip(own).into_iter().collect();
         if let Some(mut host) = self.lan.take() {
             let guests: Vec<u32> = host
@@ -501,6 +515,7 @@ impl Game<'_> {
                         damage_type,
                         exploding,
                         attacker.as_ref(),
+                        blast_source.as_ref(),
                     )
                 });
                 if let Some(Some(push)) = push {
@@ -567,6 +582,7 @@ impl Game<'_> {
         }
         self.mobs = mobs;
         // Dropped items: 5 health, destroyed by the explosion damage (nether stars resist).
+        let before = self.dropped_ids();
         let mut items = std::mem::take(&mut self.dropped);
         items.retain_mut(|item| {
             let feet = [item.position.x, item.position.y, item.position.z];
@@ -593,9 +609,11 @@ impl Game<'_> {
             true
         });
         self.dropped = items;
+        self.native_items_left_since(&before);
         // Experience orbs: `ExperienceOrb.hurtServer` takes the damage off
         // their 5 health, and `pushFromExplosion` moves the ones that stay
         // (a 0.5 x 0.5 box, the eyes at 0.85 of its height).
+        let orbs_before = self.orb_ids();
         let mut orbs = std::mem::take(&mut self.orbs);
         orbs.retain_mut(|o| {
             let feet = [o.position.x, o.position.y, o.position.z];
@@ -622,6 +640,7 @@ impl Game<'_> {
             true
         });
         self.orbs = orbs;
+        self.native_orbs_left_since(&orbs_before);
         // Primed TNT: knockback only, from its position (not its eyes).
         let mut tnts = std::mem::take(&mut self.tnts);
         for t in &mut tnts {

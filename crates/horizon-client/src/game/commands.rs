@@ -1178,6 +1178,8 @@ impl Game<'_> {
         {
             // `ShieldItem.getName`: the banner's base colour names the shield.
             Text::translate(&format!("item.minecraft.shield.{color}"), &[])
+        } else if let Some(head) = horizon_client::item_tooltip::player_head_name(s) {
+            head.text()
         } else {
             // Item.getDescriptionId: a block item's is the block's.
             let (namespace, path) = item.split_once(':').unwrap_or(("minecraft", item));
@@ -1924,7 +1926,11 @@ impl Game<'_> {
                     }
                 }
             }
-            Target::Item(id) => self.dropped.retain(|i| i.id != id),
+            Target::Item(id) => {
+                if let Some(i) = self.dropped.iter().position(|i| i.id == id) {
+                    self.remove_dropped(i);
+                }
+            }
             Target::Orb(id) => {
                 if let Some(o) = self.orbs.iter_mut().find(|o| o.id == id) {
                     o.age = u32::MAX / 2;
@@ -1955,7 +1961,9 @@ impl Game<'_> {
             Target::Dragon(id) => self.kill_dragon(id),
         }
         // The orbs marked for removal are gone (Entity.kill removes them).
+        let before = self.orb_ids();
         self.orbs.retain(|o| o.age < u32::MAX / 2);
+        self.native_orbs_left_since(&before);
     }
     fn cmd_kill(&mut self, ctx: &Context) -> R<i32> {
         let targets = if ctx.get("targets").is_some() {
@@ -2280,10 +2288,14 @@ impl Game<'_> {
         };
         let rolled = self.take_loot_table(key, &tag, &mut new);
         let after = horizon_client::save::encode_block_entity(key, &new, &name);
-        if after == before && !rolled {
+        // The lock is outside the model: a tag that only changes it still
+        // changes the block entity.
+        let lock_changed = self.world.block_lock(key) != tag.get("lock");
+        if after == before && !rolled && !lock_changed {
             return false;
         }
         self.world.block_entities.insert(key, new);
+        self.world.set_block_lock(key, &tag);
         self.update_spawner_display(key);
         self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
         true
@@ -3337,13 +3349,30 @@ impl Game<'_> {
                 .options
                 .resources
                 .join(format!("data/{ns}/tags/{registry}/{path}.json"));
-            let Ok(v) = std::fs::read(file)
-                .map_err(|_| ())
-                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).map_err(|_| ()))
-            else {
-                continue;
-            };
-            for e in v["values"].as_array().into_iter().flatten() {
+            // The game's file and the world's packs' both count, entries
+            // joined in resource-stack order; a pack file with `replace`
+            // drops what the lower sources put in (`TagLoader.load`).
+            let packed = self
+                .fns
+                .store
+                .files
+                .get(&format!("tags/{ns}:{registry}/{path}"))
+                .into_iter()
+                .flatten()
+                .filter_map(|b| serde_json::from_slice::<serde_json::Value>(b).ok());
+            let parsed = std::fs::read(file)
+                .ok()
+                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+                .into_iter()
+                .chain(packed);
+            let mut entries = Vec::new();
+            for v in parsed {
+                if v["replace"].as_bool() == Some(true) {
+                    entries.clear();
+                }
+                entries.extend(v["values"].as_array().into_iter().flatten().cloned());
+            }
+            for e in &entries {
                 let id = e.as_str().or_else(|| e["id"].as_str()).unwrap_or_default();
                 match id.strip_prefix('#') {
                     Some(nested) => pending.push(nested.to_owned()),

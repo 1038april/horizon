@@ -76,6 +76,9 @@ pub struct ItemEntity {
     /// `Entity.tickCount`: ticks since the item entered the level, which
     /// paces `ItemEntity.mergeWithNeighbours`.
     pub ticks: u32,
+    /// `Entity.needsSync` / `syncPosition`: immediate `ServerEntity.sendChanges`
+    /// after a bounce or velocity jump (`> 0.1` in `ItemEntity.tick`).
+    pub needs_sync: bool,
 }
 /// Environment results needed by the entity owner, including lethal lava damage.
 #[derive(Debug)]
@@ -232,6 +235,7 @@ impl ItemEntity {
             self.pickup_delay -= 1;
         }
         let (water_height, lava_height) = self.update_fluids(world, fluids);
+        let old_velocity = self.velocity;
         let in_water = water_height > f64::from(0.1f32);
         if in_water {
             // ItemEntity.setUnderwaterMovement
@@ -329,6 +333,9 @@ impl ItemEntity {
                 &mut self.velocity,
             );
         }
+        if self.velocity.subtract(old_velocity).length_squared() > 0.01 {
+            self.needs_sync = true;
+        }
         self.age += 1;
         // ItemEntity.tick refreshes immersion after moving.
         self.update_fluids(world, fluids);
@@ -341,6 +348,7 @@ impl ItemEntity {
     pub fn piston_slime_bounce(&mut self, movement: Direction) {
         self.velocity = horizon_world::piston_push::bounce_velocity(movement, self.velocity);
         self.on_ground = false;
+        self.needs_sync = true;
     }
     /// `HoneyBlock.entityInside` for the honey blocks this item's box is in
     /// (`Entity.checkInsideBlocks`, deflated by `1.0E-5`). Slide sounds and
@@ -1171,6 +1179,7 @@ mod fire_environment_tests {
             pickup_delay: 0,
             bob_offset: 0.0,
             ticks: 0,
+            needs_sync: false,
         };
         let mut wood = make("minecraft:oak_planks");
         let mut metal = make("minecraft:netherite_ingot");
@@ -1268,6 +1277,7 @@ mod merge_tests {
             pickup_delay: 0,
             bob_offset: 0.0,
             ticks: age,
+            needs_sync: false,
         }
     }
     fn max_stack(stack: &ItemStack) -> u32 {
@@ -1541,6 +1551,7 @@ mod honey_slide_tests {
             pickup_delay: 0,
             bob_offset: 0.0,
             ticks: 10,
+            needs_sync: false,
         }
     }
 
@@ -1668,6 +1679,7 @@ mod slime_bounce_tests {
             pickup_delay: 0,
             bob_offset: 0.0,
             ticks: 10,
+            needs_sync: false,
         }
     }
 
@@ -1677,9 +1689,12 @@ mod slime_bounce_tests {
         item.piston_slime_bounce(Direction::Up);
         assert_eq!(item.velocity, Vec3::new(0.0, 1.0, 0.0));
         assert!(!item.on_ground);
+        assert!(item.needs_sync);
+        item.needs_sync = false;
         item.piston_slime_bounce(Direction::East);
         assert_eq!(item.velocity, Vec3::new(1.0, 1.0, 0.0));
         assert!(!item.on_ground);
+        assert!(item.needs_sync);
     }
 
     #[test]
@@ -1689,5 +1704,50 @@ mod slime_bounce_tests {
         let bounced = item_vertical_collision_velocity(-1.0, true) * 0.98;
         assert!(bounced > 0.0);
         assert_eq!(bounced, 0.8 * 0.98);
+    }
+
+    #[test]
+    fn a_slime_bounce_marks_the_item_for_immediate_sync() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = crate::assets::Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let facts = crate::blocks::BlockFacts::load(&root, assets.registry).unwrap();
+        let fluids = crate::motion::FluidResources::new(&assets, &facts).unwrap();
+        let collision = crate::collisions::load(&root, assets.registry).unwrap();
+        let mut world = World::test_scene(&assets, &render, 3).unwrap();
+        let slime = assets
+            .registry
+            .default_state("minecraft:slime_block")
+            .unwrap();
+        for x in 19..=21 {
+            for z in 19..=21 {
+                world.set(x, 3, z, slime).unwrap();
+            }
+        }
+        // ItemEntity.tick sets needsSync when getDeltaMovement().subtract(oldMovement).lengthSqr() > 0.01.
+        let mut falling = grounded_item();
+        falling.position = Vec3::new(20.5, 4.2, 20.5);
+        falling.previous = falling.position;
+        falling.velocity = Vec3::new(0.0, -0.5, 0.0);
+        falling.on_ground = false;
+        falling.age = 0;
+        falling.id = 1;
+        falling.tick(&world, assets.registry, &facts, &collision, false, &fluids);
+        assert_eq!(falling.position.y, 4.0);
+        assert!(falling.velocity.y > 0.0);
+        assert!(falling.on_ground);
+        assert!(falling.needs_sync);
+
+        // An idle tick where velocity only steps by -0.04 (0.04^2 = 0.0016 <= 0.01)
+        // does not set needs_sync.
+        falling.velocity = Vec3::ZERO;
+        falling.needs_sync = false;
+        falling.tick(&world, assets.registry, &facts, &collision, false, &fluids);
+        assert!(!falling.needs_sync);
     }
 }
