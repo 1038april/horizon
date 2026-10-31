@@ -5245,8 +5245,8 @@ impl Game<'_> {
             || self.interact_boat(target)
             || self.interact_cart(target)
             || self.interact_mob(target)?
-            // A knot is a block under the crosshair, not an entity id, so a
-            // packet's click never reaches it.
+            // Knots are reached only through the crosshair pick for now: a
+            // guest's Interact naming a knot's id is a known gap.
             || target.is_none() && self.interact_knot())
     }
     /// `ItemStack.applyAfterUseComponentSideEffects`: a used stack with a
