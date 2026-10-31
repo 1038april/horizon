@@ -141,7 +141,7 @@ hook hears the layout's inputs (`HealthInputs`) and the screen's GUI size, and a
 draws replaces all the rows — armour, hearts, food, air and the heights above the hotbar — for that
 frame. Nothing answered draws Horizon's own. Bundles that use it need `"hooks": 27`.
 
-API 28 added `native_block_in_tag` and `native_item_in_tag` for server tick hooks. API @API:server_tag_reads@ removes their tick context parameter so any server hook can use them; update existing calls to omit that parameter. They read the world's merged block and item tags, including data packs and content mods. An unknown tag returns false. An empty item stack tests the `minecraft:air` item, as vanilla does. Calls on a client return `NotServer`; calls before the world loads its tags return `TagsUnavailable`. Bundles using the new signatures need `"hooks": @API:server_tag_reads@`.
+API 28 adds `native_block_in_tag` and `native_item_in_tag` for server tick hooks; calls with an inactive or stale tick context return an error. API @API:server_tag_reads@ adds `native_server_block_in_tag` and `native_server_item_in_tag` for any server hook, without a tick context. They read the world's merged block and item tags, including data packs and content mods. An unknown tag returns false. An empty item stack tests the `minecraft:air` item, as vanilla does. The new helpers return `NotServer` on a client and `TagsUnavailable` before the world loads its tags. Bundles using them need `"hooks": @API:server_tag_reads@`.
 
 API 29 adds right-clicking an entity, on the server for every player: `native_interact_entity` hears a right click on
 an entity (its id and type, and the stack in the hand) where `Player.interactOn` starts, once per hand. A mod that claims

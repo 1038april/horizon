@@ -35,9 +35,37 @@ impl Game<'_> {
         Ok(self.items())
     }
 
-    /// Test a block state's name against the server's merged block tags.
+    /// Test a block state's name in an active server tick hook. API 28.
     #[allow(dead_code)]
     pub(super) fn native_block_in_tag(
+        &self,
+        context: &NativeLifecycleContext,
+        state: &BlockState,
+        tag: &str,
+    ) -> Result<bool, NativeBlockReadError> {
+        if !self.native_lifecycle.permits_read(context) {
+            return Err(NativeBlockReadError::InactiveContext);
+        }
+        self.native_server_block_in_tag(state, tag)
+    }
+
+    /// Test an item stack in an active server tick hook. API 28.
+    #[allow(dead_code)]
+    pub(super) fn native_item_in_tag(
+        &self,
+        context: &NativeLifecycleContext,
+        stack: &ItemStack,
+        tag: &str,
+    ) -> Result<bool, NativeBlockReadError> {
+        if !self.native_lifecycle.permits_read(context) {
+            return Err(NativeBlockReadError::InactiveContext);
+        }
+        self.native_server_item_in_tag(stack, tag)
+    }
+
+    /// Test a block state's name against the server's merged block tags.
+    #[allow(dead_code)]
+    pub(super) fn native_server_block_in_tag(
         &self,
         state: &BlockState,
         tag: &str,
@@ -47,7 +75,7 @@ impl Game<'_> {
 
     /// Test an item stack against the server's merged item tags.
     #[allow(dead_code)]
-    pub(super) fn native_item_in_tag(
+    pub(super) fn native_server_item_in_tag(
         &self,
         stack: &ItemStack,
         tag: &str,
