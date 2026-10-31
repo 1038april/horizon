@@ -87,7 +87,9 @@ mod creatures;
 mod crossbow;
 pub(crate) mod cushions;
 mod debug_keys;
+mod debug_lines;
 mod debug_options;
+mod debug_renderers;
 mod debug_stick;
 mod decorated_pot;
 mod dedicated;
@@ -2292,6 +2294,16 @@ struct Game<'a> {
     debug_entries: horizon_client::debug_entries::DebugEntries,
     /// `DebugOptionsScreen` while it is open (game/debug_options.rs).
     debug_options: Option<debug_options::DebugOptionsUi>,
+    /// `DebugEntryMemory`'s readings (game/debug_lines.rs).
+    memory_meter: std::cell::RefCell<horizon_client::debug_overlay::MemoryMeter>,
+    /// `Minecraft.gpuUtilization`: the last timed frame's GPU time over its
+    /// CPU time, in percent.
+    gpu_utilization: f64,
+    /// The mobs `mob_geometry` drew last frame (`lastEntityRenderStateCount`).
+    rendered_mobs: std::cell::Cell<usize>,
+    /// `ServerChunkCache.lastSpawnState` of each level: its spawnable chunks
+    /// and each `MobCategory`'s count.
+    spawn_counts: HashMap<Dim, (i32, [i32; 8])>,
     /// PauseScreen.showPauseMenu (false after F3+Escape).
     pause_menu: bool,
     /// MultiPlayerGameMode.previousLocalPlayerMode (F3+N goes back to it).
@@ -9309,6 +9321,7 @@ impl Game<'_> {
         see_through.clear();
         self.name_tag_geometry(camera, alpha, &mut out, &mut see_through);
         self.test_instance_marker_geometry(camera, &mut out, &mut see_through);
+        self.debug_renderer_geometry(camera, &mut out);
         self.text_display_geometry(camera, alpha, &mut out, &mut see_through);
         self.see_through_vertices = see_through;
         // Entity shadows (EntityRenderer.extractShadow).
@@ -14634,6 +14647,9 @@ impl ApplicationHandler for Game<'_> {
                         if self.screen == Screen::Stats {
                             self.stats_drag();
                         }
+                        if self.screen == Screen::DebugOptions {
+                            self.debug_options_drag();
+                        }
                         if self.screen == Screen::WorldOptions {
                             self.world_options_drag();
                         }
@@ -14954,6 +14970,9 @@ impl ApplicationHandler for Game<'_> {
                         }
                         Screen::DebugOptions if pressed && button == MouseButton::Left => {
                             self.debug_options_click()
+                        }
+                        Screen::DebugOptions if button == MouseButton::Left => {
+                            self.debug_options_release()
                         }
                         Screen::ConfirmLink if pressed && button == MouseButton::Left => {
                             self.confirm_link_click()
@@ -15354,6 +15373,10 @@ impl ApplicationHandler for Game<'_> {
                                 ms(cpu),
                                 r.gpu_times.last().copied(),
                             );
+                            if let Some(&gpu) = r.gpu_times.last() {
+                                self.gpu_utilization =
+                                    f64::from(gpu) * 100.0 / f64::from(ms(cpu).max(0.001));
+                            }
                             self.frame_stats.record_cpu(ms(cpu));
                             let render = r.last_encode;
                             self.frame_stats.record_phases([
@@ -15959,6 +15982,10 @@ impl<'a> Game<'a> {
                 &std::env::current_dir().unwrap_or_default(),
             ),
             debug_options: None,
+            memory_meter: Default::default(),
+            gpu_utilization: 0.0,
+            rendered_mobs: Default::default(),
+            spawn_counts: HashMap::new(),
             pause_menu: true,
             previous_mode: None,
             gamemode_switcher: None,

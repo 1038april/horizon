@@ -5211,6 +5211,7 @@ impl Game<'_> {
         let atlas = &self.gui.atlas;
         let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
         let scale = self.view_scale();
+        self.rendered_mobs.set(0);
         for mob in &self.mobs {
             let entity_start = out.len();
             let outline = self.mob_outline(mob);
@@ -5257,6 +5258,7 @@ impl Game<'_> {
                 }
             }
             self.mark_entity(entity_start, &mob.kind.id);
+            self.rendered_mobs.set(self.rendered_mobs.get() + 1);
             let light = self.world.light(
                 mob.position.x.floor() as i32,
                 (mob.position.y + mob.eye_height()).floor() as i32,
