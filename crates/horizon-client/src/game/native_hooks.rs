@@ -722,7 +722,8 @@ impl Game<'_> {
     /// A living player's server tick ends (`ServerPlayer.tick`): once a tick
     /// for every player in the world, after their digging, item use,
     /// cooldowns, statistics and advancements. The helpers read that player.
-    /// API 31.
+    /// Players still tick under `/tick freeze`; a dead player doesn't, nor
+    /// does one killed earlier in the same tick. API 31.
     pub(super) fn native_player_tick(&mut self) {}
     /// The player-health HUD rows, once a frame the HUD draws them
     /// (`HealthHud::layout`, not under F1): `inputs` carries the health,
