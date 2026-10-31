@@ -2019,9 +2019,12 @@ impl OptionsUi {
                             label = label.append(tr("horizon.mods.dev"));
                         }
                         let dead = installed.dev || installed.id.is_empty();
-                        // A native mod gets its settings page's button beside
-                        // the toggle.
-                        if installed.native.is_some() {
+                        // Only native mods with actual settings need a second button.
+                        if installed
+                            .native
+                            .as_ref()
+                            .is_some_and(|page| !page.keys.is_empty() || !page.buttons.is_empty())
+                        {
                             let toggle = button(0.0, 0.0, 150.0, label, Act::ToggleMod(i));
                             let settings = button(
                                 0.0,
@@ -3981,7 +3984,10 @@ mod tests {
             description: String::new(),
             problem: None,
             dev: false,
-            native: Some(crate::mod_list::NativePage::default()),
+            native: Some(crate::mod_list::NativePage {
+                buttons: vec!["Setting".into()],
+                ..Default::default()
+            }),
         });
         ui.show(Page::Mods);
         let (widgets, ..) = ui.layout(&s, size.0, size.1);
@@ -4010,6 +4016,56 @@ mod tests {
         // Its labels were made with the list, maybe in another language.
         assert_eq!(events.last(), Some(&Event::NativeSettings(0)));
         assert_eq!(ui.page(), Page::NativeMod(0));
+    }
+
+    #[test]
+    fn native_mod_without_settings_has_only_a_full_width_toggle() {
+        let atlas = atlas();
+        let mut s = Settings::default();
+        let mut ui = OptionsUi::default();
+        s.mods.installed.push(crate::mod_list::Installed {
+            id: "no_settings".into(),
+            title: "Native 1.0".into(),
+            description: String::new(),
+            problem: None,
+            dev: false,
+            native: Some(crate::mod_list::NativePage::default()),
+        });
+        ui.show(Page::Mods);
+        let (widgets, ..) = ui.layout(&s, 480.0, 240.0);
+        assert!(!widgets.iter().any(|w| matches!(
+            w.kind,
+            WKind::Button {
+                act: Act::ModSettings(_),
+                ..
+            }
+        )));
+        let toggle = widgets
+            .iter()
+            .find(|w| {
+                matches!(
+                    w.kind,
+                    WKind::Button {
+                        act: Act::ToggleMod(0),
+                        ..
+                    }
+                )
+            })
+            .unwrap();
+        assert_eq!(toggle.w, 310.0);
+        let events = ui.click(
+            &mut s,
+            &atlas,
+            toggle.x + 1.0,
+            toggle.y + 1.0,
+            (480.0, 240.0),
+            [480, 240],
+            false,
+            false,
+        );
+        assert!(events.contains(&Event::Changed));
+        assert!(!s.mods.is_on(0));
+        assert!(s.mods.disabled.contains("no_settings"));
     }
 
     #[test]
