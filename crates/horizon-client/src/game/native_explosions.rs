@@ -71,9 +71,53 @@ impl Game<'_> {
             NativeBlast::Block => self.destroy_type("block_explosion_drop_decay"),
             NativeBlast::Tnt => self.destroy_type("tnt_explosion_drop_decay"),
         };
-        self.server_explode(center, radius, interaction, fire)
-            .is_ok()
+        // `Level.explode(null, ...)`: no source. Called from inside another
+        // blast (`native_explosion_detonate`), it must not take that blast's
+        // source, owner or flags, and that blast gets them back after.
+        let outer = self.take_blast_state();
+        let done = self
+            .server_explode(center, radius, interaction, fire)
+            .is_ok();
+        self.restore_blast_state(outer);
+        done
     }
+
+    /// The blast going off now, cleared to a sourceless one.
+    fn take_blast_state(&mut self) -> BlastState {
+        let c = &mut self.combat;
+        BlastState {
+            source: c.explosion_source.take(),
+            cause: c.explosion_cause.take(),
+            source_named: std::mem::take(&mut c.explosion_source_named),
+            in_water: std::mem::take(&mut c.explosion_in_water),
+            hive_emptying: std::mem::take(&mut c.hive_emptying_blast),
+            rail_proof: std::mem::take(&mut c.rail_proof_blast),
+            owner: c.explosion_owner.take(),
+        }
+    }
+
+    /// Puts back what `take_blast_state` cleared.
+    fn restore_blast_state(&mut self, s: BlastState) {
+        let c = &mut self.combat;
+        c.explosion_source = s.source;
+        c.explosion_cause = s.cause;
+        c.explosion_source_named = s.source_named;
+        c.explosion_in_water = s.in_water;
+        c.hive_emptying_blast = s.hive_emptying;
+        c.rail_proof_blast = s.rail_proof;
+        c.explosion_owner = s.owner;
+    }
+}
+
+/// The fields of `CombatTracker` that describe the blast going off now.
+struct BlastState {
+    source: Option<u32>,
+    cause: Option<horizon_client::advancements::EntityView>,
+    source_named: bool,
+    in_water: bool,
+    hive_emptying: bool,
+    rail_proof: bool,
+    owner: Option<u32>,
 }
 
 #[cfg(test)]
