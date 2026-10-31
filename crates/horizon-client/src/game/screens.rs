@@ -152,6 +152,7 @@ impl Game<'_> {
     /// Vanilla: a single button (customAdditions) that opens the dialog_list
     /// when the tag has multiple entries, or the single dialog directly.
     fn pause_screen_additions(&self) -> Option<(Text, Tag)> {
+        // single button for all additions; Dialog::set_list expands to dialog_list
         let registries = &self.remote.as_ref()?.registries;
         let dialogs = registries.registries.get("minecraft:dialog")?;
         let tag = registries
