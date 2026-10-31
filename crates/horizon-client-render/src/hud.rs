@@ -467,6 +467,7 @@ impl HudAtlas {
             glint: (vec![0; 4], 1, 1),
             glint_armor: (vec![0; 4], 1, 1),
             white,
+            text_shader: None,
         }
     }
     /// Shelf placements of `images` (tallest first) in the narrowest atlas
