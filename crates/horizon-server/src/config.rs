@@ -74,6 +74,14 @@ allow_public = false         # true lets bind be any address; the token is then 
 # alert = 5
 # kick = 20
 # decay = 0.02               # violation level lost each second
+
+# The chat filter (docs/chat-filter.md) is on: a message, sign, anvil name or book title with a hate slur reaches
+# nobody, the sender is told, and logs/chat-filter.log keeps it for operators. To change it:
+# [chat_filter]
+# enabled = true             # false: players' text goes out as they wrote it
+# mute_after = 2             # the hit (within window_minutes) that mutes for mute_minutes; 0: never
+# tempban_after = 3          # the hit that bans for tempban_hours; 0: never
+# words_file = ""            # your own list, in the format of the built-in one; "": the built-in list
 "##;
 
 /// Each typed setting: its section, its name, and the vanilla key it writes.
@@ -117,6 +125,14 @@ pub struct Config {
     /// The game reads this section itself (docs/anticheat.md); written only when it isn't the default.
     #[serde(default, skip_serializing_if = "anticheat_default")]
     pub anticheat: horizon_anticheat::Config,
+    /// The game reads this section itself (docs/chat-filter.md); written only when it isn't the default.
+    #[serde(default, skip_serializing_if = "chat_filter_default")]
+    pub chat_filter: horizon_chat_filter::Config,
+}
+
+/// The game reads this section itself too (docs/chat-filter.md).
+fn chat_filter_default(c: &horizon_chat_filter::Config) -> bool {
+    *c == horizon_chat_filter::Config::default()
 }
 
 fn anticheat_default(c: &horizon_anticheat::Config) -> bool {
@@ -368,6 +384,7 @@ impl Config {
         self.panel.address()?;
         self.api.check()?;
         self.anticheat.check()?;
+        self.chat_filter.check()?;
         if self.server.port == 0 {
             return Err("server.port must be a port number from 1 to 65535".into());
         }
@@ -479,11 +496,13 @@ pub fn render(config: &Config) -> String {
         set(&mut doc, section, field, &table[section][field]);
     }
     let mut text = doc.to_string();
-    if let Some(anticheat) = table.get("anticheat") {
-        let mut only = toml::Table::new();
-        only.insert("anticheat".into(), anticheat.clone());
-        text.push('\n');
-        text.push_str(&toml::to_string(&only).expect("the anticheat's settings are a table"));
+    for section in ["anticheat", "chat_filter"] {
+        if let Some(settings) = table.get(section) {
+            let mut only = toml::Table::new();
+            only.insert(section.into(), settings.clone());
+            text.push('\n');
+            text.push_str(&toml::to_string(&only).expect("a section's settings are a table"));
+        }
     }
     text
 }
@@ -620,6 +639,26 @@ mod tests {
     fn template_is_the_default() {
         assert_eq!(Config::parse(TEMPLATE).unwrap(), Config::default());
         assert_eq!(render(&Config::default()), TEMPLATE);
+    }
+
+    #[test]
+    fn the_chat_filter_is_on_unless_its_section_turns_it_off() {
+        assert!(Config::default().chat_filter.enabled);
+        assert!(!TEMPLATE.lines().any(|l| l.trim() == "[chat_filter]"));
+        let text =
+            format!("{TEMPLATE}\n[chat_filter]\nmute_after = 3\nwords_file = \"slurs.txt\"\n");
+        let c = Config::parse(&text).unwrap();
+        assert_eq!(c.chat_filter.mute_after, 3);
+        assert_eq!(Config::parse(&render(&c)).unwrap(), c);
+        // The game reads the same section from the same file.
+        assert_eq!(
+            horizon_chat_filter::Config::from_server_toml(&text).unwrap(),
+            c.chat_filter
+        );
+        let off = Config::parse(&format!("{TEMPLATE}\n[chat_filter]\nenabled = false\n")).unwrap();
+        assert!(!off.chat_filter.enabled);
+        assert_eq!(Config::parse(&render(&off)).unwrap(), off);
+        assert!(Config::parse("[chat_filter]\nmute = 2\n").is_err());
     }
 
     #[test]
