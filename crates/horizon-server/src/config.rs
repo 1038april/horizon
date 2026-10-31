@@ -62,6 +62,12 @@ bind = ""                    # the control API: "" a free port on 127.0.0.1; or 
 token = ""                   # its token (16 characters or more); "" a new random one at every start
 allow_public = false         # true lets bind be any address; the token is then all that guards the server
 
+# Post the chat, joins, leaves and deaths to a Discord channel, drawn like the in-game chat (docs/hosting.md)
+[discord]
+webhook = ""                 # the channel's webhook URL (a secret: anyone with it can post there); "" off
+events = ["chat", "join", "leave", "death"]   # what is posted; "kick" too if you like
+enabled = true               # false pauses it and keeps the webhook
+
 # Horizon's anticheat (docs/anticheat.md) is on: `combat` drops and kicks attacks no vanilla client sends;
 # timer, ground and prediction only write logs/anticheat.log until they're trusted. To change it:
 # [anticheat]
@@ -122,6 +128,9 @@ pub struct Config {
     pub panel: Panel,
     #[serde(default)]
     pub api: Api,
+    /// Chat and players posted to a Discord channel (discord.rs).
+    #[serde(default)]
+    pub discord: crate::discord::Settings,
     /// The game reads this section itself (docs/anticheat.md); written only when it isn't the default.
     #[serde(default, skip_serializing_if = "anticheat_default")]
     pub anticheat: horizon_anticheat::Config,
@@ -383,6 +392,7 @@ impl Config {
         crate::backup::interval(&self.backups.every)?;
         self.panel.address()?;
         self.api.check()?;
+        self.discord.check()?;
         self.anticheat.check()?;
         self.chat_filter.check()?;
         if self.server.port == 0 {

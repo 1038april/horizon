@@ -36,6 +36,9 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 p12-keystore = "0.2"
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 ureq = { version = "2", default-features = false, features = ["tls"] }
+# [discord]: the chat drawn as a PNG with Pixelify Sans (SIL OFL, crates/horizon-theme/fonts).
+ab_glyph = "0.2.32"
+png = "0.18"
 # Backups: one zip anyone can open, Windows included.
 zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
 
