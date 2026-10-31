@@ -1397,6 +1397,9 @@ fn title_screen_keyboard_navigation_and_activation() {
     let (action, sound) = f.title.confirm_key_size(size);
     assert_eq!(action, Action::None);
     assert!(sound);
+    // `createWorld.preparing` first, then Create New World.
+    assert!(f.title.preparing());
+    f.title.finish_preparing();
     assert!(matches!(f.title.mode, Mode::Create { .. }));
 
     // Focus and toggle Game Mode cycle button (id 20) from Survival to Hardcore

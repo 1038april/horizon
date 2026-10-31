@@ -10683,7 +10683,7 @@ impl Game<'_> {
     }
     /// `onAbort`: the confirm screen's Back or Escape reopens the Data
     /// Packs screen with the selection it had.
-    fn reopen_data_packs(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
+    fn reopen_data_packs(&mut self, event_loop: &dyn EventLoopCtl) -> Result<()> {
         let action = self
             .title
             .as_mut()
