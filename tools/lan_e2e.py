@@ -7072,7 +7072,7 @@ def check_sprint_hit_slowdown(host, guest, out):
     Player.attack runs on the attacker's client too, and RemotePlayer.hurtClient lets it reach
     causeExtraKnockback: the horizontal speed times 0.6 and setSprinting(false). Ctrl is released
     before the hit (the sprint holds while W stays down), so only the hit can end it. Input and
-    the attack run in one control script so command latency cannot carry the guest past the host.
+    the click run in one control script so command latency cannot carry the guest past the host.
     """
     if dead(guest):
         guest.raw('respawn')
@@ -7083,6 +7083,10 @@ def check_sprint_hit_slowdown(host, guest, out):
     guest('command', command='gamemode survival')
     guest('command', command='effect clear @s')
     guest('command', command='item replace entity @s weapon.mainhand with minecraft:air')
+    # Drain the server's attack log before the tick-tight click. The raw mouse
+    # click deliberately keeps W held; the `attack` agent command would release
+    # movement keys before its deferred result arrives.
+    host('hurtlog')
     hx, hy, hz = pos_of(host)
     x, y, z = math.floor(hx), math.floor(hy), math.floor(hz)
     host('command', command=f'fill {x - 6} {y} {z - 2} {x + 14} {y + 3} {z + 2} minecraft:air')
@@ -7099,7 +7103,7 @@ def check_sprint_hit_slowdown(host, guest, out):
             f'command tp @s {x + 3.5} {y} {z + 0.5} 90 0',
             'state',
             'key ctrl up',
-            'attack',
+            'mouse left click',
             'state',
             'wait 1',
             'state',
@@ -7111,7 +7115,13 @@ def check_sprint_hit_slowdown(host, guest, out):
         ], every=True)
         horizontal = lambda p: round(math.hypot(p['velocity'][0], p['velocity'][2]), 4)
         states = [r['player'] for r in replies if 'player' in r]
-        attack = next((r for r in replies if 'hit' in r), None)
+        logs = host('hurtlog').get('players', [])
+        victim_log = next((p for p in logs if p.get('name') == host.player), {})
+        attack = next(
+            (h for h in victim_log.get('hurts', [])
+             if h.get('source') == 'minecraft:player_attack' and h.get('hurt')),
+            None,
+        )
         before_index = next(
             (i for i, p in enumerate(states) if p['sprinting'] and horizontal(p) > 0.1),
             None,
@@ -7128,7 +7138,7 @@ def check_sprint_hit_slowdown(host, guest, out):
         'after': [{'sprinting': p['sprinting'], 'speed': horizontal(p)} for p in after],
         'attack': attack,
     }
-    assert attack and attack.get('hit'), f'the guest did not hit the host: {seen}'
+    assert attack, f'the guest did not hit the host: {seen}'
     assert before and seen['before']['speed'] > 0.1, f'the guest was not sprinting at the host: {seen}'
     # The click reaches the game on its next frame, so the samples may start before the hit.
     ended = next((i for i, a in enumerate(seen['after']) if not a['sprinting']), None)
