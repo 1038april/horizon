@@ -42,6 +42,41 @@ pub fn set_key(
     modifiers.set(*bit, pair.iter().any(|key| physical.contains(key)));
 }
 
+/// A modifier held for one synthesized click (the pad's Y, an agent's
+/// shift-click): what [`restore`] puts back once the click is done.
+#[derive(Clone, Copy, Debug)]
+pub struct Held {
+    key: KeyCode,
+    was_down: bool,
+    bit: bool,
+}
+
+/// Holds `key` in both the physical keys and the modifier word, which is
+/// what screens read (`InputWithModifiers.hasShiftDown`).
+pub fn hold(modifiers: &mut ModifiersState, physical: &mut HashSet<KeyCode>, key: KeyCode) -> Held {
+    let bit = MODIFIERS
+        .iter()
+        .find(|(_, pair)| pair.contains(&key))
+        .is_some_and(|(bit, _)| modifiers.contains(*bit));
+    let held = Held {
+        key,
+        was_down: physical.contains(&key),
+        bit,
+    };
+    set_key(modifiers, physical, key, true);
+    held
+}
+
+/// Undoes [`hold`]: a key or bit that was already down stays down.
+pub fn restore(modifiers: &mut ModifiersState, physical: &mut HashSet<KeyCode>, held: Held) {
+    if !held.was_down {
+        physical.remove(&held.key);
+    }
+    if let Some((bit, _)) = MODIFIERS.iter().find(|(_, pair)| pair.contains(&held.key)) {
+        modifiers.set(*bit, held.bit);
+    }
+}
+
 /// Recover missing modifier releases without releasing a rebound key or a pad.
 /// ToggleKeyMapping itself preserves keyboard and controller toggles on release.
 pub fn reconcile(
@@ -99,6 +134,27 @@ mod tests {
             assert!(modifiers.contains(bit));
             set_key(&mut modifiers, &mut physical, right, false);
             assert!(modifiers.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_held_click_restores_the_previous_state() {
+        let mut modifiers = ModifiersState::empty();
+        let mut physical = HashSet::new();
+        let held = hold(&mut modifiers, &mut physical, KeyCode::ShiftLeft);
+        assert!(modifiers.shift_key());
+        restore(&mut modifiers, &mut physical, held);
+        assert!(modifiers.is_empty());
+        assert!(physical.is_empty());
+
+        // Right Shift already held, or the OS word set with no physical key.
+        for start in [HashSet::from([KeyCode::ShiftRight]), HashSet::new()] {
+            let mut modifiers = ModifiersState::SHIFT;
+            let mut physical = start.clone();
+            let held = hold(&mut modifiers, &mut physical, KeyCode::ShiftLeft);
+            restore(&mut modifiers, &mut physical, held);
+            assert_eq!(modifiers, ModifiersState::SHIFT);
+            assert_eq!(physical, start);
         }
     }
 

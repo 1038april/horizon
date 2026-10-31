@@ -153,15 +153,12 @@ impl Game<'_> {
         reply: &Sender<String>,
         event_loop: &ActiveEventLoop,
     ) -> Result<Option<Value>> {
-        // A tap's release must run even when a screen consumes the press,
-        // the key is unbound, or a command handler returns an error.
-        let mut words = line.split_whitespace();
-        let tap = match (words.next(), words.next(), words.next()) {
-            (Some("key"), Some(key), Some("tap")) => key_code(key),
-            _ => None,
-        };
+        // A tap's or an up's release must run even when a dialog, the sign
+        // editor or a screen consumes the key, there is no world, or a
+        // command handler returns an error: a lost release keeps Shift down.
+        let released = released_modifier(line);
         let result = self.control_command_inner(line, reply, event_loop);
-        if let Some(key) = tap {
+        if let Some(key) = released {
             self.press_modifier_key(key, false);
         }
         result
@@ -1183,6 +1180,15 @@ fn vendor_name(id: u32) -> String {
     }
 }
 
+/// The key a `key <name> tap|up` command releases, whatever its handler does.
+fn released_modifier(line: &str) -> Option<KeyCode> {
+    let mut words = line.split_whitespace();
+    match (words.next(), words.next(), words.next()) {
+        (Some("key"), Some(key), Some("tap" | "up")) => key_code(key),
+        _ => None,
+    }
+}
+
 fn key_code(name: &str) -> Option<KeyCode> {
     let name = name.to_ascii_lowercase();
     let letters = [
@@ -1258,4 +1264,25 @@ fn key_code(name: &str) -> Option<KeyCode> {
         "down" => KeyCode::ArrowDown,
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn taps_and_ups_always_release_their_key() {
+        for line in ["key shift tap", "key shift up", "key  Shift  up"] {
+            assert_eq!(released_modifier(line), Some(KeyCode::ShiftLeft), "{line}");
+        }
+        for line in [
+            "key shift down",
+            "key shift repeat",
+            "key shift",
+            "keys shift up",
+            "key nope up",
+        ] {
+            assert_eq!(released_modifier(line), None, "{line}");
+        }
+    }
 }
