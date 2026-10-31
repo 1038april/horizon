@@ -110,7 +110,7 @@ ShelfBlockEntity.setChanged	inline	crates/horizon-client/src/game/machines.rs::C
 ShelfBlockEntity.applyImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::place	Items as container component
 ShelfBlockEntity.collectImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::collect	Items as container component
 ShulkerBoxBlockEntity.updateAnimation	port	crates/horizon-client-render/src/block_entity_anim.rs::Shulker::tick	lid progress
-ShulkerBoxBlockEntity.moveCollidedEntities	missing		player: unsure: a player in the swept lid box is not pushed out when the box opens; the code comment says the level does it and no push code was found
+ShulkerBoxBlockEntity.moveCollidedEntities	inline	crates/horizon-client/src/game/piston_push.rs::Game::push_shulker_entities	the sweeping lid box moves every body it meets out along the facing by the box's size plus 0.01 (`Entity.move(MoverType.SHULKER_BOX, …)`), through the piston push machinery
 ShulkerBoxBlockEntity.doNeighborUpdates	missing		minor: unsure: neighbour updates on lid open and close are left to the level; no code found
 ShulkerBoxBlockEntity.saveAdditional	port	crates/horizon-client/src/save.rs::encode_block_entity	shulker box uses the chest arm (27 slots)
 ShulkerBoxBlockEntity.loadFromTag	port	crates/horizon-client/src/block_entity_item.rs::place	contents from the item's data
