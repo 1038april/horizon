@@ -175,7 +175,7 @@ impl Game<'_> {
     /// The frame under the crosshair within reach and its distance.
     pub(super) fn frame_hit(&self) -> Option<(usize, f64)> {
         let (eye, dir) = self.aim()?;
-        let reach: f64 = if self.creative { 5.0 } else { 3.0 };
+        let reach: f64 = self.entity_reach;
         let mut best: Option<(usize, f64)> = None;
         for (i, f) in self.item_frames.iter().enumerate() {
             let (lo, hi) = f.bounds();
@@ -201,7 +201,7 @@ impl Game<'_> {
     }
     /// Nearer than the targeted block?
     pub(super) fn before_block(&self, distance: f64) -> bool {
-        self.pick().is_none_or(|h| {
+        self.pick_unfiltered().is_none_or(|h| {
             let eye = self.aim().map(|(eye, _)| eye).unwrap_or_default();
             (0..3)
                 .map(|a| (h.point[a] - eye[a]).powi(2))
@@ -433,6 +433,7 @@ impl Game<'_> {
             };
             let frame_packed =
                 (u32::from(frame_light >> 4) * 16) | ((u32::from(frame_light & 15) * 16) << 8);
+            let frame_start = out.len();
             let mut quad =
                 |m: &glam::DMat4, corners: [[f64; 3]; 4], uv: [[f32; 2]; 4], light: u32| {
                     // The frame model is drawn with the entity shader, lit by its face normal.
@@ -478,6 +479,13 @@ impl Game<'_> {
                         map_uv(r, *uv),
                         frame_packed,
                     );
+                }
+            }
+            // HDR output: a glow frame shines softly (entity.wgsl fs_hdr_mark); the item in it
+            // is only lit, as vanilla draws it.
+            if f.glow {
+                for v in &mut out[frame_start..] {
+                    v.layer |= u32::from(horizon_client::mesher::INCANDESCENT) << 16;
                 }
             }
             self.cull_entity_vertices(out, entity_start);
