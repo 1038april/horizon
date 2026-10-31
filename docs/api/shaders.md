@@ -74,6 +74,9 @@ sprites = ["block/glass", "block/*_stained_glass"]   # sprite names, at most one
 
 [budget]
 gpu_ms = 1.5               # optional: the GPU time the pack aims to add (0 to 16 ms)
+
+[reflection]               # optional, needs [material]: when the water mirror (`reflection`) is drawn
+option = "reflections"     # optional: drawn while this option is not 0 (else whenever the material reads it)
 ```
 
 An option's `override` has the type of its kind: `bool`, `f32`, `i32`, or `u32` for a choice (the index of the
@@ -100,6 +103,17 @@ stages.
 
 ## Changelog
 
+- 2026-10-30: API 0.1 (additions): the manifest's `[reflection] option`, which draws the water
+  mirror only while that option is on, and the mirror's own eye in facing culling.
+- 2026-10-30: API 0.1 (additions): the material stage's `reflection` and
+  `reflection_sampler`, the world mirrored about the water plane around the camera, drawn
+  only for a pack whose material reads it; `Frame.water_plane`, `has_reflection` and
+  `reflection_resolution`.
+- 2026-10-30: API 0.1 (additions): `MaterialInput.face`, `fluid`, `emission`, `normal` and
+  `tangent`: which fluid and face a point is on, how strongly its block shines, and the
+  surface's frame for normal maps and lighting.
+- 2026-10-30: API 0.1 (additions): the post stage's `history`, last frame's input to the last
+  pass, so a temporal pass second to last reads its own previous output (TAA, denoising).
 - 2026-10-30: API 0.1 (additions): `Frame.previous_view_projection`, `camera_motion` and
   `delta_time` for temporal passes (reprojection, motion blur); `eye_light_smooth`, `in_water`
   and `in_lava`, eased so exposure and underwater fog fade instead of stepping.

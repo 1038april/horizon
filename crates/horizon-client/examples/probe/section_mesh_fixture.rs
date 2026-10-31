@@ -7,7 +7,7 @@ use horizon_client::{
     biome::{BiomeInfo, Biomes, GrassModifier},
     blocks::BlockFacts,
     chunk::{Chunk, Light, MIN_Y, index},
-    mesher::{EMISSION_BITS, MeshTables, Mesher, OPAQUE_LAYER, TerrainVertex},
+    mesher::{EMISSION_BITS, FLUID_FACE_BITS, MeshTables, Mesher, OPAQUE_LAYER, TerrainVertex},
     models,
 };
 use horizon_core::biome::BiomeZoom;
@@ -168,7 +168,7 @@ fn scene(
                         z,
                         u,
                         w,
-                        argb(v.color | EMISSION_BITS),
+                        argb(v.color | EMISSION_BITS | FLUID_FACE_BITS),
                         light_coords(v.light)
                     ])
                 })
