@@ -71,8 +71,6 @@ pub(super) struct RecipeUi {
     time: f32,
     ghost: Vec<Ghost>,
     last_placed: Option<String>,
-    /// Display id of the recipe last sent with `PlaceRecipe` (ghost lookup).
-    last_placed_display: Option<i32>,
     overlay: Option<Overlay>,
     /// A press landed in the search box, so a drag selects text in it.
     search_drag: bool,
@@ -89,16 +87,10 @@ pub(super) struct RecipeUi {
 }
 
 impl RecipeUi {
-    /// Drop a faded ghost recipe (`GhostSlots.clear`); used when the server
-    /// updates the open menu's slots after a place.
-    pub(super) fn clear_ghost(&mut self) {
-        self.ghost.clear();
-    }
     /// A new screen starts without a ghost recipe, overlay or search focus.
     pub(super) fn reset_screen(&mut self) {
         self.ghost.clear();
         self.last_placed = None;
-        self.last_placed_display = None;
         self.overlay = None;
         self.tab = None;
         self.page = 0;
@@ -619,7 +611,6 @@ impl Game<'_> {
             && self.is_book_slot(book_type, slot)
         {
             self.recipe_ui.last_placed = None;
-            self.recipe_ui.last_placed_display = None;
             self.recipe_ui.ghost.clear();
         }
         let (bx, by) = self.book_button_pos(book_type, ox, &batch);
@@ -896,16 +887,15 @@ impl Game<'_> {
         let Some(book_type) = self.active_book() else {
             return false;
         };
-        let Some(entry) = self
+        let Some(id) = self
             .recipe_ui
             .book
             .as_ref()
             .and_then(|b| b.entries.get(entry_index))
-            .cloned()
+            .map(|e| e.id.clone())
         else {
             return false;
         };
-        let id = entry.id.clone();
         let button_craftable = self
             .recipe_ui
             .view
@@ -917,9 +907,8 @@ impl Game<'_> {
             return false;
         }
         self.recipe_ui.last_placed = Some(id);
-        self.recipe_ui.last_placed_display = Some(entry.display_id);
         self.recipe_ui.ghost.clear();
-        self.place_recipe(book_type, entry, use_max);
+        self.place_recipe(book_type, entry_index, use_max);
         true
     }
     /// Whether the open screen takes `native_place_recipe`: a crafting grid's
@@ -946,23 +935,21 @@ impl Game<'_> {
             return;
         };
         self.recipe_ui.ghost.clear();
-        let Some(entry) = self
-            .recipe_ui
-            .book
-            .as_ref()
-            .and_then(|b| b.entries.get(index))
-            .cloned()
-        else {
-            return;
-        };
-        self.recipe_ui.last_placed = Some(entry.id.clone());
-        self.recipe_ui.last_placed_display = Some(entry.display_id);
-        self.place_recipe(BookType::Crafting, entry, all);
+        self.place_recipe(BookType::Crafting, index, all);
     }
     /// `ServerboundPlaceRecipePacket`: the server places the recipe
     /// (`ServerPlaceRecipe` on the menu engine) and answers with a ghost
     /// recipe when the items are missing.
-    fn place_recipe(&mut self, book_type: BookType, entry: Entry, use_max: bool) {
+    fn place_recipe(&mut self, book_type: BookType, entry_index: usize, use_max: bool) {
+        let Some(entry) = self
+            .recipe_ui
+            .book
+            .as_ref()
+            .and_then(|b| b.entries.get(entry_index))
+            .cloned()
+        else {
+            return;
+        };
         if self.remote.is_some() {
             // The server places it and answers with the slots, or a ghost.
             let container = self.remote_menu_id();
@@ -973,10 +960,6 @@ impl Game<'_> {
                     use_max,
                 },
             ));
-            // Mirror a craftable placement locally while waiting for the
-            // server's slots (`RecipeBookComponent` still runs handlePlacement
-            // on the open menu).
-            self.predict_remote_place_recipe(book_type, &entry, use_max);
             return;
         }
         let creative = self.creative;
@@ -996,36 +979,6 @@ impl Game<'_> {
         });
         if post == Some(PostPlace::Ghost) {
             self.fill_ghost(book_type, &entry);
-        }
-        self.recipe_book_changed();
-    }
-    /// While waiting for the server's slots, mirror a craftable placement
-    /// locally (`RecipeBookComponent` still runs `handlePlacement` on the
-    /// open menu).
-    fn predict_remote_place_recipe(&mut self, book_type: BookType, entry: &Entry, use_max: bool) {
-        let available = self.book_available(book_type);
-        let Some(book) = self.recipe_ui.book.as_ref() else {
-            return;
-        };
-        if !book.can_craft(entry, &available) {
-            return;
-        }
-        let creative = self.creative;
-        let mut post = None;
-        let answer = &mut post;
-        self.menu_session(|menu, env, _| {
-            if env
-                .recipes
-                .placement(&entry.id)
-                .is_none_or(|p| p.impossible())
-            {
-                return Some(false);
-            }
-            *answer = Some(menu.place_recipe(env, &entry.id, use_max, creative, None));
-            Some(true)
-        });
-        if post == Some(PostPlace::Ghost) {
-            self.fill_ghost(book_type, entry);
         }
         self.recipe_book_changed();
     }
@@ -1101,23 +1054,10 @@ impl Game<'_> {
         if p.container != open {
             return;
         }
-        self.ensure_book();
-        let entry = self
-            .recipe_ui
-            .last_placed_display
-            .and_then(|d| {
-                self.recipe_ui
-                    .book
-                    .as_ref()?
-                    .entry_of_display(d)
-                    .and_then(|i| self.recipe_ui.book.as_ref()?.entries.get(i).cloned())
-            })
-            .or_else(|| {
-                self.recipe_ui.last_placed.as_ref().and_then(|id| {
-                    let book = self.recipe_ui.book.as_ref()?;
-                    book.entry(id).cloned()
-                })
-            });
+        let entry = self.recipe_ui.last_placed.as_ref().and_then(|id| {
+            let book = self.recipe_ui.book.as_ref()?;
+            book.entry(id).cloned()
+        });
         if let Some(entry) = entry {
             self.recipe_ui.ghost.clear();
             self.fill_ghost(book_type, &entry);
