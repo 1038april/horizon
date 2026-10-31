@@ -2056,11 +2056,14 @@ impl Game<'_> {
                     return Err(err("commands.summon.failed", &[]));
                 }
                 "experience_orb" => {
+                    // `new ExperienceOrb(level, pos, Vec3.ZERO, 0)`, unstuck
+                    // like any other orb spawn.
+                    let at = self.unstuck_orb(pos);
                     self.next_entity += 1;
                     self.orbs.push(horizon_client::entities::ExperienceOrb {
                         id: self.next_entity,
-                        position: Vec3::new(pos[0], pos[1], pos[2]),
-                        previous: Vec3::new(pos[0], pos[1], pos[2]),
+                        position: Vec3::new(at[0], at[1], at[2]),
+                        previous: Vec3::new(at[0], at[1], at[2]),
                         velocity: Vec3::new(0.0, 0.0, 0.0),
                         value: 0,
                         age: 0,
@@ -3349,13 +3352,30 @@ impl Game<'_> {
                 .options
                 .resources
                 .join(format!("data/{ns}/tags/{registry}/{path}.json"));
-            let Ok(v) = std::fs::read(file)
-                .map_err(|_| ())
-                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).map_err(|_| ()))
-            else {
-                continue;
-            };
-            for e in v["values"].as_array().into_iter().flatten() {
+            // The game's file and the world's packs' both count, entries
+            // joined in resource-stack order; a pack file with `replace`
+            // drops what the lower sources put in (`TagLoader.load`).
+            let packed = self
+                .fns
+                .store
+                .files
+                .get(&format!("tags/{ns}:{registry}/{path}"))
+                .into_iter()
+                .flatten()
+                .filter_map(|b| serde_json::from_slice::<serde_json::Value>(b).ok());
+            let parsed = std::fs::read(file)
+                .ok()
+                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+                .into_iter()
+                .chain(packed);
+            let mut entries = Vec::new();
+            for v in parsed {
+                if v["replace"].as_bool() == Some(true) {
+                    entries.clear();
+                }
+                entries.extend(v["values"].as_array().into_iter().flatten().cloned());
+            }
+            for e in &entries {
                 let id = e.as_str().or_else(|| e["id"].as_str()).unwrap_or_default();
                 match id.strip_prefix('#') {
                     Some(nested) => pending.push(nested.to_owned()),

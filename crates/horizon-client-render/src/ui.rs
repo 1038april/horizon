@@ -355,6 +355,9 @@ pub fn button(
     hover: bool,
 ) {
     crate::widgets::record(&label.plain(), [x, y, w, h], active);
+    crate::widgets::narratable(|| {
+        crate::widgets::Narratable::button(label.plain(), [x, y, w, h], active).hovered(hover)
+    });
     crate::widgets::widget_cursor(hover, active);
     let sprite = if !active {
         "gui/sprites/widget/button_disabled"
@@ -392,17 +395,41 @@ pub fn slider(
     active: bool,
     dragging: bool,
 ) {
+    slider_ext(
+        batch, atlas, x, y, w, label, value, hover, false, false, active, dragging,
+    );
+}
+
+/// `AbstractSliderButton.extractWidgetRenderState`: track, 8px handle at `value` (0..1),
+/// with support for keyboard focus and `canChangeValue`.
+pub fn slider_ext(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    x: f32,
+    y: f32,
+    w: f32,
+    label: &Text,
+    value: f32,
+    hover: bool,
+    focused: bool,
+    can_change_value: bool,
+    active: bool,
+    dragging: bool,
+) {
     let kind = crate::widgets::Kind::Slider {
         value,
         track: [x + 4.0, w - 8.0],
     };
     // The control socket's widget tree (`ui`): its label and value.
     crate::widgets::record_as(&label.plain(), [x, y, w, 20.0], active, kind);
+    crate::widgets::narratable(|| {
+        crate::widgets::Narratable::slider(label.plain(), [x, y, w, 20.0], active).hovered(hover)
+    });
     if active {
         // A controller's D-pad can focus it (Horizon's controller support).
         crate::widgets::target_as([x, y, w, 20.0], kind);
     }
-    let (track, handle) = slider_sprites(hover, active, dragging);
+    let (track, handle) = slider_sprites_ext(hover, active, focused, can_change_value, dragging);
     nine_slice(batch, atlas, track, x, y, w, 20.0, u32::MAX);
     nine_slice(
         batch,
@@ -421,15 +448,26 @@ pub fn slider(
     };
     centered_text(batch, atlas, label, x + 2.0, y + 6.0, w - 4.0, color);
 }
-/// Track and handle sprites: the track outline shows only while the slider is
-/// dragged, hovering highlights just the handle.
+#[cfg(test)]
 fn slider_sprites(hover: bool, active: bool, dragging: bool) -> (&'static str, &'static str) {
-    let track = if dragging {
+    slider_sprites_ext(hover, active, false, false, dragging)
+}
+
+/// Track and handle sprites: the track outline shows while dragged or focused with
+/// keyboard navigation (!can_change_value), hovering or editing highlights the handle.
+fn slider_sprites_ext(
+    hover: bool,
+    active: bool,
+    focused: bool,
+    can_change_value: bool,
+    dragging: bool,
+) -> (&'static str, &'static str) {
+    let track = if dragging || (active && focused && !can_change_value) {
         "gui/sprites/widget/slider_highlighted"
     } else {
         "gui/sprites/widget/slider"
     };
-    let handle = if hover && active {
+    let handle = if active && (hover || can_change_value || dragging) {
         "gui/sprites/widget/slider_handle_highlighted"
     } else {
         "gui/sprites/widget/slider_handle"
@@ -648,6 +686,7 @@ pub fn tooltip(batch: &mut HudBatch, atlas: &HudAtlas, lines: &[Text], cursor: (
     if lines.is_empty() {
         return;
     }
+    crate::widgets::frame_tooltip(lines);
     let w = lines
         .iter()
         .map(|l| atlas.font.width_text(l))
@@ -714,6 +753,9 @@ pub struct EditBox {
     /// Grey completion shown after the text (EditBox.setSuggestion).
     pub suggestion: Option<String>,
     pub text_color: u32,
+    /// `getMessage`: what the narrator calls the box ("<message> edit box:
+    /// <value>").
+    pub message: String,
 }
 /// The focused text field of a screen that keeps its values as `String`s
 /// (the world list's search, world names, seeds, and the server screens): the `EditBox` state that
@@ -975,6 +1017,7 @@ impl EditBox {
             focused_at: Instant::now(),
             suggestion: None,
             text_color: rgba(224, 224, 224, 255),
+            message: String::new(),
         }
     }
     pub fn inner_width(&self) -> f32 {
@@ -1197,6 +1240,14 @@ impl EditBox {
             [self.x, self.y, self.width, self.height],
             crate::widgets::Kind::Field,
         );
+        crate::widgets::narratable(|| {
+            crate::widgets::Narratable::edit_box(
+                self.message.clone(),
+                self.value.clone(),
+                [self.x, self.y, self.width, self.height],
+            )
+            .focused(self.focused)
+        });
         if self.bordered {
             let sprite = if self.focused {
                 "gui/sprites/widget/text_field_highlighted"
