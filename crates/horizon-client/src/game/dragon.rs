@@ -2633,8 +2633,13 @@ impl Game<'_> {
             0,
             &mut eye_quads,
         );
+        // `RenderTypes.eyes` has an `OitPipelineSet`: improved transparency
+        // moves the tagged quads into its stages (the HDR tier is the eyes'
+        // shine, `mobs::render::EYES_TIER`).
         for v in &mut eye_quads {
-            v.layer = 2;
+            v.layer = 2
+                | horizon_client::gfx::OIT_ENTITY
+                | u32::from(horizon_client::mesher::BRIGHT) << 16;
         }
         additive.extend(eye_quads);
         if death > 0.0 {
@@ -3344,6 +3349,9 @@ impl Game<'_> {
     /// The END stage: the portal crystals blow up (no block damage) and a
     /// new dragon takes over.
     fn finish_respawn(&mut self) {
+        // Portal crystals are not on spikes; clear their revival beams before
+        // the spike reset and before they are removed (vanilla resetEndCrystals).
+        self.respawn_beams(None);
         self.reset_spike_crystals();
         self.fight.respawn = None;
         let list = std::mem::take(&mut self.fight.respawn_crystals);
@@ -3398,6 +3406,7 @@ impl Game<'_> {
     /// `abortRespawnSequence`.
     fn abort_respawn(&mut self) {
         self.fight.respawn = None;
+        self.respawn_beams(None);
         self.fight.respawn_crystals.clear();
         self.reset_spike_crystals();
         let _ = self.activate_exit_portal();
