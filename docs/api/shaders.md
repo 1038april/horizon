@@ -55,7 +55,7 @@ file = "sky.wgsl"
 [material]
 file = "material.wgsl"
 
-[shadow]                   # optional: a shadow map from the sun (the moon by night)
+[shadow]                   # optional, needs [material] or [[post]]: a shadow map from the sun (the moon by night)
 resolution = 2048          # its side in texels, 256 to 8192
 distance = 128.0           # half the side of the square it covers, in blocks, 32 to 512
 
@@ -102,7 +102,7 @@ pack exist ([stability.md](stability.md)).
 
 ## Not there yet
 
-Option values other than the defaults (the three stages run, with hot reload), then the overlay, lighting and shadow
+Option values other than the defaults (the three stages run, with hot reload), then the overlay and lighting
 stages.
 
 ## Changelog

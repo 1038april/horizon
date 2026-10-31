@@ -4657,7 +4657,8 @@ impl Renderer {
             .or_else(|| {
                 // One of Horizon's own packs with `[shadow]` uses the same lists.
                 let native = self.native.as_ref().filter(|_| !frame.title)?;
-                Some(native.shadow.as_ref()?.view(frame))
+                native.shadow.as_ref()?;
+                native.frame.shadow_view(frame)
             });
         let mut shadow_visible = std::mem::take(&mut self.shadow_visible);
         shadow_visible.clear();
