@@ -2282,10 +2282,14 @@ impl Game<'_> {
         };
         let rolled = self.take_loot_table(key, &tag, &mut new);
         let after = horizon_client::save::encode_block_entity(key, &new, &name);
-        if after == before && !rolled {
+        // The lock is outside the model: a tag that only changes it still
+        // changes the block entity.
+        let lock_changed = self.world.block_lock(key) != tag.get("lock");
+        if after == before && !rolled && !lock_changed {
             return false;
         }
         self.world.block_entities.insert(key, new);
+        self.world.set_block_lock(key, &tag);
         self.update_spawner_display(key);
         self.world.modified.insert((pos[0] >> 4, pos[2] >> 4));
         true
