@@ -92,6 +92,12 @@ fn text(rest: &str) -> bool {
             || name == ".gitignore")
 }
 
+/// Whether a bundle may carry the file `rest` (its path under `mixins/<id>/`): sources and
+/// manifests, data, and the text files of a crate folder.
+pub fn allowed(rest: &str) -> bool {
+    rest.ends_with(".rs") || rest.ends_with(".toml") || in_data(rest) || text(rest)
+}
+
 impl Bundle {
     pub fn read(path: &Path) -> Result<Self, String> {
         let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
@@ -103,7 +109,7 @@ impl Bundle {
         let mut total = 0u64;
         for i in 0..zip.len() {
             let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
-            let name = entry.name().to_owned();
+            let name = entry.name().map_err(|e| e.to_string())?.into_owned();
             if entry.is_dir() {
                 continue;
             }
@@ -141,7 +147,7 @@ impl Bundle {
             let Some(rest) = name.strip_prefix(&prefix) else {
                 return Err(format!("unexpected native source: {name}"));
             };
-            if !(name.ends_with(".rs") || name.ends_with(".toml") || in_data(rest) || text(rest)) {
+            if !allowed(rest) {
                 return Err(format!("unexpected native source: {name}"));
             }
         }
