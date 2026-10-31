@@ -106,7 +106,7 @@ pub fn inputs() -> horizon_shaders::GbuffersInputs {
 
 /// What `gbuffers_clouds` reads from the clouds' mesh (entity vertices, `vs_cloud`): the
 /// position moved by the clouds' offset, the colour of the face's shade from their palette,
-/// full sky light. Set 1 holds the clouds' uniform (`clouds::Uniform`).
+/// full light, the face's normal. Set 1 holds the clouds' uniform (`clouds::Uniform`).
 pub fn cloud_inputs() -> horizon_shaders::GbuffersInputs {
     let declarations = "layout(location = 0) in vec3 hz_v_pos;\nlayout(location = 1) in vec2 hz_v_uv;\n\
          layout(location = 2) in uint hz_v_overlay;\nlayout(location = 3) in vec4 hz_v_color;\n\
@@ -115,7 +115,7 @@ pub fn cloud_inputs() -> horizon_shaders::GbuffersInputs {
         .to_owned();
     let body = "    hz_Vertex = vec4(hz_v_pos + hz_cloud_offset.xyz, 1.0);\n    \
          hz_MultiTexCoord0 = vec4(hz_v_uv, 0.0, 1.0);\n    \
-         hz_MultiTexCoord1 = vec4(0.0, 240.0, 0.0, 1.0);\n    \
+         hz_MultiTexCoord1 = vec4(240.0, 240.0, 0.0, 1.0);\n    \
          hz_MultiTexCoord2 = hz_MultiTexCoord1;\n    \
          hz_Color = hz_cloud_colors[min(hz_v_light.x, 3u)];\n    \
          hz_Normal = dot(hz_v_normal.xyz, hz_v_normal.xyz) > 0.01 ? normalize(hz_v_normal.xyz) : vec3(0.0, 1.0, 0.0);\n"
@@ -123,7 +123,7 @@ pub fn cloud_inputs() -> horizon_shaders::GbuffersInputs {
     let attributes = [
         ("vaPosition", "hz_Vertex.xyz"),
         ("vaUV0", "hz_v_uv"),
-        ("vaUV2", "ivec2(0, 240)"),
+        ("vaUV2", "ivec2(240, 240)"),
         ("vaColor", "hz_Color"),
         ("vaNormal", "hz_Normal"),
     ];
