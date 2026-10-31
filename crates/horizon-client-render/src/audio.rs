@@ -176,8 +176,9 @@ pub struct Audio {
     /// `SoundEngine.lastSeenDevices`: the system default output last seen.
     #[cfg(feature = "audio")]
     default_seen: Option<String>,
-    /// The ALSA cards last seen: listing the output devices probes every
-    /// built-in PCM, so it waits for these to change (`card_fingerprint`).
+    /// The ALSA cards (Linux) or Core Audio devices (macOS) last seen: listing
+    /// the output devices probes every one, so it waits for these to change
+    /// (`card_fingerprint`).
     #[cfg(feature = "audio")]
     cards_seen: Option<String>,
     /// The other half of `lastSeenDevices`: every output device last seen.
@@ -579,16 +580,28 @@ fn default_output_name() -> Option<String> {
         .default_output_device()
         .and_then(|d| d.name().ok())
 }
-/// A cheap fingerprint of the ALSA cards, the only part of what `output_devices`
-/// lists that can change: the rest are `cpal`'s fixed names. Linux only; `None`
-/// elsewhere, where the list is always looked at.
+/// A cheap fingerprint of what `output_devices` can list. On Linux, the ALSA
+/// cards: the rest are `cpal`'s fixed names. On macOS, every Core Audio
+/// device's name, inputs included: telling which of them play opens each one
+/// (about 90 ms a second with twenty devices), naming them takes 2 or 3 ms.
+/// `None` elsewhere, where the list is always looked at.
 #[cfg(feature = "audio")]
 fn card_fingerprint() -> Option<String> {
     #[cfg(target_os = "linux")]
     {
         std::fs::read_to_string("/proc/asound/cards").ok()
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        let devices = cpal::default_host().devices().ok()?;
+        Some(
+            devices
+                .filter_map(|d| d.name().ok())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         None
     }
@@ -709,8 +722,8 @@ impl Audio {
         engine.loaded = live;
         #[cfg(feature = "audio")]
         let cards = if live { card_fingerprint() } else { None };
-        // Where the cards gate the list (Linux), it starts empty: opening the
-        // output does not need it, and listing it probes every PCM; the first
+        // Where the cards gate the list (Linux, macOS), it starts empty: opening the
+        // output does not need it, and listing it probes every device; the first
         // change fills it. Elsewhere it starts with every device listed, as before.
         #[cfg(feature = "audio")]
         let devices = if live && cards.is_none() {
@@ -890,9 +903,10 @@ impl Audio {
         self.device_ticks = 0;
         let default = default_output_name();
         let cards = card_fingerprint();
-        // Listing the devices probes every built-in PCM (printing ALSA's errors
-        // for the plugins this system lacks) and takes milliseconds; only the
-        // cards can change the list, and reading them costs microseconds.
+        // Listing the devices probes every one (on Linux every built-in PCM,
+        // printing ALSA's errors for the plugins this system lacks; on macOS
+        // every Core Audio device, about 90 ms with twenty of them); only the
+        // fingerprint's devices can change the list, and it is cheap.
         if default == self.default_seen
             && !cards_changed(self.cards_seen.as_deref(), cards.as_deref())
         {
