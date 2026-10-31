@@ -220,6 +220,9 @@ pub fn encode_reply(id: u32, columns: Option<&[Column]>, biome_names: &[String])
             body.u16(span.light);
         }
     }
+    if palette.len() > MAX_BIOMES {
+        return refusal(id);
+    }
     w.varint(palette.len() as i32);
     for biome in palette {
         w.string(
@@ -455,7 +458,7 @@ mod tests {
         }
         // A tile past the span cap is refused by the server and by the client.
         let many: Vec<Span> = (0..=MAX_SPANS as i16 / 4)
-            .map(|i| span(i * 2, i * 2 + 1))
+            .map(|i| span(i - 2048, i - 2047))
             .collect();
         let mut tile = vec![Column::default(); SIDE * SIDE];
         for column in &mut tile[..4] {
@@ -475,7 +478,8 @@ mod tests {
         let mut forged = Writer::new();
         forged.varint(2);
         forged.u8(0);
-        forged.varint(0);
+        forged.varint(1);
+        forged.string("a");
         forged.varint(256);
         for i in 0..256 {
             forged.bool(false);
@@ -488,7 +492,8 @@ mod tests {
                 forged.u16(0);
             }
         }
-        assert!(decode_reply(&forged.data, &client, 9).is_err());
+        let err = decode_reply(&forged.data, &client, 9).unwrap_err();
+        assert!(err.to_string().contains("too many spans"), "{err}");
         assert!(decode_reply(&vec![0; MAX_REPLY + 1], &client, 9).is_err());
     }
 
