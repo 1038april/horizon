@@ -52,4 +52,4 @@ jobs:
             git fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"
           fi
           git push --force-with-lease origin "$branch"
-          gh pr create --base main --head "$branch" --title 'Stamp native hook API fragments' --body 'Assign API numbers to the pending native hook fragments.'
+          gh pr create --base main --head "$branch" --title 'Stamp native hook API fragments' --body 'Assign API numbers to the pending native hook fragments. Close and reopen this PR to run CI.'
