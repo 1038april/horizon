@@ -668,6 +668,15 @@ fn effects_from_blocks(
             (m.position.y - f64::from(0.2_f32)).floor() as i32,
             m.position.z.floor() as i32,
         );
+        crate::block_contact::emit(crate::block_contact::Event::StepOn(
+            crate::block_contact::Contact {
+                entity: m.id as i32,
+                kind: &m.kind.id,
+                block: w.block_name(x, y, z),
+                state: w.world.block(x, y, z),
+                position: horizon_core::position::BlockPos::new(x, y, z),
+            },
+        ));
         if w.block_name(x, y, z) == "minecraft:magma_block" {
             m.damage(1.0, Damage::of(DamageKind::HotFloor));
         }
@@ -702,6 +711,16 @@ fn effects_from_blocks(
                     if visited.contains(&p) {
                         continue;
                     }
+                    crate::block_contact::emit(crate::block_contact::Event::Inside(
+                        crate::block_contact::Contact {
+                            entity: m.id as i32,
+                            kind: &m.kind.id,
+                            block: w.block_name(x, y, z),
+                            state: w.world.block(x, y, z),
+                            position: horizon_core::position::BlockPos::new(x, y, z),
+                        },
+                    ));
+                    visited.push(p);
                     match w.block_name(x, y, z) {
                         "minecraft:cactus" => {
                             m.damage(1.0, Damage::of(DamageKind::Cactus));
@@ -751,7 +770,6 @@ fn effects_from_blocks(
                         "minecraft:honey_block" => honey_slide(m, p, level_random, events),
                         _ => continue,
                     }
-                    visited.push(p);
                 }
             }
         }
