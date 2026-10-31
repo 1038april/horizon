@@ -3327,7 +3327,7 @@ impl Game<'_> {
                 .fns
                 .store
                 .files
-                .get(&format!("tags/{registry}/{ns}:{path}"))
+                .get(&format!("tags/{ns}:{registry}/{path}"))
                 .into_iter()
                 .flatten()
                 .filter_map(|b| serde_json::from_slice::<serde_json::Value>(b).ok());

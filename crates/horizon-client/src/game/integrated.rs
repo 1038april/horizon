@@ -296,6 +296,15 @@ impl Game<'_> {
         options.server = None;
         options.world = None;
         self.join_world_rest()?;
+        // The window plays against the world's own biome table (its chunks
+        // carry the packs' ids past the built-in list, `set_registries`
+        // names them through it), as the server thread's copy does.
+        let world = std::env::current_dir()?.join("saves").join(folder);
+        self.world_biomes = Some(super::world_loading::packed_biomes(
+            &world,
+            &self.options.resources,
+            self.res.biomes(),
+        ));
         let (res, pack, settings) = (self.res.clone(), self.pack.clone(), self.settings.clone());
         let flags = Arc::new(Flags::default());
         flags

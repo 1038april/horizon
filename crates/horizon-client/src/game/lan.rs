@@ -1257,9 +1257,10 @@ impl Game<'_> {
         host: Option<u128>,
     ) -> Result<()> {
         let sync = sync_data(&self.options.resources, &self.pack_files())?;
-        let biome_names: Vec<String> = self
-            .res
-            .biomes()
+        // The table the world plays with (`world_biomes!`): a world with
+        // biome data packs sends their ids past the built-in list, as the
+        // encoder's `SectionCoder` expects.
+        let biome_names: Vec<String> = world_biomes!(self)
             .list
             .iter()
             .map(|b| b.name.clone())
