@@ -101,10 +101,8 @@ fn walk(dir: &Path, prefix: &str, out: &mut BTreeMap<String, Value>) {
 }
 
 /// A synchronized registry's entries from the world's data packs (`<dir>/`
-/// files, the top pack's for each id) over the game's own, in
-/// `ResourceManagerRegistryLoadTask`'s order: by `Identifier`, which compares
-/// the path first, then the namespace. Each entry is ((namespace, path),
-/// JSON, from a pack).
+/// files, the top pack's for each id) over the game's own. Each entry is
+/// ((namespace, path), JSON, from a pack); `file_order` sorts them.
 fn pack_entries(
     dir: &str,
     overlay: &horizon_world::loot::PackOverlay,
@@ -131,7 +129,14 @@ fn pack_entries(
             None => entries.push((key, value, true)),
         }
     }
-    entries.sort_by(|((a_ns, a), ..), ((b_ns, b), ..)| a.cmp(b).then_with(|| a_ns.cmp(b_ns)));
+}
+
+/// ResourceManagerRegistryLoadTask.load: the entries register sorted by the
+/// file `Identifier` FileToIdConverter.listMatchingResources keys them by
+/// (`<dir>/<path>.json`), path first, then namespace (Identifier.compareTo).
+/// The `.json` counts: `x-y` comes before `x`, as `-` sorts before `.`.
+fn file_order<T>(entries: &mut [((String, String), T, bool)]) {
+    entries.sort_by_cached_key(|((ns, path), ..)| (format!("{path}.json"), ns.clone()));
 }
 
 /// A JSON value as the NBT that vanilla's NbtOps would produce from the codec
@@ -208,6 +213,7 @@ impl SyncData {
             if PACK_REGISTRIES.contains(key) {
                 pack_entries(path, overlay, &mut entries);
             }
+            file_order(&mut entries);
             let mut e = Entries {
                 names: Vec::new(),
                 json: Vec::new(),
@@ -413,7 +419,11 @@ mod tests {
     #[test]
     fn pack_dialogs_join_the_registry_in_identifier_order() {
         let vanilla = |p: &str| (("minecraft".to_owned(), p.to_owned()), Value::Null, false);
-        let mut entries = vec![vanilla("custom_options"), vanilla("quick_actions")];
+        let mut entries = vec![
+            vanilla("custom_options"),
+            vanilla("quick_actions"),
+            vanilla("x"),
+        ];
         let files = [
             (
                 "dialog/blazeandcave:config/change_points_task".to_owned(),
@@ -428,16 +438,19 @@ mod tests {
                 ],
             ),
             ("dialog/broken:bad".to_owned(), vec![b"{".to_vec()]),
+            ("dialog/minecraft:x-y".to_owned(), vec![b"{}".to_vec()]),
             ("recipe/blazeandcave:other".to_owned(), vec![b"{}".to_vec()]),
         ];
         let overlay = horizon_world::loot::PackOverlay { files: &files };
         pack_entries("dialog", &overlay, &mut entries);
+        file_order(&mut entries);
         let got: Vec<_> = entries
             .iter()
             .map(|((ns, p), v, from_pack)| (format!("{ns}:{p}"), v["type"].clone(), *from_pack))
             .collect();
         // Identifier.compareTo: "config/..." sorts before "custom_options"
-        // by path, though "blazeandcave" is not "minecraft".
+        // by path, though "blazeandcave" is not "minecraft"; "x-y.json"
+        // sorts before "x.json".
         assert_eq!(
             got,
             [
@@ -452,6 +465,8 @@ mod tests {
                     Value::from("minecraft:multi_action"),
                     true
                 ),
+                ("minecraft:x-y".to_owned(), Value::Null, true),
+                ("minecraft:x".to_owned(), Value::Null, false),
             ]
         );
     }

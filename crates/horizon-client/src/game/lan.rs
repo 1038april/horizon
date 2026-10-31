@@ -28,18 +28,33 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-/// The registries and tags, loaded once per world (a world open or a
-/// `/reload` forgets them, as `forget_sync_data` does).
-static SYNC: Mutex<Option<std::result::Result<Arc<SyncData>, String>>> = Mutex::new(None);
+/// What `sync_data` loaded: whether it was with data packs over the game's
+/// data, and the registries and tags.
+type Synced = (bool, std::result::Result<Arc<SyncData>, String>);
+
+/// The registries and tags, loaded once per world (a world with packs open
+/// or a `/reload` forgets them, as `forget_sync_data` does).
+static SYNC: Mutex<Option<Synced>> = Mutex::new(None);
 
 /// The registries and tags a server sends, loaded from `root` the first
-/// time, with the world's data packs' recipes and advancements over them.
+/// time, with the world's data packs' recipes, advancements and dialogs over
+/// them. What was read with packs is read again for a world without them
+/// (their dialogs would stay); a world with packs forgets what was read
+/// before it at open (`finish_open_world`).
 pub(super) fn sync_data(
     root: &std::path::Path,
     overlay: &horizon_world::loot::PackOverlay,
 ) -> std::result::Result<Arc<SyncData>, String> {
+    let packs = !overlay.files.is_empty();
     let mut sync = SYNC.lock().unwrap_or_else(|e| e.into_inner());
-    sync.get_or_insert_with(|| SyncData::load(root, overlay).map(Arc::new))
+    if sync
+        .as_ref()
+        .is_some_and(|(with_packs, _)| *with_packs != packs)
+    {
+        *sync = None;
+    }
+    sync.get_or_insert_with(|| (packs, SyncData::load(root, overlay).map(Arc::new)))
+        .1
         .clone()
 }
 
@@ -51,16 +66,9 @@ pub(super) fn forget_sync_data() {
 
 impl Game<'_> {
     /// The commands' `minecraft:dialog` ids as the clients get them in the
-    /// configuration phase (`SyncData`, the world's packs' dialogs among
-    /// them): `/dialog show` parses an id against these and sends its index.
-    pub(super) fn sync_dialog_ids(&mut self) {
-        let sync = match sync_data(&self.options.resources, &self.pack_files()) {
-            Ok(sync) => sync,
-            Err(e) => {
-                log::warn!("Horizon: dialogs not synchronized: {e}");
-                return;
-            }
-        };
+    /// configuration phase (`sync`, the world's packs' dialogs among them):
+    /// `/dialog show` parses an id against these and sends its index.
+    pub(super) fn sync_dialog_ids(&mut self, sync: &SyncData) {
         let Some(names) = sync.dynamic.registries.get("minecraft:dialog") else {
             return;
         };
@@ -101,9 +109,10 @@ impl SyncPreload {
             return;
         }
         if let Ok(read) = self.0.join() {
-            SYNC.lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get_or_insert_with(|| read.map(Arc::new));
+            let mut sync = SYNC.lock().unwrap_or_else(|e| e.into_inner());
+            if !sync.as_ref().is_some_and(|(with_packs, _)| !with_packs) {
+                *sync = Some((false, read.map(Arc::new)));
+            }
         }
     }
 }
@@ -1282,6 +1291,7 @@ impl Game<'_> {
         host: Option<u128>,
     ) -> Result<()> {
         let sync = sync_data(&self.options.resources, &self.pack_files())?;
+        self.sync_dialog_ids(&sync);
         let biome_names: Vec<String> = self
             .res
             .biomes()
