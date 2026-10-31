@@ -4,6 +4,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(any(test, target_os = "linux"))]
+mod linux_split;
 #[cfg(target_os = "macos")]
 mod mac;
 #[cfg(windows)]
@@ -16,8 +18,8 @@ pub trait Speech {
     fn say(&mut self, message: &str, interrupt: bool, volume: f32);
     /// `clear`: drops what is queued and stops speaking.
     fn clear(&mut self);
-    /// Called while the thread waits for work (every 50 ms), for speech that
-    /// keeps its own queue.
+    /// Called every 50 ms on the speech thread, for speech that keeps its own
+    /// queue.
     fn idle(&mut self) {}
 }
 
@@ -86,16 +88,23 @@ fn run(silent: bool, opened: &Sender<bool>, commands: &Receiver<Command>) {
         }
     };
     let _ = opened.send(true);
+    const IDLE: std::time::Duration = std::time::Duration::from_millis(50);
+    let mut last_idle = std::time::Instant::now();
     loop {
-        match commands.recv_timeout(std::time::Duration::from_millis(50)) {
+        match commands.recv_timeout(IDLE.saturating_sub(last_idle.elapsed())) {
             Ok(Command::Say(message, interrupt, volume)) => speech.say(&message, interrupt, volume),
             Ok(Command::Clear) => speech.clear(),
-            Err(mpsc::RecvTimeoutError::Timeout) => speech.idle(),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
             // `destroy`: the game dropped its handle.
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 speech.clear();
                 return;
             }
+        }
+        // Every 50 ms, however many commands arrive in between.
+        if last_idle.elapsed() >= IDLE {
+            last_idle = std::time::Instant::now();
+            speech.idle();
         }
     }
 }
