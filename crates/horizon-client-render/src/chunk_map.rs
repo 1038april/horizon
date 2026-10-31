@@ -1,5 +1,8 @@
 //! Resident chunk membership, with a token for consumers that cache its keys.
-use crate::{chunk::Chunk, fast_hash::FxHashMap};
+use crate::{
+    chunk::Chunk,
+    fast_hash::{FxHashMap, FxHashSet},
+};
 use std::{
     collections::{
         VecDeque,
@@ -47,6 +50,8 @@ pub struct ChunkMap {
     /// the other maps (a server thread's, another dimension's), which say
     /// nothing about this one's keys.
     recent_deltas: VecDeque<(u64, ChunkMembershipDelta)>,
+    /// The resident chunks generation has not placed its animals in yet.
+    fresh: FxHashSet<Key>,
 }
 impl Default for ChunkMap {
     fn default() -> Self {
@@ -56,6 +61,7 @@ impl Default for ChunkMap {
             revision,
             min_valid_revision: revision,
             recent_deltas: VecDeque::new(),
+            fresh: FxHashSet::default(),
         }
     }
 }
@@ -111,6 +117,11 @@ impl ChunkMap {
         Some(slice.copied())
     }
     pub fn insert(&mut self, key: Key, chunk: Arc<Chunk>) -> Option<Arc<Chunk>> {
+        if chunk.fresh {
+            self.fresh.insert(key);
+        } else {
+            self.fresh.remove(&key);
+        }
         let previous = self.columns.insert(key, chunk);
         if previous.is_none() {
             self.revision = next_revision();
@@ -119,6 +130,7 @@ impl ChunkMap {
         previous
     }
     pub fn remove(&mut self, key: &Key) -> Option<Arc<Chunk>> {
+        self.fresh.remove(key);
         let previous = self.columns.remove(key);
         if previous.is_some() {
             self.revision = next_revision();
@@ -129,12 +141,34 @@ impl ChunkMap {
     pub fn clear(&mut self) {
         if !self.columns.is_empty() {
             self.columns.clear();
+            self.fresh.clear();
             self.revision = next_revision();
             self.recent_deltas.clear();
             self.recent_deltas
                 .push_back((self.revision, ChunkMembershipDelta::Reset));
             self.min_valid_revision = self.revision;
         }
+    }
+    pub fn has_fresh(&self) -> bool {
+        !self.fresh.is_empty()
+    }
+    /// The fresh keys in the chunk map's own iteration order, so the spawns
+    /// they drive run in the order a scan of the columns gave.
+    pub fn fresh_keys_ordered(&self) -> Vec<Key> {
+        if self.fresh.is_empty() {
+            Vec::new()
+        } else if self.fresh.len() == 1 {
+            self.fresh.iter().copied().collect()
+        } else {
+            self.columns
+                .keys()
+                .filter(|k| self.fresh.contains(k))
+                .copied()
+                .collect()
+        }
+    }
+    pub fn remove_fresh(&mut self, key: &Key) {
+        self.fresh.remove(key);
     }
     pub fn get_mut(&mut self, key: &Key) -> Option<&mut Arc<Chunk>> {
         self.columns.get_mut(key)
@@ -305,5 +339,47 @@ mod tests {
             kinds(map.deltas_since(cleared).unwrap().collect()),
             [ChunkMembershipDelta::Added((1, 0))]
         );
+    }
+
+    #[test]
+    fn fresh_chunks_tracking() {
+        let mut map = ChunkMap::default();
+        assert!(!map.has_fresh());
+        let mut chunk = Chunk::empty(1, 2);
+        chunk.fresh = true;
+        map.insert((1, 2), Arc::new(chunk));
+        assert!(map.has_fresh());
+        assert_eq!(map.fresh_keys_ordered(), vec![(1, 2)]);
+
+        map.remove_fresh(&(1, 2));
+        assert!(!map.has_fresh());
+
+        let mut chunk2 = Chunk::empty(3, 4);
+        chunk2.fresh = true;
+        map.insert((3, 4), Arc::new(chunk2));
+        assert!(map.has_fresh());
+
+        map.remove(&(3, 4));
+        assert!(!map.has_fresh());
+    }
+
+    #[test]
+    fn fresh_keys_ordered_matches_chunk_map_iteration_order() {
+        let mut map = ChunkMap::default();
+        let keys = [(-5, 10), (12, -3), (0, 0), (7, 8), (-1, -1), (4, 4)];
+        for (i, &key) in keys.iter().enumerate() {
+            let mut chunk = Chunk::empty(key.0, key.1);
+            chunk.fresh = i % 2 == 0;
+            map.insert(key, Arc::new(chunk));
+        }
+
+        let ordered = map.fresh_keys_ordered();
+        let expected: Vec<Key> = map
+            .keys()
+            .copied()
+            .filter(|k| map.fresh.contains(k))
+            .collect();
+        assert_eq!(ordered, expected);
+        assert_eq!(ordered.len(), 3);
     }
 }
