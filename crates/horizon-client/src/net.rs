@@ -306,6 +306,11 @@ impl Session {
     pub fn cancel_far_terrain(&self) {
         self.far.cancel();
     }
+    /// The connection is configured again (a proxy's next server): requests
+    /// the old server held never come back, so their slots are freed.
+    pub fn reset_far_terrain(&self) {
+        self.far.reset();
+    }
     /// ServerboundResourcePackPacket, in whichever phase the connection is.
     pub fn send_pack_status(&self, id: u128, action: i32) {
         let status = cfg::ResourcePackResponse { id, action };

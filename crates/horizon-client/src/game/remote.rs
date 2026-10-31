@@ -1726,6 +1726,9 @@ impl Game<'_> {
                         remote.far_terrain = None;
                     }
                     self.clear_lod();
+                    if let Some(remote) = &self.remote {
+                        remote.session.reset_far_terrain();
+                    }
                     self.player = None;
                     self.screen = Screen::Playing;
                     self.capture(false);

@@ -74,6 +74,17 @@ impl Inbox {
         drop(state);
         self.changed.notify_all();
     }
+    /// The connection now talks to another server (a proxy's reconfiguration):
+    /// what the old one was asked can never come back, so its slots and its
+    /// rate go too. Ids keep increasing, so a late reply matches nothing.
+    pub fn reset(&self) {
+        self.cancel();
+        let mut state = self.state.lock().unwrap();
+        state.waiting.clear();
+        state.bucket = None;
+        drop(state);
+        self.changed.notify_all();
+    }
     fn epoch(&self) -> u64 {
         self.state.lock().unwrap().epoch
     }
@@ -242,6 +253,14 @@ mod tests {
         assert_eq!(inbox.state.lock().unwrap().waiting.len(), 1);
         inbox.deliver(refusal(id));
         assert!(inbox.state.lock().unwrap().waiting.is_empty());
+        // A reconfiguration frees the slots still at the old server.
+        let epoch = inbox.epoch();
+        assert!(inbox.send(epoch, offer, request(48)).is_some());
+        assert_eq!(inbox.requests().len(), 1);
+        inbox.reset();
+        let state = inbox.state.lock().unwrap();
+        assert!(state.waiting.is_empty() && state.outbox.is_empty() && state.bucket.is_none());
+        drop(state);
     }
 
     #[test]
