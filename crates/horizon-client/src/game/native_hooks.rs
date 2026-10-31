@@ -6,8 +6,11 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
-//! API 41 adds the item entities near a block (`native_item_entities`,
+//! API 42 adds the item entities near a block (`native_item_entities`,
 //! `native_set_item_entity`).
+//!
+//! API 41 adds bundles' data files: `horizon_client::native_data!` compiles a file of a
+//! bundle's `data/` folder in, and `native_built_data` is the folder its post-build step wrote.
 //!
 //! API 40 adds mod messages between a mod's server and client halves
 //! (`native_net_from_client`, `native_net_from_server`, and
@@ -194,7 +197,7 @@ pub(super) use horizon_world::level::flags;
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 41;
+pub(crate) const NATIVE_HOOKS_API: u32 = 42;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -1383,7 +1386,7 @@ impl Game<'_> {
     /// `Level.getEntitiesOfClass(ItemEntity.class, box, ENTITY_STILL_ALIVE)`, as a
     /// hopper's `getItemsAtAndAbove` asks for its block and the one above
     /// (`[x, y, z]`..`[x + 1, y + 2, z + 1]`). Empty for a level not in place
-    /// (as `native_set_block`) and on a client of a server. API 41.
+    /// (as `native_set_block`) and on a client of a server. API 42.
     pub(super) fn native_item_entities(
         &self,
         dimension: &str,
@@ -1410,7 +1413,7 @@ impl Game<'_> {
     /// a hopper's `addItem` leaves what it couldn't take (`ItemEntity.setItem`);
     /// an empty stack (count 0) removes the entity (`setItem(EMPTY)`, then
     /// `discard`). Players see it on their next tracker update. False when the
-    /// level in place has no such item entity, or on a client. API 41.
+    /// level in place has no such item entity, or on a client. API 42.
     pub(super) fn native_set_item_entity(
         &mut self,
         dimension: &str,
@@ -1723,6 +1726,12 @@ impl Game<'_> {
     pub(super) fn native_data_dir(&self, mod_id: &str) -> PathBuf {
         let mods = Self::options_path().with_file_name(mod_list::DIR);
         mods.join(".horizon-mod-data").join(mod_id)
+    }
+    /// The folder mod `mod_id`'s post-build step wrote into when the launcher built the game
+    /// (`native-data/<id>/` in the build's version folder); None when the game's own path is
+    /// unknown. API 41.
+    pub(super) fn native_built_data(&self, mod_id: &str) -> Option<PathBuf> {
+        horizon_client::native_data::built(mod_id)
     }
     /// A mod's setting `key` (one file per key in `native_data_dir`).
     pub(super) fn native_setting(&self, mod_id: &str, key: &str) -> Option<String> {
@@ -2456,7 +2465,7 @@ fn finite(v: f32, lo: f32, hi: f32) -> f32 {
     if v.is_finite() { v.clamp(lo, hi) } else { lo }
 }
 
-/// An item entity as `native_item_entities` lists it. API 41.
+/// An item entity as `native_item_entities` lists it. API 42.
 /// Read by mods only.
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
