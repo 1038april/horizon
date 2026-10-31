@@ -5199,6 +5199,7 @@ impl Game<'_> {
         if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
             horizon_client::entity_nbt::apply_item_components(m, stack);
         }
+        self.apply_spawn_egg_entity_data(id, stack);
         self.swing_arm();
         if !self.creative
             && let Some(s) = self.held_mut().as_mut()
@@ -5209,6 +5210,25 @@ impl Game<'_> {
             }
         }
         Ok(true)
+    }
+    /// `EntityType.updateCustomEntityTag`: the egg's `minecraft:entity_data` on
+    /// the mob it spawned, once the guards let it through, as
+    /// `TypedEntityData.loadInto`: the mob's own compound, the data merged over
+    /// it, loaded back into the same mob (`/data merge entity`'s loader).
+    fn apply_spawn_egg_entity_data(&mut self, id: u32, stack: &ItemStack) {
+        let Some(i) = self.mobs.iter().position(|m| m.id == id) else {
+            return;
+        };
+        let kind = self.mobs[i].kind.id.clone();
+        let op = self.acting_player_is_op();
+        let Some(data) = horizon_client::block_entity_item::spawn_egg_entity_data(stack, &kind, op)
+        else {
+            return;
+        };
+        let own = self.mob_tree_nbt(i);
+        let tag = horizon_client::data_cmd::merged(&own, data);
+        // Nothing to report: the mob's own compound always loads back.
+        let _ = self.apply_entity_nbt(super::commands::Target::Mob(id), tag);
     }
     /// A beam target's centre (half its height), interpolated.
     fn beam_target(&self, who: Option<Who>, alpha: f64) -> Option<glam::DVec3> {
