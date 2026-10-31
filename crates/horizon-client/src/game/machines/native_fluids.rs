@@ -1,4 +1,4 @@
-//! Fluids of a block for native server mods (docs/native-mods.md, API 41):
+//! Fluids of a block for native server mods (docs/native-mods.md, API @API:fluids@):
 //! the tanks a mod block declared through `native_block_entity_fluids`, and a
 //! cauldron, read through a side, filled and drained in millibuckets. They act
 //! where the world is simulated, never on a client's copy, and only on the
@@ -198,7 +198,7 @@ impl Game<'_> {
     /// its side `face`, in the level in place: a mod block's tanks first
     /// those with the same fluid, then empty ones, by the sides and tanks its
     /// table gave; a cauldron by thirds of a bucket, a lava one only whole.
-    /// What did not fit. API 41.
+    /// What did not fit. API @API:fluids@.
     pub(in crate::game) fn native_fluid_insert(
         &mut self,
         pos: [i32; 3],
@@ -296,7 +296,7 @@ impl Game<'_> {
     /// that its side `face` reaches, with their fluids and amounts. None
     /// where no tanks are: another dimension, a chunk that isn't loaded, a
     /// block without tanks, or the mod block entity ticking now (it's out of
-    /// the world). A cauldron reads as one tank of a bucket's capacity. API 41.
+    /// the world). A cauldron reads as one tank of a bucket's capacity. API @API:fluids@.
     pub(in crate::game) fn native_fluid_tanks(
         &self,
         dimension: &str,
@@ -355,7 +355,7 @@ impl Game<'_> {
     /// drainable tanks, one fluid only (the first that's there), or a
     /// cauldron, which drains in thirds of a bucket and a lava one only
     /// whole. The fluid and how much; none when the side reaches nothing.
-    /// API 41.
+    /// API @API:fluids@.
     pub(in crate::game) fn native_fluid_extract(
         &mut self,
         dimension: &str,
