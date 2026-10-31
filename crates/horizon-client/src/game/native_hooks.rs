@@ -6,6 +6,10 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 41 adds a block's items for server mods (`native_container_slots`,
+//! `native_extract_item`, `native_move_items`, and `native_dimension` for a
+//! machine's tick, in `machines/native_items.rs`).
+//!
 //! API 40 adds mod messages between a mod's server and client halves
 //! (`native_net_from_client`, `native_net_from_server`, and
 //! `native_net_send_to_player`, `native_net_send_to_server` in
@@ -191,7 +195,7 @@ pub(super) use horizon_world::level::flags;
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 40;
+pub(crate) const NATIVE_HOOKS_API: u32 = 41;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -1574,15 +1578,16 @@ impl Game<'_> {
             .cloned()
     }
     /// Puts `stack` into the container at `pos` (a chest, a furnace, a mod
-    /// container) through its side `face`, as a hopper would, and returns
-    /// what did not fit: a machine's auto-output. API 20.
+    /// container) through its side `face`, as a hopper would, one by one, and
+    /// returns what did not fit: a machine's auto-output. A composter takes
+    /// one a call, and a client's copy of the world none. API 20.
     pub(super) fn native_insert_item(
         &mut self,
         pos: [i32; 3],
         face: Direction,
         stack: ItemStack,
     ) -> Option<ItemStack> {
-        self.insert_into_container((pos[0], pos[1], pos[2]), stack, face)
+        self.insert_stack_through(pos, face, stack)
     }
     /// Where the mouse is, in GUI pixels. API 20.
     pub(super) fn native_cursor(&self) -> [f32; 2] {
