@@ -10,7 +10,6 @@ use horizon_client::{
     gizmos::Gizmos,
     hud::HudBatch,
     hud_layout, keybinds,
-    save::VERSION_NAME,
     text::Text,
 };
 use horizon_core::geometry::{Axis, Vec3};
@@ -297,7 +296,6 @@ impl Game<'_> {
         {
             return;
         }
-        let on = |path: &str| self.debug_entries.enabled(path, self.debug, reduced);
         let framebuffer = size.map(|v| v as i32);
         let (scale, [width, height]) = debug_overlay::scale(
             framebuffer,
@@ -307,73 +305,7 @@ impl Game<'_> {
             [batch.width as i32, batch.height as i32],
         );
         let mut d = debug_overlay::Displayer::default();
-        // fps: DebugEntryFps.
-        if on("fps") {
-            self.debug_fps_line(&mut d);
-        }
-        // game_version: DebugEntryVersion (the launched version and brand).
-        if on("game_version") {
-            d.priority(format!("Minecraft {VERSION_NAME} ({VERSION_NAME}/horizon)"));
-        }
-        // player_position, player_section_position.
-        if let Some(p) = self.player.as_ref() {
-            let mut lines = debug_overlay::position(
-                [p.position.x, p.position.y, p.position.z],
-                self.yaw,
-                self.pitch,
-                self.dim.id(),
-                self.streaming.forced.len(),
-            );
-            let section = lines.pop().unwrap_or_default();
-            if on("player_position") {
-                d.group("position", lines);
-            }
-            if on("player_section_position") {
-                d.group("position", [section]);
-            }
-            // chunk_generation_stats: DebugEntryChunkGeneration, where the world is generated here.
-            // The window's server thread publishes its generators; the deprecated in-frame path
-            // (`end.locator`) is not extended.
-            if on("chunk_generation_stats") {
-                let terrain = self
-                    .integrated
-                    .as_ref()
-                    .and_then(|server| server.terrain(self.dim.id()));
-                // `DebugEntryChunkGeneration.display`: the feet block decides whether the line is
-                // sampled again; otherwise the last result is drawn.
-                let feet = [
-                    p.position.x.floor() as i32,
-                    p.position.y.floor() as i32,
-                    p.position.z.floor() as i32,
-                ];
-                let dim = self.dim.id();
-                let mut cache = self.debug_density.borrow_mut();
-                let line = cache.line(
-                    dim,
-                    feet,
-                    terrain.map(|t| move || t.density_debug_line(feet)),
-                );
-                if let Some(line) = line {
-                    d.group("chunk_generation", [line.to_owned()]);
-                }
-            }
-        }
-        if on("simple_performance_impactors") {
-            self.debug_performance_lines(&mut d);
-        }
-        if on("system_specs") {
-            self.debug_system_lines(&mut d, framebuffer);
-        }
-        // Horizon's own: the shader pack's GPU time per pass (an empty group would move others).
-        let pass_lines = self.renderer.as_ref().map_or_else(Vec::new, |r| {
-            debug_overlay::shader_pass_lines(&r.shader_pass_times())
-        });
-        if self.debug && !pass_lines.is_empty() {
-            d.group("shader pack", pass_lines);
-        }
-        if on("tps") {
-            self.debug_tps_line(&mut d);
-        }
+        self.debug_entry_lines(&mut d, framebuffer);
         // The chart keys and the charts only while the overlay is open.
         let footer = if self.debug {
             self.debug_chart_lines().to_vec()
@@ -410,7 +342,7 @@ impl Game<'_> {
         hud_layout::paint(batch, atlas, &draws);
     }
     /// `DebugEntryFps`.
-    fn debug_fps_line(&self, d: &mut debug_overlay::Displayer) {
+    pub(super) fn debug_fps_line(&self, d: &mut debug_overlay::Displayer) {
         let limit = self.framerate_limit();
         let present = self
             .renderer
@@ -441,7 +373,7 @@ impl Game<'_> {
         ));
     }
     /// `DebugEntrySimplePerformanceImpactors`.
-    fn debug_performance_lines(&self, d: &mut debug_overlay::Displayer) {
+    pub(super) fn debug_performance_lines(&self, d: &mut debug_overlay::Displayer) {
         let s = &self.settings;
         d.line(format!(
             "{}{}B: {}",
@@ -468,7 +400,11 @@ impl Game<'_> {
         ));
     }
     /// `DebugEntrySystemSpecs` (no Java line: Horizon has no JVM).
-    fn debug_system_lines(&self, d: &mut debug_overlay::Displayer, framebuffer: [i32; 2]) {
+    pub(super) fn debug_system_lines(
+        &self,
+        d: &mut debug_overlay::Displayer,
+        framebuffer: [i32; 2],
+    ) {
         if let Some(r) = self.renderer.as_ref() {
             static CPU: std::sync::OnceLock<String> = std::sync::OnceLock::new();
             d.group(
@@ -536,7 +472,7 @@ impl Game<'_> {
         }
     }
     /// `DebugEntryTps` for local and remote connections.
-    fn debug_tps_line(&self, d: &mut debug_overlay::Displayer) {
+    pub(super) fn debug_tps_line(&self, d: &mut debug_overlay::Displayer) {
         if self.player.is_some() {
             let [tx, rx] = self.debug_charts.packet_rates.map(|n| n.round() as i64);
             let (target, status) = if self.clock.sprinting() {
@@ -940,6 +876,7 @@ impl Game<'_> {
     pub(super) fn debug_gizmos(&self, alpha: f32, camera: [f64; 3]) -> Gizmos {
         let mut g = Gizmos::default();
         self.bounding_box_gizmos(camera, &mut g);
+        self.debug_renderer_gizmos(&mut g);
         if self.debug_entry("chunk_borders")
             && let Some(p) = &self.player
         {
@@ -1249,7 +1186,7 @@ impl DebugQuery {
 pub(super) struct DensityCache(Option<(&'static str, [i32; 3], Option<String>)>);
 impl DensityCache {
     /// The line to draw; `sample` is `None` without a generator.
-    fn line(
+    pub(super) fn line(
         &mut self,
         dim: &'static str,
         feet: [i32; 3],

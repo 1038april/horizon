@@ -342,6 +342,9 @@ pub(super) struct Remote {
     /// Options.serverRenderDistance: the server's view distance from the
     /// login or the last chunk-cache-radius packet.
     pub(super) view_distance: i32,
+    /// `ClientLevel.serverSimulationDistance`: from the login or the last
+    /// simulation-distance packet.
+    pub(super) simulation_distance: i32,
     sequence: i32,
     position_sender: horizon_client::player_sync::PositionSender,
     last_input: u8,
@@ -832,6 +835,7 @@ impl Game<'_> {
             )),
             decoder: ChunkDecoder::new(),
             view_distance: self.settings.render_distance,
+            simulation_distance: self.settings.simulation_distance,
             sequence: 0,
             position_sender: Default::default(),
             last_input: 0,
@@ -2670,6 +2674,7 @@ impl Game<'_> {
                     r.camera = None;
                     r.logged_in = true;
                     r.view_distance = p.chunk_radius;
+                    r.simulation_distance = p.simulation_distance;
                     r.show_death_screen = p.show_death_screen;
                 }
                 self.streaming.radius =
@@ -4246,6 +4251,11 @@ impl Game<'_> {
                 None => self.score.board.reset_all(&p.owner),
             },
             C::SetPlayerTeam(p) => self.remote_team(p),
+            C::SetSimulationDistance(p) => {
+                if let Some(r) = self.remote.as_mut() {
+                    r.simulation_distance = p.distance;
+                }
+            }
             C::SetChunkCacheRadius(p) => {
                 self.streaming.radius = self.settings.render_distance.min(p.distance + 1).max(2);
                 if let Some(r) = self.remote.as_mut() {
