@@ -1388,6 +1388,11 @@ impl Game<'_> {
         r.game_mode = spawn.game_type;
         r.flat = spawn.flat;
         r.loaded_sent = false;
+        // A replacement LevelLoadingScreen starts its bar from nothing (the
+        // first one carries on from the server's start).
+        if self.player.is_some() {
+            self.loading_progress = 0.0;
+        }
         // startWaitingForNewLevel: `LevelLoadTracker.startClientLoad` and the
         // `LevelLoadingScreen`.
         r.level_load.start_client_load(client_millis(), reason);
@@ -2289,6 +2294,8 @@ impl Game<'_> {
                 self.snap_player_model_pitch();
             }
             C::PlayerLookAt(p) => self.remote_look_at(&p),
+            // ClientCommonPacketListenerImpl.handlePostEffects.
+            C::PostEffects(p) => self.post_effects = p.effects,
             C::SetCamera(p) => self.remote_set_camera(p.camera_id),
             C::LevelChunkWithLight(p) => self.remote_chunk(&p, None),
             C::LightUpdate(p) => self.remote_light_update(&p),
@@ -3686,6 +3693,8 @@ impl Game<'_> {
             // ClientCommonPacketListenerImpl.handleShowDialog / handleClearDialog.
             C::ShowDialog(p) => self.show_play_dialog(&p.dialog),
             C::ClearDialog(_) => self.clear_dialog(),
+            // ClientPacketListener.handleLowDiskSpaceWarning.
+            C::LowDiskSpaceWarning(_) => horizon_client::chunk_io::report_low_disk_space(),
             C::ClearTitles(p) => {
                 self.titles.clear();
                 if p.value {
@@ -4432,6 +4441,8 @@ impl Game<'_> {
             alive: player.health.health() > 0.0,
         };
         let now = client_millis();
+        // LevelLoadingScreen.tick.
+        self.tick_load_progress();
         let Some(r) = self.remote.as_mut() else {
             return;
         };
@@ -7540,7 +7551,14 @@ impl Game<'_> {
             // chunk status view and progress are the integrated server's alone
             // (`LevelLoadTracker.statusView`, `hasProgress`).
             self.draw_level_loading_background(batch, r.level_load.reason);
-            horizon_client::level_loading::draw(batch, atlas, None, None);
+            match self.integrated.as_ref().map(|i| i.load_view()) {
+                Some(view) => {
+                    let status = |x: i32, z: i32| view.status(x, z);
+                    let progress = view.has_progress().then_some(self.loading_progress);
+                    horizon_client::level_loading::draw(batch, atlas, Some(&status), progress);
+                }
+                None => horizon_client::level_loading::draw(batch, atlas, None, None),
+            }
             return true;
         }
         let cancel = self.connect_cancel((w, h)).is_some();

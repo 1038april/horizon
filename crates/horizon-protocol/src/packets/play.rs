@@ -789,6 +789,11 @@ packet!(
         entity: Option<LookAtEntity> => Opt<LookAtEntity>,
     }
 );
+packet!(
+    /// ClientboundPostEffectsPacket: the `post_effect` chains (ids) the player's
+    /// screen runs, in order (`ServerPlayer.postEffects`).
+    PostEffects { effects: Vec<String> => List<Ident> }
+);
 packet!(PlayerRotation { yaw: f32 => Float, relative_yaw: bool => Bool, pitch: f32 => Float, relative_pitch: bool => Bool });
 packet!(RemoveEntities { ids: Vec<i32> => List<VarInt> });
 packet!(Respawn { spawn: SpawnInfo => SpawnInfo, keep: i8 => Byte });
@@ -1892,6 +1897,7 @@ packet_enum!(Clientbound, crate::ids::play::clientbound {
     ChunkBatchFinished(ChunkBatchFinished) = CHUNK_BATCH_FINISHED,
     ChunkBatchStart(Empty) = CHUNK_BATCH_START,
     ClearTitles(Bool1) = CLEAR_TITLES,
+    LowDiskSpaceWarning(Empty) = LOW_DISK_SPACE_WARNING,
     Commands(Commands) = COMMANDS,
     RecipeBookAdd(super::recipes::RecipeBookAdd) = RECIPE_BOOK_ADD,
     RecipeBookRemove(super::recipes::RecipeBookRemove) = RECIPE_BOOK_REMOVE,
@@ -1941,6 +1947,7 @@ packet_enum!(Clientbound, crate::ids::play::clientbound {
     PlayerLookAt(PlayerLookAt) = PLAYER_LOOK_AT,
     PlayerPosition(PlayerPosition) = PLAYER_POSITION,
     PlayerRotation(PlayerRotation) = PLAYER_ROTATION,
+    PostEffects(PostEffects) = POST_EFFECTS,
     RemoveEntities(RemoveEntities) = REMOVE_ENTITIES,
     RemoveMobEffect(RemoveMobEffect) = REMOVE_MOB_EFFECT,
     ResetScore(ResetScore) = RESET_SCORE,
@@ -2781,6 +2788,7 @@ mod tests {
     fn clientbound_round_trips() {
         let packets = vec![
             Clientbound::BundleDelimiter(Empty),
+            Clientbound::LowDiskSpaceWarning(Empty),
             Clientbound::PongResponse(crate::packets::status::Ping { time: 1_234_567 }),
             Clientbound::SetBorderCenter(SetBorderCenter { x: 1.5, z: -2.0 }),
             Clientbound::SetBorderLerpSize(SetBorderLerpSize {
@@ -3461,6 +3469,25 @@ mod tests {
                 Clientbound::PlayerLookAt(p)
             );
         }
+    }
+
+    #[test]
+    fn post_effects_round_trips() {
+        let p = PostEffects {
+            effects: vec!["minecraft:invert".into(), "pack:glow".into()],
+        };
+        let bytes = Clientbound::PostEffects(p.clone()).encode();
+        assert_eq!(
+            Clientbound::decode(crate::ids::play::clientbound::POST_EFFECTS, &bytes[1..]).unwrap(),
+            Clientbound::PostEffects(p)
+        );
+        // The empty list the server sends on join.
+        assert_eq!(
+            Clientbound::decode(crate::ids::play::clientbound::POST_EFFECTS, &[0]).unwrap(),
+            Clientbound::PostEffects(PostEffects {
+                effects: Vec::new()
+            })
+        );
     }
 
     /// ClientboundChunksBiomesPacket is read, not passed through as an
