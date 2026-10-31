@@ -7463,6 +7463,10 @@ impl Game<'_> {
             return batch;
         }
         if self.screen == Screen::Options {
+            if self.title.is_none() {
+                self.flush_skin_slots();
+                self.update_remote_skins();
+            }
             self.draw_options(&mut batch);
             return batch;
         }
