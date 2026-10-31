@@ -168,6 +168,7 @@ def player_state():
         cmd('/effect clear @s'),
         cmd('/give @s minecraft:diamond 3'),
         cmd('/give @s minecraft:diamond_sword[minecraft:custom_name="Blade"]'),
+        cmd('/give @s minecraft:diamond[item_name={text:"ItemName",color:"red"}]'),
         cmd('/give @s minecraft:stone 130'),
         cmd('/clear @s minecraft:diamond 0'),
         cmd('/clear @s minecraft:stone 0'),
@@ -510,6 +511,10 @@ def execute():
         cmd('/execute positioned 4 210 4 if block ~ ~ ~ minecraft:stone'),
         cmd('/execute positioned as @s run tp @s ~ ~ ~'),
         cmd('/execute align xyz run summon minecraft:armor_stand ~ ~-20 ~ {NoGravity:1b,Tags:["ex"],UUID:[I;1,2,3,4]}'),
+        cmd('/summon minecraft:armor_stand 3 210 3 {NoGravity:1b,Tags:["implicit_tp"]}'),
+        cmd('/execute as @e[tag=implicit_tp,limit=1] run tp 4 210 4'),
+        cmd('/data get entity @e[tag=implicit_tp,limit=1] Pos'),
+        cmd('/kill @e[tag=implicit_tp]'),
         cmd('/execute if entity @e[tag=ex]'),
         cmd('/execute as @e[tag=ex] run data get entity @s Pos'),
         cmd('/data get entity @e[tag=ex,limit=1]'),
@@ -1113,8 +1118,9 @@ def social():
 
 
 def test_command():
-    # Horizon has no game test runner: `/test run|runmultiple|verify` of an
-    # existing instance and `/test create` are not compared.
+    # `/test run|runmultiple` of an existing instance start a real test (a
+    # tick-based run, not compared here); `verify`, `create`, `locate` and
+    # `pos` with test instance blocks around are not ported.
     return [
         cmd('/test clearall'),
         cmd('/test stop'),
@@ -1212,6 +1218,25 @@ def ender_dragon():
     ]
 
 
+def place_structure():
+    """`/place structure` (PlaceCommand.placeStructure): the id is resolved, a
+    `StructureStart` is generated for the position's chunk with vanilla's
+    `biome -> true` predicate, and its `placeInChunk` runs for every chunk of the
+    start's box in the live level. Buried treasure's one piece digs down from the
+    ocean floor and leaves a single chest, so a chest count in its chunk compares
+    the generated start and its placement without knowing the terrain height."""
+    return [
+        *setup('/gamemode creative', '/tp @s 8.5 230 8.5 0 0'),
+        {'op': 'settle'},
+        *setup('/kill @e[type=!minecraft:player]',
+               '/fill 0 0 0 15 120 15 minecraft:air replace minecraft:chest'),
+        cmd('/place structure minecraft:buried_treasure 4 210 4'),
+        # One chest between y 0 and 120 of chunk (0, 0): the piece's column is
+        # inside that chunk whatever height its dig reached.
+        cmd('/fill 0 0 0 15 120 15 minecraft:air replace minecraft:chest'),
+    ]
+
+
 def tame_wolf_kills():
     # LivingEntity.resolvePlayerResponsibleForDamage: a tame wolf's hit is its
     # owner's (the harness player, OfflinePlayer:Player), so the kill drops
@@ -1271,5 +1296,6 @@ def groups():
         ('test', test_command()),
         ('wither breaks', wither_breaks()),
         ('ender dragon', ender_dragon()),
+        ('place structure', place_structure()),
         ('tame wolf kills', tame_wolf_kills()),
     ]
