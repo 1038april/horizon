@@ -3303,27 +3303,39 @@ impl Title {
                 .as_ref()
                 .and_then(|s| s.click(atlas, cursor, size));
             match click {
+                // ExperimentsScreen: a switch only flips the screen's own
+                // list; the selection is written back when Done is pressed.
                 Some(experiments::Click::Switch(i)) => {
-                    let flipped = self
+                    if let Some(f) = self
                         .experiments
                         .borrow_mut()
                         .as_mut()
                         .and_then(|s| s.flags.get_mut(i))
-                        .map(|f| {
-                            f.enabled = !f.enabled;
-                            (f.id.clone(), f.enabled)
-                        });
-                    if let (Some((id, on)), Mode::Create { options, .. }) =
-                        (flipped, &mut self.mode)
                     {
-                        options.data_packs.retain(|p| p != &id);
-                        if on {
-                            options.data_packs.push(id);
-                        }
+                        f.enabled = !f.enabled;
                     }
                     return true;
                 }
-                Some(experiments::Click::Outcome(_)) => {
+                Some(experiments::Click::Outcome(outcome)) => {
+                    // ExperimentsScreen.onDone: the other packs keep their
+                    // order, the selected features are appended in reverse
+                    // screen order. Cancel drops the switches.
+                    if outcome == experiments::Outcome::Done
+                        && let Mode::Create { options, .. } = &mut self.mode
+                        && let Some(flags) = self.experiments.borrow().as_ref().map(|s| {
+                            s.flags
+                                .iter()
+                                .map(|f| (f.id.clone(), f.enabled))
+                                .collect::<Vec<_>>()
+                        })
+                    {
+                        for (id, _) in &flags {
+                            options.data_packs.retain(|p| p != id);
+                        }
+                        for (id, _) in flags.iter().rev().filter(|(_, e)| *e) {
+                            options.data_packs.push(id.clone());
+                        }
+                    }
                     *self.experiments.get_mut() = None;
                     return true;
                 }
