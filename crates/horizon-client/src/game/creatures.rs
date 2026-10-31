@@ -726,6 +726,7 @@ impl Game<'_> {
                 .map(super::boat_leads::boat_state)
                 .collect();
             let base = self.mob_world_base(&[]);
+            let path_changes = horizon_client::mobs::collision_changes(&base, &path_writes);
             // Each mob keeps its snapshot slot all tick; the first slot of an
             // id answers, as a scan would.
             let mut index = horizon_client::fast_hash::FxHashMap::<u32, u32>::default();
@@ -786,7 +787,7 @@ impl Game<'_> {
                     continue;
                 }
                 horizon_client::mobs::apply_mob_pushes(m, &mut pushes);
-                horizon_client::mobs::blocks_changed(m, &w, &path_writes);
+                horizon_client::mobs::blocks_changed(m, &path_changes);
                 let from = events.len();
                 let kept = m.tick(&w, &mut scratch, &mut events);
                 // A killed mob's body is removed: its effects that act on
@@ -891,6 +892,7 @@ impl Game<'_> {
         self.tick_fangs();
         self.tick_allays();
         self.tick_pandas();
+        self.tick_mob_looting();
         self.tick_breeze_effects();
         self.tick_sniffer_effects();
         self.piglin_pickups();
@@ -1546,11 +1548,19 @@ impl Game<'_> {
                     self.combat.explosion_source = Some(mob);
                     // The creeper causes the blast's damage, but it is out of
                     // the mob list already: its name comes with the event.
-                    self.combat.exploded.push((mob, name.clone()));
-                    self.note_named_attacker("minecraft:explosion", mob, name);
+                    self.combat.exploded.push((mob, name));
                     if charged {
                         self.combat.charged_exploders.push(mob);
                     }
+                }
+                MobEvent::LingeringCloud {
+                    at,
+                    effects,
+                    hidden,
+                    ambient,
+                    color,
+                } => {
+                    self.spawn_creeper_cloud(at, effects, hidden, ambient, color);
                 }
                 MobEvent::Explode(at, radius, species) => {
                     // The exploding mob causes the damage (Creeper.explodeCreeper).
@@ -1565,9 +1575,6 @@ impl Game<'_> {
                             .map(|m| m.id)
                             .next()
                     });
-                    if !noted && let Some(id) = source_mob {
-                        self.note_attacker("minecraft:explosion", id);
-                    }
                     self.combat.explosion_source = source_mob;
                     self.combat.explosion_source_named = noted;
                     self.combat.explosion_cause = match species {
@@ -3956,6 +3963,13 @@ impl Game<'_> {
                 Hit::None => {}
             },
             (ProjectileKind::LargeFireball { power }, hit) => {
+                // Fireball explosions are caused by the shooter. A direct hit
+                // on the player takes `projectile_owner`, so read the owner
+                // from the fireball.
+                let owner = match p.owner {
+                    Some(Who::Mob(id)) => Some(id),
+                    _ => None,
+                };
                 if let Hit::Entity { who, .. } = hit {
                     match who {
                         Who::Player => {
@@ -3977,11 +3991,7 @@ impl Game<'_> {
                         }
                     }
                 }
-                // Fireball explosions are caused by the shooter.
-                if let Some(owner) = self.combat.projectile_owner {
-                    self.note_attacker("minecraft:explosion", owner);
-                }
-                self.combat.explosion_owner = self.combat.projectile_owner;
+                self.combat.explosion_owner = owner;
                 // The blast's source names the owner, so a dragon it kills
                 // remembers the player who shot it.
                 self.set_blast_by_player(p.owner == Some(Who::Player));
@@ -5208,6 +5218,7 @@ impl Game<'_> {
         if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
             horizon_client::entity_nbt::apply_item_components(m, stack);
         }
+        self.apply_spawn_egg_entity_data(id, stack);
         self.swing_arm();
         if !self.creative
             && let Some(s) = self.held_mut().as_mut()
@@ -5218,6 +5229,25 @@ impl Game<'_> {
             }
         }
         Ok(true)
+    }
+    /// `EntityType.updateCustomEntityTag`: the egg's `minecraft:entity_data` on
+    /// the mob it spawned, once the guards let it through, as
+    /// `TypedEntityData.loadInto`: the mob's own compound, the data merged over
+    /// it, loaded back into the same mob (`/data merge entity`'s loader).
+    fn apply_spawn_egg_entity_data(&mut self, id: u32, stack: &ItemStack) {
+        let Some(i) = self.mobs.iter().position(|m| m.id == id) else {
+            return;
+        };
+        let kind = self.mobs[i].kind.id.clone();
+        let op = self.acting_player_is_op();
+        let Some(data) = horizon_client::block_entity_item::spawn_egg_entity_data(stack, &kind, op)
+        else {
+            return;
+        };
+        let own = self.mob_tree_nbt(i);
+        let tag = horizon_client::data_cmd::merged(&own, data);
+        // Nothing to report: the mob's own compound always loads back.
+        let _ = self.apply_entity_nbt(super::commands::Target::Mob(id), tag);
     }
     /// A beam target's centre (half its height), interpolated.
     fn beam_target(&self, who: Option<Who>, alpha: f64) -> Option<glam::DVec3> {
