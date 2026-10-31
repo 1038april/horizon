@@ -65,7 +65,7 @@ Enderman.addAdditionalSaveData	missing		minor: the carried block is not written 
 Enderman.readAdditionalSaveData	missing		minor: the carried block is not read from saves
 Enderman.canRandomlyTeleportTo	port	crates/horizon-client/src/mobs/enderman.rs::teleport_to	the water check on the ground block
 Enderman.repeatedlyTryToTeleport	port	crates/horizon-client/src/mobs/enderman.rs::ai_step	pending teleports retry up to 64 times
-Enderman.dropCustomDeathLoot	missing		player: an Enderman killed while holding a block drops no block
+Enderman.dropCustomDeathLoot	port	crates/horizon-client/src/mobs/enderman.rs::carried_block_drops	the carried block's drops with a silk-touch diamond axe (carried_block_tool), drawn from the block table's random sequence (game/creatures.rs, the death handling)
 Enderman.hurtWithCleanWater	missing		player: a thrown splash water potion does nothing to an Enderman; vanilla hurts it
 Enderman.EndermanLeaveBlockGoal.canPlaceBlock	inline	crates/horizon-client/src/mobs/enderman.rs::LeaveBlock::tick	gap: minor: the place-on blacklist tag and the carried block canSurvive check are not in the tick
 Endermite.registerGoals	port	crates/horizon-client/src/mobs/ai.rs::register	Hostile family defaults; gap: unsure: the ClimbOnTopOfPowderSnow goal is not checked
