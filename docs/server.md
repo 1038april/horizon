@@ -481,9 +481,11 @@ runtime or new dependency. Server-sent events can replace the polling later if a
   (one keystore for both) and compares the answers, and the document with the data generator's
   `json-rpc-api-schema.json`.
   - built: the WebSocket and its authentication, TLS, `rpc.discover`, `players`, `players/kick`,
-    `server/{status,save,stop,system_message}`, the getters of the four lists;
-  - planned: changing the lists (through the game, so the source, expiry and kicks are vanilla's),
-    `serversettings/*` and `gamerules`, the notifications and heartbeat (from the event stream).
+    `server/{status,save,stop,system_message}`, the getters of the four lists, and `allowlist/*` and
+    `bans/*`, which the game applies itself (its control endpoint's `management` request, in
+    `game/dedicated/management.rs`), so the source, expiry, log lines and kicks are vanilla's;
+  - planned: changing `ip_bans` and `operators` the same way, `serversettings/*` and `gamerules`, the
+    notifications and heartbeat (from the event stream).
 - **RCON.** `enable-rcon`, `rcon.port` and `rcon.password` turn on vanilla's remote console, for the hosting panels,
   Discord bridges and scripts written for it. The supervisor serves it (`rcon.rs`, std only like `http.rs`), so it
   answers while the game restarts (a command then says the game isn't running), and it reads its settings as

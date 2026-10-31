@@ -7,6 +7,7 @@ mod backup;
 mod cli;
 mod config;
 mod console;
+mod discord;
 mod engine;
 mod events;
 mod http;
