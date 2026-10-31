@@ -22,6 +22,7 @@ use horizon_client::{
     motion::{MotionWorld, PlayerMotion},
     net::{Event, Session},
     save::SaveDir,
+    screen_effects,
     sprint::Keys,
     streaming::{ChunkGenerator, Proto, Streaming},
     tab_list::SPECTATOR,
@@ -993,12 +994,17 @@ impl Game<'_> {
         e.visible = p.flags & 2 != 0;
         let list = &mut self.potions.effects.list;
         match list.iter_mut().find(|x| x.id == id) {
-            // forceAddEffect's copyBlendState: an updated darkness keeps its fade.
+            // forceAddEffect's copyBlendState: an updated effect keeps its fade.
             Some(existing) => *existing = e,
             None => {
+                // ClientboundUpdateMobEffectPacket.shouldBlend (flag 8).
+                let blend = p.flags & 8 != 0;
                 if id == "darkness" {
-                    // ClientboundUpdateMobEffectPacket.shouldBlend (flag 8).
-                    self.sculk.darkness = super::sculk::darkness_blend_added(&e, p.flags & 8 != 0);
+                    self.sculk.darkness = super::sculk::darkness_blend_added(&e, blend);
+                } else if id == "nausea" {
+                    let (o_nausea, nausea) = screen_effects::nausea_blend_added(&e, blend);
+                    self.screen_fx.o_nausea = o_nausea;
+                    self.screen_fx.nausea = nausea;
                 }
                 list.push(e);
             }
