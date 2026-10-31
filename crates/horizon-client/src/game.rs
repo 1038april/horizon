@@ -11827,23 +11827,6 @@ impl Game<'_> {
                 }
                 // LivingEntity.breakItem: the broken item's five crumbs.
                 self.eat_particles(&gone, 5);
-                // LivingEntity.onEquippedItemBroken: the level broadcasts the
-                // break event for the hand, so a guest's tool breaking on the
-                // host reaches every client (`ServerPlayer`'s own break is
-                // broadcast too, this window's included).
-                let guest = self.lan_acting.and_then(|conn| {
-                    self.lan
-                        .as_ref()
-                        .and_then(|host| host.hub.guests.iter().find(|g| g.conn == conn))
-                        .map(|g| g.entity_id)
-                });
-                if let Some(entity) = guest {
-                    let event = horizon_client::mobs::item_break::equipment_break_event(
-                        horizon_world::player_inventory::EquipmentSlot::MainHand,
-                    );
-                    let at = self.eye_position().unwrap_or([0.0; 3]);
-                    self.lan_entity_event(entity, event, at);
-                }
             }
         }
     }
