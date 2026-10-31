@@ -1285,11 +1285,14 @@ fn title_screen_keyboard_navigation_and_activation() {
     assert!(matches!(f.title.mode, Mode::Select { .. }));
     assert_eq!(f.title.focused_button, None);
 
-    // Navigate to Create New World button (id 11) on the select screen
+    // Navigate to Create New World button (id 11) on the select screen: the
+    // "Preparing for world creation" screen comes first, then the create screen.
     f.title.focused_button = Some(11);
     let (action, sound) = f.title.confirm_key_size(size);
     assert_eq!(action, Action::None);
     assert!(sound);
+    assert!(f.title.preparing());
+    f.title.finish_preparing();
     assert!(matches!(f.title.mode, Mode::Create { .. }));
 
     // Focus and toggle Game Mode cycle button (id 20) from Survival to Hardcore
