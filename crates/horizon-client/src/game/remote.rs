@@ -1431,10 +1431,12 @@ impl Game<'_> {
                 Event::Reconfigured(registries) => {
                     // handleConfigurationStart → clearClientLevel, and the next
                     // ClientPacketListener starts with no players or scoreboard,
-                    // and its new ClientSuggestionProvider with no custom
-                    // chat completions.
+                    // no waypoints (its own ClientWaypointManager: a proxy's next
+                    // server never untracks the last one's), and its new
+                    // ClientSuggestionProvider with no custom chat completions.
                     self.hud_disconnected();
                     self.score.board = Default::default();
+                    self.clear_waypoints();
                     if let Some(r) = self.remote.as_mut() {
                         r.players.clear();
                         r.tab_players.clear();
