@@ -81,7 +81,12 @@ impl Launcher {
             .bg(t.surface)
             .flex()
             .flex_col()
-            .occlude();
+            .occlude()
+            .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                this.account_menu = false;
+                this.menu_closed_at = Some(event.position);
+                cx.notify();
+            }));
         for (i, (who, name, how)) in self.players().into_iter().enumerate() {
             let chosen = who == now;
             menu = menu.child(
@@ -142,7 +147,7 @@ impl Launcher {
         }
         self.play_as(Player::Offline(name));
         if !matches!(self.sign_in_state, Some(SignInState::Done(Err(_)))) {
-            self.servers.text(Field::OfflineName).clear();
+            self.servers.text(Field::OfflineName).set(String::new());
         }
     }
 
