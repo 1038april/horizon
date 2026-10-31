@@ -29,12 +29,14 @@ A mod that hooks only Horizon's native hook points (`crates/horizon-client/src/g
 functions the game calls at fixed places, plus helpers, kept stable across releases) can name the version it
 needs instead of pinning: `"hooks": 1` in its `.hnmod`'s `horizon-native.json`, the `NATIVE_HOOKS_API` of that
 file when it was made. Hook points are only ever added: each addition raises `NATIVE_HOOKS_API`, and a mod builds
-on any Horizon whose version is the one it needs or a later one. Hook and helper authors use [API fragments](../tools/native-hook-fragments/README.md) to request a number. Its `horizon` is then only the commit it was tested on. The launcher builds it on the commit the other mods
+on any Horizon whose version is the one it needs or a later one. Its `horizon` is then only the commit it was tested on. The launcher builds it on the commit the other mods
 pin, else on the installed version's commit (the game the player plays), after checking that commit's
 `NATIVE_HOOKS_API` (read from GitHub) is at least the mod's; when it isn't and nothing pins, it builds on the commit the
 mod was tested on. In its own copy of the mod it sets `horizon_revision` to the commit it builds on. Horizon's
 own native mods (Zoom, FPS counter, Keystrokes, Minimap; horizon-rust/horizon-mods, `native/<name>/`) are made this way, so any of them build together
 with no re-release for each Nightly.
+
+Hook and helper authors use [API fragments](../tools/native-hook-fragments/README.md) to request a number.
 
 API 2 adds the item panel beside container screens and its recipe pages (`native_panel_items`,
 `native_panel_recipes`, and the hook `native_panel_event` for the player's clicks, searches and keys over items), and
