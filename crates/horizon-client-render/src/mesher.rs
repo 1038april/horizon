@@ -953,6 +953,8 @@ fn pack_coords(coords: u32) -> u16 {
 pub struct Mesher<'a> {
     /// CardinalLighting.NETHER: brighter up/down faces.
     pub nether_shading: bool,
+    /// A shader pack lights the faces (its `oldLighting` off): no face shading in the colours.
+    pub shader_pack_lighting: bool,
     pub assets: &'a Assets,
     pub render: &'a RenderAssets,
     pub tables: &'a MeshTables,
@@ -1027,8 +1029,8 @@ impl Mesher<'_> {
                     }
                     if state.fluid.kind() != FluidKind::Empty {
                         let water = tints.get(Resolver::Water, x, y, z);
-                        let nether = self.nether_shading;
-                        fluid::tesselate(self.tables, nether, pad, water, &mut out, [x, y, z]);
+                        let shade = (self.nether_shading, self.shader_pack_lighting);
+                        fluid::tesselate(self.tables, shade, pad, water, &mut out, [x, y, z]);
                     }
                     if !state.model {
                         continue;
@@ -1127,7 +1129,11 @@ impl Mesher<'_> {
         let q = &face.quad;
         let tier = state.tier.max(hdr_tier("", q.light_emission));
         let shade_face = q.shade_direction_override.unwrap_or(q.facing);
-        let directional = lighting::cardinal(self.nether_shading, shade_face);
+        let directional = if self.shader_pack_lighting {
+            1.0
+        } else {
+            lighting::cardinal(self.nether_shading, shade_face)
+        };
         // Grey level per vertex before tinting, and vanilla light coords.
         let (gray, coords) = if ao {
             let info = &self.tables.info;
