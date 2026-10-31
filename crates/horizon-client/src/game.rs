@@ -12701,15 +12701,16 @@ impl Game<'_> {
     fn creative_origin(batch: &HudBatch) -> (f32, f32) {
         batch.centered_origin(Creative::WIDTH, Creative::HEIGHT)
     }
-    /// A creative tab's title: `itemGroup.*` (a mod tab's `itemGroup.<mod>.<path>`
-    /// from its lang files), else the export's or the tab file's English title.
+    /// A creative tab's title: `itemGroup.*` for vanilla's; a mod tab's
+    /// `itemGroup.<mod>.<name>`, else its `title` as a lang key (a mod's own
+    /// `itemGroup.<mod>`), else `title` as English text.
     fn creative_tab_title(&self, tab: &horizon_client::creative::Tab) -> String {
         match horizon_client::creative::item_group_key(&tab.id) {
             Some(key) => self.translate(key, &tab.title),
-            None => self.translate(
-                &format!("itemGroup.{}", tab.id.replace(':', ".")),
-                &tab.title,
-            ),
+            None => {
+                let own = self.translate(&tab.title, &tab.title);
+                self.translate(&format!("itemGroup.{}", tab.id.replace(':', ".")), &own)
+            }
         }
     }
     /// Vanilla tooltip: dark box with a purple gradient border, laid out and
