@@ -887,9 +887,11 @@ pub fn mob_to_nbt(
             (Some(state), Some(registry)) => {
                 map.insert("carriedBlockState".into(), state_to_nbt(registry, state));
             }
-            // Nothing carries a block state out without the registry.
-            (Some(_), None) => {}
-            (None, _) => {
+            // Nothing carries a block state out without the registry, and a
+            // caller without one keeps what the loaded compound had, so the
+            // key is only dropped when a registry could have written it.
+            (Some(_), None) | (None, None) => {}
+            (None, Some(_)) => {
                 map.remove(&"carriedBlockState".into());
             }
         },
