@@ -1,5 +1,6 @@
 //! The interactive title before world resources exist. Uses only the menu
 //! atlas/panorama; transfers the actual screen and queued entry to Game.
+use super::event_loop::EventLoopCtl;
 use super::key_focus::{self, Act};
 use super::*;
 use horizon_client::{
@@ -239,7 +240,7 @@ impl StartupMenu {
     }
 
     /// `Screen.keyPressed` on the title screens: the action a key starts (Enter confirms, see `confirm_key` in title.rs).
-    fn title_key(&mut self, event: &KeyEvent) -> Action {
+    fn title_key(&mut self, event: &KeyEvent, viewport: (f32, f32)) -> Action {
         let shortcut = self.shortcut(event);
         let Some(title) = &mut self.title else {
             return Action::None;
@@ -261,10 +262,16 @@ impl StartupMenu {
         match event.physical_key {
             PhysicalKey::Code(KeyCode::Escape) => title.escape(),
             PhysicalKey::Code(KeyCode::F5) => title.refresh_servers(),
-            PhysicalKey::Code(KeyCode::Tab) => title.tab(),
-            PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => return title.confirm_key(),
-            PhysicalKey::Code(KeyCode::Space) if title.list_focused() => {
-                return title.confirm_key();
+            PhysicalKey::Code(KeyCode::Tab) => {
+                title.tab_dir(self.modifiers.shift_key(), viewport);
+            }
+            PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
+                return title.confirm_key_size(viewport).0;
+            }
+            PhysicalKey::Code(KeyCode::Space)
+                if title.list_focused() || title.focused_button.is_some() =>
+            {
+                return title.confirm_key_size(viewport).0;
             }
             PhysicalKey::Code(
                 key @ (KeyCode::Backspace
@@ -279,6 +286,14 @@ impl StartupMenu {
                     self.modifiers.control_key(),
                     self.modifiers.shift_key(),
                 );
+            }
+            PhysicalKey::Code(
+                key @ (KeyCode::ArrowLeft
+                | KeyCode::ArrowRight
+                | KeyCode::ArrowUp
+                | KeyCode::ArrowDown),
+            ) => {
+                title.arrow_key(key, viewport);
             }
             _ => {
                 let cleared = !title.has_caret_field()
@@ -400,11 +415,15 @@ impl Loading {
             gui.atlas.font.japanese = self.settings.japanese_glyphs;
         }
         if let Some(window) = self.window.clone() {
-            let modes = window
+            let monitor = window
                 .current_monitor()
-                .or_else(|| window.primary_monitor())
-                .map(|m| horizon_client::window::monitor_video_modes(&m))
-                .unwrap_or_default();
+                .or_else(|| window.primary_monitor());
+            if let Some(modes) = self
+                .video_modes
+                .refresh(monitor, horizon_client::window::monitor_video_modes)
+            {
+                self.settings.video_modes = modes;
+            }
             let preferred = self
                 .settings
                 .file
@@ -418,7 +437,6 @@ impl Loading {
                 preferred,
                 false,
             );
-            self.settings.video_modes = modes;
         }
         self.update_menu_cursor();
     }
@@ -464,7 +482,7 @@ impl Loading {
     fn open_menu_options(&mut self, page: Page) {
         self.menu.options.open_at(false, page);
         self.menu.options.languages = horizon_client::lang::available(&[&self.menu.root]);
-        self.menu.options.pack_infos = packs::pack_infos(&self.vanilla_root);
+        self.menu.options.pack_infos = packs::pack_infos(&self.vanilla_root, &[]);
         self.menu.options.pack_selection = self.settings.resource_packs.clone();
         self.menu.options.pack_screen = None;
         self.menu.options_open = true;
@@ -503,8 +521,9 @@ impl Loading {
                     packs::open_folder(&dir);
                 }
                 Event::DataPacks(ids) => {
+                    let resources = self.vanilla_root.clone();
                     if let Some(title) = &mut self.menu.title {
-                        title.set_data_packs(ids);
+                        title.offer_data_packs(&resources, ids);
                     }
                 }
                 Event::OpenDataPackFolder(dir) => {
@@ -611,7 +630,7 @@ impl Loading {
         self.menu_option_events(events);
     }
 
-    fn menu_action(&mut self, event_loop: &ActiveEventLoop, action: Action) {
+    fn menu_action(&mut self, event_loop: &dyn EventLoopCtl, action: Action) {
         match action {
             Action::Quit => event_loop.exit(),
             Action::Options => self.open_menu_options(Page::Main),
@@ -684,7 +703,7 @@ impl Loading {
     /// resources load, as `Game::key_focus_key` does it in the game (the
     /// pointer sits on the focus; a step past a list's visible rows doesn't
     /// scroll it here). Whether the key was used.
-    fn menu_key_focus(&mut self, event_loop: &ActiveEventLoop, key: KeyCode) -> bool {
+    fn menu_key_focus(&mut self, event_loop: &dyn EventLoopCtl, key: KeyCode) -> bool {
         let Some(nav) = key_focus::nav_of(key, self.menu.modifiers.shift_key()) else {
             return false;
         };
@@ -793,7 +812,7 @@ impl Loading {
 
     /// The keyboard's focus lands on `target`, the pointer with it (see
     /// `Game::key_focus_landed`).
-    fn menu_key_focus_on(&mut self, event_loop: &ActiveEventLoop, target: Target) {
+    fn menu_key_focus_on(&mut self, event_loop: &dyn EventLoopCtl, target: Target) {
         let left = self.menu.key_focus.replace(target);
         self.menu.key_nudge = None;
         self.menu.key_slider_edit = false;
@@ -821,7 +840,7 @@ impl Loading {
     }
 
     /// A left click at `at` (GUI pixels), the pointer staying there.
-    fn menu_key_click(&mut self, event_loop: &ActiveEventLoop, at: (f32, f32)) {
+    fn menu_key_click(&mut self, event_loop: &dyn EventLoopCtl, at: (f32, f32)) {
         self.menu.cursor = at;
         let was = std::mem::replace(&mut self.menu.key_synthetic, true);
         for state in [ElementState::Pressed, ElementState::Released] {
@@ -839,7 +858,7 @@ impl Loading {
 
     pub(super) fn menu_event(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn EventLoopCtl,
         event: WindowEvent,
     ) -> Result<()> {
         if let WindowEvent::KeyboardInput { event, .. } = &event
@@ -898,6 +917,13 @@ impl Loading {
             }
             WindowEvent::RedrawRequested => self.draw(),
             WindowEvent::ModifiersChanged(modifiers) => self.menu.modifiers = modifiers.state(),
+            // `PackSelectionScreen.onFilesDrop`: a pack dropped on the window
+            // joins the Create New World screen's data packs.
+            WindowEvent::DroppedFile(path) => {
+                if let Some(title) = &mut self.menu.title {
+                    title.drop_file(path);
+                }
+            }
             WindowEvent::Focused(false) => {
                 self.menu.modifiers = ModifiersState::empty();
                 self.menu.physical_keys.clear();
@@ -1041,7 +1067,8 @@ impl Loading {
                         self.menu_option_events(events);
                     }
                 } else {
-                    let action = self.menu.title_key(&event);
+                    let batch = HudBatch::new(self.menu_size());
+                    let action = self.menu.title_key(&event, (batch.width, batch.height));
                     self.menu_action(event_loop, action);
                 }
             }
@@ -1185,6 +1212,7 @@ mod tests {
             gui: None,
             settings: Settings::default(),
             fullscreen: horizon_client::window::FullscreenState::new(false),
+            video_modes: Default::default(),
             options: None,
             vanilla_root: PathBuf::new(),
             pack_error: None,
