@@ -361,8 +361,13 @@ pub enum What {
         selected: bool,
         active: bool,
     },
-    /// `EditBox`: "<message> edit box: <value>".
-    EditBox { message: String, value: String },
+    /// `EditBox`: "<message> edit box: <value>"; an inactive one (a box
+    /// that can't be edited now) isn't narrated.
+    EditBox {
+        message: String,
+        value: String,
+        active: bool,
+    },
     /// A text widget that narrates its message and nothing else
     /// (`FittingMultiLineTextWidget`, a list's `FocusableTextWidget` header).
     Text { message: String },
@@ -451,6 +456,7 @@ impl Narratable {
             What::EditBox {
                 message: message.into(),
                 value: value.into(),
+                active: true,
             },
             rect,
         )
@@ -585,9 +591,9 @@ impl Narratable {
             | What::Slider { active, .. }
             | What::Cycle { active, .. }
             | What::NamedCycle { active, .. }
-            | What::Checkbox { active, .. } => *active,
-            What::EditBox { .. }
-            | What::Text { .. }
+            | What::Checkbox { active, .. }
+            | What::EditBox { active, .. } => *active,
+            What::Text { .. }
             | What::List { .. }
             | What::ContainerList { .. }
             | What::Recipe { .. }
@@ -872,7 +878,8 @@ mod narration_tests {
             last.items[0].what,
             What::EditBox {
                 message: "Search for worlds".into(),
-                value: "abc".into()
+                value: "abc".into(),
+                active: true,
             }
         );
         assert_eq!(last.items[0].order, -1);
@@ -920,6 +927,11 @@ mod narration_tests {
         assert!(a.is_active());
         assert!(!Narratable::button("B", a.rect, false).is_active());
         assert!(Narratable::edit_box("Search", "", a.rect).is_active());
+        let mut port = Narratable::edit_box("Port", "", a.rect);
+        if let What::EditBox { active, .. } = &mut port.what {
+            *active = false;
+        }
+        assert!(!port.is_active());
         assert!(Narratable::group(false, a.rect).is_active());
         let recipe = Narratable::recipe("Torch", true, a.rect).in_group(9);
         assert_eq!(recipe.parent, Some((9, 0)));

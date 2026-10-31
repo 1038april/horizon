@@ -1180,7 +1180,10 @@ impl Game<'_> {
         if !widgets::narrating() {
             return;
         }
-        widgets::narratable(|| Narratable::button("", button, true));
+        // The button moves with the book: it keeps the focus a click gave it.
+        widgets::narratable(|| {
+            Narratable::button("", button, true).key(key_of(&"recipe_book/button"))
+        });
         let open = self.book_open(book_type);
         let (xo, yo) = self.book_origin(batch);
         let group = key_of(&"recipe_book");

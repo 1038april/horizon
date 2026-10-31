@@ -905,6 +905,13 @@ impl Game<'_> {
             };
             let mark = widgets::narratables_mark();
             o.port.draw(batch, atlas, None);
+            // updatePortControlsState: the box is active with LAN only.
+            let lan = o.lan;
+            widgets::last_narratable(|n| {
+                if let horizon_client::widgets::What::EditBox { active, .. } = &mut n.what {
+                    *active = lan;
+                }
+            });
             if let Some(at) = port_at {
                 widgets::move_narratables(mark, at);
             }

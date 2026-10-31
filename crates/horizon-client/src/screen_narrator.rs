@@ -344,7 +344,7 @@ fn narrate(
                 out.add(ElementType::Usage, ctx.tr(key, &[]));
             }
         }
-        What::EditBox { message, value } => {
+        What::EditBox { message, value, .. } => {
             out.add(
                 ElementType::Title,
                 ctx.tr("gui.narrate.editBox", &[message, value]),
