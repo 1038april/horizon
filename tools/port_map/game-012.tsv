@@ -44,8 +44,8 @@ Frog.createAttributes	skip:data		attributes come from entity-types.json
 Frog.checkFrogSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	frogs_spawnable_on below and bright enough
 Frog.FrogNodeEvaluator.getStart	missing		minor: frogs use the plain ground navigation, so a frog in water does not start its path at the box corner
 Frog.FrogNodeEvaluator.getPathType	missing		minor: blocks above #frog_prefer_jump_to (lily pad, dripleaf) are not treated as open path nodes
-Frog.FrogPathNavigation.canCutCorner	missing		minor: no frog navigation, so water-border nodes allow cutting corners
-Frog.FrogPathNavigation.createPathFinder	missing		player: frogs path as plain walkers (NavKind::Ground, no water malus 4 or trapdoor block); vanilla frogs use amphibious pathing with a shallow-water preference
+Frog.FrogPathNavigation.canCutCorner	port	crates/horizon-client/src/mobs/nav.rs::Navigation::can_cut_corner	with the frog on the amphibious finder the corners it refuses are the generic set (fire, damage, walkable doors), which is the frog's own three
+Frog.FrogPathNavigation.createPathFinder	port	crates/horizon-client/src/mobs/frog.rs::register	amphibious navigation with the frog's prefersShallowSwimming (water below sea level - 10 costs more)
 FrogAi.initCoreActivity	inline	crates/horizon-client/src/mobs/frog.rs::register	gap: minor: Panic runs at 1.25 where AnimalPanic uses 2.0; look and move sinks are the controls
 FrogAi.initIdleActivity	inline	crates/horizon-client/src/mobs/frog.rs::register	gap: player: Croak, stroll and look at player (6 blocks) are there; no slimeball tempt, no mate search and no TryFindLand
 FrogAi.initSwimActivity	inline	crates/horizon-client/src/mobs/frog.rs::register	gap: minor: no separate swim activity: Float and the land stroll stand in, no random swim at 0.75 or find-land
