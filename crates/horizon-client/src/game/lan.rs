@@ -187,6 +187,9 @@ pub(super) struct LanHost {
     /// Native mods' commands and the level each needs, once asked
     /// (game/native_server.rs).
     pub native_commands: Option<HashMap<String, u8>>,
+    /// The players a native mod leaves out of the sleep count when they
+    /// aren't in bed (`native_sleep_ignored`).
+    pub sleep_ignored: std::collections::HashSet<u128>,
     /// The entities the guests track, described again every tick
     /// (`lan_entities`) over last tick's states.
     pub(super) states: lan::entity::States,
@@ -1393,6 +1396,7 @@ impl Game<'_> {
             commands: Vec::new(),
             quiet: std::collections::VecDeque::new(),
             native_commands: None,
+            sleep_ignored: Default::default(),
             states: Default::default(),
         });
         self.audio.capture = Some(Vec::new());
