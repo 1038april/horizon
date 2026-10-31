@@ -71,6 +71,25 @@ fn set_flag(m: &mut Mob, f: i32, on: bool) {
 fn clear_states(m: &mut Mob) {
     m.extra.ints[0] = 0;
 }
+/// `Fox.getTrustedEntities`: the UUIDs a fox trusts, `DATA_TRUSTED_ID_0`
+/// first.
+pub fn trusted_entities(m: &Mob) -> impl Iterator<Item = [i32; 4]> + '_ {
+    m.extra.trusted.iter().flatten().copied()
+}
+/// `Fox.addTrustedEntity`: the first free slot, and once both are taken a new
+/// one replaces the second.
+pub fn add_trusted_entity(m: &mut Mob, uuid: [i32; 4]) {
+    let slot = usize::from(m.extra.trusted[0].is_some());
+    m.extra.trusted[slot] = Some(uuid);
+}
+/// `Fox.clearTrusted`: forget everyone.
+pub fn clear_trusted(m: &mut Mob) {
+    m.extra.trusted = [None; 2];
+}
+/// `Fox.trusts`: the UUID is one of the trusted.
+pub fn trusts(m: &Mob, uuid: [i32; 4]) -> bool {
+    trusted_entities(m).any(|trusted| trusted == uuid)
+}
 /// `Fox.canMove`, which `FoxMoveControl` waits for.
 pub fn can_move(m: &Mob) -> bool {
     !flag(m, SLEEPING | SITTING | FACEPLANTED)
@@ -119,7 +138,7 @@ pub fn register(m: &mut Mob) {
     g.add(
         4,
         AvoidEntity::new(Avoid::Player, 16.0, 1.6, 1.4)
-            .player_when(|p| !p.sneaking && !p.spectator),
+            .player_when(|m, p| !p.sneaking && !p.spectator && !trusts(m, p.uuid)),
     );
     g.add(
         4,
@@ -895,5 +914,40 @@ pub fn pose(m: &Mob, partial: f32) -> super::body_anim::Fox {
         head_roll_angle: m.anim.lerp(INTERESTED_ANGLE, partial) * 0.11 * std::f32::consts::PI,
         crouch_amount: m.anim.lerp(CROUCH_AMOUNT, partial),
         leg_motion_pos: (m.age as f32 + partial) * 0.67 * 3.0,
+    }
+}
+
+#[cfg(test)]
+mod trust_tests {
+    use super::*;
+    use crate::mobs::sensor_scan_tests::kind;
+
+    fn fox() -> Mob {
+        let mut kind = kind();
+        let k = std::sync::Arc::make_mut(&mut kind);
+        k.id = "minecraft:fox".into();
+        k.species = Species::Fox;
+        Mob::new(1, kind, Vec3::ZERO, 0.0)
+    }
+
+    /// `Fox.addTrustedEntity`: the first free slot, then the second, and a
+    /// third player replaces the second (`DATA_TRUSTED_ID_0/1`).
+    #[test]
+    fn a_fox_trusts_two_players_and_the_third_replaces_the_second() {
+        const A: [i32; 4] = [1, 2, 3, 4];
+        const B: [i32; 4] = [5, 6, 7, 8];
+        const C: [i32; 4] = [9, 10, 11, 12];
+        let mut f = fox();
+        assert!(!trusts(&f, A), "a fresh fox trusts nobody");
+        add_trusted_entity(&mut f, A);
+        add_trusted_entity(&mut f, B);
+        assert!(trusts(&f, A) && trusts(&f, B));
+        add_trusted_entity(&mut f, C);
+        assert!(trusts(&f, A), "the first slot stays");
+        assert!(!trusts(&f, B) && trusts(&f, C), "the second is replaced");
+        assert_eq!(trusted_entities(&f).collect::<Vec<_>>(), vec![A, C]);
+        clear_trusted(&mut f);
+        assert_eq!(trusted_entities(&f).count(), 0);
+        assert!(!trusts(&f, A));
     }
 }

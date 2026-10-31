@@ -833,6 +833,9 @@ pub struct Extra {
     pub stew_effects: Option<Vec<(Arc<str>, i32)>>,
     /// Dye colour id (sheep wool, collars).
     pub color: u8,
+    /// `Fox.DATA_TRUSTED_ID_0` and `_1`: the players a fox trusts, first free
+    /// slot first, and a third replaces the second (`Fox.addTrustedEntity`).
+    pub trusted: [Option<[i32; 4]>; 2],
     pub sheared: bool,
     /// `Mob.canPickUpLoot` (also lets dispensers equip it).
     pub pick_up_loot: bool,
