@@ -20,11 +20,11 @@ Usage: horizon-prepare [--prepare] [--server-jar PATH] [--minecraft-dir PATH] [-
                        [--java-home PATH] [--complete] [--progress json]
        horizon-prepare --check [--root PATH] [--output PATH]
        horizon-prepare compile-exporters [--root PATH]
-       horizon-prepare sounds [--minecraft-dir PATH] [--root PATH] [--output PATH]
-       horizon-prepare panorama [--minecraft-dir PATH] [--root PATH] [--output PATH]
-       horizon-prepare fonts [--minecraft-dir PATH] [--root PATH] [--output PATH]
-       horizon-prepare packs [--minecraft-dir PATH] [--root PATH] [--output PATH]
-       horizon-prepare languages [--minecraft-dir PATH] [--root PATH] [--output PATH]
+       horizon-prepare sounds [--minecraft-dir PATH] [--version-json PATH] [--assets-dir PATH] [--root PATH] [--output PATH]
+       horizon-prepare panorama [--minecraft-dir PATH] [--version-json PATH] [--assets-dir PATH] [--root PATH] [--output PATH]
+       horizon-prepare fonts [--minecraft-dir PATH] [--version-json PATH] [--assets-dir PATH] [--root PATH] [--output PATH]
+       horizon-prepare packs [--minecraft-dir PATH] [--version-json PATH] [--assets-dir PATH] [--root PATH] [--output PATH]
+       horizon-prepare languages [--minecraft-dir PATH] [--version-json PATH] [--assets-dir PATH] [--root PATH] [--output PATH]
 
   --prepare             Import the pinned game files from your own copy first
   --server-jar PATH     The pinned server jar you downloaded yourself
