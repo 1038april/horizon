@@ -1648,11 +1648,9 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
             &serde_json::to_vec(&remainders)?,
         )?;
     }
-    // Clients must agree on the block states and the mob effects' network ids.
-    if mods
-        .iter()
-        .any(|m| !m.content.blocks.is_empty() || !m.content.effects.is_empty())
-    {
+    // clients must agree on the block states and the items' and mob effects'
+    // network ids.
+    if !plan.blocks.is_empty() || !plan.items.is_empty() || !plan.effects.is_empty() {
         overlay.write(crate::content_identity::MARKER, b"1")?;
     }
     overlay.write(WARNINGS, warnings.join("\n").as_bytes())?;
