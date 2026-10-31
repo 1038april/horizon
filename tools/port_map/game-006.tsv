@@ -79,7 +79,7 @@ LivingEntity.calculateEntityAnimation	port	crates/horizon-client/src/mobs/living
 LivingEntity.causeExtraKnockback	port	crates/horizon-client/src/game/enchant_effects.rs::Game::extra_knockback_direction	target pushed along the attacker's yaw; the attacker stops sprinting
 LivingEntity.wasRecentlyStabbed	inline	crates/horizon-client/src/game/spear.rs::Game::spear_tick	Game::stabbed with contact_cooldown_ticks
 LivingEntity.rememberStabbedEntity	inline	crates/horizon-client/src/game/spear.rs::Game::spear_tick	stabbed.insert(key, now)
-LivingEntity.stabbedEntities	missing		player: the count of mobs stabbed in one use is never read, so the Spear Many Mobs advancement (spear_mobs trigger) never unlocks
+LivingEntity.stabbedEntities	port	crates/horizon-client/src/game/spear.rs::Game::spear_tick	the living entities stabbed in one use feed the minecraft:spear_mobs trigger
 LivingEntity.stabAttack	port	crates/horizon-client/src/game/spear.rs::Game::stab_mob	gap: minor: the player's spear only; mobs never stab
 LivingEntity.handleHandSwap	skip:other		the LAN server sends both changed slots in one SetEquipment instead of entity event 55; clients end in the same state
 LivingEntity.handleEquipmentChanges	port	crates/horizon-client/src/lan/entity.rs::ServerEntity::send_equipment	changed slots as one SetEquipment

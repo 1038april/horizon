@@ -81,12 +81,12 @@ Display.shouldRenderAtSqrDistance	inline	crates/horizon-client/src/game/text_dis
 Display.getTeamColor	missing		minor: glow_color_override is read but a glowing display gets no coloured outline
 Display.createFreshRenderState	inline	crates/horizon-client/src/game/text_displays.rs::RemoteTextDisplay::tick	the copy of the synced data when no interpolation runs
 Display.createInterpolatedRenderState	inline	crates/horizon-client/src/game/text_displays.rs::RemoteTextDisplay::tick	the new start state is the old one blended to the last drawn progress (TextDisplayData::blend)
-Display.BlockDisplay	missing		player: block displays a server or map places are not drawn at all (only text displays are); command and datapack made decorations are invisible
-Display.ItemDisplay	missing		player: item displays (floating items, custom models on servers) are not drawn at all; only text displays are
+Display.BlockDisplay	port	crates/horizon-client/src/game/text_displays.rs::Game::block_item_display_geometry	a block display submits its block model under the display's transformation, lit and tracked like an entity
+Display.ItemDisplay	port	crates/horizon-client/src/game/text_displays.rs::Game::block_item_display_geometry	an item display submits its item model with the display context
 Display.TextDisplay.defineSynchedData	port	crates/horizon-client/src/text_display.rs::TextDisplayData::default	text, line width 200, background 0x40000000, opacity -1, flags 0
 Display.TextDisplay.onSyncedDataUpdated	port	crates/horizon-client/src/game/text_displays.rs::RemoteTextDisplay::metadata	the text render state ids mark the render state dirty
 Display.TextDisplay.loadFlag	missing		minor: reads the NBT booleans into the style flags; no local display entity
-Display.TextDisplay.readAdditionalSaveData	missing		player: text displays saved in a world are not loaded (see Display.readAdditionalSaveData)
+Display.TextDisplay.readAdditionalSaveData	port	crates/horizon-client/src/text_display.rs::text_display_data	a saved text display's synched data (ids 23 to 27) is read back from its compound and re-sent
 Display.TextDisplay.storeFlag	missing		minor: writes the style flags to NBT; no local display entity
 Display.TextDisplay.addAdditionalSaveData	missing		minor: no local display entity to save
 Display.TextDisplay.updateRenderSubState	port	crates/horizon-client/src/text_display.rs::TextDisplayData::blend	text, line width, opacity and background blend over the interpolation

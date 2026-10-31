@@ -1,7 +1,7 @@
 FireworkRocketEntity.<init>	port	crates/horizon-client/src/game/fireworks.rs::Game::new_rocket	launch velocity triangle and lifetime 10*(1+flight)+randoms; the owner and attached target are set by the callers
 FireworkRocketEntity.defineSynchedData	skip:java		SynchedEntityData definitions; Horizon keeps the rocket fields on the Rocket struct
 FireworkRocketEntity.shouldRender	port	crates/horizon-client/src/game/fireworks.rs::Game::rocket_geometry	attached rockets are not drawn; camera range is the caller's check
-FireworkRocketEntity.onHitEntity	missing		player: a firework shot from a crossbow or dispenser flies through mobs and bursts only on a block or at its timer end; Horizon has no entity hit test for rockets
+FireworkRocketEntity.onHitEntity	port	crates/horizon-client/src/game/fireworks.rs::Game::tick_rockets	a rocket fired from a crossbow or dispenser tests entity hits in flight and bursts on what it strikes
 FireworkRocketEntity.onHitBlock	inline	crates/horizon-client/src/game/fireworks.rs::Game::tick_rockets	a block hit ends the angled rocket early and explodes it; vanilla explodes only when it has explosions and skips the block entityInside effect
 FireworkRocketEntity.dealExplosionDamage	port	crates/horizon-client/src/game/fireworks.rs::Game::explode_rocket	damage 5+2 per explosion; attached target takes the full blast, others within 5 blocks with line of sight
 FireworkRocketEntity.addAdditionalSaveData	missing		minor: rocket life, lifetime and item are not written to a save; Horizon does not save flying rockets
