@@ -234,6 +234,12 @@ API 42 adds the item entities near a block, for machines that pick up items as a
 does with what it takes. Both act on the level in place, as `native_set_block` does. Bundles that use them need
 `"hooks": 42`.
 
+API 43 adds `native_level_random(dimension)`, the server level's own random (vanilla's `Level.random`, NeoForge mods'
+`level.getRandom()`): a mod draws from the stream vanilla's explosions and block drops use, so its draws shift theirs
+as a Java mod's would. It is `None` on a client of a server and for a level that isn't open: the Nether and the End
+open when someone first goes there and close after 300 ticks with nobody in them. Bundles
+that use it need `"hooks": 43`.
+
 ## A bundle
 
 A bundle is a folder with a `horizon-mixin.toml`. Besides its helpers and modules (horizon-mixins' README) it can
