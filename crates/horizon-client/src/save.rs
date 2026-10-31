@@ -2348,6 +2348,24 @@ impl SaveDir {
     fn region_path(&self, folder: &str, rx: i32, rz: i32) -> PathBuf {
         region_path(&self.root, folder, rx, rz)
     }
+    /// The references a saved chunk keeps for its structure start `name`
+    /// (`StructureStart.getReferences`, saved as `references`): 0 for a chunk
+    /// not saved yet, a start it does not have or one without the field.
+    pub fn start_references(&self, x: i32, z: i32, name: &str) -> i32 {
+        let Some(root) = self.read_record("region", x, z) else {
+            return 0;
+        };
+        match root
+            .tag
+            .get("structures")
+            .and_then(|s| s.get("starts"))
+            .and_then(|s| s.get(name))
+            .and_then(|s| s.get("references"))
+        {
+            Some(Tag::Int(n)) => *n,
+            _ => 0,
+        }
+    }
     fn read_record(&self, folder: &str, x: i32, z: i32) -> Option<NamedTag> {
         let pending = self
             .pending
@@ -2377,6 +2395,44 @@ impl SaveDir {
         let mut chunk = decode_with(&root, registry, biomes, tables, self.shape.column())?;
         load_light(&root.tag, &mut chunk, self.shape.sky_light);
         Some(chunk)
+    }
+    /// A saved full chunk read for a player's far ring (`lan::far`), as `load` but past the gameplay
+    /// region cache, and only where the region file lists it (no file opened where there is none).
+    pub fn load_far(
+        &self,
+        x: i32,
+        z: i32,
+        registry: &BlockRegistry,
+        biomes: &Biomes,
+    ) -> Option<Chunk> {
+        let pending = self
+            .pending
+            .lock()
+            .ok()?
+            .get(&(Folder::Region, x, z))
+            .map(|(_, record)| record.clone());
+        let root = if let Some(record) = pending {
+            record.tag().map(|tag| (*tag).clone())?
+        } else {
+            if !self.lod_saved(x, z) {
+                return None;
+            }
+            let mut region = RegionFile::open(self.region_path("region", x >> 5, z >> 5)).ok()?;
+            region
+                .read(ChunkPos::new(x, z))
+                .ok()??
+                .nbt(Limits::default())
+                .ok()?
+        };
+        let tables = self.tables.get().map(|t| &**t);
+        let mut chunk = decode_with(&root, registry, biomes, tables, self.shape.column())?;
+        load_light(&root.tag, &mut chunk, self.shape.sky_light);
+        // Without its saved light (`isLightOn`) it would need the light engine: not one for the far ring.
+        chunk.light_loaded.then_some(chunk)
+    }
+    /// Chunks queued for the writer thread and not yet in their region files.
+    pub fn pending_writes(&self) -> usize {
+        self.pending.lock().map_or(0, |p| p.len())
     }
     /// A proto chunk saved before it became final (`decode_proto`).
     pub fn load_proto(
@@ -2839,18 +2895,34 @@ fn write_saved_data(world: &Path, name: &str, data: Tag) -> Result<()> {
 }
 pub use horizon_client_core::uuid::{uuid_from_text, uuid_text};
 /// A random (version 4) UUID as vanilla's four-int form.
+///
+/// Every call gets its own: the generator is seeded once from the clock and
+/// the process, then each call takes the next step of one shared counter. A
+/// seed from the clock alone repeats within its resolution (a microsecond on
+/// macOS): a pack of mobs generated together all had the same UUID, and a
+/// vanilla client keeps only one entity per UUID (the rest never moved).
 pub fn random_uuid() -> [i32; 4] {
-    let t = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos() as u64);
-    let mut s = t ^ (std::process::id() as u64).rotate_left(32) ^ 0x9E37_79B9_7F4A_7C15;
-    let mut next = || {
-        s ^= s << 13;
-        s ^= s >> 7;
-        s ^= s << 17;
-        s
+    use std::sync::{
+        OnceLock,
+        atomic::{AtomicU64, Ordering},
     };
-    let (a, b) = (next(), next());
+    static NEXT: OnceLock<AtomicU64> = OnceLock::new();
+    let next = NEXT.get_or_init(|| {
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as u64);
+        AtomicU64::new(t ^ (std::process::id() as u64).rotate_left(32))
+    });
+    // SplitMix64: distinct steps give distinct outputs.
+    let split = || {
+        let mut z = next
+            .fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed)
+            .wrapping_add(0x9E37_79B9_7F4A_7C15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    };
+    let (a, b) = (split(), split());
     let a = (a & !0xF000) | 0x4000;
     let b = (b & !(0xC000_0000_0000_0000)) | 0x8000_0000_0000_0000;
     [(a >> 32) as i32, a as i32, (b >> 32) as i32, b as i32]
@@ -3753,12 +3825,11 @@ impl Level {
             entries.push(("Pos", doubles(&pos)));
         }
         entries.push(("seenCredits", Tag::Byte(i8::from(self.seen_credits))));
-        if !self.post_effects.is_empty() {
-            entries.push((
-                "post_effects",
-                Tag::List(self.post_effects.iter().map(|e| string(e)).collect()),
-            ));
-        }
+        // `output.store` writes the list even when it is empty.
+        entries.push((
+            "post_effects",
+            Tag::List(self.post_effects.iter().map(|e| string(e)).collect()),
+        ));
         if let Some((dimension, pos)) = &self.last_death {
             entries.push((
                 "LastDeathLocation",
@@ -4956,6 +5027,40 @@ mod tests {
         assert_eq!(number(overworld.tag.get("yPos")), Some(-4));
     }
 
+    /// The far ring's reads (`lan::far`): a chunk saved with its light, without the gameplay's region
+    /// cache; none for a chunk not saved, or saved without its light.
+    #[test]
+    fn far_reads_take_saved_lit_chunks_only() {
+        let Some(root) = std::env::var_os("HORIZON_TEST_RESOURCES") else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        let assets = crate::assets::Assets::load(&root).expect("assets");
+        let biomes = Biomes::load(&root).expect("biomes");
+        let stone = assets.registry.default_state("minecraft:stone").unwrap();
+        let mut lit = Chunk::empty(4, -7);
+        lit.set(1, 70, 2, stone.0);
+        let mut dark = lit.clone();
+        dark.x = 5;
+        lit.lit = true;
+        let dir = std::env::temp_dir().join(format!("horizon-far-save-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let save = SaveDir::new(dir.clone(), LevelShape::OVERWORLD);
+        let records =
+            [&lit, &dark].map(|c| ((c.x, c.z), Some(encode(c, assets.registry, &biomes))));
+        save.write_records("region", records.into(), true).unwrap();
+        let reopened = SaveDir::new(dir.clone(), LevelShape::OVERWORLD);
+        let far = reopened
+            .load_far(4, -7, assets.registry, &biomes)
+            .expect("saved with its light");
+        assert_eq!(far.block(1, 70, 2), stone);
+        assert!(far.lit && far.light_loaded);
+        assert!(reopened.load_far(5, -7, assets.registry, &biomes).is_none());
+        assert!(reopened.load_far(6, -7, assets.registry, &biomes).is_none());
+        assert!(reopened.regions.lock().unwrap().is_empty());
+        fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn saved_far_surface_reads_builds_and_water_without_gameplay_chunks() {
         let Some(root) = std::env::var_os("HORIZON_TEST_RESOURCES") else {
@@ -5769,6 +5874,12 @@ mod tests {
         );
         let r = random_uuid();
         assert_eq!((r[1] >> 12) & 0xF, 4, "version 4");
+    }
+    #[test]
+    fn random_uuids_made_at_once_differ() {
+        let made: std::collections::HashSet<[i32; 4]> =
+            (0..10_000).map(|_| random_uuid()).collect();
+        assert_eq!(made.len(), 10_000);
     }
     #[test]
     fn creaking_heart_keeps_its_protector_uuid() {
