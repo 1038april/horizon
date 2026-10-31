@@ -875,14 +875,8 @@ mod tests {
             Some(Tag::compound([
                 ("colors", Tag::List(vec![Tag::Int(0x00a0_a0a0)])),
                 ("flags", Tag::List(vec![Tag::Byte(1)])),
-                (
-                    "floats",
-                    Tag::List(vec![Tag::Float(1.0f32.to_bits())]),
-                ),
-                (
-                    "strings",
-                    Tag::List(vec![Tag::String("mymod:ruby".into())]),
-                ),
+                ("floats", Tag::List(vec![Tag::Float(1.0f32.to_bits())])),
+                ("strings", Tag::List(vec![Tag::String("mymod:ruby".into())])),
             ])),
         );
         let wire = crate::lan::guest::stack_to_network(
