@@ -45,7 +45,7 @@ pub(super) fn sync_data(
 
 /// Let go of what `sync_data` loaded: for a preload no world used
 /// (game/world_loading.rs).
-pub(super) fn forget_sync_data() {
+pub fn forget_sync_data() {
     *SYNC.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 

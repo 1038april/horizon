@@ -103,6 +103,9 @@ fn pause_buttons(
 /// `FRIENDS_ICON` (vanilla's `CommonButtons.friends`) opens Horizon's
 /// Play with Friends; the others stay inactive.
 const FRIENDS_ICON: usize = 2;
+/// Icon IDs for pause_click matching.
+const BUG_ICON: usize = 0;
+const FEEDBACK_ICON: usize = 1;
 fn pause_icons(
     w: f32,
     h: f32,
@@ -146,39 +149,39 @@ fn death_buttons(w: f32, h: f32, hardcore: bool) -> [(f32, f32, &'static str, u8
 impl Game<'_> {
     /// `pause_screen_additions` tag: dialogs with external_title and pause:true
     /// that should appear as buttons in the pause menu.
-    fn pause_screen_additions(&self) -> Vec<(Text, Tag)> {
-        let registries = match &self.remote {
-            Some(r) => &r.registries,
-            None => return Vec::new(),
-        };
-        let dialogs = match registries.registries.get("minecraft:dialog") {
-            Some(d) => d,
-            None => return Vec::new(),
-        };
-        let tag = match registries
+    /// Vanilla: a single button (customAdditions) that opens the dialog_list
+    /// when the tag has multiple entries, or the single dialog directly.
+    fn pause_screen_additions(&self) -> Option<(Text, Tag)> {
+        let registries = &self.remote.as_ref()?.registries;
+        let dialogs = registries.registries.get("minecraft:dialog")?;
+        let tag = registries
             .dialog_tags
-            .get("minecraft:pause_screen_additions")
-        {
-            Some(t) => t,
-            None => return Vec::new(),
-        };
-        tag.iter()
+            .get("minecraft:pause_screen_additions")?;
+        // Filter dialogs with external_title and pause:true
+        let valid_dialogs: Vec<Tag> = tag
+            .iter()
             .filter_map(|&id| {
                 let i = usize::try_from(id).ok()?;
                 let (_, dialog_tag_opt) = dialogs.get(i)?;
                 let dialog_tag = dialog_tag_opt.as_ref()?;
                 let dialog = Dialog::parse(dialog_tag)?;
-                // Only dialogs with external_title and pause:true appear in pause menu
                 if dialog.external_title.is_some() && dialog.pause {
-                    Some((
-                        dialog.external_title.unwrap_or(dialog.title),
-                        dialog_tag.clone(),
-                    ))
+                    Some(dialog_tag.clone())
                 } else {
                     None
                 }
             })
-            .collect()
+            .collect();
+        if valid_dialogs.is_empty() {
+            return None;
+        }
+        // Vanilla: use the dialog_list dialog (minecraft:pause_screen_additions_list)
+        // or create a synthetic one. For now, use the first dialog's external_title
+        // and the tag itself (which Dialog::set_list will expand to a dialog_list).
+        let first_dialog = Dialog::parse(&valid_dialogs[0])?;
+        let label = first_dialog.external_title.unwrap_or(first_dialog.title);
+        // Return the tag itself - show_dialog will handle dialog_list expansion
+        Some((label, Tag::List(valid_dialogs)))
     }
 
     /// Singleplayer also has a connection, backed by the integrated server.
@@ -203,9 +206,13 @@ impl Game<'_> {
         let links = !self.server_links().is_empty();
         let additions = self.pause_screen_additions();
         let mut tooltip = None;
-        for (x, y, bw, key, id, active) in
-            pause_buttons(w, h, self.external_server(), links, additions.len())
-        {
+        for (x, y, bw, key, id, active) in pause_buttons(
+            w,
+            h,
+            self.external_server(),
+            links,
+            additions.is_some() as usize,
+        ) {
             let hover = active && ui::hovered(self.cursor, x, y, bw, 20.0);
             ui::button(
                 batch,
@@ -223,20 +230,28 @@ impl Game<'_> {
                 tooltip = Some(Text::translate("menu.custom_options.tooltip", &[]));
             }
         }
-        // Draw pause screen additions buttons (row 3: y0 + 122, after server_links)
-        let links_down = if links { 24.0 } else { 0.0 };
-        let additions_h = additions.len() as f32 * 24.0;
-        let (grid_w, grid_h) = (212.0, 166.0 + links_down + additions_h);
-        let x0 = ((w - grid_w) * 0.5).floor();
-        let y0 = ((h - grid_h) * 0.25).floor();
-        // Additions start at row 3 (y0 + 122), after server_links if present
-        let base_y = y0 + 122.0 + links_down;
-        for (i, (label, _)) in additions.iter().enumerate() {
-            let y = base_y + i as f32 * 24.0;
-            let hover = ui::hovered(self.cursor, x0 + 4.0, y, 204.0, 20.0);
-            ui::button(batch, atlas, x0 + 4.0, y, 204.0, 20.0, label, true, hover);
+        // Draw pause screen additions button (row 3: y0 + 122, after server_links)
+        if let Some((label, _)) = &additions {
+            let links_down = if links { 24.0 } else { 0.0 };
+            let additions_h = 24.0; // Single button
+            let (grid_w, grid_h) = (212.0, 166.0 + links_down + additions_h);
+            let x0 = ((w - grid_w) * 0.5).floor();
+            let y0 = ((h - grid_h) * 0.25).floor();
+            let base_y = y0 + 122.0 + links_down;
+            let hover = ui::hovered(self.cursor, x0 + 4.0, base_y, 204.0, 20.0);
+            ui::button(
+                batch,
+                atlas,
+                x0 + 4.0,
+                base_y,
+                204.0,
+                20.0,
+                label,
+                true,
+                hover,
+            );
         }
-        for (i, (x, y, sprite)) in pause_icons(w, h, links, additions.len())
+        for (i, (x, y, sprite)) in pause_icons(w, h, links, additions.is_some() as usize)
             .into_iter()
             .enumerate()
         {
@@ -292,43 +307,57 @@ impl Game<'_> {
         };
         let links = !self.server_links().is_empty();
         let additions = self.pause_screen_additions();
-        let friends = pause_icons(w, h, links, additions.len())[FRIENDS_ICON];
+        let icons = pause_icons(w, h, links, additions.is_some() as usize);
+        let friends = icons[FRIENDS_ICON];
+        let bug_icon = icons[BUG_ICON];
+        let feedback_icon = icons[FEEDBACK_ICON];
 
         // Check standard pause buttons first
-        let standard_hit = pause_buttons(w, h, self.external_server(), links, additions.len())
-            .into_iter()
-            .find(|b| b.5 && ui::hovered(self.cursor, b.0, b.1, b.2, 20.0))
-            .map(|b| b.4);
+        let standard_hit = pause_buttons(
+            w,
+            h,
+            self.external_server(),
+            links,
+            additions.is_some() as usize,
+        )
+        .into_iter()
+        .find(|b| b.5 && ui::hovered(self.cursor, b.0, b.1, b.2, 20.0))
+        .map(|b| b.4);
 
-        // Check pause screen additions
+        // Check pause screen additions button
         let addition_hit = if standard_hit.is_none() {
-            let links_down = if links { 24.0 } else { 0.0 };
-            let additions_h = additions.len() as f32 * 24.0;
-            let (grid_w, grid_h) = (212.0, 166.0 + links_down + additions_h);
-            let x0 = ((w - grid_w) * 0.5).floor();
-            let y0 = ((h - grid_h) * 0.25).floor();
-            // Additions start at row 3 (y0 + 122), after server_links if present
-            let base_y = y0 + 122.0 + links_down;
-            additions
-                .iter()
-                .enumerate()
-                .find_map(|(i, (_, dialog_tag))| {
-                    let y = base_y + i as f32 * 24.0;
-                    if ui::hovered(self.cursor, x0 + 4.0, y, 204.0, 20.0) {
-                        Some((i, dialog_tag.clone()))
-                    } else {
-                        None
-                    }
-                })
+            if let Some((_, dialog_tag)) = &additions {
+                let links_down = if links { 24.0 } else { 0.0 };
+                let additions_h = 24.0;
+                let (grid_w, grid_h) = (212.0, 166.0 + links_down + additions_h);
+                let x0 = ((w - grid_w) * 0.5).floor();
+                let y0 = ((h - grid_h) * 0.25).floor();
+                let base_y = y0 + 122.0 + links_down;
+                if ui::hovered(self.cursor, x0 + 4.0, base_y, 204.0, 20.0) {
+                    Some(dialog_tag.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
         } else {
             None
         };
 
-        // Check friends icon
-        let friends_hit = if standard_hit.is_none() && addition_hit.is_none() {
-            (self.friends_view().shown
-                && ui::hovered(self.cursor, friends.0, friends.1, 20.0, 20.0))
-            .then_some(10)
+        // Check icon buttons (bug report, feedback, friends)
+        let icon_hit = if standard_hit.is_none() && addition_hit.is_none() {
+            if ui::hovered(self.cursor, bug_icon.0, bug_icon.1, 20.0, 20.0) {
+                Some(12)
+            } else if ui::hovered(self.cursor, feedback_icon.0, feedback_icon.1, 20.0, 20.0) {
+                Some(13)
+            } else if self.friends_view().shown
+                && ui::hovered(self.cursor, friends.0, friends.1, 20.0, 20.0)
+            {
+                Some(10)
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -353,15 +382,30 @@ impl Game<'_> {
                 _ => {}
             }
             self.audio.play_button_click();
-        } else if let Some((_, dialog_tag)) = addition_hit {
+        } else if let Some(dialog_tag) = addition_hit {
             // Handle pause screen additions - close pause menu, then open the dialog
             self.screen = Screen::Playing;
             self.capture(true);
             self.show_dialog(&dialog_tag);
             self.audio.play_button_click();
-        } else if friends_hit.is_some() {
-            self.screen = Screen::Friends;
-            self.audio.play_button_click();
+        } else if let Some(icon_id) = icon_hit {
+            match icon_id {
+                12 => {
+                    // Report Bugs
+                    self.confirm_trusted_link("https://bugs.mojang.com", Screen::Paused);
+                    self.audio.play_button_click();
+                }
+                13 => {
+                    // Give Feedback
+                    self.confirm_trusted_link("https://feedback.minecraft.net", Screen::Paused);
+                    self.audio.play_button_click();
+                }
+                10 => {
+                    self.screen = Screen::Friends;
+                    self.audio.play_button_click();
+                }
+                _ => {}
+            }
         }
 
         Ok(())
