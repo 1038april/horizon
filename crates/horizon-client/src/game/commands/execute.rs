@@ -773,7 +773,9 @@ impl Game<'_> {
             })
             .collect()
     }
-    pub(super) fn target_with_uuid(&self, uuid: [i32; 4]) -> Option<Target> {
+    /// `ServerLevel.getEntity(UUID)`: any entity of the level in place, not
+    /// only mobs (displays, armor stands, items...).
+    pub(in crate::game) fn target_with_uuid(&self, uuid: [i32; 4]) -> Option<Target> {
         if Some(uuid) == self.level.player_uuid {
             return Some(Target::Player);
         }
@@ -783,10 +785,7 @@ impl Game<'_> {
             .iter()
             .find(|(_, u)| **u == uuid)
             .map(|(id, _)| *id)?;
-        self.mobs
-            .iter()
-            .any(|m| m.id == id)
-            .then_some(Target::Mob(id))
+        self.level_entity(i32::try_from(id).ok()?)
     }
     /// The highest block of a heightmap type at a column (`Level.getHeight`).
     fn heightmap_at(&self, kind: &str, x: i32, z: i32) -> i32 {
