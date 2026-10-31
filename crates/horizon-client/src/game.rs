@@ -6693,6 +6693,31 @@ impl Game<'_> {
             self.keys.remove(&key);
         }
     }
+    /// Let a held sneak or sprint go when the keyboard reports its modifier up.
+    /// A release does not always reach the mapping: a screen reads presses only,
+    /// and an unfocused window is given no release at all, so the latch would
+    /// keep the player sneaking or sprinting until the key is tapped again. The
+    /// modifier state is what the keyboard itself asserts, so it settles the
+    /// question. A mapping that toggles, or one a pad latched, keeps its state:
+    /// `set_down(false, needs_toggle)` leaves those alone, and a toggle the
+    /// player asked for is meant to outlive the key. A mapping rebound away
+    /// from its modifier is left alone too: the modifier says nothing about it.
+    fn heal_hold_latches(&mut self) {
+        for (slot, mapping, needs_toggle) in [
+            (0, "key.sneak", self.settings.toggle_crouch),
+            (1, "key.sprint", self.settings.toggle_sprint),
+        ] {
+            let held = match horizon_client::keybinds::key_code(self.settings.keys.get(mapping)) {
+                Some(KeyCode::ShiftLeft | KeyCode::ShiftRight) => self.modifiers.shift_key(),
+                Some(KeyCode::ControlLeft | KeyCode::ControlRight) => self.modifiers.control_key(),
+                _ => continue,
+            };
+            if !held {
+                self.toggles.0[slot].set_down(false, needs_toggle);
+                self.sync_toggle(slot);
+            }
+        }
+    }
     /// A key event after rebinding, as the default key of its mapping (the
     /// keyboard and controllers both end here).
     fn mapped_key(&mut self, key: KeyCode, pressed: bool, repeat: bool) -> Result<()> {
@@ -15378,6 +15403,7 @@ impl ApplicationHandler for Game<'_> {
                     }
                     let updated = Instant::now();
                     self.track_toggle_screens();
+                    self.heal_hold_latches();
                     // For the "I'm playing" ping: an atomic, sent on when it changes.
                     horizon_client::heartbeat::set_lan(self.is_published());
                     self.update_discord_presence();
