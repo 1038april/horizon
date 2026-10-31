@@ -3281,6 +3281,7 @@ impl Game<'_> {
             pickup_delay,
             bob_offset: bob,
             ticks: 0,
+            needs_sync: false,
         });
         // ServerLevel.addFreshEntity.
         if !self.native_entity_joins(self.next_entity, "minecraft:item", position, false) {
@@ -7464,6 +7465,10 @@ impl Game<'_> {
             return batch;
         }
         if self.screen == Screen::Options {
+            if self.title.is_none() {
+                self.flush_skin_slots();
+                self.update_remote_skins();
+            }
             self.draw_options(&mut batch);
             return batch;
         }
