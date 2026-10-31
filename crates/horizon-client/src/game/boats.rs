@@ -861,7 +861,7 @@ impl Game<'_> {
     pub(super) fn open_chest_boat_container(&mut self, i: usize) {
         let b = &self.boats[i];
         let key = (i32::MAX - 15, super::minecarts::CART_KEY_Y, b.id as i32);
-        let at = [b.position.x, b.position.y + 0.5, b.position.z];
+        let at = [b.position.x, b.position.y, b.position.z];
         let items = b.items.clone();
         self.world
             .block_entities

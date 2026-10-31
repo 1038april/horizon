@@ -1086,11 +1086,46 @@ impl Game<'_> {
         }
     }
 
+    /// `ContainerEntity`'s `Container.stopOpen` when a vehicle menu closes
+    /// (`AbstractChestBoat.stopOpen` / `MinecartChest.stopOpen`): the menu's
+    /// slots go back to the vehicle, the shared placeholder leaves
+    /// `world.block_entities`, and CONTAINER_CLOSE fires at the vehicle with
+    /// the closing player as the source. A hopper minecart keeps
+    /// `Container.stopOpen`'s no-op. Called by the close packet and by the
+    /// `ServerPlayer.tick` reach/destroyed close.
+    fn close_guest_vehicle_menu(&mut self, host: &LanHost, conn: u32, key: (i32, i32, i32)) {
+        self.store_cart_items(key);
+        self.world.block_entities.remove(&key);
+        let at = if let Some(b) = self.boats.iter().find(|b| b.id as i32 == key.2) {
+            Some([b.position.x, b.position.y, b.position.z])
+        } else if let Some(c) = self.carts.iter().find(|c| c.id as i32 == key.2) {
+            (c.kind == super::minecarts::CartKind::Chest).then_some([
+                c.position.x,
+                c.position.y,
+                c.position.z,
+            ])
+        } else {
+            None
+        };
+        if let Some(at) = at {
+            let spect = host.hub.guest(conn).is_some_and(|g| g.spectator());
+            let ctx = horizon_client::sculk::Context {
+                source: Some(horizon_client::mobs::Who::Player),
+                spectator: spect,
+                targetable: !spect,
+                living: true,
+                player: true,
+                ..Default::default()
+            };
+            self.post_game_event("minecraft:container_close", at, ctx);
+        }
+    }
+
     /// `ServerPlayer.tick`'s `stillValid`: a guest's block container closes
     /// once the guest is out of reach of its block (a removed block closes it
     /// in the hub's `sync_containers`).
     fn lan_containers_tick(&mut self, host: &mut LanHost) {
-        let far: Vec<u32> = host
+        let far: Vec<(u32, Option<(i32, i32, i32)>)> = host
             .hub
             .guests
             .iter()
@@ -1104,11 +1139,20 @@ impl Game<'_> {
                         })
                 })
             })
-            .map(|g| g.conn)
+            .map(|g| {
+                let vehicle = g.menu.as_ref().and_then(|m| match m.slots {
+                    Slots::Block(key) if key.1 == super::minecarts::CART_KEY_Y => Some(key),
+                    _ => None,
+                });
+                (g.conn, vehicle)
+            })
             .collect();
-        for conn in far {
+        for (conn, vehicle) in far {
             self.guest_container_closed(host, conn);
             host.hub.close_container(conn);
+            if let Some(key) = vehicle {
+                self.close_guest_vehicle_menu(host, conn, key);
+            }
             if let Some(gi) = host.hub.guests.iter().position(|g| g.conn == conn) {
                 self.guest_carried_back(host, gi);
             }
@@ -1697,33 +1741,7 @@ impl Game<'_> {
                     self.guest_container_closed(host, conn);
                 }
                 if let Some(key) = vehicle {
-                    self.close_cart_container(key);
-                    // `stopOpen`: a chest boat and a chest minecart fire
-                    // CONTAINER_CLOSE with the closing player's context; a
-                    // hopper minecart keeps `Container.stopOpen`'s no-op.
-                    let at = if let Some(b) = self.boats.iter().find(|b| b.id as i32 == key.2) {
-                        Some([b.position.x, b.position.y + 0.5, b.position.z])
-                    } else if let Some(c) = self.carts.iter().find(|c| c.id as i32 == key.2) {
-                        (c.kind == super::minecarts::CartKind::Chest).then_some([
-                            c.position.x,
-                            c.position.y,
-                            c.position.z,
-                        ])
-                    } else {
-                        None
-                    };
-                    if let Some(at) = at {
-                        let spect = host.hub.guest(conn).is_some_and(|g| g.spectator());
-                        let ctx = horizon_client::sculk::Context {
-                            source: Some(horizon_client::mobs::Who::Player),
-                            spectator: spect,
-                            targetable: !spect,
-                            living: true,
-                            player: true,
-                            ..Default::default()
-                        };
-                        self.post_game_event("minecraft:container_close", at, ctx);
-                    }
+                    self.close_guest_vehicle_menu(host, conn, key);
                 }
                 host.hub.container_closed(conn, p.container);
                 self.guest_carried_back(host, gi);
