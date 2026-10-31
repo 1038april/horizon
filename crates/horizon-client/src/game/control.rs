@@ -153,6 +153,26 @@ impl Game<'_> {
         reply: &Sender<String>,
         event_loop: &ActiveEventLoop,
     ) -> Result<Option<Value>> {
+        // A tap's release must run even when a screen consumes the press,
+        // the key is unbound, or a command handler returns an error.
+        let mut words = line.split_whitespace();
+        let tap = match (words.next(), words.next(), words.next()) {
+            (Some("key"), Some(key), Some("tap")) => key_code(key),
+            _ => None,
+        };
+        let result = self.control_command_inner(line, reply, event_loop);
+        if let Some(key) = tap {
+            self.press_modifier_key(key, false);
+        }
+        result
+    }
+
+    fn control_command_inner(
+        &mut self,
+        line: &str,
+        reply: &Sender<String>,
+        event_loop: &ActiveEventLoop,
+    ) -> Result<Option<Value>> {
         let words: Vec<&str> = line.split_whitespace().collect();
         if self.pending_save.is_some() && words.first() != Some(&"quit") {
             return Err("a world save is in progress".into());
@@ -285,6 +305,10 @@ impl Game<'_> {
             "pad" => Ok(Some(self.pad_command(&words)?)),
             "key" => {
                 let key = key_code(arg(1)?).ok_or_else(|| format!("unknown key {}", words[1]))?;
+                let action = arg(2)?;
+                if !matches!(action, "down" | "up" | "tap" | "repeat") {
+                    return Err("key action must be down, up, tap or repeat".into());
+                }
                 // A server's dialog takes the keys, in configuration too.
                 if self.dialog_open() {
                     if arg(2)? != "up" {
@@ -324,6 +348,7 @@ impl Game<'_> {
                 {
                     use horizon_client::debug_keys::KeyAction;
                     let action = arg(2)?;
+                    self.press_modifier_key(key, action != "up");
                     if action != "up" {
                         self.physical_keys.insert(key);
                         if self.debug_key(key, KeyAction::Press) {
@@ -408,6 +433,7 @@ impl Game<'_> {
             "release" => {
                 self.keys.clear();
                 self.physical_keys.clear();
+                self.modifiers = winit::keyboard::ModifiersState::empty();
                 self.left = false;
                 self.right = false;
                 ok()

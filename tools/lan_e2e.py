@@ -114,6 +114,8 @@ address. The script then checks, from both sides, what a guest's game used to ge
 - shift-drag: a 20 diamond stack dragged over three slots of a crafting table spreads 6 each with
              the left button and 1 each with the right, with Shift held over the drag or not; the
              server hands the rest back when the table closes (#4166).
+- modifier-release: a Shift tap or the control socket's release command leaves the next real
+             inventory click as a normal pickup, rather than a stuck Shift transfer (#4166).
 - wheel:     with the Mouse Tweaks extra on, real wheel events and a right-drag in a furnace, a
              crafting table, a hopper and a dropper: fuel and smeltables go to their slots, nothing
              into a result slot, and down over a result takes it. The server has each.
@@ -352,7 +354,7 @@ SERVER_THREAD = True
 CHECKS = ['tab', 'self', 'armour', 'nametags', 'walls', 'chest', 'menu-transfer', 'crafting', 'spawned', 'sign', 'damage', 'mobs', 'hazards', 'pvp', 'deaths',
           'flow-push', 'bubble-column', 'arrows', 'kills', 'looting', 'leave', 'hurt', 'looks', 'leads', 'respawn', 'containers', 'names', 'feedback', 'titles', 'chat', 'styles',
           'commands', 'recipes', 'machines', 'brewing', 'loom', 'stonecutter', 'grindstone', 'anvil', 'smithing',
-          'enchanting', 'beacon', 'crafter', 'lectern', 'cartography', 'trials', 'clicks', 'shift-double-click', 'recipe-shift', 'shift-drag', 'wheel', 'sleep', 'sleep-villager', 'bed-occupied', 'sleep-reload', 'predict', 'push',
+          'enchanting', 'beacon', 'crafter', 'lectern', 'cartography', 'trials', 'clicks', 'shift-double-click', 'recipe-shift', 'shift-drag', 'modifier-release', 'wheel', 'sleep', 'sleep-villager', 'bed-occupied', 'sleep-reload', 'predict', 'push',
           'piston-push', 'piston-slime', 'eat', 'eat-on-block', 'eating', 'xp', 'objects', 'projectiles', 'thrown', 'sparks', 'hud', 'sidebar', 'border', 'particles',
           'worn', 'blast', 'barter', 'deflect', 'fireball', 'light', 'time', 'swings', 'cracks', 'plates', 'effects',
           'portals', 'distance', 'growth', 'doors', 'flight', 'ladder', 'boats', 'boat_shoved', 'minecarts', 'frames', 'hands',
@@ -2433,6 +2435,38 @@ def result_of(game):
     """The crafting result of the open screen, as (item, count)."""
     s = grid_of(game, 200, 201).get(200, (None, None))
     return s
+
+
+def check_modifier_release(host, guest, out):
+    """Agent key taps and release must clear Shift before the next mouse pickup."""
+    guest('command', command='gamemode survival')
+    grab(host)
+    seen = {}
+    for case in ('tap', 'release'):
+        guest('command', command='clear @s')
+        guest('command', command='give @s minecraft:diamond 10')
+        guest.wait(5)
+        guest.raw('key', 'e', 'tap')
+        guest.raw('wait-for', 'screen', 'inventory', '--timeout', 10)
+        guest.wait(5)
+        try:
+            if case == 'tap':
+                guest.raw('key', 'shift', 'tap')
+            else:
+                guest.raw('key', 'shift', 'down')
+                guest.raw('release')
+            mouse(guest, hotbar_slot(guest, 'minecraft:diamond'))
+            seen[case] = held(guest)
+            guest.shot(out, f'modifier-release-{case}')
+            assert seen[case] == ('minecraft:diamond', 10), \
+                f'{case} left Shift held: the click carried {seen[case]}'
+        finally:
+            guest.raw('release')
+            guest.raw('key', 'esc', 'tap')
+            guest.wait(5)
+        assert server_count(guest, 'diamond') == 10, 'modifier cleanup lost items'
+    host_unaffected(host, "the guest's modifier cleanup")
+    return seen
 
 
 def check_shift_double_click(host, guest, out):
@@ -6333,6 +6367,7 @@ CHECK_FNS = {'tab': check_tab, 'self': check_self, 'armour': check_armour,
              'effects': check_effects, 'portals': check_portals, 'distance': check_distance,
              'clicks': check_clicks, 'shift-double-click': check_shift_double_click, 'recipe-shift': check_recipe_shift,
              'shift-drag': check_shift_drag, 'wheel': check_wheel, 'sleep': check_sleep, 'sleep-villager': check_sleep_villager,
+             'modifier-release': check_modifier_release,
              'bed-occupied': check_bed_occupied, 'sleep-reload': check_sleep_reload,
              'push': check_push, 'piston-push': check_piston_push,
              'piston-slime': check_piston_slime,
