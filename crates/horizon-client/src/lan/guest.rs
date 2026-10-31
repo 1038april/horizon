@@ -136,6 +136,8 @@ pub struct Guest {
     /// Pending ClientboundPlayerPositionPacket id; movement is ignored until
     /// the client accepts it (ServerGamePacketListenerImpl.awaitingPositionFromClient).
     pub awaiting_teleport: Option<(i32, [f64; 3])>,
+    /// The teleport awaited keeps the player's motion (`Hub::teleport_keeping_motion`).
+    pub awaiting_keeps_motion: bool,
     /// Through a portal, until `LanHub::land` gives the client its position:
     /// the moves it sent from the old level are ignored, as they would be
     /// while it had a teleport to accept.
@@ -350,6 +352,7 @@ impl Guest {
             spawn: None,
             respawn_elsewhere: None,
             awaiting_teleport: None,
+            awaiting_keeps_motion: false,
             landing: false,
             teleport_counter: 0,
             watching: false,
@@ -457,6 +460,10 @@ impl Guest {
             C::UpdateAttributes(p) if own(p.id) => Change::State,
             C::UpdateMobEffect(p) if own(p.id) => Change::State,
             C::RemoveMobEffect(p) if own(p.id) => Change::State,
+            C::PlayerAbilities(_) => Change::Abilities,
+            // The chest slot (InventoryMenu's slot 6): a glider.
+            C::ContainerSetSlot(p) if p.container == 0 && p.slot == 6 => Change::Abilities,
+            C::ContainerSetContent(p) if p.container == 0 => Change::Abilities,
             _ => return,
         };
         self.changes
@@ -975,7 +982,69 @@ fn network_stack(
             horizon_protocol::item::Component::Text(name.clone()),
         ));
     }
+    // The model a pack or mod picks for this stack, which the client's item model reads.
+    if let Some(model) = s
+        .data()
+        .and_then(|d| crate::save::text(d.other("minecraft:item_model")))
+    {
+        stack.added.push((
+            horizon_protocol::item::component::ITEM_MODEL,
+            horizon_protocol::item::Component::Ident(model),
+        ));
+    }
+    if let Some(t) = s
+        .data()
+        .and_then(|d| d.other("minecraft:custom_model_data"))
+    {
+        stack.added.push((
+            horizon_protocol::item::component::CUSTOM_MODEL_DATA,
+            custom_model_data(t),
+        ));
+    }
     Some(stack)
+}
+
+/// `CustomModelData.CODEC` read from its saved form, for its stream codec.
+fn custom_model_data(t: &horizon_world::nbt::Tag) -> horizon_protocol::item::Component {
+    use horizon_world::nbt::Tag;
+    // NbtOps writes a list of ints or bytes as an int or byte array.
+    let entries = |key: &str| -> Vec<Tag> {
+        match t.get(key) {
+            Some(Tag::List(l)) => l.clone(),
+            Some(Tag::IntArray(a)) => a.iter().map(|v| Tag::Int(*v)).collect(),
+            Some(Tag::ByteArray(a)) => a.iter().map(|v| Tag::Byte(*v as i8)).collect(),
+            _ => Vec::new(),
+        }
+    };
+    // `ARGB.as8BitChannel`.
+    let channel = |v: f64| ((v as f32) * 255.0).floor() as i32 & 255;
+    horizon_protocol::item::Component::CustomModelData {
+        floats: entries("floats")
+            .iter()
+            .filter_map(|v| crate::save::float(Some(v)))
+            .map(|v| v as f32)
+            .collect(),
+        flags: entries("flags")
+            .iter()
+            .filter_map(|v| crate::save::number(Some(v)))
+            .map(|v| v != 0)
+            .collect(),
+        strings: entries("strings")
+            .iter()
+            .filter_map(|v| crate::save::text(Some(v)))
+            .collect(),
+        // `ExtraCodecs.RGB_COLOR_CODEC`: an int, or an opaque colour from three floats.
+        colors: entries("colors")
+            .iter()
+            .filter_map(|v| match v {
+                Tag::List(rgb) if rgb.len() == 3 => {
+                    let c = |i: usize| crate::save::float(rgb.get(i)).map(channel);
+                    Some(0xFF << 24 | c(0)? << 16 | c(1)? << 8 | c(2)?)
+                }
+                v => crate::save::number(Some(v)).map(|v| v as i32),
+            })
+            .collect(),
+    }
 }
 
 /// `Player.isWithinBlockInteractionRange`: `eye` closer than `range` to the
