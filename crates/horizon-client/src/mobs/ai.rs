@@ -1068,7 +1068,8 @@ fn play_ambient(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         // Nautilus/ZombieNautilus.getAmbientSound: by age, under water or on land.
         Species::Nautilus | Species::ZombieNautilus => super::nautilus::sounds(m)[0],
         Species::Enderman if m.ai.target.is_some() => "entity.enderman.scream",
-        Species::Wolf if m.ai.target.is_some() => {
+        // Wolf.isAngry reads the persistent anger timer, not the current target.
+        Species::Wolf if super::tame::angry(m) => {
             super::finalize::variant_sound(m, "growl").unwrap_or("entity.wolf.growl")
         }
         Species::Wolf if m.random.next_int_bound(3).unwrap_or(1) == 0 => {
@@ -1226,7 +1227,8 @@ fn ai_step(m: &mut Mob, w: &MobWorld, level_random: &mut LegacyRandom, events: &
         // LivingEntity.travelRidden: the rider's client moves it
         // (handleMoveVehicle), so the server only stops it.
         m.velocity = Vec3::ZERO;
-    } else {
+    } else if !(m.species() == Species::Mannequin && m.extra.immovable) {
+        // Mannequin.isEffectiveAi: an immovable one never travels.
         m.travel(w, input, events);
     }
     push_entities(m, w, events);
@@ -1726,7 +1728,9 @@ fn check_despawn(m: &mut Mob, w: &MobWorld) -> bool {
     // zombie villagers being cured and ridden mobs stay.
     let creature = m.kind.category == "creature";
     let removable = !(never_removed_when_far(m.species())
-        || creature && m.kind.flags.animal && !m.extra.jockey
+        || creature && m.kind.flags.animal && !m.extra.jockey && m.species() != Species::Ocelot
+        // Ocelot.removeWhenFarAway: `!isTrusting() && tickCount > 2400`.
+        || m.species() == Species::Ocelot && (m.extra.trusting || m.age <= 2400)
         || super::raider::keeps_alive(m, d)
         || super::zombie_villager::keeps_alive(m)
         || super::riders::keeps_alive(m));
