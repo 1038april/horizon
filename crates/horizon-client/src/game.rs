@@ -1828,7 +1828,7 @@ struct Game<'a> {
     world_loader: Option<world_loading::WorldLoader>,
     /// `DebugEntryChunkGeneration`'s `lastPos` and `result`: F3's `Density` line is sampled
     /// again only when the feet block (or the dimension) changes.
-    debug_density: RefCell<Option<(&'static str, [i32; 3], Option<String>)>>,
+    debug_density: RefCell<debug_keys::DensityCache>,
     pending_pack_reload: bool,
     /// When `resourcepacks/` was last looked at for the open pack screen, and what it held
     /// (`watch_pack_folder`).
@@ -10459,7 +10459,7 @@ impl Game<'_> {
     fn finish_open_world(&mut self, prepared: world_loading::PreparedWorld) -> Result<()> {
         self.reset_tutorial();
         // Another world: its generator, not the last one's Density line.
-        *self.debug_density.borrow_mut() = None;
+        self.debug_density.borrow_mut().clear();
         let world_loading::PreparedWorld {
             save_root,
             shapes,
@@ -15701,7 +15701,7 @@ impl<'a> Game<'a> {
             rest_loader: None,
             pending_entry: None,
             world_loader: None,
-            debug_density: RefCell::new(None),
+            debug_density: RefCell::default(),
             pending_pack_reload: false,
             pack_folder: None,
             pack_reload: None,
