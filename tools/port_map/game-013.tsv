@@ -56,7 +56,7 @@ Panda.PandaAvoidGoal.canUse	port	crates/horizon-client/src/mobs/panda.rs::When::
 Parrot.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	random one of five variants, ageable group without babies
 Parrot.createAttributes	skip:data		attributes (health 6, flying speed 0.4) come from the entity type table
 Parrot.createNavigation	port	crates/horizon-client/src/mobs/parrot.rs::register	flying navigation and a flying move control, no doors, floats
-Parrot.calculateFlapping	port	crates/horizon-client/src/mobs/parrot.rs::flap	
+Parrot.calculateFlapping	port	crates/horizon-client/src/mobs/parrot.rs::calculate_flapping	
 Parrot.checkParrotSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	S::Parrot arm: parrots_spawnable_on below and bright enough
 Parrot.onFlap	port	crates/horizon-client/src/mobs/parrot.rs::process_flapping	the wing-beat sound at 0.15 and nextFlap
 Parrot.hurtServer	port	crates/horizon-client/src/mobs/tame.rs::stand_when_hurt	

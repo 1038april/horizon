@@ -11,8 +11,8 @@ AbstractHorse.causeFallDamage	inline	crates/horizon-client/src/mobs/living.rs::M
 AbstractHorse.createInventory	skip:java		resizes a SimpleContainer; Horizon sizes the chest items when the menu opens
 AbstractHorse.getEquipSound	port	crates/horizon-client/src/game/dispenser.rs::equip_sound	saddle slot plays entity.horse.saddle
 AbstractHorse.hurtServer	port	crates/horizon-client/src/mobs/equine.rs::after_hurt_server	
-AbstractHorse.playStepSound	inline	crates/horizon-client/src/mobs/ai.rs::step_sound	gap: player: horses play the block's own step sound at 15%, never entity.horse.step, step_wood, step_baby or the gallop of a ridden horse; snow above the block is not used either
-AbstractHorse.isWoodSoundType	missing		minor: part of playStepSound, horses on wood use the block's wood step instead of horse.step_wood
+AbstractHorse.playStepSound	port	crates/horizon-client/src/mobs/equine.rs::play_step	
+AbstractHorse.isWoodSoundType	port	crates/horizon-client/src/mobs/equine.rs::is_wood_sound_type	
 AbstractHorse.fedFood	port	crates/horizon-client/src/game/mounts.rs::Game::feed_mount	handleEating and consuming one item; llamas use llamas.rs feed_llama
 AbstractHorse.doPlayerRide	inline	crates/horizon-client/src/game/mounts.rs::Game::interact_mount	clears eating and standing, turns the player to the mount and mounts; the block at the end of interact_mount
 AbstractHorse.isImmobile	port	crates/horizon-client/src/mobs/equine.rs::immobile	
@@ -21,7 +21,7 @@ AbstractHorse.followMommy	missing		minor: no Bred flag, so a bred foal is not pu
 AbstractHorse.openMouth	inline	crates/horizon-client/src/game/mounts.rs::Game::feed_mount	gap: minor: sets the mouth animation to 1 once, it closes after 3 ticks; the mouth flag is not synced to a remote client
 AbstractHorse.setStanding	inline	crates/horizon-client/src/mobs/equine.rs::make_mad	the 20 tick rear; RandomStand::start and the jump in tick_mount_riding set the same counter
 AbstractHorse.standIfPossible	inline	crates/horizon-client/src/mobs/equine.rs::make_mad	rears only species that can; the hurt caller is missing (see hurtServer)
-AbstractHorse.tickRidden	port	crates/horizon-client/src/mobs/equine.rs::ridden_step	yaw and half the pitch follow the rider; no gallop counter (see playStepSound)
+AbstractHorse.tickRidden	port	crates/horizon-client/src/mobs/equine.rs::ridden_step	yaw and half the pitch follow the rider
 AbstractHorse.addPassenger	inline	crates/horizon-client/src/game/mounts.rs::Game::interact_mount	gap: minor: the rider's yaw is snapped to the mount's on mounting, the pitch is not
 AbstractHorse.getRiddenInput	port	crates/horizon-client/src/mobs/equine.rs::ridden_step	gap: player: no allowStandSliding, so a horse that lands from a small hop while still rearing ignores the keys until the rear ends
 AbstractHorse.executeRidersJump	port	crates/horizon-client/src/mobs/equine.rs::ridden_step	gap: minor: the impulse is jump strength times the bar only, no honey block factor and no Jump Boost
