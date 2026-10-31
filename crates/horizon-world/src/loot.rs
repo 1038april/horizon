@@ -374,24 +374,29 @@ pub fn shared_tables(
             .for_each(|file| file.hash(&mut hasher));
         hasher.finish()
     };
-    let mut loaded = LOADED.lock().unwrap_or_else(|e| e.into_inner());
-    loaded.retain(|(_, tables)| tables.strong_count() > 0);
-    if let Some(tables) = loaded
-        .iter()
-        .find(|(k, _)| *k == key)
-        .and_then(|(_, tables)| tables.upgrade())
-    {
+    let held = |loaded: &mut Vec<(u64, Weak<HashMap<String, Value>>)>| {
+        loaded.retain(|(_, tables)| tables.strong_count() > 0);
+        loaded
+            .iter()
+            .find(|(k, _)| *k == key)
+            .and_then(|(_, tables)| tables.upgrade())
+    };
+    if let Some(tables) = held(&mut *LOADED.lock().unwrap_or_else(|e| e.into_inner())) {
         return Ok(tables);
     }
     let mut tables = HashMap::new();
     load_kind(&root.join("data"), "loot_table", &mut tables)?;
     overlay_map(overlay, "loot_table", &mut tables);
-    let mut ids: Vec<String> = tables.keys().cloned().collect();
-    ids.sort();
-    for id in ids {
-        if let Some(table) = tables.get_mut(&id) {
-            native_loot_table_load(&id, table);
-        }
+    // The mods' hooks run outside the lock.
+    let mut each: Vec<_> = tables.iter_mut().collect();
+    each.sort_by(|a, b| a.0.cmp(b.0));
+    for (id, table) in each {
+        native_loot_table_load(id, table);
+    }
+    let mut loaded = LOADED.lock().unwrap_or_else(|e| e.into_inner());
+    // Another thread may have loaded the same tables meanwhile: keep one.
+    if let Some(tables) = held(&mut *loaded) {
+        return Ok(tables);
     }
     let tables = Arc::new(tables);
     loaded.push((key, Arc::downgrade(&tables)));
@@ -404,8 +409,8 @@ pub fn shared_tables(
 /// rolls it (NeoForge's `LootTableLoadEvent`, Fabric's `LootTableEvents.MODIFY`). Add pools to
 /// `table["pools"]` or entries to a pool's `entries`, change or replace it (no pools: it drops
 /// nothing). Called once per table, in id order, wherever the tables load: the server,
-/// and a client too, so make the same change each time. Tables load again on `/reload` and
-/// when a world opens with other packs. API @API:loot_tables@.
+/// and a client too, so make the same change each time, and don't load loot tables from here. A `/reload` or a world opened with
+/// other packs may load them again, or keep the tables already loaded from the same files. API @API:loot_tables@.
 #[inline(never)]
 pub fn native_loot_table_load(id: &str, table: &mut Value) {
     let _ = (id, table);

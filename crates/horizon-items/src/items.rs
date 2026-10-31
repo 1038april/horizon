@@ -1024,15 +1024,15 @@ impl Items {
             .name
             .split_once(':')
             .unwrap_or(("minecraft", &block.name));
+        let own = format!("{namespace}:blocks/{name}");
+        if self.loot.contains_key(&own) {
+            return Some(own);
+        }
         let standing = name.replacen("_wall_", "_", 1);
         let standing = standing.strip_prefix("wall_").unwrap_or(&standing);
         let standing = standing.replacen("wall_", "", 1);
-        [
-            format!("{namespace}:blocks/{name}"),
-            format!("{namespace}:blocks/{standing}"),
-        ]
-        .into_iter()
-        .find(|id| self.loot.contains_key(id))
+        let standing = format!("{namespace}:blocks/{standing}");
+        self.loot.contains_key(&standing).then_some(standing)
     }
     /// Evaluate the block's loot table for a player break without explosions.
     pub fn block_drops<R: RandomSource>(
@@ -1924,6 +1924,53 @@ mod tests {
         assert!(items.item_in_tag("test:items", "test:apple"));
         assert!(!items.item_in_tag("test:items", "test:stone"));
         assert!(!items.item_in_tag("test:missing", "test:apple"));
+    }
+
+    /// `Blocks.wallVariant`: a wall block without a table of its own drops
+    /// from its standing block's (vanilla's tables: `blocks/torch` for
+    /// `wall_torch`, `blocks/oak_sign` for `oak_wall_sign`...).
+    #[test]
+    fn wall_blocks_use_the_standing_blocks_table() {
+        let facts = br#"{"defaults":{"minecraft:air":0},"states":[
+            ["air",true,false,"","minecraft:air"],
+            ["a",false,false,"","minecraft:wall_torch"],
+            ["b",false,false,"","minecraft:oak_wall_sign"],
+            ["c",false,false,"","minecraft:skeleton_wall_skull"],
+            ["d",false,false,"","minecraft:dead_brain_coral_wall_fan"],
+            ["e",false,false,"","test:wall_lamp"],
+            ["f",false,false,"","minecraft:cobblestone_wall"]
+        ]}"#;
+        let registry = BlockRegistry::from_facts_json(&facts[..]).unwrap();
+        let mut items = Items::for_tests(HashMap::new());
+        items.loot = Arc::new(
+            [
+                "minecraft:blocks/torch",
+                "minecraft:blocks/oak_sign",
+                "minecraft:blocks/skeleton_skull",
+                "minecraft:blocks/dead_brain_coral_fan",
+                "test:blocks/wall_lamp",
+                "test:blocks/lamp",
+                "minecraft:blocks/cobblestone_wall",
+            ]
+            .map(|id| (id.to_owned(), json!({"pools": []})))
+            .into_iter()
+            .collect(),
+        );
+        let table = |state| items.block_loot_table(&registry, BlockStateId(state));
+        assert_eq!(table(1).as_deref(), Some("minecraft:blocks/torch"));
+        assert_eq!(table(2).as_deref(), Some("minecraft:blocks/oak_sign"));
+        assert_eq!(table(3).as_deref(), Some("minecraft:blocks/skeleton_skull"));
+        assert_eq!(
+            table(4).as_deref(),
+            Some("minecraft:blocks/dead_brain_coral_fan")
+        );
+        // A table of its own wins over the standing block's.
+        assert_eq!(table(5).as_deref(), Some("test:blocks/wall_lamp"));
+        assert_eq!(
+            table(6).as_deref(),
+            Some("minecraft:blocks/cobblestone_wall")
+        );
+        assert_eq!(table(0), None);
     }
 
     fn ctx<'a>(

@@ -477,10 +477,11 @@ impl GameLevel<'_> {
 
 /// What dropped the items [`Game::native_loot_drops`] hears.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct LootDrops<'a> {
+pub(crate) struct NativeLootDrops<'a> {
     /// The loot table rolled (`minecraft:blocks/stone`, `minecraft:entities/zombie`); empty when
-    /// the block or mob has none.
+    /// none rolled: the block or mob has none, the `mob_drops` rule is off, a baby animal.
     pub(crate) table: &'a str,
+    /// The level they drop in (`minecraft:overworld`).
     pub(crate) dimension: &'a str,
     /// Where the items drop (`LootContextParams.ORIGIN`).
     pub(crate) origin: [f64; 3],
@@ -488,7 +489,7 @@ pub(crate) struct LootDrops<'a> {
     pub(crate) block: Option<([i32; 3], BlockStateId)>,
     /// The mob that died: its entity ID and type (`minecraft:zombie`).
     pub(crate) entity: Option<(u32, &'a str)>,
-    /// The player who broke the block or killed the mob.
+    /// The player who broke the block or killed the mob, when known.
     pub(crate) player: Option<u128>,
     /// What broke the block (`LootContextParams.TOOL`).
     pub(crate) tool: Option<&'a ItemStack>,
@@ -1407,17 +1408,20 @@ impl Game<'_> {
     }
     /// A block broke or a mob died, and `drops` are the items about to drop,
     /// in order: what its loot table rolled (after `native_loot_table_load`'s
-    /// changes), and for a mob what it wore or carried. Add, change or take
-    /// out stacks (NeoForge's global loot modifiers, Fabric's
+    /// changes), and for a mob what it wore and held (not an enderman's
+    /// carried block, which drops after). A block's stacks get its block
+    /// entity's data (a shulker box's items) after this. Add, change or take
+    /// out stacks; empty ones don't drop (NeoForge's global loot modifiers, Fabric's
     /// `LootTableEvents.MODIFY_DROPS`); `context` says what dropped them and
-    /// how, and it is called even when `drops` is empty. Not called where
-    /// nothing drops at all (a creative break, a tool that can't harvest the
-    /// block), for a block that breaks as a neighbour changes (a torch losing
-    /// its wall), nor for experience. Server-side, for every player. API
+    /// how, and it is called even when `drops` is empty. It hears blocks
+    /// that a player, an explosion or a mob breaks, not other breaks (leaves
+    /// decaying, a torch losing its wall, a piston, `/setblock ... destroy`),
+    /// nor a creative break or a tool that can't harvest the block, nor
+    /// experience. Server-side, for every player. API
     /// @API:loot_tables@.
     pub(super) fn native_loot_drops(
         &mut self,
-        context: &LootDrops<'_>,
+        context: &NativeLootDrops<'_>,
         drops: &mut Vec<ItemStack>,
     ) {
         let _ = (context, drops);
@@ -2463,7 +2467,7 @@ impl Game<'_> {
             None => self.res.items(),
         };
         let table = items.block_loot_table(self.pack.assets.registry, state);
-        let context = LootDrops {
+        let context = NativeLootDrops {
             table: table.as_deref().unwrap_or_default(),
             dimension: self.dim.id(),
             origin: pos.map(|c| f64::from(c) + 0.5),
@@ -2474,6 +2478,7 @@ impl Game<'_> {
             explosion,
         };
         self.native_loot_drops(&context, drops);
+        drops.retain(|stack| stack.count > 0 && &*stack.item != "minecraft:air");
     }
     /// Whether a native mod keeps the acting player from taking `stack`.
     pub(super) fn native_pickup_refused(&mut self, stack: &ItemStack) -> bool {

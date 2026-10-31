@@ -436,12 +436,7 @@ pub fn die(m: &mut Mob, d: &Death, sequences: &mut RandomSequences) -> (Vec<Drop
                 .map(|item| (item, m.extra.ints[1]))
         })
         .flatten();
-    let drops_loot = d.mob_drops && (is_monster(s) || !m.is_baby());
-    if drops_loot {
-        let table = format!(
-            "minecraft:entities/{}",
-            m.kind.id.trim_start_matches("minecraft:")
-        );
+    if let Some(table) = death_loot_table(m, d.mob_drops) {
         let params = EntityLootParams {
             this: this.clone(),
             damage: d.damage.clone(),
@@ -543,6 +538,16 @@ pub fn die(m: &mut Mob, d: &Death, sequences: &mut RandomSequences) -> (Vec<Drop
         }
     }
     (out, skulls)
+}
+/// The loot table `die` rolls for `m` (`LivingEntity.getLootTable`), when it
+/// rolls one: none with `doMobLoot` off, nor for a baby that isn't a monster.
+pub fn death_loot_table(m: &Mob, mob_drops: bool) -> Option<String> {
+    (mob_drops && (is_monster(m.species()) || !m.is_baby())).then(|| {
+        format!(
+            "minecraft:entities/{}",
+            m.kind.id.trim_start_matches("minecraft:")
+        )
+    })
 }
 fn roll(
     d: &Death,

@@ -1322,14 +1322,8 @@ impl Game<'_> {
     /// The UUID of the player `last_hurt_by_player` keeps: the guest on
     /// connection `conn`, else the player in place.
     fn killer_uuid(&mut self, conn: Option<u32>) -> u128 {
-        let guest = conn.and_then(|conn| {
-            self.lan
-                .iter()
-                .flat_map(|h| h.hub.guests.iter())
-                .find(|g| g.conn == conn)
-                .map(|g| g.uuid)
-        });
-        guest.unwrap_or_else(|| self.native_acting_id())
+        let guest = conn.and_then(|conn| self.lan.as_ref()?.hub.guest(conn));
+        guest.map_or_else(|| self.native_acting_id(), |g| g.uuid)
     }
     fn drop_death_loot(
         &mut self,
@@ -1419,36 +1413,34 @@ impl Game<'_> {
         let raider = horizon_client::mobs::raider::is_raider(m.species());
         // The item drops come before the carried block and the orbs, so the
         // mods get them all at once and they still spawn in that order.
-        let (stacks, rest): (Vec<_>, Vec<_>) = items
-            .into_iter()
-            .partition(|d| matches!(d, drops::Drop::Item(_)));
-        let mut stacks: Vec<ItemStack> = stacks
-            .into_iter()
-            .filter_map(|d| match d {
-                drops::Drop::Item(stack) => Some(stack),
-                _ => None,
-            })
-            .map(|stack| {
-                if raider && stack.item == horizon_client::mobs::raider::BANNER {
-                    horizon_client::mobs::raider::ominous_banner()
-                } else {
-                    from_loot(&stack)
-                }
-            })
-            .collect();
+        let mut stacks = Vec::new();
+        let mut rest = Vec::new();
+        for d in items {
+            match d {
+                drops::Drop::Item(stack) => stacks.push(
+                    if raider && stack.item == horizon_client::mobs::raider::BANNER {
+                        horizon_client::mobs::raider::ominous_banner()
+                    } else {
+                        from_loot(&stack)
+                    },
+                ),
+                other => rest.push(other),
+            }
+        }
         let kind = super::native_hooks::mob_kind(m);
-        let table = kind.replacen(':', ":entities/", 1);
-        let context = super::native_hooks::LootDrops {
-            table: if loot.has_table(&table) { &table } else { "" },
+        let table = drops::death_loot_table(m, death.mob_drops).filter(|t| loot.has_table(t));
+        let context = super::native_hooks::NativeLootDrops {
+            table: table.as_deref().unwrap_or_default(),
             dimension: self.dim.id(),
             origin: pos,
             block: None,
             entity: Some((m.id, &kind)),
-            player: player_uuid.filter(|_| by_player),
+            player: player_uuid,
             tool: None,
             explosion: None,
         };
         self.native_loot_drops(&context, &mut stacks);
+        stacks.retain(|stack| stack.count > 0 && &*stack.item != "minecraft:air");
         for item in stacks {
             // Every death drop is its own ItemEntity, and the drop entity's
             // own random (not the level's) gives it the constructor's
@@ -1460,7 +1452,6 @@ impl Game<'_> {
         }
         for d in rest {
             match d {
-                drops::Drop::Item(_) => {}
                 drops::Drop::CarriedBlock(state) => {
                     // Enderman.dropCustomDeathLoot: spawnAtLocation for each
                     // of the carried block's silk-touch drops.
@@ -1476,7 +1467,7 @@ impl Game<'_> {
                     }
                 }
                 drops::Drop::Orb(value) if !consumed => self.spawn_orbs(pos, value as u32),
-                drops::Drop::Orb(_) => {}
+                _ => {}
             }
         }
     }
