@@ -142,7 +142,7 @@ impl Launcher {
                         .font_weight(FontWeight::SEMIBOLD)
                         .cursor_pointer()
                         .hover(|s| s.opacity(0.8))
-                        .child("Install")
+                        .child(tr("Install"))
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                             this.install_update();
                             cx.notify();
@@ -165,12 +165,12 @@ impl Launcher {
                     .child(
                         shell::text(night::UI, c(n.ink))
                             .relative()
-                            .child(telemetry::PING_NAME),
+                            .child(tr(telemetry::PING_NAME)),
                     )
                     .child(
                         shell::text(night::CAPTION, c(n.muted))
                             .relative()
-                            .child(telemetry::PING),
+                            .child(tr(telemetry::PING)),
                     )
                     .child(
                         shell::text(night::UI, c(n.accent_hi))
@@ -370,7 +370,7 @@ impl Launcher {
                 focused,
                 false,
                 false,
-                "Paste an invite code",
+                tr("Paste an invite code"),
             ))
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                 window.focus(&this.friend_focus);
