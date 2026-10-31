@@ -1545,6 +1545,8 @@ impl PackPost {
         let custom_names: Vec<String> = custom.uniforms().map(|u| u.0.to_owned()).collect();
         // A first run finds the names neither the frame nor the pack defines.
         custom.eval(0.0, &|n| pack_uniforms::index(n).map(|_| Val::scalar(0.0)));
+        // Its zeros are no start for `smooth`: the first frame's values are, as in Iris.
+        custom.restart_smoothing();
         if !custom.notes.is_empty() {
             notes.push(format!("custom uniforms: {}", custom.notes.join("; ")));
             custom.notes.clear();
@@ -3312,6 +3314,10 @@ impl PackPost {
             t.begin(device, queue);
         }
         self.uniforms.update(frame, inputs, size);
+        // Until the camera's biome is known, `smooth` waits for the world's values.
+        if !inputs.biome_known {
+            self.custom.restart_smoothing();
+        }
         self.uniforms.eval_custom(&mut self.custom);
         if self.targets.is_none() {
             return;
