@@ -37,6 +37,8 @@ mod was tested on. In its own copy of the mod it sets `horizon_revision` to the 
 own native mods (Zoom, FPS counter, Keystrokes, Minimap; horizon-rust/horizon-mods, `native/<name>/`) are made this way, so any of them build together
 with no re-release for each Nightly.
 
+Hook and helper authors use [API fragments](../tools/native-hook-fragments/README.md) to request a number.
+
 API 2 adds the item panel beside container screens and its recipe pages (`native_panel_items`,
 `native_panel_recipes`, and the hook `native_panel_event` for the player's clicks, searches and keys over items), and
 the game's items and recipes (`native_recipes`, `native_known_recipes`, `native_place_recipe`, `native_give`): what a
@@ -152,7 +154,9 @@ gets it back. The clicking player's own client still predicts the crack until th
 Bundles that use it need `"hooks": 30`.
 
 API 31 adds a player's server tick: `native_player_tick` runs once a tick for every living player in the world, at the
-end of their `ServerPlayer.tick`, with the helpers reading that player. Bundles that use it need `"hooks": 31`.
+end of their `ServerPlayer.tick`, with the helpers reading that player. Players still tick while the game is frozen
+(`/tick freeze`), as in vanilla. A dead player isn't called, and neither is one killed earlier in the same tick; it
+runs again once they respawn. Bundles that use it need `"hooks": 31`.
 
 API 32 adds shape updates a mod can answer through `native_update_shape`: on an authoritative server, each time a
 block's state is worked out from a neighbour (`BlockBehaviour.updateShape`): neighbour shape updates after a
@@ -234,12 +238,25 @@ API 42 adds the item entities near a block, for machines that pick up items as a
 does with what it takes. Both act on the level in place, as `native_set_block` does. Bundles that use them need
 `"hooks": 42`.
 
-API 43 sends mod block entities to clients. Each mod block has a block entity type of its own, named after it, after
+API 43 adds `native_level_random(dimension)`, the server level's own random (vanilla's `Level.random`, NeoForge mods'
+`level.getRandom()`): a mod draws from the stream vanilla's explosions and block drops use, so its draws shift theirs
+as a Java mod's would. It is `None` on a client of a server and for a level that isn't open: the Nether and the End
+open when someone first goes there and close after 300 ticks with nobody in them. Bundles
+that use it need `"hooks": 43`.
+
+API 44 adds the server starting and stopping, on the single player server thread and on a dedicated server:
+`native_server_about_to_start(dedicated)` before the worlds load (NeoForge's `ServerAboutToStartEvent`), and
+`native_server_stopping(dedicated)` when an orderly stop begins, with the players still connected and not yet saved
+(`ServerStoppingEvent`). Each start is followed by `native_world_lifecycle`'s `WorldOpenReady` or `WorldOpenFailed`,
+and each stop by `WorldCloseFinal`; a server whose loop fails reports `WorldCloseFailed` instead of stopping. Bundles
+that use them need `"hooks": 44`.
+
+API 45 sends mod block entities to clients. Each mod block has a block entity type of its own, named after it, after
 vanilla's; a client makes its copy of the block entity with `native_block_entity`, as the server does.
 `native_block_entity_update_tag` gives what clients get of one (`BlockEntity.getUpdateTag`, read from the block entity
 alone): it is asked when a chunk holding it is sent and when its block changes, and the client merges it into the
 copy's `nbt`. A saved chunk sent past the view distance asks it on its own thread, so read only `entity`. Keep it to what clients show (a machine running, its facing, a tank's level), not a menu's progress:
-menus have their own data slots. Bundles that use it need `"hooks": 43`.
+menus have their own data slots. Bundles that use it need `"hooks": 45`.
 
 ## A bundle
 
