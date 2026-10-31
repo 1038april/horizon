@@ -6732,7 +6732,10 @@ mod tests {
         assert!((ray.truncate() - reflected).length() < 1e-5, "{ray}");
         // The view's origin, the camera, goes to the mirror's eye.
         let eye = Mat4::from_cols_array_2d(&mirrored) * Vec4::W;
-        assert!((eye.truncate() - Vec3::new(0.0, -6.5, 0.0)).length() < 1e-5, "{eye}");
+        assert!(
+            (eye.truncate() - Vec3::new(0.0, -6.5, 0.0)).length() < 1e-5,
+            "{eye}"
+        );
     }
     #[test]
     fn drawable_size_skips_minimized_and_oversized_windows() {
