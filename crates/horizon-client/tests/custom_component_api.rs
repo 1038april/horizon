@@ -1,10 +1,14 @@
 //! Native component registration, value limits and content identity.
-use horizon_client::content_identity;
+use horizon_client::{
+    content_identity,
+    mod_content::{ContentMod, accept_mod, build, known_components},
+};
 use horizon_protocol::{
     buf::NBT_QUOTA,
     item::custom::{self, InstallError},
 };
 use horizon_world::nbt::Tag;
+use std::fs;
 
 #[test]
 fn registration_limits_and_defaults_are_bound_to_the_connection() {
@@ -55,5 +59,82 @@ fn registration_limits_and_defaults_are_bound_to_the_connection() {
     let c = content_identity::identity(&dir.join("c")).unwrap();
     assert_ne!(a, b);
     assert_eq!(a, c);
+    let scratch = std::env::temp_dir().join(format!(
+        "horizon-component-isolation-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&scratch);
+    let make = |id: &str, patch: &str, block: bool| {
+        let kind = if block { "block" } else { "item" };
+        let dir = scratch.join(id);
+        let path = dir.join(format!("data/{id}/horizon/{kind}/thing.json"));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(dir.join("horizon-mod.toml"), format!("id = \"{id}\"\nname = \"{id}\"\nversion = \"1.0\"\napi = \"0.2\"\ncapabilities = [\"registries\"]\nnamespaces = []\n")).unwrap();
+        fs::write(
+            path,
+            format!(r#"{{"template":"minecraft:stone","components":{patch}}}"#),
+        )
+        .unwrap();
+        let package = horizon_mods::Package::read(&dir).unwrap();
+        ContentMod {
+            id: id.into(),
+            content: horizon_mods::Content::read(&dir, &package.manifest).unwrap(),
+        }
+    };
+    let base = scratch.join("base");
+    fs::create_dir_all(&base).unwrap();
+    fs::write(
+        base.join("items.json"),
+        r#"{"minecraft:stone":{"minecraft:repairable":{}}}"#,
+    )
+    .unwrap();
+    let known = known_components(&base).unwrap();
+    let good = make(
+        "good",
+        r#"{"sample:a":{"value":5},"!minecraft:repairable":{}}"#,
+        false,
+    );
+    let removal = make("remove", r#"{"!sample:a":{}}"#, true);
+    let bad = make("bad", r#"{"missing:type":{}}"#, false);
+    let bad_block = make("badblock", r#"{"!missing:type":{}}"#, true);
+    let mut oversized = make("large", r#"{"sample:a":1}"#, false);
+    oversized.content.items[0]
+        .components
+        .insert("sample:a".into(), serde_json::json!("x".repeat(2_097_153)));
+    let mut accepted = Vec::new();
+    for (candidate, valid) in [
+        (good, true),
+        (bad, false),
+        (removal, true),
+        (bad_block, false),
+        (oversized, false),
+    ] {
+        assert_eq!(accept_mod(&mut accepted, candidate, &known).is_ok(), valid);
+    }
+    assert_eq!(
+        accepted.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+        ["good", "remove"]
+    );
+    fs::write(
+        base.join("facts.json"),
+        r#"{"states":[["minecraft:stone"]],"defaults":{"minecraft:stone":0}}"#,
+    )
+    .unwrap();
+    fs::write(
+        base.join("gameplay-facts.json"),
+        r#"{"states":[{"item":"minecraft:stone"}]}"#,
+    )
+    .unwrap();
+    let out = scratch.join("out");
+    build(&base, &accepted, &out).unwrap();
+    let items: serde_json::Value =
+        serde_json::from_slice(&fs::read(out.join("items.json")).unwrap()).unwrap();
+    assert_eq!(
+        items["good:thing"]["sample:a"],
+        serde_json::json!({"value":5})
+    );
+    assert!(items["good:thing"].get("minecraft:repairable").is_none());
+    assert!(items.get("bad:thing").is_none());
+    fs::remove_dir_all(scratch).unwrap();
     std::fs::remove_dir_all(dir).unwrap();
 }
