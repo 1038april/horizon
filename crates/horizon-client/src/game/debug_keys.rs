@@ -354,13 +354,19 @@ impl Game<'_> {
             ];
             let dim = self.dim.id();
             let mut last = self.debug_density.borrow_mut();
-            // Not kept while the level has no generator yet (the server thread has not run it).
-            if !last
-                .as_ref()
-                .is_some_and(|(d, f, _)| *d == dim && *f == feet)
-                && let Some(t) = terrain
-            {
-                *last = Some((dim, feet, t.density_debug_line(feet)));
+            // Vanilla adds the group only inside its server-level branch: with no generator
+            // (a remote server, a LAN world joined, the server thread not there yet) nothing is
+            // drawn and nothing of the last world is kept.
+            match terrain {
+                None => *last = None,
+                Some(t) => {
+                    if !last
+                        .as_ref()
+                        .is_some_and(|(d, f, _)| *d == dim && *f == feet)
+                    {
+                        *last = Some((dim, feet, t.density_debug_line(feet)));
+                    }
+                }
             }
             if let Some((_, _, Some(line))) = last.as_ref() {
                 d.group("chunk_generation", [line.clone()]);

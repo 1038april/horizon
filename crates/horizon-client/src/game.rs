@@ -10458,6 +10458,8 @@ impl Game<'_> {
 
     fn finish_open_world(&mut self, prepared: world_loading::PreparedWorld) -> Result<()> {
         self.reset_tutorial();
+        // Another world: its generator, not the last one's Density line.
+        *self.debug_density.borrow_mut() = None;
         let world_loading::PreparedWorld {
             save_root,
             shapes,
