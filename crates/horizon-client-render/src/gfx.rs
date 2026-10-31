@@ -245,7 +245,27 @@ struct SectionGpu {
     /// When it began to fade out, its column gone over far terrain that
     /// stays behind it (`Renderer::leave_section`); released once it has.
     leaving: Option<std::time::Instant>,
+    /// Animated sprite layers present in this section.
+    animated_layers: Box<[u16]>,
 }
+/// Extracts distinct animated sprite layers present in a section mesh,
+/// masking out `OPAQUE_LAYER` (bit 15) which is attached to opaque quads.
+pub(crate) fn collect_animated_layers(
+    mesh: &SectionMesh,
+    is_animated: impl Fn(u16) -> bool,
+) -> Box<[u16]> {
+    let mut animated: Vec<u16> = Vec::new();
+    for part in [&mesh.solid, &mesh.translucent] {
+        for quad in part.as_chunks::<4>().0 {
+            let layer = quad[0].layer & !crate::mesher::OPAQUE_LAYER;
+            if is_animated(layer) && !animated.contains(&layer) {
+                animated.push(layer);
+            }
+        }
+    }
+    animated.into_boxed_slice()
+}
+
 impl SectionGpu {
     /// Its fade code this frame (`lod::fade_code`), 0 once whole. `retiring`:
     /// its column has left the render distance, far terrain is coming in
@@ -543,6 +563,7 @@ pub struct Renderer {
     lightmap_view: wgpu::TextureView,
     lightmap_sampler: wgpu::Sampler,
     animations: animate::SpriteAnimator,
+    active_animated_layers: Vec<u16>,
     uploads: upload::Uploads,
     /// Section meshes are staged through their own belt into
     /// `section_copies`, which the next frame records its commands after:
@@ -2839,6 +2860,7 @@ impl Renderer {
             lightmap_view,
             lightmap_sampler,
             animations,
+            active_animated_layers: Vec::new(),
             uploads,
             section_uploads,
             section_copies: None,
@@ -3243,6 +3265,8 @@ impl Renderer {
         {
             self.queue.submit([copies]);
         }
+        let animated_layers =
+            collect_animated_layers(mesh, |layer| self.animations.is_animated(layer));
         Some(SectionGpu {
             page,
             start,
@@ -3265,6 +3289,7 @@ impl Renderer {
             flat_id,
             fading: None,
             leaving: None,
+            animated_layers,
         })
     }
     /// The section copies recorded since the last submission, closed.
@@ -3918,8 +3943,10 @@ impl Renderer {
         self.lightmap_pixels = pixels;
         self.lightmap_uploaded = true;
     }
-    fn animate(&mut self, encoder: &mut wgpu::CommandEncoder, tick: u64) {
-        self.animations.animate(encoder, &mut self.uploads, tick);
+    fn animate(&mut self, encoder: &mut wgpu::CommandEncoder, tick: u64, cull_inactive: bool) {
+        let active = cull_inactive.then_some(&self.active_animated_layers[..]);
+        self.animations
+            .animate(encoder, &mut self.uploads, tick, active);
         if let Some(atlas) = &self.pack_atlas {
             atlas.copy(
                 encoder,
@@ -4026,7 +4053,6 @@ impl Renderer {
                 })
         });
         if self.animated_textures {
-            self.animate(&mut encoder, frame.ticks);
             self.hud
                 .animate_sprites(&mut self.uploads, &mut encoder, frame.ticks);
         }
@@ -4264,6 +4290,40 @@ impl Renderer {
                 let height = |s: &resident::Visible| glam::Vec3::from(s.origin).dot(light);
                 height(b).total_cmp(&height(a))
             });
+        }
+        if self.animated_textures {
+            self.active_animated_layers.clear();
+            for v in &visible {
+                let s = self.sections.get(v.slot);
+                for &layer in &*s.animated_layers {
+                    if !self.active_animated_layers.contains(&layer) {
+                        self.active_animated_layers.push(layer);
+                    }
+                }
+            }
+            for v in &visible_lods {
+                if let Some(tile) = self.lods.get(&v.key) {
+                    for &layer in &*tile.drawn().animated_layers {
+                        if !self.active_animated_layers.contains(&layer) {
+                            self.active_animated_layers.push(layer);
+                        }
+                    }
+                    for &layer in &*tile.mesh.animated_layers {
+                        if !self.active_animated_layers.contains(&layer) {
+                            self.active_animated_layers.push(layer);
+                        }
+                    }
+                }
+            }
+            for v in &shadow_visible {
+                let s = self.sections.get(v.slot);
+                for &layer in &*s.animated_layers {
+                    if !self.active_animated_layers.contains(&layer) {
+                        self.active_animated_layers.push(layer);
+                    }
+                }
+            }
+            self.animate(&mut encoder, frame.ticks, !frame.title);
         }
         self.drawn_sections = visible.len() + visible_lods.len();
         let instances = self.drawn_sections + shadow_visible.len();
@@ -6606,6 +6666,22 @@ mod sprite_upload_tests {
             let (chain, _) = mip_chain(animation.pixels(0), size, &[], 0, 1);
             assert_eq!(chain.capacity(), chain.len());
         }
+    }
+
+    #[test]
+    fn collect_animated_layers_masks_opaque_layer() {
+        use crate::mesher::{self, SectionMesh, TerrainVertex};
+        let opaque_vertex =
+            TerrainVertex::new([0.0, 0.0, 0.0], [0.0, 0.0], 7 | mesher::OPAQUE_LAYER, 0, 0);
+        let translucent_vertex = TerrainVertex::new([0.0, 0.0, 0.0], [0.0, 0.0], 12, 0, 0);
+        let mesh = SectionMesh {
+            solid: vec![opaque_vertex; 4],
+            translucent: vec![translucent_vertex; 4],
+            ..Default::default()
+        };
+
+        let animated = super::collect_animated_layers(&mesh, |layer| layer == 7 || layer == 12);
+        assert_eq!(&*animated, &[7, 12]);
     }
 }
 
