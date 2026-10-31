@@ -103,6 +103,19 @@ fn frame_entry(visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
+/// Seconds between frames past which the last one is forgotten (`NativeFrame::write`).
+const MAX_FRAME_GAP: f32 = 0.5;
+
+/// `value` moved toward `target` over `dt` seconds by a half-life in seconds; a NaN `value`
+/// (the first frame) starts at `target`.
+fn eased(value: f32, target: f32, half_life: f32, dt: f32) -> f32 {
+    if value.is_nan() {
+        target
+    } else {
+        target + (value - target) * 0.5f32.powf(dt / half_life)
+    }
+}
+
 impl NativeFrame {
     pub fn new(device: &wgpu::Device) -> Self {
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -210,10 +223,15 @@ impl NativeFrame {
         .to_cols_array_2d();
         let now = std::time::Instant::now();
         inputs.previous_view_projection = view_proj;
-        if let Some((previous, camera, time)) = self.last {
-            inputs.previous_view_projection = previous;
-            inputs.camera_motion = (frame.camera - camera).as_vec3().to_array();
-            inputs.delta_time = (now - time).as_secs_f32();
+        // `write` skips title frames, so a gap means a pause or another world: the frame
+        // before says nothing about this one, and the eased values start over.
+        match self.last {
+            Some((previous, camera, time)) if (now - time).as_secs_f32() < MAX_FRAME_GAP => {
+                inputs.previous_view_projection = previous;
+                inputs.camera_motion = (frame.camera - camera).as_vec3().to_array();
+                inputs.delta_time = (now - time).as_secs_f32();
+            }
+            _ => self.eye = [f32::NAN; 4],
         }
         self.last = Some((view_proj, frame.camera, now));
         // The eye's light and medium eased by half-lives in seconds, from where they are at
@@ -226,11 +244,7 @@ impl NativeFrame {
         ];
         let dt = inputs.delta_time;
         for (value, (target, half_life)) in self.eye.iter_mut().zip(targets) {
-            *value = if value.is_nan() {
-                target
-            } else {
-                target + (*value - target) * 0.5f32.powf(dt / half_life)
-            };
+            *value = eased(*value, target, half_life, dt);
         }
         let [block, sky, water, lava] = self.eye;
         inputs.eye_light_smooth = [block, sky];
@@ -577,6 +591,13 @@ pub fn frame_inputs(frame: &Frame, size: [u32; 2], seconds: f32, index: u32) -> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn eased_values_start_at_the_target_and_halve_the_distance() {
+        use super::eased;
+        assert_eq!(eased(f32::NAN, 0.25, 2.0, 0.0), 0.25);
+        assert_eq!(eased(1.0, 0.0, 2.0, 2.0), 0.5);
+        assert_eq!(eased(1.0, 0.0, 2.0, 0.0), 1.0);
+    }
     use super::*;
     use horizon_shader_api::{MANIFEST, Pack, check};
 
