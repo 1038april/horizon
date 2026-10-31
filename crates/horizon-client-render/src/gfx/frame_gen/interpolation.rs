@@ -385,7 +385,7 @@ impl Interpolation {
         let render = inputs.render_size.map(|v| v as i32);
         let flow_size = self
             .display
-            .map(|v| (v / super::optical_flow::BLOCK_SIZE) as i32);
+            .map(|v| v.div_ceil(super::optical_flow::BLOCK_SIZE) as i32);
         let base = Params {
             reproject: inputs.reproject.to_cols_array_2d(),
             device_to_view: device_to_view(
