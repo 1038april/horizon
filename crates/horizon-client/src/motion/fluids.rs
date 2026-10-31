@@ -222,7 +222,13 @@ impl MotionWorld<'_, '_, '_> {
     pub fn fluid_base_tick(&mut self) -> Result<()> {
         self.player.fluids.was_eye_in_water = self.player.is_eye_in_fluid(WATER);
         self.update_fluids()?;
+        // `Player.updateSwimming`'s flying guard over `Entity.updateSwimming`,
+        // whose both branches need `!isPassenger()`: a rider keeps no swim, so
+        // the server's copy of a guest who boards a boat while swimming is not
+        // left in the swimming box (eye 0.4) in the seat, at the waterline,
+        // where the boat drowned and suffocated them (#4427).
         self.player.swimming = !self.player.flying
+            && !self.player.is_passenger
             && self.player.sprinting
             && if self.player.swimming {
                 self.player.fluids.was_touching_water
