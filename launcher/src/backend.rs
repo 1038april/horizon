@@ -2621,8 +2621,7 @@ fn installed_launcher_version(path: &Path) -> Option<String> {
 /// Puts `new` at `exe`, the path this launcher started from. The running process keeps its
 /// file (unlinked) and works on. Unix only: `self_replace` asks the system where the running
 /// binary is, and Linux answers "<path> (deleted)" once the file has been replaced, so a second
-/// update in the same run failed with "No such file or directory". Windows keeps a running
-/// binary locked, so there `self_replace` moves it aside first.
+/// update in the same run failed with "No such file or directory".
 #[cfg(unix)]
 fn replace_binary(new: &Path, exe: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -2641,9 +2640,80 @@ fn replace_binary(new: &Path, exe: &Path) -> std::io::Result<()> {
     result
 }
 
+/// Windows keeps a running binary from being written or deleted but lets it be renamed: the
+/// running one steps aside to `<name>.old-<pid>-<n>` in its folder, the new one takes its path,
+/// and a later start removes the old file (`remove_replaced_binaries`). The `self_replace` crate
+/// did this by copying the launcher under a random hidden name and starting that copy to delete
+/// the original through a hidden `cmd.exe`, which Microsoft Defender quarantines as
+/// Trojan:Script/Wacatac (#3175).
 #[cfg(not(unix))]
-fn replace_binary(new: &Path, _exe: &Path) -> std::io::Result<()> {
-    self_replace::self_replace(new)
+fn replace_binary(new: &Path, exe: &Path) -> std::io::Result<()> {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    // A second update in the same run moves the first one's binary aside too.
+    static MOVED: AtomicU32 = AtomicU32::new(0);
+    let dir = exe.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "the launcher has no folder")
+    })?;
+    let name = exe.file_name().unwrap_or_default().to_string_lossy();
+    let pid = std::process::id();
+    let temp = dir.join(format!("{name}.update-{pid}"));
+    let old = dir.join(format!(
+        "{name}.old-{pid}-{}",
+        MOVED.fetch_add(1, Ordering::Relaxed)
+    ));
+    if let Err(e) = fs::copy(new, &temp) {
+        let _ = fs::remove_file(&temp);
+        return Err(e);
+    }
+    match fs::rename(exe, &old) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            let _ = fs::remove_file(&temp);
+            return Err(e);
+        }
+        _ => {}
+    }
+    if let Err(e) = fs::rename(&temp, exe) {
+        let _ = fs::rename(&old, exe);
+        let _ = fs::remove_file(&temp);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Deletes the binaries earlier self-updates moved aside (`replace_binary`), and the copies of an
+/// update that stopped before its new binary took its place (`<name>.update-<pid>`). The one the
+/// launcher just restarted from is still exiting, so this keeps trying for a few seconds in the
+/// background; one that stays in use (another launcher window) goes on a later start.
+#[cfg(windows)]
+pub fn remove_replaced_binaries() {
+    let exe = exe_path();
+    let (Some(dir), Some(name)) = (exe.parent(), exe.file_name()) else {
+        return;
+    };
+    let dir = dir.to_path_buf();
+    let name = name.to_string_lossy();
+    let old = format!("{name}.old-");
+    let update = format!("{name}.update-");
+    let own = format!("{update}{}", std::process::id());
+    std::thread::spawn(move || {
+        for _ in 0..10 {
+            let Ok(entries) = fs::read_dir(&dir) else {
+                return;
+            };
+            let mut left = false;
+            for entry in entries.flatten() {
+                let file = entry.file_name();
+                let file = file.to_string_lossy();
+                if file.starts_with(&old) || (file.starts_with(&update) && file != own) {
+                    left |= fs::remove_file(entry.path()).is_err();
+                }
+            }
+            if !left {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    });
 }
 
 /// The app bundle the launcher runs from (`…/Horizon.app` for `…/Horizon.app/Contents/MacOS/
@@ -3120,11 +3190,11 @@ pub struct Settings {
     /// one now (the owner gate's screen).
     #[serde(default)]
     pub owner_notice_seen: bool,
-    /// Seconds the sidebar's partner banner has been on screen, over every start, up to
-    /// `partner::SEEN_BEFORE_HIDE`: only then can the player hide it.
+    /// Seconds a partner banner (the sidebar's card or the Servers page's banner) has been on
+    /// screen, over every start, up to `partner::SEEN_BEFORE_HIDE`: only then can the player hide it.
     #[serde(default)]
     pub partner_seen_secs: u64,
-    /// The player hid the sidebar's partner banner. The Servers page keeps its own.
+    /// The player hid a partner banner: the sidebar's card and the Servers page's banner are both gone for good.
     #[serde(default)]
     pub partner_hidden: bool,
     /// What the window does while the game runs. Stays by default.
@@ -3790,17 +3860,17 @@ pub fn {f}("
     #[test]
     fn the_accent_is_violet_unless_picked_and_an_unknown_one_keeps_the_rest() {
         use crate::themes::Accent;
-        assert_eq!(Settings::parse("{}").accent, Accent::Violet);
+        assert_eq!(Settings::parse("{}").accent, Accent::VIOLET);
         let teal =
             Settings::parse(r#"{"accent": "teal", "background": "background-0123456789ab.png"}"#);
         assert_eq!(
             (teal.accent, teal.background.as_deref()),
-            (Accent::Teal, Some("background-0123456789ab.png"))
+            (Accent::TEAL, Some("background-0123456789ab.png"))
         );
         let future = Settings::parse(r#"{"accent": "plaid", "game_args": "--x"}"#);
         assert_eq!(
             (future.accent, future.game_args.as_str()),
-            (Accent::Violet, "--x")
+            (Accent::VIOLET, "--x")
         );
     }
 
