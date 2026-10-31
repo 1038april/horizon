@@ -431,9 +431,11 @@ impl GameLevel<'_> {
     /// A block is about to take the state it is placed in
     /// (`Block.getStateForPlacement(BlockPlaceContext)`), `state` the block's
     /// own default state. Answer only for your blocks: put the state you want
-    /// in `answer` as `Some(Some(state))`, or refuse the placement with
-    /// `Some(None)`: the block goes nowhere and the stack is kept, as vanilla's
-    /// `null`. Left empty, the block's own placement runs. `context` is
+    /// in `answer` as `Some(Some(state))` — a state of that block, as vanilla
+    /// sets properties on its own `defaultBlockState` (another block's is
+    /// ignored) — or refuse the placement with `Some(None)`: the block goes
+    /// nowhere and the stack is kept, as vanilla's `null`. Left empty, the
+    /// block's own placement runs. `context` is
     /// vanilla's `BlockPlaceContext` (the clicked face, the placer's rotation,
     /// the clicked position, whether the clicked block is being replaced, the
     /// item in hand) and `fluid` the fluid in the position the block would go

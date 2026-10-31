@@ -3041,8 +3041,14 @@ fn the_level_chooses_the_state_a_block_is_placed_in() {
         b.state_for_placement(&mut level, &mut ticks, stairs, &ctx),
         vanilla
     );
-    // A made-up id is not trusted: the block places as vanilla's would.
+    // A made-up id is not trusted, nor is another block's state: the block
+    // places as vanilla's would.
     level.answer = Some(Some(BlockStateId(u32::MAX)));
+    assert_eq!(
+        b.state_for_placement(&mut level, &mut ticks, furnace_block, &ctx),
+        Some(furnace)
+    );
+    level.answer = Some(Some(b.default_of(stairs)));
     assert_eq!(
         b.state_for_placement(&mut level, &mut ticks, furnace_block, &ctx),
         Some(furnace)

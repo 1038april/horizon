@@ -297,9 +297,15 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         self.level
             .before_state_for_placement(default, ctx, fluid, &mut answer);
         match answer {
-            // A mod's answer: an id past the state table would panic the
-            // server, so an impossible one leaves vanilla's state as it is.
-            Some(Some(new)) if (new.0 as usize) < self.b.table.state_count() => return Some(new),
+            // A mod's answer, for a state of the block being placed, as
+            // vanilla's `getStateForPlacement` returns its own `defaultBlockState`
+            // set out. Another block's answer, or an id past the state table
+            // (which would panic the server), leaves vanilla's state as it is.
+            Some(Some(new))
+                if (new.0 as usize) < self.b.table.state_count() && self.b.block(new) == block =>
+            {
+                return Some(new);
+            }
             // Vanilla's `null` return: the block goes nowhere.
             Some(None) => return None,
             _ => {}

@@ -400,10 +400,10 @@ pub trait LevelAccess {
     /// faces the player, sits on the clicked face, or comes waterlogged).
     /// `context` is vanilla's `BlockPlaceContext`, `fluid` the fluid in the
     /// position the block would go in. `answer` starts empty: `Some(Some(s))`
-    /// places `s`, `Some(None)` refuses the placement (vanilla's `null`
-    /// return: the block goes nowhere and nothing is consumed), and `None`
-    /// leaves the block's own `getStateForPlacement` to run. The default does
-    /// nothing.
+    /// places `s`, a state of the block's own, `Some(None)` refuses the
+    /// placement (vanilla's `null` return: the block goes nowhere and nothing
+    /// is consumed), and `None` leaves the block's own `getStateForPlacement`
+    /// to run. The default does nothing.
     #[allow(clippy::option_option)]
     fn before_state_for_placement(
         &self,
