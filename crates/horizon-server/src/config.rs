@@ -28,6 +28,7 @@ whitelist = true             # only whitelisted players and operators can join
 enforce_whitelist = false    # kick online players taken off the whitelist
 view_distance = 10           # chunks sent around each player
 simulation_distance = 10     # chunks around each player where mobs, crops and redstone tick
+max_view_distance = 0        # past view_distance, saved chunks only, up to this (never generated; 0: off)
 
 [world]
 name = "world"               # the world folder
@@ -55,10 +56,28 @@ keep = 1                     # other releases kept by updates, besides the one i
 [panel]
 bind = "127.0.0.1:8130"      # the web panel: this computer only, or a tailnet address (100.x); "" turns it off
 allow_public = false         # true lets bind be any address; never put the panel on the open internet
+
+[api]
+bind = ""                    # the control API: "" a free port on 127.0.0.1; or a fixed one, like 127.0.0.1:8131 or a tailnet address
+token = ""                   # its token (16 characters or more); "" a new random one at every start
+allow_public = false         # true lets bind be any address; the token is then all that guards the server
+
+# Horizon's anticheat (docs/anticheat.md) is on: `combat` drops and kicks attacks no vanilla client sends;
+# timer, ground and prediction only write logs/anticheat.log until they're trusted. To change it:
+# [anticheat]
+# enabled = true             # false: the server checks only what vanilla's checks
+# alerts = true              # tell online operators (alert_level = 2) in their chat; the console always is
+# log = "logs/anticheat.log" # every flag, one line each
+# [anticheat.timer]          # a sped-up game: more client ticks than the server's clock allows
+# enabled = true             # false turns this check off
+# setback = 2                # the violation level from which the player is sent back; 0: never
+# alert = 5
+# kick = 20
+# decay = 0.02               # violation level lost each second
 "##;
 
 /// Each typed setting: its section, its name, and the vanilla key it writes.
-pub(crate) const TYPED: [(&str, &str, &str); 14] = [
+pub(crate) const TYPED: [(&str, &str, &str); 15] = [
     ("server", "motd", "motd"),
     ("server", "port", "server-port"),
     ("server", "bind", "server-ip"),
@@ -68,6 +87,7 @@ pub(crate) const TYPED: [(&str, &str, &str); 14] = [
     ("server", "enforce_whitelist", "enforce-whitelist"),
     ("server", "view_distance", "view-distance"),
     ("server", "simulation_distance", "simulation-distance"),
+    ("server", "max_view_distance", "horizon-max-view-distance"),
     ("world", "name", "level-name"),
     ("world", "seed", "level-seed"),
     ("world", "game_mode", "gamemode"),
@@ -92,6 +112,15 @@ pub struct Config {
     pub updates: Updates,
     #[serde(default)]
     pub panel: Panel,
+    #[serde(default)]
+    pub api: Api,
+    /// The game reads this section itself (docs/anticheat.md); written only when it isn't the default.
+    #[serde(default, skip_serializing_if = "anticheat_default")]
+    pub anticheat: horizon_anticheat::Config,
+}
+
+fn anticheat_default(c: &horizon_anticheat::Config) -> bool {
+    *c == horizon_anticheat::Config::default()
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -106,6 +135,8 @@ pub struct Server {
     pub enforce_whitelist: bool,
     pub view_distance: u32,
     pub simulation_distance: u32,
+    /// Horizon's far ring (docs/hosting.md): saved chunks sent past `view_distance`, up to this; 0 is off.
+    pub max_view_distance: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -147,24 +178,62 @@ impl Default for Panel {
 impl Panel {
     /// Where the panel listens; `None` when it is off.
     pub fn address(&self) -> Result<Option<std::net::SocketAddr>, String> {
-        if self.bind.trim().is_empty() {
-            return Ok(None);
-        }
-        let address: std::net::SocketAddr = self.bind.trim().parse().map_err(|_| {
-            format!(
-                "panel.bind is \"{}\": use an address and a port, like 127.0.0.1:8130",
-                self.bind
-            )
-        })?;
-        if !self.allow_public && !private(address.ip()) {
-            return Err(format!(
-                "panel.bind is \"{}\": the panel listens only on this computer (127.0.0.1) or a tailnet \
-                 address (100.64.0.0/10, fd7a:115c:a1e0::/48); reach it from elsewhere over Tailscale or SSH",
-                self.bind
-            ));
-        }
-        Ok(Some(address))
+        listen_address("panel", &self.bind, self.allow_public, 8130)
     }
+}
+
+/// The control API's fixed address and token (docs/api/server.md); by default neither: a free port on
+/// 127.0.0.1 and a random token, both written to `.horizon/api.json`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Api {
+    pub bind: String,
+    pub token: String,
+    pub allow_public: bool,
+}
+
+impl Api {
+    /// Where the API listens: `bind`, or a free port on 127.0.0.1.
+    pub fn address(&self) -> Result<std::net::SocketAddr, String> {
+        Ok(listen_address("api", &self.bind, self.allow_public, 8131)?
+            .unwrap_or_else(|| (std::net::Ipv4Addr::LOCALHOST, 0).into()))
+    }
+
+    fn check(&self) -> Result<(), String> {
+        self.address()?;
+        let token = self.token.trim();
+        if !token.is_empty() && (token.len() < 16 || token.chars().any(|c| !c.is_ascii_graphic())) {
+            return Err(
+                "api.token must be 16 characters or more, without spaces (or \"\": a random one)"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+}
+
+/// A `bind` setting: `None` when empty; anything but this computer or the tailnet needs `allow_public`.
+fn listen_address(
+    what: &str,
+    bind: &str,
+    allow_public: bool,
+    example_port: u16,
+) -> Result<Option<std::net::SocketAddr>, String> {
+    if bind.trim().is_empty() {
+        return Ok(None);
+    }
+    let address: std::net::SocketAddr = bind.trim().parse().map_err(|_| {
+        format!(
+            "{what}.bind is \"{bind}\": use an address and a port, like 127.0.0.1:{example_port}"
+        )
+    })?;
+    if !allow_public && !private(address.ip()) {
+        return Err(format!(
+            "{what}.bind is \"{bind}\": the {what} listens only on this computer (127.0.0.1) or a tailnet \
+             address (100.64.0.0/10, fd7a:115c:a1e0::/48); reach it from elsewhere over Tailscale or SSH"
+        ));
+    }
+    Ok(Some(address))
 }
 
 /// Loopback, or a Tailscale address: reachable only from this computer or the owner's tailnet.
@@ -212,6 +281,7 @@ impl Default for Server {
             enforce_whitelist: false,
             view_distance: 10,
             simulation_distance: 10,
+            max_view_distance: 0,
         }
     }
 }
@@ -296,6 +366,8 @@ impl Config {
         }
         crate::backup::interval(&self.backups.every)?;
         self.panel.address()?;
+        self.api.check()?;
+        self.anticheat.check()?;
         if self.server.port == 0 {
             return Err("server.port must be a port number from 1 to 65535".into());
         }
@@ -400,10 +472,20 @@ pub fn render(config: &Config) -> String {
         ("updates", "keep"),
         ("panel", "bind"),
         ("panel", "allow_public"),
+        ("api", "bind"),
+        ("api", "token"),
+        ("api", "allow_public"),
     ] {
         set(&mut doc, section, field, &table[section][field]);
     }
-    doc.to_string()
+    let mut text = doc.to_string();
+    if let Some(anticheat) = table.get("anticheat") {
+        let mut only = toml::Table::new();
+        only.insert("anticheat".into(), anticheat.clone());
+        text.push('\n');
+        text.push_str(&toml::to_string(&only).expect("the anticheat's settings are a table"));
+    }
+    text
 }
 
 /// After the game stopped: copies into `server.toml` the keys it wrote that the game changed in
@@ -541,11 +623,38 @@ mod tests {
     }
 
     #[test]
+    fn anticheat_is_on_unless_its_section_turns_it_off() {
+        assert!(Config::default().anticheat.enabled);
+        assert!(!TEMPLATE.lines().any(|l| l.trim() == "[anticheat]"));
+        let text =
+            format!("{TEMPLATE}\n[anticheat]\nenabled = true\n[anticheat.timer]\nkick = 20\n");
+        let c = Config::parse(&text).unwrap();
+        assert!(c.anticheat.enabled);
+        assert_eq!(c.anticheat.timer.kick, 20.0);
+        let off = Config::parse(&format!("{TEMPLATE}\n[anticheat]\nenabled = false\n")).unwrap();
+        assert!(!off.anticheat.enabled);
+        assert_eq!(Config::parse(&render(&off)).unwrap(), off);
+        // The game reads the same section from the same file.
+        assert_eq!(
+            horizon_anticheat::Config::from_server_toml(&text).unwrap(),
+            c.anticheat
+        );
+        assert_eq!(Config::parse(&render(&c)).unwrap(), c);
+        assert!(Config::parse("[anticheat]\nenable = true\n").is_err());
+        assert!(Config::parse("[anticheat.timer]\nalert = -1\n").is_err());
+    }
+
+    #[test]
     fn defaults_are_vanilla() {
         // Every typed default is what vanilla 26.3 writes for a missing key.
         let vanilla =
             ServerProperties::new(Properties::default(), &mut SystemEntropy::default()).unwrap();
         for (key, value) in Config::default().vanilla() {
+            // Horizon's own (off by default), which vanilla doesn't have.
+            if key.starts_with("horizon-") {
+                assert_eq!(value, "0", "{key}");
+                continue;
+            }
             assert_eq!(vanilla.raw.get(&key), Some(value.as_str()), "{key}");
         }
     }
