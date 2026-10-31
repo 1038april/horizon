@@ -9999,10 +9999,11 @@ impl Game<'_> {
                     .block_entity_render()
                     .render(&scene, visible, &mut out);
             }
-            // Mod block entities: their mods draw them (`native_block_entity_submit`).
+            // Mod block entities: their mods draw them (`native_block_entity_submit`),
+            // culled by the bounds they give.
             let mods = r
                 .visible_block_entities(self.settings.chunk_fade)
-                .filter(|(p, state)| !self.res.block_entity_render().renders(*state) && in_view(p));
+                .filter(|(_, state)| !self.res.block_entity_render().renders(*state));
             self.mod_block_entity_geometry(mods, camera, alpha as f32, &mut out);
             self.mark_stage(out.len(), "DESTROY");
             for &(pos, stage) in &cracks {

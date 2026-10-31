@@ -19,6 +19,25 @@ use horizon_world::registry::BlockStateId;
 
 /// `BlockEntityRenderer.getViewDistance`'s default, in blocks.
 const VIEW_DISTANCE: f64 = 64.0;
+/// A mod block entity's bounds until its mod says otherwise: the block with
+/// the block of margin Horizon culls vanilla's block entities with.
+const DEFAULT_BOUNDS: [f32; 6] = [-1.0, -1.0, -1.0, 2.0, 2.0, 2.0];
+
+/// Whether `bounds` (min then max, in blocks from `origin`, the block's corner
+/// relative to the camera) meet the frustum; an infinite bound always does
+/// (NeoForge's `INFINITE_EXTENT_AABB`), as does a frame without a frustum.
+fn in_frustum(
+    frustum: Option<&horizon_client::gfx::Frustum>,
+    origin: Vec3,
+    bounds: [f32; 6],
+) -> bool {
+    if bounds.iter().any(|b| !b.is_finite()) {
+        return true;
+    }
+    let min = origin + Vec3::new(bounds[0], bounds[1], bounds[2]);
+    let max = origin + Vec3::new(bounds[3], bounds[4], bounds[5]);
+    frustum.is_none_or(|f| f.intersects(min, max))
+}
 
 /// One mod block entity's frame, as `submit` gets it: the render state's
 /// partial tick, game time and light, and the pose stack the helpers draw
@@ -126,9 +145,11 @@ fn shaded(tint: u32, brightness: f32) -> u32 {
 }
 
 impl Game<'_> {
-    /// `native_block_entity_submit` for each of `blocks` (in view, drawn by no
-    /// vanilla renderer) whose block entity is a mod's, within
-    /// `BlockEntityRenderer.getViewDistance` of the camera.
+    /// `native_block_entity_submit` for each of `blocks` (in drawn sections,
+    /// drawn by no vanilla renderer) whose block entity is a mod's, closer than
+    /// `BlockEntityRenderer.getViewDistance` to the camera (`shouldRender`)
+    /// and with its bounds (`native_block_entity_render_bounding_box`) in the
+    /// frustum.
     pub(super) fn mod_block_entity_geometry<'a>(
         &self,
         blocks: impl Iterator<Item = &'a ([i32; 3], u32)>,
@@ -146,7 +167,8 @@ impl Game<'_> {
         };
         for &(pos, state) in blocks {
             let corner = DVec3::new(f64::from(pos[0]), f64::from(pos[1]), f64::from(pos[2]));
-            if (corner + 0.5).distance_squared(camera) > VIEW_DISTANCE * VIEW_DISTANCE {
+            // Vec3.closerThan: strictly closer.
+            if (corner + 0.5).distance_squared(camera) >= VIEW_DISTANCE * VIEW_DISTANCE {
                 continue;
             }
             let Some(BlockEntity::Mod(entity)) =
@@ -154,13 +176,18 @@ impl Game<'_> {
             else {
                 continue;
             };
+            let block = &*self.res.facts().get(BlockStateId(state)).name;
+            let origin = (corner - camera).as_vec3();
+            let mut bounds = DEFAULT_BOUNDS;
+            self.native_block_entity_render_bounding_box(pos, block, entity, &mut bounds);
+            if !in_frustum(self.view_frustum.as_ref(), origin, bounds) {
+                continue;
+            }
             let start = draw.vertices.len();
             self.mark_block_entity(start, state);
             draw.poses.clear();
-            draw.poses
-                .push(Mat4::from_translation((corner - camera).as_vec3()));
+            draw.poses.push(Mat4::from_translation(origin));
             draw.light = vertex_light(self.world.light(pos[0], pos[1], pos[2]));
-            let block = &*self.res.facts().get(BlockStateId(state)).name;
             self.native_block_entity_submit(pos, block, entity, &mut draw);
             self.cull_entity_vertices(&mut draw.vertices, start);
         }
@@ -336,6 +363,14 @@ mod tests {
         let up = diffuse(Vec3::Y, diffuse_lights(false));
         assert_eq!(v.color, shaded(0xFFFFFF, up));
         assert_eq!(v.color >> 24, 0xFF);
+    }
+
+    #[test]
+    fn infinite_bounds_and_frames_without_a_frustum_are_never_culled() {
+        let origin = Vec3::new(1.0e6, 0.0, 0.0);
+        assert!(in_frustum(None, origin, DEFAULT_BOUNDS));
+        let infinite = [f32::NEG_INFINITY, 0.0, 0.0, f32::INFINITY, 1.0, 1.0];
+        assert!(in_frustum(None, origin, infinite));
     }
 
     #[test]
