@@ -227,7 +227,6 @@ use horizon_client::{
     chat::ChatSource,
     containers::{BlockEntity, MOD_MENUS, ModBlockEntity, ModContainer, ModFluidTanks},
     crafting::{CustomRecipe, Ingredient, recipe_result},
-    creative::Creative,
     extras::Corner,
     extras_hud::Corners,
     fast_hash::FxHashMap,
@@ -548,10 +547,11 @@ pub struct NativeScreenView<'a> {
     /// `title` (both None on a window the client opened itself) and by
     /// `slots`.
     pub id: &'static str,
-    /// The vanilla menu type of the menu the server opened for this screen
-    /// (`minecraft:generic_9x3`, `minecraft:furnace`, a mod's own id), as
-    /// `MenuType` names them. None on a screen without one: the client's own
-    /// inventory, creative, the pause menu, stats…
+    /// The type id of the menu the server opened for this screen
+    /// (`minecraft:generic_9x3`, `minecraft:furnace`, a mod's own id; a mount's
+    /// inventory is `horizon:mount<n>`). None on a screen without one (the
+    /// client's own inventory, creative, the pause menu, stats…) and for a
+    /// menu type the client does not know.
     pub menu: Option<&'a str>,
     /// The title the server gave the open menu, if it has one: the component
     /// itself, not a copy (`.plain()` it to draw, `chars()` for the styles).
@@ -559,9 +559,9 @@ pub struct NativeScreenView<'a> {
     /// while playing.
     pub title: Option<&'a Text>,
     /// The screen's container panel in GUI pixels, `[x, y, width, height]`;
-    /// the whole window for a screen with none. A vanilla-sized window is 176
-    /// wide (a taller station is still 176 wide; a mod screen reports its
-    /// own size).
+    /// the whole window for a screen with none. The panel is where the game
+    /// draws the window: 176 wide for most, wider for the merchant and the
+    /// beacon, a mod screen's own size for a mod's.
     pub rect: [f32; 4],
     /// The slots the open menu has, as `Game::slots` counts them: the player
     /// inventory's 36, then the container's, the station's, the mod screen's
@@ -1122,7 +1122,7 @@ impl Game<'_> {
     pub(super) fn screen_view(&self, batch: &HudBatch, screen: Screen) -> NativeScreenView<'_> {
         NativeScreenView {
             id: screen.id(),
-            menu: self.remote_menu_type(),
+            menu: self.remote_menu_type().filter(|m| !m.is_empty()),
             title: self.remote.as_ref().and_then(|r| r.menu_title.as_ref()),
             rect: self.screen_rect(batch, screen),
             slots: self.slot_count(),
@@ -1137,12 +1137,15 @@ impl Game<'_> {
         if screen != Screen::Inventory && screen != Screen::Creative {
             return [0.0, 0.0, batch.width, batch.height];
         }
-        let (x, y) = self.inventory_origin(batch);
-        if screen == Screen::Creative {
-            return [x, y, Creative::WIDTH, Creative::HEIGHT];
-        }
-        let width = self.native_screen_width().unwrap_or(176.0);
-        [x, y, width, self.screen_height()]
+        // The window the game itself draws (`container_image`): the merchant
+        // and the beacon are wider and shifted, creative is its own size.
+        let image = self.container_image(batch);
+        [
+            image.left as f32,
+            image.top as f32,
+            image.width as f32,
+            image.height as f32,
+        ]
     }
     /// A left or right (`right`) press at `at` (GUI pixels from the screen's
     /// top left, so outside it too) on block `block`'s screen, a mod's, over

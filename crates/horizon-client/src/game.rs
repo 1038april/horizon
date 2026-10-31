@@ -7933,6 +7933,8 @@ impl Game<'_> {
         if screen == Screen::Playing {
             return;
         }
+        // slot_count mirrors slots() without allocating; keep them in step.
+        debug_assert_eq!(self.slot_count(), self.slots().len());
         let view = self.screen_view(batch, screen);
         self.native_screen_render_post(batch, &view);
     }
