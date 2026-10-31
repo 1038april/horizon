@@ -1706,6 +1706,23 @@ impl Game<'_> {
         }
         Some(out)
     }
+    /// Sends clients the block at `pos` and its block entity's update tag
+    /// (`native_block_entity_update_tag`) again, as `Level.sendBlockUpdated`
+    /// does: with the level's other block changes, to the players who see its
+    /// chunk, once however often it is called before then. Changes made in a
+    /// block entity's tick go out at the start of the next tick, as vanilla's
+    /// do (`ServerLevel.tick` broadcasts chunks before it ticks block
+    /// entities). Call it when what clients show changed (a machine started),
+    /// not for every tick's progress: a menu's data slots carry that. Nothing
+    /// happens for an unloaded block. API @API:native-block-entity-sync@.
+    pub(super) fn native_block_entity_sync(&mut self, pos: [i32; 3]) {
+        if !self.world.loaded(pos[0], pos[2]) {
+            return;
+        }
+        if let Some(log) = self.world.block_log.as_mut() {
+            log.push((pos[0], pos[1], pos[2]));
+        }
+    }
     /// Playing, with nothing over the world: keys and zoom apply.
     pub(super) fn native_playing(&self) -> bool {
         self.screen == Screen::Playing
