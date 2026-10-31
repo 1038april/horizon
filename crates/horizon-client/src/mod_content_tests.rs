@@ -1462,6 +1462,7 @@ fn shapes_reject_unknown_or_missing_template_values() {
         assert!(e.contains("shapetest:rod"), "{e}");
     }
     fs::remove_dir_all(scratch).unwrap();
+}
 
 /// A connecting block (template `minecraft:chorus_plant`, `connects_to` a
 /// tag) joins itself and its tag's blocks on each side, needs no support, and
@@ -1487,7 +1488,7 @@ fn connecting_blocks_join_themselves_and_their_tag() {
         ),
         (
             "data/cable/horizon/block/tin_cable.json",
-            r##"{"template": "minecraft:chorus_plant", "connects_to": "#cable:joins"}"##,
+            r##"{"template": "minecraft:chorus_plant", "connects_to": "#cable:joins", "thickness": 4}"##,
         ),
         (
             "data/cable/horizon/block/machine.json",
@@ -1577,6 +1578,29 @@ fn connecting_blocks_join_themselves_and_their_tag() {
     // The machine gone: the arm goes too.
     b.set_block(&mut level, &mut ticks, at(1, 64, 0), air, 3);
     assert_eq!(sides(level.block_state(at(0, 64, 0))), ["up"]);
+    // Its shapes are 4 pixels across: the outline and the cached collision.
+    let joined = level.block_state(at(0, 64, 0));
+    let thin = horizon_world::collision::pipe_shape(4.0, [false, true, false, false, false, false])
+        .unwrap();
+    let facts = BlockFacts::load(&root, registry).unwrap();
+    let outline = &facts.get(joined).outline;
+    assert_eq!(outline.len(), thin.boxes().len());
+    let file =
+        horizon_world::registry::BlockTableFile::open(&root.join("cached-collision.nbt"), registry)
+            .unwrap();
+    let cached = horizon_world::collision::CachedCollisionRegistry::from_table(
+        file.table("collision").unwrap(),
+    )
+    .unwrap();
+    assert!(cached.has_canonical_identities());
+    let shape = cached.cached_shape(joined).unwrap().unwrap();
+    assert_eq!(shape.boxes(), thin.boxes());
+    assert_eq!(
+        shape
+            .bounds()
+            .map(|b| b.min(horizon_core::geometry::Axis::X)),
+        Some(0.375)
+    );
     // Vanilla's chorus plant keeps its own rules: it doesn't join the machine.
     b.set_block(&mut level, &mut ticks, at(5, 64, 0), machine, 3);
     let chorus = registry.default_state("minecraft:chorus_plant").unwrap();

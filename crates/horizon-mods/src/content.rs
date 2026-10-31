@@ -94,6 +94,8 @@ struct BlockFile {
     default_state: BTreeMap<String, String>,
     #[serde(default)]
     connects_to: Option<String>,
+    #[serde(default)]
+    thickness: Option<f32>,
     #[serde(default = "yes")]
     item: bool,
     #[serde(default)]
@@ -123,6 +125,9 @@ pub struct Block {
     /// without the chorus plant's rules): the block tag, without `#`, whose
     /// blocks it joins besides itself (a cable's machines).
     pub connects_to: Option<String>,
+    /// A connecting block's width in pixels (2 to 14): its shapes, the
+    /// chorus plant's (10) when unset.
+    pub thickness: Option<f32>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -394,6 +399,7 @@ impl Content {
                 connects_to: file
                     .connects_to
                     .map(|t| t.trim_start_matches('#').to_owned()),
+                thickness: file.thickness,
             });
         }
         let mut remainders = Vec::new();
@@ -538,6 +544,7 @@ fn check_block(file: &BlockFile) -> Result<(), String> {
         && serde_json::from_value::<Rarity>(r.clone()).is_err()
     {
         return Err("component \"minecraft:rarity\" is common, uncommon, rare or epic".into());
+    }
     if let Some(tag) = &file.connects_to {
         if file.template != "minecraft:chorus_plant" {
             return Err("connects_to needs template minecraft:chorus_plant (a PipeBlock)".into());
@@ -554,6 +561,16 @@ fn check_block(file: &BlockFile) -> Result<(), String> {
         {
             return Err("connects_to is a block tag, #namespace:path".into());
         }
+    }
+    match file.thickness {
+        Some(_) if file.connects_to.is_none() => {
+            return Err("thickness is a connecting block's (connects_to)".into());
+        }
+        Some(t) if !(2.0..=14.0).contains(&t) => return Err("thickness is 2 to 14 pixels".into()),
+        Some(_) if file.shapes.is_some() => {
+            return Err("thickness sets the shapes, so a block has one or the other".into());
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -649,6 +666,7 @@ capabilities = ["registries"]
                 item: true,
                 components: BTreeMap::new(),
                 connects_to: None,
+                thickness: None,
             }]
         );
         assert_eq!(content.items[0].id, "ruby:ruby");
@@ -800,6 +818,14 @@ capabilities = ["registries"]
             content.blocks[0].connects_to.as_deref(),
             Some("ruby:cable_joins")
         );
+        let thin =
+            r##"{"template": "minecraft:chorus_plant", "connects_to": "#ruby:j", "thickness": 4}"##;
+        assert_eq!(block(thin).unwrap().blocks[0].thickness, Some(4.0));
+        let e = block(r#"{"template": "minecraft:chorus_plant", "thickness": 4}"#).unwrap_err();
+        assert!(e.contains("connects_to"), "{e}");
+        let e = block(r##"{"template": "minecraft:chorus_plant", "connects_to": "#ruby:j", "thickness": 16}"##)
+            .unwrap_err();
+        assert!(e.contains("2 to 14"), "{e}");
         let e = block(r##"{"template": "minecraft:stone", "connects_to": "#ruby:cable_joins"}"##)
             .unwrap_err();
         assert!(e.contains("chorus_plant"), "{e}");

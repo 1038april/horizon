@@ -115,9 +115,12 @@ connects to besides itself:
 { "template": "minecraft:chorus_plant", "connects_to": "#mymod:cable_connects" }
 ```
 
-It keeps the chorus plant's six sides and shapes but none of its rules: it
-needs no support, and each side is joined when the block there is the same
-block or in the tag, on placement and whenever that neighbour changes.
+It keeps the chorus plant's six sides but none of its rules: it needs no
+support, and each side is joined when the block there is the same block or in
+the tag, on placement and whenever that neighbour changes. Its shapes are the
+chorus plant's (10 pixels across) unless it sets `"thickness"`, 2 to 14
+pixels: its outline and collision are then built as `PipeBlock` builds its
+own, a core and an arm to each joined side.
 
 A component type no vanilla item has is refused, so a misspelt one fails
 the load instead of doing nothing. Behaviour the game ties to a vanilla
