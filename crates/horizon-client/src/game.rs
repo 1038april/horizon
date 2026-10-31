@@ -6737,6 +6737,7 @@ impl Game<'_> {
             && self.server_packs.prompt.is_none()
             && !self.dialog_open()
         {
+            self.pause_focus = None;
             self.screen = Screen::Paused;
         }
     }
@@ -13831,6 +13832,7 @@ impl Game<'_> {
             KeyCode::Escape => match self.screen {
                 Screen::Options => self.options_key(KeyCode::Escape, None)?,
                 Screen::Playing => {
+                    self.pause_focus = None;
                     self.screen = Screen::Paused;
                     self.pause_menu = true;
                     self.capture(false);
@@ -13842,6 +13844,7 @@ impl Game<'_> {
                 }
                 Screen::Paused | Screen::Inventory => {
                     self.close_container();
+                    self.pause_focus = None;
                     self.screen = Screen::Playing;
                     self.pause_menu = true;
                     self.capture(true);

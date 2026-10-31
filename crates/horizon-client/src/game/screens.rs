@@ -248,6 +248,7 @@ impl Game<'_> {
     pub(super) fn execute_pause_action(&mut self, hit: u8) -> Result<()> {
         match hit {
             0 => {
+                self.pause_focus = None;
                 self.screen = Screen::Playing;
                 self.capture(true);
             }
