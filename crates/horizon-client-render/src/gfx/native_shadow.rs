@@ -9,7 +9,6 @@ use horizon_shader_api::{Frame as FrameInputs, manifest::Shadow as Settings, sta
 use horizon_shaders::Shadow;
 
 use super::native_material::TerrainShape;
-use super::pack_post::ShadowView;
 use super::wgsl_prefix::{TERRAIN, prefixed, section};
 
 const PREFIX: &str = "horizon_terrain_";
@@ -24,8 +23,7 @@ struct HorizonShadowOut {
 }
 fn horizon_shadow_vertex(pos: vec3<f32>, uv: vec2<f32>, layer: u32) -> HorizonShadowOut {
     let clip = frame.shadow_view_proj * vec4(pos, 1.0);
-    let k = frame.shadow_distortion;
-    let xy = clip.xy / (length(clip.xy) * k + 1.0 - k);
+    let xy = shadow_distort(clip.xy);
     var out: HorizonShadowOut;
     out.clip = vec4(xy, clamp(clip.z, 0.0, 1.0), 1.0);
     out.uv = uv;
@@ -57,22 +55,33 @@ fn horizon_shadow_vertex(pos: vec3<f32>, uv: vec2<f32>, layer: u32) -> HorizonSh
 /// the nearest each frame and they shimmer; a still one maps the world to the same texels until
 /// the next cell. Its depth starts 256 blocks further toward the light than `shaders/` packs'
 /// (the projection's near plane is at `-near`), so the ground over a deep cave still casts its
-/// shadow.
+/// shadow, and ends past the build height and the slant across the map below the camera.
 pub fn camera(settings: &Settings) -> Shadow {
     Shadow {
         resolution: settings.resolution,
         distance: settings.distance,
         render_mul: 1.0,
         interval: SNAP,
+        euclidean_snap: true,
         near: 256.0,
-        far: 256.0_f32.max(settings.distance * 2.0),
+        far: super::pack_uniforms::SHADOW_EYE + 2.0 * settings.distance + 384.0,
         ..Shadow::default()
     }
 }
 
-/// The cell the shadow camera keeps to, in blocks along the shadow view's axes (its corner is
-/// the centre): the player stays within 11 blocks of it, where the map is still over three times
-/// as fine as at its edge.
+/// `settings` with the resolution `device` can make.
+pub fn fitted(device: &wgpu::Device, settings: &Settings) -> Settings {
+    Settings {
+        resolution: settings
+            .resolution
+            .min(device.limits().max_texture_dimension_2d),
+        ..settings.clone()
+    }
+}
+
+/// The cell the shadow camera keeps to, in blocks along the world's axes: the player stays
+/// within 7 blocks of the centre (half the cell on each axis), where the map is still over
+/// three times as fine as at its edge.
 const SNAP: f32 = 8.0;
 
 /// The ground one shadow texel covers right under the camera, in blocks: a 32nd, half a texture
@@ -99,9 +108,7 @@ pub struct ShadowMap {
 
 impl ShadowMap {
     pub fn new(device: &wgpu::Device, settings: Option<&Settings>) -> Self {
-        let size = settings
-            .map_or(1, |s| s.resolution)
-            .clamp(1, device.limits().max_texture_dimension_2d);
+        let size = settings.map_or(1, |s| s.resolution);
         let depth = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Native shader pack shadow map"),
             size: wgpu::Extent3d {
@@ -163,7 +170,6 @@ impl ShadowMap {
 /// where they run, its flat ones, and the frame they read (group 3, the uniform alone: the
 /// stages' own group 3 also holds the map being drawn).
 pub struct NativeShadow {
-    pub camera: Shadow,
     pub solid: wgpu::RenderPipeline,
     pub flat: Option<wgpu::RenderPipeline>,
     pub group: wgpu::BindGroup,
@@ -172,9 +178,10 @@ pub struct NativeShadow {
 /// The shadow pass's shader: the frame, Horizon's terrain, and the entries.
 fn shader_source() -> String {
     format!(
-        "{}@group({GROUP}) @binding(0) var<uniform> frame: Frame;\n\
+        "{}@group({GROUP}) @binding(0) var<uniform> frame: Frame;\n{}\
          // Horizon's terrain (terrain.wgsl)\n{}{ENTRIES}",
         FrameInputs::WGSL.wgsl(),
+        horizon_shader_api::stages::SHADOW_HELPERS,
         prefixed(
             section(TERRAIN, "struct Globals {", "// Sky (SkyRenderer)"),
             PREFIX
@@ -187,7 +194,6 @@ impl NativeShadow {
         device: &wgpu::Device,
         shape: &TerrainShape<'_>,
         frame: &super::native_post::NativeFrame,
-        settings: &Settings,
     ) -> Result<Self, String> {
         let text = shader_source();
         let module = naga::front::wgsl::parse_str(&text)
@@ -304,22 +310,7 @@ impl NativeShadow {
         if let Some(e) = pollster::block_on(scope.pop()) {
             return Err(format!("shadow pass: {e}"));
         }
-        Ok(Self {
-            camera: camera(settings),
-            solid,
-            flat,
-            group,
-        })
-    }
-
-    /// What the shadow camera sees this frame, for the renderer's shadow lists.
-    pub fn view(&self, frame: &super::Frame) -> ShadowView {
-        ShadowView {
-            cull: super::pack_uniforms::shadow_culling(frame, &self.camera),
-            light: super::pack_uniforms::shadow_light(frame, &self.camera),
-            distance: Some(self.camera.distance),
-            unculled: None,
-        }
+        Ok(Self { solid, flat, group })
     }
 }
 
@@ -351,10 +342,27 @@ mod tests {
             glam::DVec3::new(-2064.5, 246.0, -4304.5),
             &shadow,
         );
-        for y in [64.0, 0.0, -64.0] {
+        // Up to the build height's span below a player flying high, as well as above them.
+        for y in [64.0, 0.0, -64.0, -200.0, -384.0] {
             let clip = projection * view * glam::Vec4::new(0.0, y, 0.0, 1.0);
             assert!(clip.is_finite(), "{clip}");
             assert!((-1.0..=1.0).contains(&clip.z), "{clip}");
+        }
+    }
+
+    #[test]
+    fn the_centre_stays_near_the_player_on_both_sides_of_zero() {
+        let shadow = camera(&Settings {
+            resolution: 2048,
+            distance: 128.0,
+        });
+        let light = glam::Vec3::Y;
+        for x in [5.5, -5.5, -2064.5, 2064.5] {
+            let camera = glam::DVec3::new(x, 64.0, x);
+            let (view, _) = super::super::pack_uniforms::shadow_camera(light, camera, &shadow);
+            let centre = view.inverse().w_axis.truncate();
+            assert!(centre.x.abs() <= SNAP / 2.0, "{x}: {centre}");
+            assert!(centre.z.abs() <= SNAP / 2.0, "{x}: {centre}");
         }
     }
 

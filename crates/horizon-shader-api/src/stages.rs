@@ -55,14 +55,19 @@ const fn shadow_sampler(binding: u32) -> Resource {
 }
 
 /// A function the material and post preludes give packs.
-const SHADOW_HELPERS: &str = "\
+pub const SHADOW_HELPERS: &str = "\
+// The shadow map's distortion toward its centre, of a point at shadow clip `xy`.
+fn shadow_distort(xy: vec2<f32>) -> vec2<f32> {
+    let k = frame.shadow_distortion;
+    return xy / (length(xy) * k + 1.0 - k);
+}
 // Where the camera-relative point `position` is stored in the shadow map: xy its 0..1 texture
 // coordinate (from the top left), z its depth from the light, for `textureSampleCompareLevel`.
 fn shadow_position(position: vec3<f32>) -> vec3<f32> {
     let clip = frame.shadow_view_proj * vec4<f32>(position, 1.0);
-    let k = frame.shadow_distortion;
-    let xy = clip.xy / (length(clip.xy) * k + 1.0 - k);
-    return vec3<f32>(xy.x * 0.5 + 0.5, 0.5 - xy.y * 0.5, clip.z);
+    let xy = shadow_distort(clip.xy);
+    // At most 1, the depth where nothing is: past the map's far end a point stays lit.
+    return vec3<f32>(xy.x * 0.5 + 0.5, 0.5 - xy.y * 0.5, min(clip.z, 1.0));
 }
 ";
 

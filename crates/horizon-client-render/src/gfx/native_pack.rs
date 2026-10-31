@@ -32,11 +32,15 @@ impl NativePack {
         constants: &[(String, f64)],
     ) -> Result<(Self, Vec<String>), String> {
         let (globals, format) = (terrain.globals, terrain.format);
-        let mut frame = NativeFrame::new(device, report.shadow.as_ref());
+        let settings = report
+            .shadow
+            .as_ref()
+            .map(|settings| super::native_shadow::fitted(device, settings));
+        let mut frame = NativeFrame::new(device, settings.as_ref());
         let shadow = report
             .shadow
             .as_ref()
-            .map(|settings| NativeShadow::new(device, terrain, &frame, settings))
+            .map(|_| NativeShadow::new(device, terrain, &frame))
             .transpose()?;
         // The mirror is drawn for a material that reads it, while `[reflection] option` is on.
         let option = report.reflection.as_ref().and_then(|r| r.option.as_ref());
