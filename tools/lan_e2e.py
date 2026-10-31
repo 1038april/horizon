@@ -9893,6 +9893,70 @@ CHECKS += ['creative_tools']
 CHECK_FNS['creative_tools'] = check_creative_tools
 
 
+def check_creative_throw(host, guest, out):
+    """#3684: Q over a hotbar slot on a creative item tab drops the item instead of deleting it.
+    CreativeModeInventoryScreen.slotClicked: with an empty hand the menu's THROW sends the stack
+    (handleCreativeModeItemDrop), Control+Q the whole stack; while carrying a stack the screen
+    itself drops one from the slot and the carried stack stays."""
+    seen = {}
+
+    def dropped(player, item):
+        return sum((e.get('item') or {}).get('count', 0) for e in player.raw('entities', 8)['entities']
+                   if e['type'] == 'minecraft:item' and (e.get('item') or {}).get('item') == item)
+
+    def hotbar(player):
+        return {s['slot']: (s.get('item'), s.get('count')) for s in player('inventory')['hotbar'][:2]}
+
+    for label, player in (('host', host), ('guest', guest)):
+        player('command', command='gamemode creative')
+        player('command', command='clear @s')
+        player('command', command='kill @e[type=minecraft:item,distance=..16]')
+        player('command', command='item replace entity @s hotbar.0 with minecraft:stone 10')
+        player('command', command='item replace entity @s hotbar.1 with minecraft:dirt 5')
+        player.wait(10)
+        player.raw('key', 'e', 'tap')
+        player.raw('wait-for', 'screen', 'creative', '--timeout', 10)
+        player.wait(5)
+        widgets = {w['id']: w for w in player.raw('ui')['widgets']}
+        if 'slot-900' not in widgets:
+            raise Failed(f'{label}: the creative screen did not open on an item tab')
+        try:
+            # Empty hand: Q drops one stone.
+            player.raw('scroll-at', *(f'{v:.1f}' for v in slot_point(player, 0)), 0)
+            player.raw('key', 'q', 'tap')
+            player.wait(5)
+            one = (hotbar(player)[0], dropped(player, 'minecraft:stone'))
+            # Carrying a picked display stack: Q over the dirt drops one dirt, the hand keeps its stack.
+            player.raw('click', 'slot-900')
+            player.wait(2)
+            carried = player('inventory').get('carried')
+            player.raw('scroll-at', *(f'{v:.1f}' for v in slot_point(player, 1)), 0)
+            player.raw('key', 'q', 'tap')
+            player.wait(5)
+            carrying = (hotbar(player)[1], dropped(player, 'minecraft:dirt'), player('inventory').get('carried'))
+            # Control+Q: the rest of the dirt.
+            player.raw('key', 'ctrl', 'down')
+            player.raw('key', 'q', 'tap')
+            player.raw('key', 'ctrl', 'up')
+            player.wait(5)
+            whole = (hotbar(player)[1], dropped(player, 'minecraft:dirt'))
+            player.shot(out, f'creative-throw-{label}')
+        finally:
+            player.raw('key', 'esc', 'tap')
+            player.wait(5)
+        seen[label] = {'one': one, 'carrying': carrying, 'whole': whole}
+        assert one == (('minecraft:stone', 9), 1), seen
+        assert carried and carrying[2] == carried, seen
+        assert carrying[:2] == (('minecraft:dirt', 4), 1), seen
+        assert whole == ((None, None), 5), seen
+        player('command', command='kill @e[type=minecraft:item,distance=..16]')
+    return seen
+
+
+CHECKS += ['creative_throw']
+CHECK_FNS['creative_throw'] = check_creative_throw
+
+
 def check_cushions(host, guest, out):
     """#1935: place a colored cushion, consume it, track it, sit, dismount and break it.
     #3117: placing swings the arm, and a seated player sits on another cushion at once."""

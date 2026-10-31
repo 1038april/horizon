@@ -8432,7 +8432,38 @@ impl Game<'_> {
             self.creative_display_click(slot, button, input);
             return true;
         }
+        if let Some(slot) = slot
+            && slot < 9
+            && input == horizon_client::menu::Input::Throw
+            && self.creative_tab_open()
+            && self.carried.is_some()
+            && self.remote.is_some()
+        {
+            self.creative_hotbar_throw_carrying(slot, button);
+            return true;
+        }
         self.menu_ops(&[(slot, button, input)])
+    }
+    /// `CreativeModeInventoryScreen.slotClicked`: THROW on an item tab's hotbar slot while a
+    /// stack is carried. The menu's own THROW needs an empty hand, so the screen drops from the
+    /// slot itself: one item, or the whole stack with the control key, through
+    /// `handleCreativeModeItemDrop`, then `broadcastChanges` sends the slot. Only the server
+    /// drops it: this is the client of a server (`remote`).
+    fn creative_hotbar_throw_carrying(&mut self, slot: usize, button: i32) {
+        let Some(old) = self.inventory[slot].as_mut() else {
+            return;
+        };
+        let count = if button == 0 { 1 } else { old.count };
+        let thrown = ItemStack {
+            count,
+            ..old.clone()
+        };
+        old.count -= count;
+        if old.count == 0 {
+            self.inventory[slot] = None;
+        }
+        self.remote_creative_throw(thrown);
+        self.send_creative_slots();
     }
     /// A click on an item tab's display slot: the screen's own handling
     /// (`creative::click_display`), never the menu's.
@@ -8967,10 +8998,11 @@ impl Game<'_> {
                 let at = [p.position.x, p.position.y, p.position.z];
                 self.award_furnace_recipes(pos, at);
             }
-        } else if self.creative_inventory_open() {
-            // CreativeModeInventoryScreen.slotClicked's THROW on the Survival Inventory tab: the
-            // stack goes to the server (handleCreativeModeItemDrop), the slot follows with the
-            // others (SetCreativeModeSlot).
+        } else if self.screen == Screen::Creative {
+            // A THROW in the creative screen, on the Survival Inventory tab or an item tab's
+            // hotbar (`AbstractContainerMenu.doClick` calls `Player.handleCreativeModeItemDrop`):
+            // the stack goes to the server, the slot follows with the others
+            // (SetCreativeModeSlot). Only the server can drop it; the slot is already empty.
             for stack in dropped {
                 self.remote_creative_throw(stack);
             }
