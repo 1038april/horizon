@@ -14,6 +14,19 @@ runner, while its work took 0.3–4 minutes. So the jobs that may run on our own
 Everything else stays on GitHub's runners: a fork's pull request, the Windows and Linux builds, and every job that
 holds a secret (signing, publishing: the partner keeps hypervisor access to playhorizon).
 
+## How long
+
+Measured 2026-10-31 on #5415, with playhorizon's parity runner busy on the same CPUs (load ~15–20):
+
+| Job | GitHub's runners: wait + work | playhorizon: wait + work |
+| --- | --- | --- |
+| `verify` (Rust changed) | 20–25 min + ~8 min (clippy 2.4, tests 4.2, Python 1.3) | ~0 + 10.5 min (clippy 3.7, tests 5.0, Python 1.7) |
+| `launcher` (launcher changed) | 20–25 min + 2.1 min | ~0 + 2.5 min |
+| a bot (`pr labels`, `overlap note`...) | 20–26 min + 0.3–0.9 min | ~0 + seconds |
+
+The work is ~30% slower here (4 CPUs shared with parity, against a GitHub runner's 4 of its own); the wait it saves
+is 20 minutes and more. A runner's first build of a workspace is cold: ~14 min for `verify`, ~11 for `launcher`.
+
 ## Forks never run here
 
 A fork's pull request is code nobody here wrote. Three locks keep it off our runners:
