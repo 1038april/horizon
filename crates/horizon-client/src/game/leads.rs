@@ -301,12 +301,24 @@ impl Game<'_> {
             .filter(|&i| self.mobs[i].extra.leash == Some(Holder::Knot(knot_pos)))
             .collect();
         let existing_boats = self.boats_on(Holder::Knot(knot_pos));
+        // `LeashFenceKnotEntity.interact` runs only when the ray meets the knot
+        // before the post: the knot's box (`recalculateBoundingBox`, 0.375 wide,
+        // y + 0.375 to y + 0.875) is wider than the post, so a hit point on the
+        // post inside that box went through the knot first. Any other click on
+        // the fence is `FenceBlock.useWithoutItem` / `LeadItem.useOn`, which only
+        // ties the player's own mobs (`LeadItem.bindPlayerMobs`).
+        let knot_hit = !(existing.is_empty() && existing_boats.is_empty()) && {
+            let box_ = leash::knot_state(knot_pos);
+            let half = box_.width / 2.0 + 1.0e-6;
+            (hit.point[0] - box_.position.x).abs() <= half
+                && (hit.point[2] - box_.position.z).abs() <= half
+                && hit.point[1] >= box_.position.y - 1.0e-6
+                && hit.point[1] <= box_.position.y + box_.height + 1.0e-6
+        };
         let held_item = self.held().map(|s| s.item.to_string());
         let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft);
         // Shears snip every lead on the knot.
-        if held_item.as_deref() == Some("minecraft:shears")
-            && !(existing.is_empty() && existing_boats.is_empty())
-        {
+        if knot_hit && held_item.as_deref() == Some("minecraft:shears") {
             for i in existing {
                 let id = self.mobs[i].id;
                 self.break_leash(id, true, false);
@@ -335,7 +347,7 @@ impl Game<'_> {
                 attached = true;
             }
         }
-        if !attached && !sneaking {
+        if !attached && !sneaking && knot_hit {
             let player = self.player_center();
             let holder = self.acting_player_uuid();
             for i in existing {
