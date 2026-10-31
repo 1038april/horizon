@@ -163,7 +163,7 @@ use horizon_client::{
     atlas_sources::qualified,
     block_entities::Pos,
     chat::ChatSource,
-    containers::{BlockEntity, MOD_MENUS, ModBlockEntity, ModContainer},
+    containers::{BlockEntity, MOD_MENUS, ModBlockEntity, ModContainer, ModFluidTanks},
     crafting::{CustomRecipe, Ingredient, recipe_result},
     extras::Corner,
     extras_hud::Corners,
@@ -858,6 +858,21 @@ impl Game<'_> {
         container: &mut Option<ModContainer>,
     ) {
         let _ = (block, container);
+    }
+    /// Block `block`'s block entity has fluid tanks: set `fluids` when the
+    /// block is yours, in the container's shape — each tank's capacity in
+    /// millibuckets, the tanks each face reaches, and the tanks a fill may
+    /// reach and a drain may take. Asked once for each mod block when the
+    /// ticking table is built; at most 16 tanks, capacities clamped to
+    /// 1..=1 000 000, and tank numbers past the count are left out. The tanks'
+    /// contents are kept in the entity's saved compound, under `fluids`, and
+    /// the fluid helpers below read and write them. API @API:fluids@.
+    pub(super) fn native_block_entity_fluids(
+        &self,
+        block: &str,
+        fluids: &mut Option<ModFluidTanks>,
+    ) {
+        let _ = (block, fluids);
     }
     /// A server tick of the block entity at `pos`, in vanilla's order among
     /// the others (`Level.tickBlockEntities`), when its `id` is yours: read
@@ -2280,6 +2295,42 @@ impl Game<'_> {
             });
             if let Some(c) = container {
                 out.insert(i, Arc::clone(c));
+            }
+        }
+        out
+    }
+    /// The fluid tanks of the mod blocks' block entities, by block state
+    /// (`native_block_entity_fluids`), checked as the containers are.
+    pub(super) fn native_fluid_tables(&self) -> FxHashMap<u32, Arc<ModFluidTanks>> {
+        let registry = self.pack.assets.registry;
+        let mut by_block: FxHashMap<String, Option<Arc<ModFluidTanks>>> = FxHashMap::default();
+        let mut out = FxHashMap::default();
+        for i in 0..registry.len() as u32 {
+            let Some(state) = registry.state(horizon_world::registry::BlockStateId(i)) else {
+                continue;
+            };
+            if state.name.starts_with("minecraft:") {
+                continue;
+            }
+            let tanks = by_block.entry(state.name.clone()).or_insert_with(|| {
+                let mut fluids = None;
+                self.native_block_entity_fluids(&state.name, &mut fluids);
+                fluids.map(|mut f| {
+                    f.tanks.truncate(16);
+                    // Clamped, not dropped: the face and fill lists name
+                    // tanks by number, which must not shift.
+                    for c in &mut f.tanks {
+                        *c = (*c).clamp(1, 1_000_000);
+                    }
+                    let n = f.tanks.len();
+                    for list in f.faces.iter_mut().chain([&mut f.inputs, &mut f.outputs]) {
+                        list.retain(|&t| t < n);
+                    }
+                    Arc::new(f)
+                })
+            });
+            if let Some(t) = tanks {
+                out.insert(i, Arc::clone(t));
             }
         }
         out
