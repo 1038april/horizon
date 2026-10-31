@@ -205,7 +205,7 @@ address. The script then checks, from both sides, what a guest's game used to ge
 - mount_other_level: with a Nether chunk force-loaded (a second level ticking), the host's and the
              guest's horse inventories stay open, opened by shift + right click and by the inventory
              key while riding (#5331).
-- riding:   the host and the guest each saddle and ride a horse (walk, jump), a pig and a strider
+- riding:    the host and the guest each saddle and ride a horse (walk, jump), a pig and a strider
              (with their sticks), a camel and a donkey, sit on a llama and fly a happy ghast, and
              get off by sneaking; the other side sees the animal move.
 - portal_rider: (--server-thread) a survival guest rides a horse into a Nether portal: the horse goes
