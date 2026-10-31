@@ -199,6 +199,9 @@ impl Game<'_> {
             selecting: None,
         });
         self.dialogs.waiting = None;
+        self.keys.clear();
+        self.left = false;
+        self.right = false;
         self.capture(false);
     }
 

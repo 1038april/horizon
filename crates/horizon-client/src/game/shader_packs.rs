@@ -87,6 +87,9 @@ impl Game<'_> {
                             &text,
                             &horizon_shaders::with_options(&pack, &macros),
                         );
+                        for note in macros.define_features(&properties) {
+                            log::warn!("shader pack {name}: {note}");
+                        }
                         for note in &properties.notes {
                             log::warn!(
                                 "shader pack {name}: shaders.properties:{}: {}",
@@ -97,7 +100,7 @@ impl Game<'_> {
                         let folder = dimension_folder(&pack, dimension);
                         let inputs = renderer.pack_inputs();
                         let mut post = load_post(&pack, &folder, &properties, &macros, &inputs);
-                        let biomes = self.res.biomes();
+                        let biomes = world_biomes!(self);
                         let names: Vec<&str> =
                             biomes.list.iter().map(|b| b.name.as_str()).collect();
                         post.custom.set_biomes(&names);
@@ -175,7 +178,7 @@ impl Game<'_> {
             .get(&(at.x >> 4, at.z >> 4))
             .map(|c| c.biome(at.x, at.y, at.z));
         let (held_items, held_light) = self.held_for_pack();
-        let info = biome.map(|b| self.res.biomes().get(b));
+        let info = biome.map(|b| world_biomes!(self).get(b));
         PackInputs {
             day_time: self.world.day_time,
             rain: lerp(self.world.weather.rain_level),
@@ -191,6 +194,7 @@ impl Game<'_> {
             hide_gui: self.ui.hide_gui,
             brightness: self.settings.gamma,
             biome: biome.map_or(-1, i32::from),
+            biome_known: biome.is_some(),
             biome_category: info.map_or(0, |b| horizon_shaders::biome_category(&b.name)),
             biome_precipitation: info.map_or(0, |b| {
                 horizon_shaders::biome_precipitation(b.precipitation, b.temperature)

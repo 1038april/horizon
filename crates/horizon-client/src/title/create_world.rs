@@ -300,7 +300,8 @@ pub(super) fn buttons(w: f32, h: f32, creative: bool, o: &WorldOptions) -> Vec<B
                 28,
             ),
         ],
-        // Experiments have no screen yet.
+        // The More tab, as vanilla lays it out: Game Rules, Experiments
+        // (the resources' feature packs), Data Packs.
         _ => [
             "selectWorld.gameRules",
             "selectWorld.experiments",
@@ -308,16 +309,7 @@ pub(super) fn buttons(w: f32, h: f32, creative: bool, o: &WorldOptions) -> Vec<B
         ]
         .iter()
         .enumerate()
-        .map(|(i, key)| {
-            b(
-                gx,
-                gy + 28.0 * i as f32,
-                210.0,
-                tr(key),
-                i != 1,
-                29 + i as u8,
-            )
-        })
+        .map(|(i, key)| b(gx, gy + 28.0 * i as f32, 210.0, tr(key), true, 29 + i as u8))
         .collect(),
     };
     // The footer: two 150-wide buttons 8 apart, centred in its 33 pixels.

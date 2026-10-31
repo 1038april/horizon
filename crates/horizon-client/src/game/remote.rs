@@ -663,6 +663,9 @@ impl Game<'_> {
     ) -> Result<()> {
         self.reset_tutorial();
         self.perf.world_opening();
+        // A server's own biomes come over the connection; the last local
+        // world's packed table must not name its ids.
+        self.world_biomes = None;
         let root = self.options.resources.clone();
         let builtin = Builtin::find(&root)
             .and_then(|p| Builtin::load(&p).ok())
@@ -1745,7 +1748,7 @@ impl Game<'_> {
             .get("minecraft:worldgen/biome")
             .map(|list| {
                 list.iter()
-                    .map(|(name, _)| self.res.biomes().id(name))
+                    .map(|(name, _)| world_biomes!(self).id(name))
                     .collect()
             })
             .unwrap_or_default();
@@ -4538,7 +4541,7 @@ impl Game<'_> {
     /// `PlayerInfo.getSkin` for every player entity, including NPCs that are
     /// never in the tab list: resolve each profile's textures and give the
     /// level's player models their skin.
-    fn update_remote_skins(&mut self) {
+    pub(super) fn update_remote_skins(&mut self) {
         let local = self.remote.as_ref().map(|r| r.profile);
         self.poll_own_profile();
         let Some(r) = self.remote.as_mut() else {
@@ -4603,7 +4606,7 @@ impl Game<'_> {
             && let Some((rgba, is_slim)) = horizon_client::skins::offline_skin()
         {
             const OFFLINE: &str = "horizon/offline_skin";
-            if !self.skin_slots.contains(OFFLINE) {
+            if !self.skin_slots.contains(OFFLINE) || !self.gui.atlas.sprites.contains_key(OFFLINE) {
                 self.store_skin(OFFLINE.into(), rgba.clone());
             }
             if *is_slim {
@@ -4616,7 +4619,7 @@ impl Game<'_> {
             && let Some(rgba) = horizon_client::skins::offline_cape()
         {
             const OFFLINE: &str = "capes/offline";
-            if !self.skin_slots.contains(OFFLINE) {
+            if !self.skin_slots.contains(OFFLINE) || !self.gui.atlas.sprites.contains_key(OFFLINE) {
                 self.store_skin(OFFLINE.into(), rgba.to_vec());
             }
             capes.insert(local, OFFLINE.into());
@@ -4800,7 +4803,8 @@ impl Game<'_> {
         uuid: u128,
         (skin, slim): (String, bool),
     ) -> (String, bool) {
-        if skin.starts_with("skins/") && !self.again_skin(&skin) {
+        if (skin.starts_with("skins/") || skin == "horizon/offline_skin") && !self.again_skin(&skin)
+        {
             let skin = horizon_client::tab_list::default_skin(uuid);
             return (skin.to_owned(), skin.contains("/slim/"));
         }
@@ -4888,6 +4892,7 @@ impl Game<'_> {
             pickup_delay: 0,
             bob_offset,
             ticks: 0,
+            needs_sync: false,
         });
     }
     /// `Entity.lerpMotion` (and `recreateFromPacket`'s motion) for the
@@ -5270,7 +5275,7 @@ impl Game<'_> {
             .remote
             .as_ref()
             .is_some_and(|r| r.level_load.is_active());
-        let playing = self.screen == Screen::Playing && !loading;
+        let playing = self.screen == Screen::Playing && !loading && !self.dialog_open();
         let held = |k| playing && self.keys.contains(&k);
         let mut keys = Keys {
             forward: held(KeyCode::KeyW),
@@ -7588,7 +7593,10 @@ impl Game<'_> {
         };
         let mut input = std::mem::take(&mut r.input);
         let stop = std::mem::take(&mut r.stop_mining);
-        let ready = r.loaded_sent && self.screen == Screen::Playing && self.sleeping.is_none();
+        let ready = r.loaded_sent
+            && self.screen == Screen::Playing
+            && self.sleeping.is_none()
+            && !self.dialog_open();
         if stop || !ready {
             self.stop_remote_mining();
         }
