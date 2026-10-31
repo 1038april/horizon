@@ -1376,11 +1376,12 @@ impl Game<'_> {
     pub(super) fn save_guest(&mut self, host: &LanHost, guest: &horizon_client::lan::guest::Guest) {
         // The vehicle the guest rides, for the file that names it.
         let vehicle = self.root_vehicle_uuid(guest.vehicle);
-        if host.owner.as_ref().is_some_and(|o| o.uuid == guest.uuid) {
-            if guest.placed {
-                playerdata::store(guest, &mut self.level, vehicle);
-            }
-        } else {
+        if host.owner.as_ref().is_some_and(|o| o.uuid == guest.uuid) && guest.placed {
+            // The world's own player state rides in the level (`/data`).
+            playerdata::store(guest, &mut self.level, vehicle);
+        }
+        if guest.placed {
+            // PlayerList.save/remove: every player saves to their own file.
             playerdata::save(guest, &self.world_root, vehicle);
         }
         self.save_guest_records(host, guest);
@@ -1974,19 +1975,28 @@ impl Game<'_> {
         let force = host.hub.config.force_game_mode;
         let root = self.world_root.clone();
         let in_place = host.hub.config.dimension.clone();
-        let owner = host.owner.as_mut();
+        let mut owner = host.owner.as_mut();
         let Some(g) = host.hub.guest_mut(conn) else {
             return;
         };
-        let saved = owner
-            .filter(|o| o.uuid == g.uuid)
-            .and_then(|o| o.saved.take());
-        let known = match saved {
-            Some(level) => {
-                playerdata::apply(g, &level);
-                level.position.is_some()
+        let is_owner = owner.as_ref().is_some_and(|o| o.uuid == g.uuid);
+        // PlayerDataStorage.load: the player's own file first; the world's
+        // own player state is the fallback for a first join.
+        let known = if is_owner && playerdata::load(g, &root) {
+            true
+        } else {
+            let saved = if is_owner {
+                owner.as_mut().and_then(|o| o.saved.take())
+            } else {
+                None
+            };
+            match saved {
+                Some(level) => {
+                    playerdata::apply(g, &level);
+                    level.position.is_some()
+                }
+                None => playerdata::load(g, &root),
             }
-            None => playerdata::load(g, &root),
         };
         if !known || force {
             g.game_mode = default_mode;
