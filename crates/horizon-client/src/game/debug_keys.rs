@@ -516,12 +516,17 @@ impl Game<'_> {
         let prefix = Text::translate("debug.prefix", &[])
             .with_color(color)
             .bold();
-        self.system_message(
+        self.show_debug_chat(
             Text::empty()
                 .append(prefix)
                 .append(Text::literal(" "))
                 .append(message),
         );
+    }
+    /// `Minecraft.showDebugChat`: a client system message the narrator says.
+    fn show_debug_chat(&mut self, message: Text) {
+        self.say_system_queued(&message);
+        self.system_message(message);
     }
     fn debug_feedback(&mut self, message: Text) {
         self.debug_decorated(YELLOW, message);
@@ -663,7 +668,7 @@ impl Game<'_> {
             DebugAction::DumpVersion => {
                 self.debug_translated("debug.version.header");
                 for line in self.version_lines() {
-                    self.system_message(line);
+                    self.show_debug_chat(line);
                 }
                 true
             }

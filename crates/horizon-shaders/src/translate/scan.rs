@@ -28,6 +28,8 @@ pub(super) struct ImageDecl {
     pub(super) format: String,
     /// `readonly`, `writeonly` or empty (both).
     pub(super) access: String,
+    /// Declared `coherent` or `volatile`: invocations of a dispatch share it as it changes.
+    pub(super) coherent: bool,
 }
 
 pub(super) struct Stage<'p> {
@@ -141,6 +143,35 @@ pub(super) const VERTEX_INPUTS: [&str; 6] = [
     "gl_Normal",
     "gl_FogCoord",
     "gl_MultiTexCoord",
+];
+/// Built-in functions naga's constant evaluator lacks: a `const` that calls one is evaluated
+/// where the program runs instead (GL drivers fold them; naga fails the program).
+pub(super) const NOT_CONSTANT: [&str; 25] = [
+    "mix",
+    "smoothstep",
+    "reflect",
+    "refract",
+    "faceforward",
+    "transpose",
+    "determinant",
+    "inverse",
+    "outerProduct",
+    "matrixCompMult",
+    "modf",
+    "frexp",
+    "ldexp",
+    "packUnorm2x16",
+    "packSnorm2x16",
+    "packUnorm4x8",
+    "packSnorm4x8",
+    "packHalf2x16",
+    "unpackUnorm2x16",
+    "unpackSnorm2x16",
+    "unpackUnorm4x8",
+    "unpackSnorm4x8",
+    "unpackHalf2x16",
+    "bitfieldExtract",
+    "bitfieldInsert",
 ];
 /// Words that became keywords after GLSL 1.x and that old packs use as names.
 pub(super) const LATER_KEYWORDS: [&str; 17] = [
@@ -378,6 +409,7 @@ impl<'p> Stage<'p> {
         let mut location = None;
         let mut format = None;
         let mut access = "";
+        let mut coherent = false;
         let mut interpolation = String::new();
         while let Some(&i) = words.get(k) {
             let w = self.tokens[i];
@@ -405,6 +437,7 @@ impl<'p> Stage<'p> {
             } else if matches!(w, "readonly" | "writeonly") {
                 access = w;
             } else if QUALIFIERS.contains(&w) || matches!(w, "coherent" | "volatile" | "restrict") {
+                coherent |= matches!(w, "coherent" | "volatile");
                 if matches!(
                     w,
                     "flat" | "smooth" | "noperspective" | "centroid" | "sample"
@@ -465,6 +498,7 @@ impl<'p> Stage<'p> {
                         ty: ty.clone(),
                         format: format.to_owned(),
                         access: access.to_owned(),
+                        coherent,
                     }),
                     None => self
                         .errors
@@ -559,9 +593,16 @@ impl<'p> Stage<'p> {
         }
         declarators.push((begin, assign, words.len()));
         let constant = words[..eq].iter().any(|&i| text(i) == "const");
-        let conditional =
-            |d: &(usize, Option<usize>, usize)| words[d.0..d.2].iter().any(|&i| text(i) == "?");
-        if constant && !declarators.iter().any(conditional) {
+        // What naga cannot evaluate at global scope: a conditional, or a call to a built-in its
+        // constant evaluator lacks.
+        let runtime = |d: &(usize, Option<usize>, usize)| {
+            (d.0..d.2).any(|n| {
+                text(words[n]) == "?"
+                    || (NOT_CONSTANT.contains(&text(words[n]))
+                        && words.get(n + 1).is_some_and(|&j| text(j) == "("))
+            })
+        };
+        if constant && !declarators.iter().any(runtime) {
             return;
         }
         // The first declarator's name ends the type.
