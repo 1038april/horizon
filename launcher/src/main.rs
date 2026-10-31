@@ -836,6 +836,12 @@ impl Launcher {
                             self.owner = Some(true);
                         }
                         self.auth_status.insert(uuid, status);
+                        // A refresh may have saved a new name or skin: show it now.
+                        let saved = Accounts::load();
+                        if saved != self.accounts {
+                            self.accounts = saved;
+                            self.load_profile_heads();
+                        }
                     }
                 }
                 Msg::AccountRemoved(uuid, generation, result) => {
