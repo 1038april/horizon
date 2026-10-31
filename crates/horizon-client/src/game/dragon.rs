@@ -962,7 +962,14 @@ impl Game<'_> {
             self.fight.blast_by = by;
             // EndCrystal.hurtServer: ExplosionInteraction.BLOCK.
             let interaction = self.destroy_type("block_explosion_drop_decay");
+            // EndCrystal is 2 by 2 blocks: its box decides `isInWater`.
+            let (x, y, z) = (c.position.x, c.position.y, c.position.z);
+            self.combat.explosion_in_water = self.bounds_in_water(Aabb::new(
+                Vec3::new(x - 1.0, y, z - 1.0),
+                Vec3::new(x + 1.0, y + 2.0, z + 1.0),
+            ));
             let _ = self.server_explode(at, 6.0, interaction, false);
+            self.combat.explosion_in_water = false;
             self.fight.blast_by = None;
         }
         if respawn_crystal {
@@ -2692,7 +2699,11 @@ impl Game<'_> {
         }
         additive.extend(eye_quads);
         if death > 0.0 {
+            let rays = additive.len();
             self.dragon_rays(rays_base, death / 200.0, additive);
+            for v in &mut additive[rays..] {
+                v.layer |= u32::from(horizon_client::mesher::VERY_BRIGHT) << 16;
+            }
         }
         // The healing beam to the nearest crystal.
         if let Some(c) = d.nearest_crystal.and_then(|i| self.crystals.get(i)) {
@@ -2762,7 +2773,8 @@ impl Game<'_> {
                     normal: [0; 4],
                     pos: m.transform_point3(p).to_array(),
                     uv,
-                    layer: 6,
+                    // HDR output: the healing beam shines (entity.wgsl fs_hdr_mark).
+                    layer: 6 | u32::from(horizon_client::mesher::BRIGHT) << 16,
                     color: c,
                     light: wrap_light,
 
@@ -3942,6 +3954,28 @@ mod tests {
         let hurt = d.hurt_part(0, 1.0, true, DamageKind::WindCharge, Some(&charge));
         assert_eq!(hurt, Hurt::Landed { full: true });
         assert_eq!(d.health, MAX_HEALTH - 1.0);
+    }
+
+    #[test]
+    fn only_a_player_owned_wither_skull_takes_the_dragons_health() {
+        // WitherSkull.onHitEntity: EnderDragon.hurt takes the wither's skull
+        // (not a player, not an explosion) but takes no health, even perched.
+        let skull = ProjectileKind::WitherSkull { dangerous: false };
+        let wither = super::super::wither::skull_source(Some(Who::Mob(7)), [0.0; 3]);
+        assert_eq!((wither.amount, wither.kind), (8.0, DamageKind::WitherSkull));
+        let mut d = dragon(Phase::Scanning { time: 0 });
+        let hurt = d.hurt_part(2, wither.amount, false, wither.kind, Some(&skull));
+        assert_eq!(hurt, Hurt::Landed { full: false });
+        assert_eq!(d.health, MAX_HEALTH);
+        // A player's skull: 8 on the head, 8 / 4 + 1 on the body.
+        let player = super::super::wither::skull_source(Some(Who::Player), [0.0; 3]);
+        let mut d = dragon(Phase::Scanning { time: 0 });
+        let hurt = d.hurt_part(0, player.amount, true, player.kind, Some(&skull));
+        assert_eq!(hurt, Hurt::Landed { full: true });
+        assert_eq!(d.health, MAX_HEALTH - 8.0);
+        let mut d = dragon(flying());
+        d.hurt_part(2, player.amount, true, player.kind, Some(&skull));
+        assert_eq!(d.health, MAX_HEALTH - 3.0);
     }
 
     #[test]
