@@ -24,8 +24,14 @@ pub struct NativePost {
     nearest: wgpu::Sampler,
     /// Two targets of the world's size, written in turn (none with a single pass).
     targets: Option<([u32; 2], [wgpu::TextureView; 2])>,
-    /// The frame's shadow map and its comparison sampler (bindings 6 and 7).
-    shadow: (wgpu::TextureView, wgpu::Sampler),
+    /// The frame's shadow map, its comparison sampler (bindings 6 and 7), the translucent map
+    /// and its colour (bindings 9 and 10).
+    shadow: (
+        wgpu::TextureView,
+        wgpu::Sampler,
+        wgpu::TextureView,
+        wgpu::TextureView,
+    ),
     /// Last frame's input to the last pass (`history`, binding 8), made with the targets,
     /// and a black 1×1 in its place before then.
     history: Option<wgpu::Texture>,
@@ -165,6 +171,8 @@ impl NativeFrame {
                 texture_entry(3, wgpu::TextureSampleType::Depth),
                 comparison_entry(4),
                 texture_entry(6, wgpu::TextureSampleType::Depth),
+                texture_entry(7, wgpu::TextureSampleType::Depth),
+                texture_entry(8, wgpu::TextureSampleType::Float { filterable: true }),
                 texture_entry(11, wgpu::TextureSampleType::Float { filterable: false }),
             ],
         });
@@ -246,6 +254,14 @@ impl NativeFrame {
                 wgpu::BindGroupEntry {
                     binding: 4,
                     resource: wgpu::BindingResource::Sampler(&shadow.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::TextureView(&shadow.translucent_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::TextureView(&shadow.color_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 6,
@@ -449,6 +465,8 @@ impl NativePost {
                 texture_entry(6, wgpu::TextureSampleType::Depth),
                 comparison_entry(7),
                 texture_entry(8, float),
+                texture_entry(9, wgpu::TextureSampleType::Depth),
+                texture_entry(10, float),
             ],
         });
         let mut groups: [Option<&wgpu::BindGroupLayout>; GROUP as usize + 1] = Default::default();
@@ -516,6 +534,8 @@ impl NativePost {
             shadow: (
                 frame.shadow_map.view.clone(),
                 frame.shadow_map.sampler.clone(),
+                frame.shadow_map.translucent_view.clone(),
+                frame.shadow_map.color_view.clone(),
             ),
             linear: sampler("Native shader pack linear", wgpu::FilterMode::Linear),
             nearest: sampler("Native shader pack nearest", wgpu::FilterMode::Nearest),
@@ -637,6 +657,14 @@ impl NativePost {
                         wgpu::BindGroupEntry {
                             binding: 8,
                             resource: wgpu::BindingResource::TextureView(&history),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 9,
+                            resource: wgpu::BindingResource::TextureView(&self.shadow.2),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 10,
+                            resource: wgpu::BindingResource::TextureView(&self.shadow.3),
                         },
                     ],
                 })

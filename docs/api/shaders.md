@@ -107,6 +107,8 @@ stages.
 
 ## Changelog
 
+- 2026-10-31: API 0.1 (additions): translucent terrain in the shadow pass: `shadow_map_translucent`
+  and `shadow_color`, so a pack can tint the light that passes through water and stained glass.
 - 2026-10-31: API 0.1 (additions): `[shadow]`: the engine draws the solid terrain the light sees
   into a distorted depth map each frame, which the material and post stages read as `shadow_map`
   with `shadow_sampler` and the prelude's `shadow_position`; the frame's `light_direction`,

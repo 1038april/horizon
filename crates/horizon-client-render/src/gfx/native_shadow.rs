@@ -1,6 +1,7 @@
 //! The shadow map of Horizon's own shader packs (`[shadow]`, docs/shaders.md): each frame the
 //! solid terrain the light (the sun by day, the moon by night) sees is drawn into a square depth
-//! map, which the material and post stages read as `shadow_map`. The shadow camera is the one
+//! map, which the material and post stages read as `shadow_map`; translucent terrain goes over a
+//! copy of it, `shadow_map_translucent`, with its colour in `shadow_color`. The shadow camera is the one
 //! `shaders/` packs use (`pack_uniforms::shadow_camera`), so the renderer's shadow visibility and
 //! draw lists (`ShadowView`) serve both; the map's texels are distorted toward the camera as the
 //! prelude's `shadow_position` undoes.
@@ -21,8 +22,13 @@ struct HorizonShadowOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) @interpolate(flat) layer: u32,
+    @location(2) tint: vec3<f32>,
+    @location(3) @interpolate(flat) fluid: u32,
 }
-fn horizon_shadow_vertex(pos: vec3<f32>, uv: vec2<f32>, layer: u32) -> HorizonShadowOut {
+// `color` is the vertex colour: the tint, and the fluid flag in its alpha's high nibble
+// (mesher.rs's `fluid_face`).
+fn horizon_shadow_vertex(pos: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f32>)
+    -> HorizonShadowOut {
     let clip = frame.shadow_view_proj * vec4(pos, 1.0);
     let k = frame.shadow_distortion;
     let xy = clip.xy / (length(clip.xy) * k + 1.0 - k);
@@ -30,26 +36,41 @@ fn horizon_shadow_vertex(pos: vec3<f32>, uv: vec2<f32>, layer: u32) -> HorizonSh
     out.clip = vec4(xy, clamp(clip.z, 0.0, 1.0), 1.0);
     out.uv = uv;
     out.layer = layer;
+    out.tint = color.rgb;
+    let high = u32(round(color.a * 255.0)) >> 4u;
+    out.fluid = u32(high >= 8u && (high & 7u) < 6u);
     return out;
 }
 @vertex fn horizon_shadow_vs(
     @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>,
-    @location(2) layer: u32, @location(5) origin: vec4<f32>) -> HorizonShadowOut {
-    return horizon_shadow_vertex(position + origin.xyz, horizon_terrain_terrain_uv(uv, origin.w), layer);
+    @location(2) layer: u32, @location(3) color: vec4<f32>,
+    @location(5) origin: vec4<f32>) -> HorizonShadowOut {
+    return horizon_shadow_vertex(position + origin.xyz, horizon_terrain_terrain_uv(uv, origin.w), layer, color);
 }
 @vertex fn horizon_shadow_vs_flat(
     @builtin(vertex_index) index: u32,
-    @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>, @location(2) layer: u32
+    @location(0) position: vec3<f32>, @location(1) uv: vec2<u32>, @location(2) layer: u32,
+    @location(3) color: vec4<f32>
 ) -> HorizonShadowOut {
     let origin = horizon_terrain_slot_origins[horizon_terrain_block_slots[index >> 8u]];
-    return horizon_shadow_vertex(position + origin.xyz, horizon_terrain_terrain_uv(uv, origin.w), layer);
+    return horizon_shadow_vertex(position + origin.xyz, horizon_terrain_terrain_uv(uv, origin.w), layer, color);
 }
 @fragment fn horizon_shadow_fs(in: HorizonShadowOut) {
     // Bit 15 of the layer marks opaque leaves (forceOpaque): no alpha cutout.
     let alpha = horizon_terrain_sprite(in.uv, in.layer & 0x7fffu).a;
     if alpha < 0.5 && (in.layer & 0x8000u) == 0u { discard; }
 }
+// Translucent terrain: its colour where it is the nearest thing the light passes through;
+// alpha 1 marks a fluid, other surfaces keep their alpha below it.
+@fragment fn horizon_shadow_fs_translucent(in: HorizonShadowOut) -> @location(0) vec4<f32> {
+    let color = horizon_terrain_sprite(in.uv, in.layer & 0x7fffu);
+    if color.a < 0.01 { discard; }
+    return vec4(color.rgb * in.tint, select(min(color.a, 0.99), 1.0, in.fluid != 0u));
+}
 ";
+
+/// `shadow_color`'s format.
+const SHADOW_COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 /// The shader pack's shadow camera for `settings`: orthographic over `distance` each side,
 /// staying put while the camera walks a `SNAP`-block cell. The map is distorted about its
@@ -89,9 +110,14 @@ pub fn distortion(distance: f32, resolution: u32) -> f32 {
 }
 
 /// The shadow map: a square depth map of the pack's resolution, or a 1×1 one (cleared to "far",
-/// so everything is lit) for a pack without `[shadow]`.
+/// so everything is lit) for a pack without `[shadow]`; the same with translucent terrain drawn
+/// in, and that terrain's colour.
 pub struct ShadowMap {
+    depth: wgpu::Texture,
     pub view: wgpu::TextureView,
+    translucent: wgpu::Texture,
+    pub translucent_view: wgpu::TextureView,
+    pub color_view: wgpu::TextureView,
     pub sampler: wgpu::Sampler,
     /// The 1×1 map still holds the zeroes it was made with.
     blank_uncleared: bool,
@@ -102,20 +128,39 @@ impl ShadowMap {
         let size = settings
             .map_or(1, |s| s.resolution)
             .clamp(1, device.limits().max_texture_dimension_2d);
-        let depth = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Native shader pack shadow map"),
-            size: wgpu::Extent3d {
-                width: size,
-                height: size,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Depth32Float,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
+        let texture = |label, format, usage| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: size,
+                    height: size,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | usage,
+                view_formats: &[],
+            })
+        };
+        let depth = texture(
+            "Native shader pack shadow map",
+            wgpu::TextureFormat::Depth32Float,
+            wgpu::TextureUsages::COPY_SRC,
+        );
+        let translucent = texture(
+            "Native shader pack translucent shadow map",
+            wgpu::TextureFormat::Depth32Float,
+            wgpu::TextureUsages::COPY_DST,
+        );
+        let color = texture(
+            "Native shader pack shadow colour",
+            SHADOW_COLOR,
+            wgpu::TextureUsages::empty(),
+        );
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Native shader pack shadow comparison"),
             compare: Some(wgpu::CompareFunction::LessEqual),
@@ -125,6 +170,10 @@ impl ShadowMap {
         });
         Self {
             view: depth.create_view(&Default::default()),
+            depth,
+            translucent_view: translucent.create_view(&Default::default()),
+            translucent,
+            color_view: color.create_view(&Default::default()),
             sampler,
             blank_uncleared: settings.is_none(),
         }
@@ -151,10 +200,46 @@ impl ShadowMap {
         })
     }
 
+    /// The translucent pass: the solid terrain's map copied into the translucent one, which it
+    /// goes on drawing into, and the colour cleared to white (nothing to pass through).
+    pub fn begin_translucent<'e>(
+        &self,
+        encoder: &'e mut wgpu::CommandEncoder,
+        label: &str,
+    ) -> wgpu::RenderPass<'e> {
+        encoder.copy_texture_to_texture(
+            self.depth.as_image_copy(),
+            self.translucent.as_image_copy(),
+            self.depth.size(),
+        );
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some(label),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &self.color_view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &self.translucent_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            ..Default::default()
+        })
+    }
+
     /// Clears the 1×1 map of a pack without `[shadow]` once.
     pub fn clear_blank(&mut self, encoder: &mut wgpu::CommandEncoder) {
         if std::mem::take(&mut self.blank_uncleared) {
             drop(self.begin(encoder, "Native shader pack shadow map clear"));
+            drop(self.begin_translucent(encoder, "Native shader pack shadow colour clear"));
         }
     }
 }
@@ -166,6 +251,10 @@ pub struct NativeShadow {
     pub camera: Shadow,
     pub solid: wgpu::RenderPipeline,
     pub flat: Option<wgpu::RenderPipeline>,
+    /// The translucent terrain's draws into the translucent map and the colour, instanced and
+    /// flat.
+    pub translucent: wgpu::RenderPipeline,
+    pub flat_translucent: Option<wgpu::RenderPipeline>,
     pub group: wgpu::BindGroup,
 }
 
@@ -245,9 +334,15 @@ impl NativeShadow {
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &instance_attributes,
         };
+        let color_target = [Some(wgpu::ColorTargetState {
+            format: SHADOW_COLOR,
+            blend: None,
+            write_mask: wgpu::ColorWrites::ALL,
+        })];
         let pipeline = |layout: &wgpu::PipelineLayout,
                         vertex: &str,
-                        buffers: &[Option<wgpu::VertexBufferLayout<'_>>]| {
+                        buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
+                        translucent: bool| {
             let options = wgpu::PipelineCompilationOptions {
                 constants: &constants,
                 ..Default::default()
@@ -281,26 +376,44 @@ impl NativeShadow {
                 multisample: Default::default(),
                 fragment: Some(wgpu::FragmentState {
                     module: &module,
-                    entry_point: Some("horizon_shadow_fs"),
+                    entry_point: Some(if translucent {
+                        "horizon_shadow_fs_translucent"
+                    } else {
+                        "horizon_shadow_fs"
+                    }),
                     compilation_options: options,
-                    targets: &[],
+                    targets: if translucent { &color_target } else { &[] },
                 }),
                 multiview_mask: None,
                 cache: None,
             })
         };
+        let instanced = layout(None);
         let solid = pipeline(
-            &layout(None),
+            &instanced,
+            "horizon_shadow_vs",
+            &[Some(vertices.clone()), Some(instances.clone())],
+            false,
+        );
+        let translucent = pipeline(
+            &instanced,
             "horizon_shadow_vs",
             &[Some(vertices.clone()), Some(instances)],
+            true,
         );
-        let flat = shape.flat.map(|group| {
-            pipeline(
-                &layout(Some(group)),
-                "horizon_shadow_vs_flat",
-                &[Some(vertices.clone())],
-            )
-        });
+        let flat_layout = shape.flat.map(|group| layout(Some(group)));
+        let flat_pipeline = |translucent| {
+            flat_layout.as_ref().map(|layout| {
+                pipeline(
+                    layout,
+                    "horizon_shadow_vs_flat",
+                    &[Some(vertices.clone())],
+                    translucent,
+                )
+            })
+        };
+        let flat = flat_pipeline(false);
+        let flat_translucent = flat_pipeline(true);
         if let Some(e) = pollster::block_on(scope.pop()) {
             return Err(format!("shadow pass: {e}"));
         }
@@ -308,6 +421,8 @@ impl NativeShadow {
             camera: camera(settings),
             solid,
             flat,
+            translucent,
+            flat_translucent,
             group,
         })
     }
