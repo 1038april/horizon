@@ -196,5 +196,8 @@
   "Threads that generate, light and mesh chunks. Next start.": "Hilos que generan, iluminan y mallan chunks. Próximo inicio.",
   "Vulkan, then DirectX 12 (Windows) or OpenGL (Linux) where it fails. Next start.": "Vulkan y, donde falla, DirectX 12 (Windows) u OpenGL (Linux). Próximo inicio.",
   "Mesh data sent to the GPU per frame. Lower is smoother while loading.": "Datos de malla enviados a la GPU por fotograma. Menos es más fluido durante la carga.",
-  "Frame rate and frame times over the game, with a graph.": "Fotogramas por segundo y tiempos de fotograma sobre el juego, con un gráfico."
+  "Frame rate and frame times over the game, with a graph.": "Fotogramas por segundo y tiempos de fotograma sobre el juego, con un gráfico.",
+  "horizon.multiplayer.finding_friend": "Buscando el mundo de tu amigo…",
+  "horizon.loading.opening_world": "Abriendo el mundo",
+  "horizon.loading.cancelling_world": "Cancelando"
 }
