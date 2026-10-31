@@ -129,6 +129,13 @@ impl Custom {
         out
     }
 
+    /// Forgets what `smooth` keeps: each starts again from its next value, as on the first frame
+    /// (for runs whose values are not the world's: the load-time dry run, frames before the
+    /// camera's biome is known).
+    pub fn restart_smoothing(&mut self) {
+        self.smooth.clear();
+    }
+
     /// Names the game's biomes (registry identifiers, in id order) for `BIOME_*`.
     pub fn set_biomes(&mut self, biomes: &[&str]) {
         self.constants = crate::biomes::constants(biomes);
@@ -600,6 +607,20 @@ mod tests {
         assert_eq!(run(0.0, 0.0), 0.0);
         assert!((run(1.0, 2.0) - 0.5).abs() < 1e-9, "rising: fadeIn");
         assert!((run(0.0, 0.5) - 0.25).abs() < 1e-9, "falling: fadeOut");
+    }
+
+    /// After a restart `smooth` starts from its next value, as on the first frame, instead of
+    /// fading from the old one (a 1000-second fade from a dry run's zero).
+    #[test]
+    fn smooth_starts_again_from_its_next_value_after_a_restart() {
+        let mut c = custom("uniform.float.s = smooth(target, 1000, 1000)\n");
+        let eval = |c: &mut Custom, t: f64| {
+            c.eval(0.05, &|n: &str| (n == "target").then(|| Val::scalar(t)))[0].v[0]
+        };
+        assert_eq!(eval(&mut c, 0.0), 0.0);
+        assert!(eval(&mut c, 0.6) < 0.01, "the fade holds the old value");
+        c.restart_smoothing();
+        assert_eq!(eval(&mut c, 0.6), 0.6);
     }
 
     #[test]

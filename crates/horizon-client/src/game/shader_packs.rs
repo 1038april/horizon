@@ -173,6 +173,7 @@ impl Game<'_> {
             hide_gui: self.ui.hide_gui,
             brightness: self.settings.gamma,
             biome: biome.map_or(-1, i32::from),
+            biome_known: biome.is_some(),
             biome_category: info.map_or(0, |b| horizon_shaders::biome_category(&b.name)),
             biome_precipitation: info.map_or(0, |b| {
                 horizon_shaders::biome_precipitation(b.precipitation, b.temperature)
