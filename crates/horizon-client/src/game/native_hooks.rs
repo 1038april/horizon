@@ -972,21 +972,24 @@ impl Game<'_> {
     pub(super) fn native_block_entity_ticks(&self, block: &str, ticks: &mut bool) {
         let _ = (block, ticks);
     }
-    /// An enchantment's effect of a mod's own kind: the entry's `effect`
-    /// named a `type` in a namespace outside `minecraft:`, and the game
-    /// kept it for this call instead of silently skipping it. The
-    /// enchantment id, the kind, the JSON and the level are here; the
-    /// acting player is the one whose weapon carries the enchantment, and
-    /// the game's own damage, sounds, effects and drops are open. An
-    /// unclaimed kind does nothing. API @API:enchant_effect@.
+    /// A `minecraft:post_attack` effect of a mod's own kind, on a mob a
+    /// player's weapon hit: the entry says `enchanted` attacker and `affected`
+    /// victim, its `requirements` passed, and its `effect` names a `type` in a
+    /// namespace outside `minecraft:`. Told the enchantment id, the kind, the
+    /// `effect` JSON, the level and the mob's id (it may have just died). The
+    /// acting player is the one whose weapon carries the enchantment. Each
+    /// such entry is told once a hit, and once for each mob a sweep lands on.
+    /// A hit on a player, and an entry inside `minecraft:all_of`, aren't told
+    /// yet. An unclaimed kind does nothing. API @API:enchant_effect@.
     pub(super) fn native_enchant_effect(
         &mut self,
         enchantment: &str,
         kind: &str,
         data: &serde_json::Value,
         level: u32,
+        victim: u32,
     ) {
-        let _ = (enchantment, kind, data, level);
+        let _ = (enchantment, kind, data, level, victim);
     }
     /// Block `block`'s block entity has item slots (a `WorldlyContainer`):
     /// set `container` when the block is yours. Asked once for each mod
