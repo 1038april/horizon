@@ -158,7 +158,7 @@ impl Game<'_> {
                         self.save.save_later(
                             &chunks,
                             self.pack.assets.registry,
-                            self.res.biomes(),
+                            world_biomes!(self),
                         )?;
                         self.world.modified.remove(&key);
                         keys.pop_front();
