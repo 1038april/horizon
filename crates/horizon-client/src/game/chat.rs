@@ -1022,6 +1022,15 @@ impl Game<'_> {
         let Some(url) = &self.link_prompt else {
             return;
         };
+        // ConfirmLinkScreen: the question and the link (its warning is a
+        // widget of its own, not narrated).
+        horizon_client::widgets::begin_screen(|| {
+            super::screen_info::confirm(
+                "chat/confirm_link",
+                &super::screen_info::tr("chat.link.confirm", &[]),
+                url,
+            )
+        });
         let atlas = &self.gui.atlas;
         let (w, h) = (batch.width, batch.height);
         horizon_client::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, true);
@@ -1123,6 +1132,17 @@ impl Game<'_> {
         let Some(mut screen) = self.ui.chat_screen.take() else {
             return;
         };
+        // ChatScreen.updateNarrationState: the restricted prompt is
+        // `displayMode.showRestrictedPrompt`, the abilities' restrictions.
+        let in_bed = self.ui.in_bed_chat && self.sleeping.is_some();
+        horizon_client::widgets::begin_screen(|| {
+            super::screen_info::chat(
+                in_bed,
+                screen.value(),
+                screen.abilities.any_restriction(),
+                &super::screen_info::tr,
+            )
+        });
         let m = Measure(&self.gui.atlas.font);
         let c = Commands {
             dispatcher: chat_tree(&self.remote),
@@ -1143,7 +1163,7 @@ impl Game<'_> {
         let draws = screen.draw(&m, mouse, blink, background);
         horizon_client::screen_draw::paint(batch, &self.gui.atlas, &draws);
         self.ui.chat_screen = Some(screen);
-        if self.ui.in_bed_chat && self.sleeping.is_some() {
+        if in_bed {
             let (x, y, w, h) = Self::leave_bed_button(batch.width, batch.height);
             let label = Text::literal(horizon_client::lang::get_or(
                 "multiplayer.stopSleeping",
@@ -1263,6 +1283,7 @@ impl Game<'_> {
         self.world.health_rules.fall_damage = self.ui.rules.bool("fall_damage");
         self.world.health_rules.fire_damage = self.ui.rules.bool("fire_damage");
         self.world.health_rules.freeze_damage = self.ui.rules.bool("freeze_damage");
+        horizon_client::mobs::sulfur_cube::set_tnt_explodes(self.ui.rules.bool("tnt_explodes"));
         use horizon_world::food::Difficulty;
         self.world.health_rules.difficulty = match self.ui.difficulty {
             0 => Difficulty::Peaceful,
