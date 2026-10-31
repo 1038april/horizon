@@ -4698,6 +4698,7 @@ impl Game<'_> {
             pickup_delay: 0,
             bob_offset,
             ticks: 0,
+            needs_sync: false,
         });
     }
     /// `Entity.lerpMotion` (and `recreateFromPacket`'s motion) for the

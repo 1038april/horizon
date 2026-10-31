@@ -1730,6 +1730,8 @@ impl Game<'_> {
             e.position = [d.position.x, d.position.y, d.position.z];
             e.on_ground = d.on_ground;
             e.velocity = [d.velocity.x, d.velocity.y, d.velocity.z];
+            e.precise = d.needs_sync;
+            e.needs_sync = d.needs_sync;
             // Entity.DATA_SHARED_FLAGS_ID: glowing 0x40 (the Glowing tag).
             if self.entity_glowing(d.id) {
                 e.meta.push((0, serializer::BYTE, Value::Byte(0x40)));
@@ -2020,6 +2022,9 @@ impl Game<'_> {
             }
             for p in &mut self.creatures.projectiles {
                 p.needs_sync = false;
+            }
+            for d in &mut self.dropped {
+                d.needs_sync = false;
             }
             // `runBlockEvents`' broadcast precedes the tick's block changes
             // (`ChunkHolder.broadcastChanges` in `tick_level` below): the

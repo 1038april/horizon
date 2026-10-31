@@ -3206,6 +3206,7 @@ impl Game<'_> {
             pickup_delay,
             bob_offset: bob,
             ticks: 0,
+            needs_sync: false,
         });
     }
     /// `Block.getDrops` for a block a player breaks: the block's loot table
