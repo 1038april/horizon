@@ -168,11 +168,11 @@ pub fn decode_png(bytes: &[u8]) -> Option<Texture> {
     })
 }
 
-/// A raw dump: `<type> <internalFormat> <dimensions...> <pixelFormat> <pixelType>`, its rows
-/// tightly packed, or padded to four bytes as GL unpacks by default.
 /// The largest size a raw texture may give one of its dimensions.
 const MAX_SIZE: u32 = 16384;
 
+/// A raw dump: `<type> <internalFormat> <dimensions...> <pixelFormat> <pixelType>`, its rows
+/// tightly packed, or padded to four bytes as GL unpacks by default.
 fn raw(bytes: &[u8], words: &[&str]) -> Result<Texture, String> {
     let (dim, dims) = match words[0] {
         "TEXTURE_1D" => (Dim::D1, 1),

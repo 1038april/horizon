@@ -1154,6 +1154,18 @@ mod tests {
     }
 
     #[test]
+    fn a_pack_keeps_its_own_inverse() {
+        let fsh = "#version 120\nuniform mat4 gbufferProjection;\n\
+                   mat4 inverse(mat4 m) { return m; }\n\
+                   void main() { gl_FragData[0] = inverse(gbufferProjection) * vec4(1.0); }\n";
+        program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+    }
+
+    #[test]
     fn narrow_outputs_widen_and_inverse_is_ours() {
         let fsh = "#version 400\nlayout(location = 0) out vec3 color;\nlayout(location = 1) out float depth;\n\
                    uniform mat4 gbufferProjection;\nuniform mat3 m3;\n\

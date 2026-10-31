@@ -221,7 +221,7 @@ impl Stage<'_> {
                 // GLSL's `modf`, which naga's frontend lacks.
                 "modf" if called => Some("hz_modf".into()),
                 // Matrix inverse, which naga writes for neither Metal nor WGSL.
-                "inverse" if called => Some("hz_inverse".into()),
+                "inverse" if called && self.inverse => Some("hz_inverse".into()),
                 "texture2D" | "texture1D" | "texture3D" | "textureCube" if called => {
                     Some("texture".into())
                 }

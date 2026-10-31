@@ -40,7 +40,7 @@ pub(super) struct Stage<'p> {
     pub(super) frag_outs: Vec<(u32, String)>,
     /// Narrow outputs copied into their vec4 after the pack's `main`.
     pub(super) out_copies: Vec<String>,
-    /// The stage calls `inverse`, which ours replaces.
+    /// The stage calls `inverse`, which ours replaces, and doesn't define its own.
     pub(super) inverse: bool,
     /// The pack's functions that take samplers: which parameters are samplers.
     pub(super) sampler_functions: HashMap<String, Vec<bool>>,
@@ -176,6 +176,7 @@ impl<'p> Stage<'p> {
         };
         s.rename_vulkan_types();
         let (mut start, mut depth, mut parens) = (0, 0usize, 0usize);
+        let mut own_inverse = false;
         for i in 0..s.tokens.len() {
             match s.tokens[i] {
                 "(" => parens += 1,
@@ -210,7 +211,15 @@ impl<'p> Stage<'p> {
                     }
                 }
                 "gl_FragCoord" => s.frag_coord = true,
-                "inverse" => s.inverse = true,
+                "inverse" => {
+                    s.inverse = true;
+                    // `mat4 inverse(mat4 m)`: a pack for GLSL 1.20, which has none, wrote its own.
+                    own_inverse |= depth == 0
+                        && s.tokens[..i]
+                            .iter()
+                            .rfind(|t| significant(t))
+                            .is_some_and(|t| is_ident(t));
+                }
                 "gl_TexCoord" => {
                     if let Some((n, _)) = s.index_after(i) {
                         s.builtin_varying(format!("hz_TexCoord{n}"));
@@ -223,6 +232,7 @@ impl<'p> Stage<'p> {
                 _ => {}
             }
         }
+        s.inverse &= !own_inverse;
         s
     }
 
