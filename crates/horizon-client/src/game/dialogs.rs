@@ -199,6 +199,9 @@ impl Game<'_> {
             selecting: None,
         });
         self.dialogs.waiting = None;
+        self.keys.clear();
+        self.left = false;
+        self.right = false;
         self.capture(false);
     }
 
@@ -261,8 +264,7 @@ impl Game<'_> {
             Some(Click::RunCommand(command)) => {
                 // In configuration there is nothing to run it (vanilla warns).
                 if self.player.is_some() {
-                    let command = command.strip_prefix('/').unwrap_or(&command);
-                    self.send_chat(&format!("/{command}"));
+                    self.send_unattended_command(&command);
                 } else {
                     log::warn!(
                         "Horizon: commands are not supported in configuration, trying to run '{command}'"
