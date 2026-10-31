@@ -93,6 +93,28 @@ pub fn locked_message(title: &horizon_world::nbt::Tag) -> horizon_world::nbt::Ta
     ])
 }
 
+/// The menu a container vehicle's `createMenu` builds (`ContainerEntity`):
+/// `AbstractChestBoat.createMenu` and `MinecartChest.createMenu` are
+/// `ChestMenu.threeRows` (a 9x3 menu), `MinecartHopper.createMenu` is a
+/// `HopperMenu` (five slots). `None` for any other entity type.
+pub fn vehicle_menu(entity_type: &str) -> Option<(&'static str, usize)> {
+    match entity_type {
+        "minecraft:chest_minecart" => Some(("minecraft:generic_9x3", 27)),
+        "minecraft:hopper_minecart" => Some(("minecraft:hopper", HOPPER_SLOTS)),
+        n if n.ends_with("_chest_boat") || n.ends_with("_chest_raft") => {
+            Some(("minecraft:generic_9x3", 27))
+        }
+        _ => None,
+    }
+}
+
+/// `MenuProvider.getDisplayName` for a container vehicle: `Entity.getDisplayName`
+/// is its custom name, else `getName`, the entity type's name key. Horizon's
+/// vehicles keep no custom name, so this is the type's name key.
+pub fn vehicle_menu_name(entity_type: &str) -> String {
+    format!("entity.{}", entity_type.replacen(':', ".", 1))
+}
+
 impl Campfire {
     /// `placeFood`'s slot: the first empty one, given the item's
     /// `campfire_cooking` time; it takes one item of `held`.

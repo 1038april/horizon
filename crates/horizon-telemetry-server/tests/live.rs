@@ -6,6 +6,7 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use horizon_telemetry::live::{self, Count, Ping};
+use horizon_telemetry_server::history::Sample;
 use horizon_telemetry_server::store::Store;
 use horizon_telemetry_server::{App, Config, router};
 use http_body_util::BodyExt;
@@ -187,4 +188,89 @@ async fn the_games_ping_and_the_launchers_read_reach_it_end_to_end() {
     assert_eq!((count.playing, count.lan), (2, 1));
     assert_eq!(count.versions.len(), 2);
     assert_eq!(count.platforms[live::platform()], 2);
+}
+
+async fn history(app: &Arc<App>, range: &str) -> (StatusCode, axum::http::HeaderMap, String) {
+    let req = Request::get(format!("/v1/live/history?range={range}"))
+        .header("x-forwarded-for", "198.51.100.2")
+        .body(Body::empty())
+        .unwrap();
+    send(app, req).await
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
+#[tokio::test]
+async fn the_history_serves_the_recorded_minutes_and_peaks() {
+    let app = app(quick());
+    let now = unix_now();
+    let minute = now - now % 60;
+    let at = |playing: u64, linux: u64| Sample {
+        playing,
+        lan: 1,
+        platforms: [linux, 0, playing - linux, 0],
+    };
+    // An old peak, three days ago, then today's minutes.
+    assert!(
+        app.record_sample(minute - 3 * 86_400, &at(1234, 4))
+            .unwrap()
+    );
+    assert!(app.record_sample(minute - 120, &at(7, 2)).unwrap());
+    assert!(app.record_sample(minute - 60, &at(9, 3)).unwrap());
+    assert!(!app.record_sample(minute - 30, &at(50, 0)).unwrap());
+
+    let (code, headers, body) = history(&app, "24h").await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    assert_eq!(headers[header::CACHE_CONTROL], "public, max-age=60");
+    assert_eq!(
+        headers[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+        "https://playhorizon.dev"
+    );
+    let day: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(day["range"], "24h");
+    assert_eq!(day["step"], 300);
+    assert_eq!(day["peak"]["playing"], 9);
+    assert_eq!(day["peak"]["at"], minute - 60);
+    assert_eq!(day["all_time"]["playing"], 1234);
+    assert_eq!(day["all_time"]["at"], minute - 3 * 86_400);
+    let points = day["series"].as_array().unwrap();
+    let total: u64 = points.iter().map(|p| p[2].as_u64().unwrap()).max().unwrap();
+    assert_eq!(total, 9);
+    assert_eq!(day["platforms"]["linux"], 2.5);
+    assert_eq!(day["platforms"]["windows"], 5.5);
+
+    let (_, _, body) = history(&app, "7d").await;
+    let week: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(week["step"], 3600);
+    assert_eq!(week["peak"]["playing"], 1234);
+    let (_, _, body) = history(&app, "all").await;
+    let all: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(all["step"], 86_400);
+    assert!(!all["series"].as_array().unwrap().is_empty());
+
+    assert_eq!(history(&app, "1y").await.0, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn the_recorder_waits_a_window_then_writes_the_exact_count() {
+    let app = app(Config {
+        live_window: Duration::from_millis(400),
+        ..quick()
+    });
+    // Just started: games haven't all pinged yet.
+    assert!(!app.record_live().unwrap());
+    tokio::time::sleep(Duration::from_millis(450)).await;
+    for n in 0..3 {
+        post(&app, ping(n, "0.2.0", n == 0), "203.0.113.7").await;
+    }
+    assert!(app.record_live().unwrap());
+    let (_, _, body) = history(&app, "24h").await;
+    let day: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(day["peak"]["playing"], 3);
+    assert_eq!(day["platforms"]["linux"], 3.0);
 }
