@@ -569,10 +569,12 @@ fn classic_navigation_buttons_sound_even_without_a_game_action() {
         (Action::None, false)
     );
     assert_eq!(f.click_with_sound("Create New World"), (Action::None, true));
-    assert_eq!(
-        f.title.click(240.0, 55.0, (480.0, 262.0)),
-        (Action::None, false)
-    );
+    // Create New World prepares the world generation first
+    // (`CreateWorldScreen.openCreateWorldScreen`); the game opens the
+    // screen once that is done.
+    if f.title.click(240.0, 55.0, (480.0, 262.0)).0 == Action::None && f.title.preparing() {
+        f.title.finish_preparing();
+    }
     // The Game tab's game mode cycle button.
     let mode = f
         .title

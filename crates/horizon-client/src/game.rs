@@ -2058,6 +2058,9 @@ struct Game<'a> {
     lectern_pulses: Vec<((i32, i32, i32), i32)>,
     /// LevelLoadingScreen.smoothedProgress while the player is not placed yet.
     loading_progress: f32,
+    /// `CreateWorldScreen.openCreateWorldScreen`'s data read, on a worker,
+    /// while the title says `createWorld.preparing`.
+    creation_job: Option<std::thread::JoinHandle<()>>,
     /// When `loading_progress` last eased (the server thread's load, 50 ms a step).
     loading_progress_at: Option<std::time::Instant>,
     /// The world spawn search's origin chunk and fallback height, once known.
@@ -15931,6 +15934,7 @@ impl<'a> Game<'a> {
             book_last_click: None,
             lectern_pulses: Vec::new(),
             loading_progress: 0.0,
+            creation_job: None,
             loading_progress_at: None,
             spawn_origin: None,
             spawn_spiral: Default::default(),
@@ -16327,6 +16331,7 @@ impl Game<'_> {
     fn resume_world_entry(&mut self) -> Result<()> {
         self.poll_integrated_start()?;
         self.poll_world_rest()?;
+        self.poll_world_creation();
         if let Some(loader) = &self.world_loader {
             if !loader.ready() {
                 return Ok(());
@@ -16380,6 +16385,44 @@ impl Game<'_> {
             None => {}
         }
         Ok(())
+    }
+
+    /// `CreateWorldScreen.openCreateWorldScreen`: read the world generation
+    /// data the create screen describes, on a worker, then open the screen
+    /// (`title.preparing`).
+    fn poll_world_creation(&mut self) {
+        let Some(title) = self.title.as_ref() else {
+            return;
+        };
+        if !title.preparing() {
+            return;
+        }
+        if self.creation_job.is_none() {
+            let dir = self.options.resources.join("worldgen");
+            let registry = self.pack.assets.registry;
+            self.creation_job = std::thread::Builder::new()
+                .name("world-creation".into())
+                .spawn(move || {
+                    if let Err(e) = horizon_client::vanillagen::shared_data(&dir, registry) {
+                        log::warn!("Horizon: preparing world creation failed: {e}");
+                    }
+                })
+                .ok();
+            return;
+        }
+        if !self
+            .creation_job
+            .as_ref()
+            .is_none_or(std::thread::JoinHandle::is_finished)
+        {
+            return;
+        }
+        if let Some(job) = self.creation_job.take() {
+            let _ = job.join();
+        }
+        if let Some(title) = self.title.as_mut() {
+            title.finish_preparing();
+        }
     }
 
     fn poll_world_rest(&mut self) -> Result<()> {
