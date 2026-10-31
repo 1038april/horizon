@@ -1281,5 +1281,8 @@ fn a_respawned_guest_is_immune_until_its_client_loads_the_world() {
     // The client's ServerboundPlayerLoadedPacket once the new level is in.
     s.hub.guests[0].inbox.push_back((S::PlayerLoaded(Empty), 0));
     s.tick(&[]);
-    assert!(s.hub.guests[0].client_loaded(), "the packet marks it loaded");
+    assert!(
+        s.hub.guests[0].client_loaded(),
+        "the packet marks it loaded"
+    );
 }
