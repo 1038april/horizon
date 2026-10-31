@@ -3064,13 +3064,13 @@ fn config_dir(options: &Path) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// `v` within `lo..=hi`; `lo` when it is not a number.
 /// `params` with each value that isn't finite as 0, so a mod's mistake can't
 /// put a NaN in every pixel of a pack's picture.
 fn finite_params(params: [[f32; 4]; 8]) -> [[f32; 4]; 8] {
     params.map(|v| v.map(|x| if x.is_finite() { x } else { 0.0 }))
 }
 
+/// `v` within `lo..=hi`; `lo` when it is not a number.
 fn finite(v: f32, lo: f32, hi: f32) -> f32 {
     if v.is_finite() { v.clamp(lo, hi) } else { lo }
 }
