@@ -122,6 +122,9 @@ address. The script then checks, from both sides, what a guest's game used to ge
              pushes it, as in vanilla), not ever faster across the ground.
 - eat:       holding right click with bread, the guest's own screen plays the eating (the item in use
              counts up) and the server eats one loaf and feeds the guest.
+- eat-on-block: sweet berries clicked on a block they can't be planted on: the guest's own screen
+             plays the eating and the server eats one, a click released early eats nothing, and on
+             dirt they are planted and not eaten (BlockItem.useOn).
 - consume-release: the host and the guest each cancel eating a golden apple and drinking milk from
               either hand: use ends on client and server, the item and effects stay, and holding
               use to completion still consumes the item (#1293).
@@ -338,11 +341,11 @@ ROOT = Path(__file__).resolve().parents[1]
 GUEST_NAME = 'Guest'
 # Match normal single player; --in-frame is deprecated.
 SERVER_THREAD = True
-CHECKS = ['tab', 'self', 'armour', 'nametags', 'walls', 'chest', 'menu-transfer', 'crafting', 'spawned', 'sign', 'damage', 'mobs', 'hazards', 'pvp',
+CHECKS = ['tab', 'self', 'armour', 'nametags', 'walls', 'chest', 'menu-transfer', 'crafting', 'spawned', 'sign', 'damage', 'mobs', 'hazards', 'pvp', 'deaths',
           'flow-push', 'bubble-column', 'arrows', 'kills', 'looting', 'leave', 'hurt', 'looks', 'leads', 'respawn', 'containers', 'names', 'feedback', 'titles', 'chat', 'styles',
           'commands', 'recipes', 'machines', 'brewing', 'loom', 'stonecutter', 'grindstone', 'anvil', 'smithing',
           'enchanting', 'beacon', 'crafter', 'lectern', 'cartography', 'trials', 'clicks', 'wheel', 'sleep', 'sleep-villager', 'bed-occupied', 'sleep-reload', 'predict', 'push',
-          'piston-push', 'piston-slime', 'eat', 'eating', 'xp', 'objects', 'projectiles', 'thrown', 'sparks', 'hud', 'sidebar', 'border', 'particles',
+          'piston-push', 'piston-slime', 'eat', 'eat-on-block', 'eating', 'xp', 'objects', 'projectiles', 'thrown', 'sparks', 'hud', 'sidebar', 'border', 'particles',
           'worn', 'blast', 'barter', 'deflect', 'fireball', 'light', 'time', 'swings', 'cracks', 'plates', 'effects',
           'portals', 'distance', 'growth', 'doors', 'flight', 'ladder', 'boats', 'boat_shoved', 'minecarts', 'frames', 'hands',
           'lightning', 'riding', 'occupied_horse', 'mounts', 'worldspawn', 'beds', 'shield', 'deathmining', 'contacts', 'absorption',
@@ -1444,6 +1447,110 @@ def check_arrows(host, guest, out):
     assert hits['pvp off'][1] >= hits['pvp off'][0], f'pvp off, an arrow still hurts: {hits}'
     return hits
 
+
+def check_deaths(host, guest, out):
+    def other_player(watcher):
+        """The other player's entity id as `watcher` draws it: aiming by an entity, not by
+        coordinates, holds when a just-respawned client's position lags the server's."""
+        for _ in range(20):
+            found = watcher.raw('entities', 6, 'player')['entities']
+            if found:
+                return found[0]['id']
+            watcher.wait(5)
+        raise AssertionError(f'{watcher.name} does not draw the other player')
+
+    def ready():
+        for g in (host, guest):
+            if g('state').get('screen') == 'dead':
+                g.raw('respawn')
+                g.wait(40)
+            back_to_game(g)
+            g('command', command='effect give @s minecraft:instant_health 1 5')
+        host('command', command='execute at @s run fill ~-5 200 ~-5 ~5 200 ~5 minecraft:stone')
+        host('command', command='tp @s ~ 201 ~')
+        host('command', command=f'tp {GUEST_NAME} {host.player}')
+        guest('command', command='tp @s ~3 ~ ~')
+        host.wait(20)
+        host.raw('look-at-entity', other_player(host))
+        guest.raw('look-at-entity', other_player(guest))
+        host.wait(5)
+
+    said = {}
+    try:
+        host('command', command='gamerule pvp true')
+        host('command', command='gamerule natural_health_regeneration false')
+        for g in (host, guest):
+            g('command', command='gamemode survival')
+            g('command', command='clear @s')
+            g('command', command='item replace entity @s armor.chest with minecraft:air')
+        host('command', command='item replace entity @s weapon.mainhand with minecraft:iron_sword')
+        ready()
+        host('command', command=f'damage {GUEST_NAME} 18 minecraft:generic')
+        host.wait(30)
+        host.raw('attack')
+        host.wait(20)
+        said['sword'] = host.raw('messages', 10)['chat']
+        host.shot(out, 'deaths-sword')
+        guest('command', command='item replace entity @s weapon.mainhand with minecraft:iron_sword')
+        ready()
+        host('command', command=f'damage {host.player} 18 minecraft:generic')
+        guest.wait(30)
+        guest.raw('attack')
+        guest.wait(20)
+        said['host_death'] = host.raw('messages', 10)['chat']
+        said['host_death_behind_guest'] = guest.raw('messages', 10)['chat']
+        guest.shot(out, 'deaths-host')
+        host('command', command='item replace entity @s weapon.mainhand with minecraft:bow')
+        host('command', command='give @s minecraft:arrow 16')
+        ready()
+        host('command', command=f'damage {GUEST_NAME} 18 minecraft:generic')
+        host.raw('use-item', '--hold', 1.3)
+        host.wait(20)
+        said['arrow'] = host.raw('messages', 10)['chat']
+        guest('command', command='item replace entity @s weapon.mainhand with minecraft:bow')
+        guest('command', command='give @s minecraft:arrow 16')
+        ready()
+        host('command', command=f'damage {host.player} 18 minecraft:generic')
+        guest.raw('use-item', '--hold', 1.3)
+        guest.wait(20)
+        said['arrow_behind_guest'] = guest.raw('messages', 10)['chat']
+        host('command', command='item replace entity @s weapon.mainhand with minecraft:air')
+        host('command', command='item replace entity @s armor.chest with '
+                                'minecraft:diamond_chestplate[minecraft:enchantments={"minecraft:thorns":255}]')
+        ready()
+        hx, hy, hz = pos_of(host)
+        for _ in range(8):
+            if dead(guest):
+                break
+            guest('command', command='effect give @s minecraft:instant_health 1 5')
+            host('command', command=f'tp @s {hx:.2f} {hy:.2f} {hz:.2f}')
+            host('command', command=f'tp {GUEST_NAME} {host.player}')
+            guest('command', command='tp @s ~3 ~ ~')
+            host('command', command=f'damage {GUEST_NAME} 19 minecraft:generic')
+            guest.wait(30)
+            guest.raw('look-at-entity', other_player(guest))
+            guest.raw('attack')
+            guest.wait(10)
+        said['thorns'] = host.raw('messages', 10)['chat']
+        host.shot(out, 'deaths-thorns')
+    finally:
+        host('command', command='gamerule natural_health_regeneration true')
+        for g in (host, guest):
+            g('command', command='item replace entity @s armor.chest with minecraft:air')
+            g('command', command='clear @s')
+    name = host.player
+    want = {'sword': f'{GUEST_NAME} was slain by {name}',
+            'host_death': f'{name} was slain by {GUEST_NAME}',
+            'host_death_behind_guest': f'{name} was slain by {GUEST_NAME}',
+            'arrow': f'{GUEST_NAME} was shot by {name}',
+            'arrow_behind_guest': f'{name} was shot by {GUEST_NAME}',
+            'thorns': f'{GUEST_NAME} was killed while trying to hurt {name}'}
+    for case, line in want.items():
+        assert line in said[case], f'no "{line}" in the {case} chat: {said[case]}'
+    for case, lines in said.items():
+        assert not any('%1$s' in line or '%2$s' in line for line in lines), \
+            f'a raw template in the {case} chat: {lines}'
+    return said
 
 def dead_players(game, want, ticks=60):
     """The other players `game`'s client draws dead, once that is `want` (empty or not) or after `ticks`."""
@@ -3451,6 +3558,62 @@ def check_eat(host, guest, out):
     assert left == 2 and fed > hungry, f'the server did not eat one loaf: {detail}'
     assert detail['after'] is None, f'still eating after the release: {detail}'
     assert heard == bites + 2 * eaten, f'the guest heard {heard} bites for {bites:g} crumb bursts: {detail}'
+    return detail
+
+
+def check_eat_on_block(host, guest, out):
+    guest('command', command='gamemode survival')
+    guest('command', command='clear @s')
+    guest('command', command='effect give @s minecraft:hunger 3 255')
+    guest.wait(70)
+    guest('command', command='effect clear @s')
+    guest('command', command='give @s minecraft:sweet_berries 4')
+    x, y, z = (int(v // 1) for v in pos_of(guest))
+    stone, dirt = (x, y - 1, z + 1), (x + 1, y - 1, z)
+    guest('command', command=f'fill {x - 1} {y} {z - 1} {x + 1} {y + 2} {z + 1} minecraft:air')
+    guest('command', command=f'setblock {stone[0]} {stone[1]} {stone[2]} minecraft:stone')
+    guest('command', command=f'setblock {dirt[0]} {dirt[1]} {dirt[2]} minecraft:dirt')
+    guest.wait(10)
+    guest.raw('select', 'minecraft:sweet_berries')
+    berries = lambda: guest('inventory')['counts'].get('minecraft:sweet_berries', 0)
+    hungry = guest('state')['player']['food']
+
+    # Held on stone: the use runs on this client as well as on the server.
+    guest.raw('look-at-block', *stone, 'up')
+    guest.wait(2)
+    guest.raw('mouse', 'right', 'down')
+    using = []
+    for _ in range(4):
+        time.sleep(0.2)
+        using.append(guest('state').get('using'))
+    time.sleep(0.8)
+    guest.raw('mouse', 'right', 'up')
+    guest.wait(10)
+    held = {'using': using, 'after': guest('state').get('using'), 'left': berries(),
+            'food': guest('state')['player']['food']}
+
+    # Let go at once: the release stops the server's use too.
+    guest.raw('mouse', 'right', 'down')
+    guest.wait(2)
+    started = guest('state').get('using')
+    guest.raw('mouse', 'right', 'up')
+    guest.wait(50)
+    short = {'started': started, 'after': guest('state').get('using'), 'left': berries()}
+
+    # Dirt is where they are planted, and a planted berry isn't eaten.
+    guest.raw('look-at-block', *dirt, 'up')
+    guest.wait(2)
+    guest.raw('mouse', 'right', 'click')
+    guest.wait(50)
+    planted = {'block': guest('block', x=dirt[0], y=y, z=dirt[2]), 'using': guest('state').get('using'),
+               'left': berries()}
+    detail = {'hungry': hungry, 'held': held, 'short': short, 'planted': planted}
+    ticks = [u['ticks'] for u in using if u]
+    assert hungry < 20, f'the guest is not hungry: {detail}'
+    assert len(ticks) >= 3 and ticks == sorted(ticks) and ticks[-1] > ticks[0], f"no eating on the guest's screen: {detail}"
+    assert held['left'] == 3 and held['food'] > hungry and held['after'] is None, f'the server did not eat one berry: {detail}'
+    assert short['started'] and short['after'] is None and short['left'] == 3, f'an early release still ate: {detail}'
+    assert 'sweet_berry_bush' in str(planted['block']) and planted['left'] == 2 and planted['using'] is None, f'not planted on dirt: {detail}'
     return detail
 
 
@@ -5876,7 +6039,7 @@ CHECK_FNS = {'tab': check_tab, 'self': check_self, 'armour': check_armour,
              'sign': check_sign, 'damage': check_damage, 'mobs': check_mobs,
              'flow-push': check_flow_push,
              'bubble-column': check_bubble_column,
-             'hazards': check_hazards, 'pvp': check_pvp, 'respawn': check_respawn,
+             'hazards': check_hazards, 'pvp': check_pvp, 'deaths': check_deaths, 'respawn': check_respawn,
              'containers': check_containers, 'names': check_names, 'feedback': check_feedback, 'titles': check_titles,
              'chat': check_chat, 'styles': check_styles, 'machines': check_machines, 'brewing': check_brewing,
              'loom': check_loom, 'stonecutter': check_stonecutter, 'grindstone': check_grindstone,
@@ -5889,7 +6052,7 @@ CHECK_FNS = {'tab': check_tab, 'self': check_self, 'armour': check_armour,
              'bed-occupied': check_bed_occupied, 'sleep-reload': check_sleep_reload,
              'push': check_push, 'piston-push': check_piston_push,
              'piston-slime': check_piston_slime,
-             'eat': check_eat, 'eating': check_eating, 'xp': check_xp,
+             'eat': check_eat, 'eat-on-block': check_eat_on_block, 'eating': check_eating, 'xp': check_xp,
              'objects': check_objects, 'projectiles': check_projectiles, 'blast': check_blast,
              'light': check_light, 'plates': check_plates, 'swings': check_swings,
              'cracks': check_cracks, 'time': check_time, 'growth': check_growth, 'doors': check_doors,
