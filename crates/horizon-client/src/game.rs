@@ -11763,13 +11763,8 @@ impl Game<'_> {
         let b = self.res.behaviours();
         let border = self.border_bounds();
         ExperienceOrb::unstuck(Vec3::new(at[0], at[1], at[2]), &border, |p| {
-            b.collision_shape(self.world.block(p.x, p.y, p.z)).map(|s| {
-                s.moved(Vec3::new(
-                    f64::from(p.x),
-                    f64::from(p.y),
-                    f64::from(p.z),
-                ))
-            })
+            b.collision_shape(self.world.block(p.x, p.y, p.z))
+                .map(|s| s.moved(Vec3::new(f64::from(p.x), f64::from(p.y), f64::from(p.z))))
         })
         .map_or(at, |p| [p.x, p.y, p.z])
     }

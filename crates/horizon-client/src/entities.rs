@@ -585,9 +585,8 @@ impl ExperienceOrb {
         // The search cube: the box grown by its own size on every side, since
         // `find_free_position` bounds where the box's centre may go.
         let allowed = bounds.inflate(Vec3::new(size, size, size));
-        find_free_position(allowed, bounds.center(), bounds.size(), border, shape).map(|p| {
-            p.subtract(Vec3::new(0.0, bounds.size().y / 2.0, 0.0))
-        })
+        find_free_position(allowed, bounds.center(), bounds.size(), border, shape)
+            .map(|p| p.subtract(Vec3::new(0.0, bounds.size().y / 2.0, 0.0)))
     }
     /// `ExperienceOrb.canMerge(orb, id, value)` for an orb that is not removed:
     /// the same value and ids a multiple of 40 apart.
