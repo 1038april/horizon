@@ -534,8 +534,8 @@ fn check_components(
             Some(kind) => (true, kind),
             None => (false, key.as_str()),
         };
-        if !kind.contains(':') {
-            return Err(format!("component {key:?} must be namespaced"));
+        if horizon_world::identifier::Identifier::parse_namespaced(kind).is_none() {
+            return Err(format!("component {key:?} must be namespaced and valid"));
         }
         if let Some(own) = kind
             .strip_prefix("minecraft:")
@@ -962,6 +962,31 @@ capabilities = ["registries"]
                 "bare-component",
                 r#"{"max_damage": 3}"#,
                 "must be namespaced",
+            ),
+            (
+                "uppercase-path",
+                r#"{"minecraft:Foo": 3}"#,
+                "must be namespaced and valid",
+            ),
+            (
+                "uppercase-namespace",
+                r#"{"Example:charge": 3}"#,
+                "must be namespaced and valid",
+            ),
+            (
+                "empty-namespace",
+                r#"{":charge": 3}"#,
+                "must be namespaced and valid",
+            ),
+            (
+                "empty-path",
+                r#"{"example:": 3}"#,
+                "must be namespaced and valid",
+            ),
+            (
+                "invalid-removal",
+                r#"{"!example:Foo": {}}"#,
+                "must be namespaced and valid",
             ),
             (
                 "own-key",

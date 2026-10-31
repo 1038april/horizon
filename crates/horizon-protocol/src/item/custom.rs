@@ -43,13 +43,8 @@ pub fn install(first: i32, mut names: Vec<String>) -> Result<(), InstallError> {
         return Err(InstallError::InvalidRange);
     }
     if names.iter().any(|name| {
-        let Some((namespace, path)) = name.split_once(':') else {
-            return true;
-        };
-        namespace.is_empty()
-            || namespace == "minecraft"
-            || path.is_empty()
-            || horizon_world::identifier::Identifier::from_parts(namespace, path).is_err()
+        horizon_world::identifier::Identifier::parse_namespaced(name)
+            .is_none_or(|id| id.namespace() == "minecraft")
     }) {
         return Err(InstallError::InvalidName);
     }
