@@ -1309,6 +1309,12 @@ enum WKind {
         value: f32,
         opt: Opt,
     },
+    /// An option of a shader pack the pack shows as a slider: its value's place in its list.
+    ShaderSlider {
+        label: Text,
+        value: f32,
+        name: String,
+    },
     Text {
         text: Text,
         color: u32,
@@ -1438,6 +1444,9 @@ pub struct OptionsUi {
     pub stack: Vec<Page>,
     scroll: f32,
     pub(crate) dragging: Option<Opt>,
+    /// The shader pack option whose slider is held, and the handle's own position: it follows
+    /// the pointer while the option takes the nearest of its values.
+    shader_dragging: Option<(String, f32)>,
     /// The pressed slider's own position (`AbstractSliderButton.value`) and
     /// when it last moved: the handle follows the pointer while the option
     /// keeps its stepped value, then snaps to it (`resetValue`).
@@ -1509,6 +1518,7 @@ impl Default for OptionsUi {
             stack: vec![Page::Main],
             scroll: 0.0,
             dragging: None,
+            shader_dragging: None,
             slider_value: None,
             scrollbar_drag_y: None,
             selected_key: None,
@@ -1642,13 +1652,27 @@ fn shader_option_rows(s: &Settings) -> Vec<Row> {
                 options.screen_label(name),
                 Act::ShaderScreen(name.clone()),
             ),
-            ScreenItem::Option(name) => button(
-                0.0,
-                0.0,
-                width,
-                options.option_label(name),
-                Act::ShaderOption(name.clone()),
-            ),
+            ScreenItem::Option(name) => match options.slider_position(name) {
+                Some(value) => Widget {
+                    x: 0.0,
+                    y: 0.0,
+                    w: width,
+                    h: 20.0,
+                    kind: WKind::ShaderSlider {
+                        label: options.option_label(name),
+                        value,
+                        name: name.clone(),
+                    },
+                    list: false,
+                },
+                None => button(
+                    0.0,
+                    0.0,
+                    width,
+                    options.option_label(name),
+                    Act::ShaderOption(name.clone()),
+                ),
+            },
         })
     };
     let widgets: Vec<Widget> = options.items().iter().filter_map(widget).collect();
@@ -3063,6 +3087,22 @@ impl OptionsUi {
                         dragging,
                     );
                 }
+                WKind::ShaderSlider { label, value, name } => {
+                    let held = self.shader_dragging.as_ref().filter(|(n, _)| n == name);
+                    let dragging = held.is_some();
+                    ui::slider(
+                        batch,
+                        atlas,
+                        wd.x,
+                        wd.y,
+                        wd.w,
+                        label,
+                        held.map_or(*value, |h| h.1),
+                        hover || dragging,
+                        true,
+                        dragging,
+                    );
+                }
                 WKind::Text {
                     text,
                     color,
@@ -3328,6 +3368,15 @@ impl OptionsUi {
                 }
                 return events;
             }
+            if let Some((name, at)) = &mut self.shader_dragging
+                && let Some(wd) = widgets
+                    .iter()
+                    .find(|wd| matches!(&wd.kind, WKind::ShaderSlider { name: n, .. } if n == name))
+                && let Some(options) = &mut s.shader_options
+            {
+                *at = ui::slider_value(wd.x, wd.w, x);
+                options.set_position(name, *at);
+            }
             if let Some(opt) = self.dragging
                 && let Some(wd) = widgets
                     .iter()
@@ -3491,6 +3540,13 @@ impl OptionsUi {
                         Act::None => {}
                     }
                 }
+                WKind::ShaderSlider { name, .. } => {
+                    let at = ui::slider_value(wd.x, wd.w, x);
+                    if let Some(options) = &mut s.shader_options {
+                        options.set_position(&name, at);
+                    }
+                    self.shader_dragging = Some((name, at));
+                }
                 WKind::Slider { opt, .. } => {
                     self.can_change_value = true;
                     self.dragging = Some(opt);
@@ -3527,7 +3583,7 @@ impl OptionsUi {
         }
         // AbstractSliderButton suppresses the press sound and plays once on
         // release, even if the pointer has left the widget or its value stayed.
-        let slider = self.dragging.take().is_some();
+        let slider = self.dragging.take().is_some() | self.shader_dragging.take().is_some();
         let graphics_slider = self.graphics.release();
         let calibration_slider = self.calibration.as_mut().is_some_and(|c| c.release());
         if slider || graphics_slider || calibration_slider {

@@ -93,6 +93,34 @@ impl ShaderOptions {
         self.set(name, value);
     }
 
+    /// Where the slider of option `name` stands (its value's place in its list, 0 to 1), when
+    /// the pack shows it as one.
+    pub fn slider_position(&self, name: &str) -> Option<f32> {
+        let option = self.options.get(name)?;
+        if option.switch || option.values.len() < 2 || !self.screens.sliders.contains(name) {
+            return None;
+        }
+        let at = option
+            .values
+            .iter()
+            .position(|v| Some(v.as_str()) == self.value(name))?;
+        Some(at as f32 / (option.values.len() - 1) as f32)
+    }
+
+    /// Option `name` at the value nearest place `position` (0 to 1) of its list.
+    pub fn set_position(&mut self, name: &str, position: f32) {
+        let Some(option) = self.options.get(name) else {
+            return;
+        };
+        let last = option.values.len().saturating_sub(1);
+        let at = (position.clamp(0.0, 1.0) * last as f32).round() as usize;
+        if let Some(value) = option.values.get(at).cloned()
+            && Some(value.as_str()) != self.value(name)
+        {
+            self.set(name, value);
+        }
+    }
+
     /// The profile after the current one (the first when none matches) with its values.
     pub fn next_profile(&mut self) {
         let profiles = &self.screens.profiles;
@@ -204,7 +232,8 @@ mod tests {
                 },
             ),
         ]);
-        let text = "screen = <profile> [more]\nscreen.more = AO LEVEL\nprofile.gone = OLD=1\n\
+        let text = "screen = <profile> [more]\nscreen.more = AO LEVEL\nsliders = LEVEL AO\n\
+                    profile.gone = OLD=1\n\
                     profile.low = !AO LEVEL=1\nprofile.high = AO LEVEL=3\n";
         let screens = Screens::parse(&Properties::parse(text, &Macros::standard()), &options);
         ShaderOptions::new(
@@ -237,6 +266,21 @@ mod tests {
         );
         assert!(o.changed);
         o.reset();
+        assert!(o.chosen.is_empty());
+    }
+
+    #[test]
+    fn sliders_take_the_nearest_value() {
+        let mut o = options();
+        assert_eq!(o.slider_position("LEVEL"), Some(0.5));
+        // A switch is a button even when `sliders` names it.
+        assert_eq!(o.slider_position("AO"), None);
+        o.set_position("LEVEL", 0.9);
+        assert_eq!(o.value("LEVEL"), Some("3"));
+        o.set_position("LEVEL", -1.0);
+        assert_eq!(o.value("LEVEL"), Some("1"));
+        o.set_position("LEVEL", 0.4);
+        assert_eq!(o.value("LEVEL"), Some("2"));
         assert!(o.chosen.is_empty());
     }
 
