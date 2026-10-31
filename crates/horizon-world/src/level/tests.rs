@@ -3041,6 +3041,38 @@ fn the_level_chooses_the_state_a_block_is_placed_in() {
         b.state_for_placement(&mut level, &mut ticks, stairs, &ctx),
         vanilla
     );
+    // A dispenser places through the same state computation
+    // (`ShulkerBoxDispenseBehavior`'s `DirectionalPlaceContext`): it places
+    // the hook's state too, with the dispenser's own view of the click.
+    level.answer = Some(Some(facing("east")));
+    level.asked.borrow_mut().clear();
+    let front = BlockPos::new(3, 1, 1);
+    let dispenser = PlaceContext {
+        clicked_pos: front,
+        face: Direction::East,
+        hit: Vec3::new(3.0, 1.0, 1.5),
+        inside: false,
+        yaw: 270.0,
+        pitch: 0.0,
+        sneaking: false,
+        item: "minecraft:furnace".into(),
+        can_use_game_master_blocks: false,
+    };
+    assert!(b.directional_can_place(&mut level, &mut ticks, &dispenser));
+    let outcome = b.place_block(&mut level, &mut ticks, &dispenser);
+    assert_eq!(
+        outcome,
+        PlaceOutcome::Placed {
+            pos: front,
+            state: facing("east")
+        }
+    );
+    assert_eq!(level.block_state(front), facing("east"));
+    let (state, pos, _, _, item, _, replace_clicked, _) = asked(&level);
+    assert_eq!(state, furnace);
+    assert_eq!(pos, front);
+    assert_eq!(item, "minecraft:furnace");
+    assert!(replace_clicked, "the front block is air: it is replaced");
     // A made-up id is not trusted, nor is another block's state: the block
     // places as vanilla's would.
     level.answer = Some(Some(BlockStateId(u32::MAX)));
