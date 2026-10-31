@@ -1216,13 +1216,17 @@ impl Game<'_> {
         if !(target == Target::Player || rider.is_some()) {
             return Err(generic());
         }
-        // Boats with a free seat; minecarts carry only players here.
+        // `RideCommand.mount` forces the ride (`startRiding(vehicle, true, true)`),
+        // which skips `canRide` and `canAddPassenger`: a boat under water still
+        // takes the rider. Horizon's boats seat at most `max_passengers`, so a
+        // full boat still refuses. Minecarts carry only players here: Horizon's
+        // carts have no mob passengers yet.
         match vehicle {
             Target::Boat(id) => {
                 let Some(i) = self.boats.iter().position(|b| b.id == id) else {
                     return Err(generic());
                 };
-                if !self.boat_has_room(i) {
+                if self.boat_passengers(id) >= self.boats[i].max_passengers() {
                     return Err(generic());
                 }
                 if let Some(rider) = rider {
@@ -1230,6 +1234,8 @@ impl Game<'_> {
                 } else {
                     self.riding = Some(id);
                     self.yaw = self.boats[i].yaw;
+                    // sendEventAndTriggers: START_RIDING_TRIGGER.
+                    self.trigger_player("minecraft:started_riding");
                 }
                 self.feedback(Text::translate(
                     "commands.ride.mount.success",
@@ -1242,6 +1248,7 @@ impl Game<'_> {
                     return Err(generic());
                 }
                 self.riding = Some(id);
+                self.trigger_player("minecraft:started_riding");
                 self.feedback(Text::translate(
                     "commands.ride.mount.success",
                     &[name, vehicle_name],
