@@ -790,6 +790,8 @@ pub fn anger_left(anger_end: i64, game_time: i64) -> i32 {
 /// Species-specific persistent state (variants, colours, taming, ageing...).
 #[derive(Clone, Debug, Default)]
 pub struct Extra {
+    /// `Ocelot.DATA_TRUSTING`: it no longer runs from players.
+    pub trusting: bool,
     /// `Mannequin.DATA_IMMOVABLE`: it neither moves nor falls (`isEffectiveAi` is false).
     pub immovable: bool,
     /// `Mannequin.DATA_DESCRIPTION`: the text under its name.
@@ -1424,6 +1426,8 @@ pub enum MobEvent {
         mob: u32,
         charged: bool,
         name: crate::text::Text,
+        /// `Entity.isInWater` of the source: `BlockAttached.ignoreExplosion`.
+        in_water: bool,
     },
     /// The centre, the radius and the kind of the mob blowing up (it may be
     /// gone from the list by the time the blast is handled).
