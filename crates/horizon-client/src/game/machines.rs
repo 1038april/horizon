@@ -5,6 +5,7 @@
 use super::{Game, storage::is_shulker_box};
 
 mod crafter;
+pub(in crate::game) mod native_fluids;
 pub(in crate::game) mod native_items;
 use horizon_client::{
     Result,
@@ -1255,6 +1256,7 @@ impl Game<'_> {
             horizon_client::text::Text::literal(self.container_title(self.translate(key, fallback)))
                 .resolve_legacy()
         });
+        super::screen_info::name_container(|| title.plain());
         let title_x = if screen == Screen::Hopper {
             8.0
         } else {

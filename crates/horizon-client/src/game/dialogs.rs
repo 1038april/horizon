@@ -111,6 +111,18 @@ impl Game<'_> {
         let d = &self.dialogs;
         d.open.is_some() || d.waiting.is_some() || d.warning
     }
+    /// Whether the dialog's focus is one of its text inputs, which takes the
+    /// keys.
+    pub(super) fn dialog_typing(&self) -> bool {
+        let d = &self.dialogs;
+        !d.warning
+            && d.waiting.is_none()
+            && d.open.as_ref().is_some_and(|o| {
+                o.focus
+                    .and_then(|f| o.fields.get(f))
+                    .is_some_and(Option::is_some)
+            })
+    }
 
     /// `showDialog`: the dialog replaces an open one (and a waiting screen);
     /// under the warning screen, it is what Back returns to.
@@ -704,6 +716,7 @@ impl Game<'_> {
                     input,
                     rect: [x, y, w, h],
                 } if ui::hovered(cursor, x, y, w, h) => {
+                    open.focus = Some(input);
                     open.dragging = Some(input);
                     if let Some(v) = open.values.get_mut(input) {
                         *v = InputValue::Slider(ui::slider_value(x, w, cursor.0));
@@ -776,16 +789,17 @@ impl Game<'_> {
         if let Some(open) = self.dialogs.open.as_mut() {
             let [_, ay, _, ah] = layout.area;
             if delta != 0.0 && cursor.1 >= ay && cursor.1 < ay + ah {
-                let hovered = layout
-                    .placed(open.scroll.amount)
-                    .find_map(|(part, _)| match part {
-                        Part::Cycle {
-                            input,
-                            rect: [x, y, w, h],
-                        } if ui::hovered(cursor, x, y, w, h) => Some(input),
-                        _ => None,
-                    });
-                if let Some(input) = hovered {
+                let hovered_cycle =
+                    layout
+                        .placed(open.scroll.amount)
+                        .find_map(|(part, _)| match part {
+                            Part::Cycle {
+                                input,
+                                rect: [x, y, w, h],
+                            } if ui::hovered(cursor, x, y, w, h) => Some(input),
+                            _ => None,
+                        });
+                if let Some(input) = hovered_cycle {
                     // CycleButton.mouseScrolled: up goes back.
                     cycle(open, input, if delta > 0.0 { -1 } else { 1 });
                     return;
@@ -918,6 +932,32 @@ impl Game<'_> {
                 };
                 open.focus = Some(texts[next]);
             }
+            return Ok(());
+        }
+        if let Some(focus) = open.focus
+            && let Some(input) = open.dialog.inputs.get(focus)
+            && let Control::NumberRange {
+                start,
+                end,
+                step,
+                width,
+                ..
+            } = &input.control
+            && let Some(InputValue::Slider(val)) = open.values.get_mut(focus)
+            && matches!(key, KeyCode::ArrowLeft | KeyCode::ArrowRight)
+        {
+            let delta = if let Some(step) = step {
+                let range = (end - start).abs();
+                if range > 0.0 { *step / range } else { 0.01 }
+            } else {
+                1.0 / (*width as f32 - 8.0).max(1.0)
+            };
+            let step_sign = if key == KeyCode::ArrowRight {
+                delta
+            } else {
+                -delta
+            };
+            *val = (*val + step_sign).clamp(0.0, 1.0);
             return Ok(());
         }
         let Some(Some(edit)) = open.focus.and_then(|f| open.fields.get_mut(f)) else {
