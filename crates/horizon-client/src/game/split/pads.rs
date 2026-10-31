@@ -4,9 +4,13 @@ use super::*;
 use crate::game::pad::{PadEvent, PadId};
 use horizon_client::gamepad::PadState;
 
-/// The player a controller nobody has goes to when pressed: the first without one (P1 first).
-pub(super) fn first_without<Id>(pads: &[Option<Id>]) -> Option<usize> {
-    pads.iter().position(Option::is_none)
+/// The player a controller nobody has goes to when pressed: the first without one (P1 first)
+/// whose controllers are on (`settings.controller.enabled`): a player on keyboard and mouse
+/// with controllers off would leave the pad dead.
+pub(super) fn first_without<Id>(pads: &[Option<Id>], enabled: &[bool]) -> Option<usize> {
+    pads.iter()
+        .zip(enabled)
+        .position(|(pad, &on)| pad.is_none() && on)
 }
 
 impl Split<'_> {
@@ -14,6 +18,17 @@ impl Split<'_> {
     fn pads_of(&self) -> Vec<Option<PadId>> {
         std::iter::once(self.p1_pad)
             .chain(self.guests.iter().map(|g| g.pad))
+            .collect()
+    }
+
+    /// Whether each player has controllers on, P1's first.
+    fn pads_enabled(&self) -> Vec<bool> {
+        std::iter::once(self.host.settings.controller.enabled)
+            .chain(
+                self.guests
+                    .iter()
+                    .map(|g| g.game.settings.controller.enabled),
+            )
             .collect()
     }
 
@@ -52,7 +67,7 @@ impl Split<'_> {
                     if pads.contains(&Some(id)) || !self.pads.connected(id) {
                         continue;
                     }
-                    if let Some(i) = first_without(&pads) {
+                    if let Some(i) = first_without(&pads, &self.pads_enabled()) {
                         self.set_pad(i, Some(id));
                         self.fresh.push(id);
                     }
@@ -118,11 +133,15 @@ mod tests {
 
     #[test]
     fn a_new_controller_goes_to_the_first_player_without_one() {
-        assert_eq!(first_without::<u8>(&[None, None]), Some(0));
-        assert_eq!(first_without(&[Some(1), None, None]), Some(1));
-        assert_eq!(first_without(&[Some(1), Some(2), None]), Some(2));
+        let on = [true; 4];
+        assert_eq!(first_without::<u8>(&[None, None], &on), Some(0));
+        assert_eq!(first_without(&[Some(1), None, None], &on), Some(1));
+        assert_eq!(first_without(&[Some(1), Some(2), None], &on), Some(2));
         // P2 lost its controller: the next new one is P2's, not P3's.
-        assert_eq!(first_without(&[Some(1), None, Some(3), None]), Some(1));
-        assert_eq!(first_without(&[Some(1), Some(2)]), None);
+        assert_eq!(first_without(&[Some(1), None, Some(3), None], &on), Some(1));
+        assert_eq!(first_without(&[Some(1), Some(2)], &on), None);
+        // P1 plays on keyboard and mouse with controllers off: the pad is P2's.
+        assert_eq!(first_without::<u8>(&[None, None], &[false, true]), Some(1));
+        assert_eq!(first_without::<u8>(&[None], &[false]), None);
     }
 }

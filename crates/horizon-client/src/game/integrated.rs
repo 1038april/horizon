@@ -615,6 +615,8 @@ impl Game<'_> {
         ready: &Sender<Ready>,
         opening: Opening,
     ) -> Result<()> {
+        // MinecraftServer.loadLevel's start: nothing is loaded yet.
+        self.native_server_about_to_start(false);
         self.native_lifecycle_open_started();
         // `load_world`, with the world `serve` started preparing.
         self.join_world_rest()?;
@@ -721,6 +723,8 @@ impl Game<'_> {
     fn stop_integrated(&mut self) -> Result<()> {
         // The close request: lifecycle observation stops.
         self.native_lifecycle.begin_close();
+        // MinecraftServer.stopServer's start: everyone is still here.
+        self.native_server_stopping(false);
         // IntegratedServer.stopServer: teardownPublishedState.
         if let Some(s) = self.serving.take() {
             s.flags.published.store(0, Ordering::Relaxed);
@@ -1005,18 +1009,24 @@ impl Game<'_> {
                 .find(|g| g.uuid == owner)
                 .map(|g| g.conn)
         {
-            host.hub.set_game_mode(conn, mode);
+            host.hub
+                .set_game_mode(conn, mode, &self.world, Some(self.collision));
         }
     }
     /// `IntegratedServer.setWorldAllowCommands`: the owner is an operator
     /// while the world allows commands; everyone's level is sent again.
     pub(super) fn owner_allow_commands(&mut self, allow: bool) {
-        let Some(owner) = self.serving.as_ref().map(|s| s.owner) else {
+        let Some((owner, flags)) = self.serving.as_ref().map(|s| (s.owner, s.flags.clone())) else {
             return;
         };
         let published = self.published_port().is_some();
         if let Some(host) = self.lan.as_mut() {
-            host.hub.ops.insert(owner, if allow { 4 } else { 0 });
+            let level = if allow { 4 } else { 0 };
+            host.hub.ops.insert(owner, level);
+            // Splitscreen seats have the owner's permissions (`join_split`): they follow it.
+            for &seat in flags.split_players.lock().unwrap().iter() {
+                host.hub.ops.insert(seat, level);
+            }
             if published {
                 host.hub.config.guest_commands = allow && host.settings.guest_commands;
             }

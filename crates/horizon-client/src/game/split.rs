@@ -361,7 +361,7 @@ impl<'a> Split<'a> {
 
     /// The testing players (`HORIZON_SPLIT`) join, one a frame, once P1 is in its own world:
     /// whether one did.
-    fn admit(&mut self, event_loop: &ActiveEventLoop) -> bool {
+    fn admit(&mut self, _event_loop: &ActiveEventLoop) -> bool {
         let in_world = self.host.title.is_none()
             && self.host.player.is_some()
             && self.host.integrated.is_some();
@@ -374,8 +374,9 @@ impl<'a> Split<'a> {
                 true
             }
             Err(e) => {
-                self.host.error = Some(e);
-                event_loop.exit();
+                // One player failing doesn't stop the others: P1 keeps playing.
+                log::warn!("Horizon: splitscreen player couldn't join: {e}");
+                self.test_players = 0;
                 false
             }
         }

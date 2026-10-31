@@ -233,6 +233,11 @@ pub struct Audio {
     /// `SoundEngine.lastSeenDevices`: the system default output last seen.
     #[cfg(feature = "audio")]
     default_seen: Option<String>,
+    /// The ALSA cards (Linux) or Core Audio devices (macOS) last seen: listing
+    /// the output devices probes every one, so it waits for these to change
+    /// (`card_fingerprint`).
+    #[cfg(feature = "audio")]
+    cards_seen: Option<String>,
     /// The other half of `lastSeenDevices`: every output device last seen.
     #[cfg(feature = "audio")]
     devices_seen: Vec<String>,
@@ -697,12 +702,78 @@ fn open_device(
     }
     Ok((stream, config))
 }
+/// Try one output device for `open`: skip it when it was already tried, log it
+/// when it opens, and keep its error when it does not.
+#[cfg(feature = "audio")]
+fn try_open_device(
+    device: &cpal::Device,
+    mixer: Arc<Mutex<Mixer>>,
+    tried: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) -> Option<cpal::Stream> {
+    let name = device.name().unwrap_or_else(|_| "unnamed device".into());
+    if tried.contains(&name) {
+        return None;
+    }
+    tried.push(name.clone());
+    match open_device(device, mixer) {
+        Ok((stream, config)) => {
+            log::info!(
+                "Horizon: audio output {name} ({} Hz, {} channels, {})",
+                config.sample_rate().0,
+                config.channels(),
+                config.sample_format()
+            );
+            Some(stream)
+        }
+        Err(e) => {
+            errors.push(format!("{name}: {e}"));
+            None
+        }
+    }
+}
 /// The name of the system's default output device.
 #[cfg(feature = "audio")]
 fn default_output_name() -> Option<String> {
     cpal::default_host()
         .default_output_device()
         .and_then(|d| d.name().ok())
+}
+/// A cheap fingerprint of what `output_devices` can list. On Linux, the ALSA
+/// cards: the rest are `cpal`'s fixed names. On macOS, every Core Audio
+/// device's name, inputs included: telling which of them play opens each one
+/// (about 90 ms a second with twenty devices), naming them takes 2 or 3 ms.
+/// `None` elsewhere, where the list is always looked at.
+#[cfg(feature = "audio")]
+fn card_fingerprint() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string("/proc/asound/cards").ok()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let devices = cpal::default_host().devices().ok()?;
+        Some(
+            devices
+                .filter_map(|d| d.name().ok())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        None
+    }
+}
+/// Whether the output device list should be looked at again: only the ALSA
+/// cards can add or remove an entry, and `None` means there is no fingerprint,
+/// so the list has to be checked as before.
+#[cfg(any(feature = "audio", test))]
+fn cards_changed(seen: Option<&str>, cards: Option<&str>) -> bool {
+    match (seen, cards) {
+        (Some(seen), Some(cards)) => seen != cards,
+        _ => true,
+    }
 }
 #[cfg(feature = "audio")]
 fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
@@ -808,6 +879,17 @@ impl Audio {
         };
         let mut engine = SoundEngine::new(registry);
         engine.loaded = live;
+        #[cfg(feature = "audio")]
+        let cards = if live { card_fingerprint() } else { None };
+        // Where the cards gate the list (Linux, macOS), it starts empty: opening the
+        // output does not need it, and listing it probes every device; the first
+        // change fills it. Elsewhere it starts with every device listed, as before.
+        #[cfg(feature = "audio")]
+        let devices = if live && cards.is_none() {
+            output_devices()
+        } else {
+            Vec::new()
+        };
         Self {
             _stream: stream,
             device_name: target_device.to_owned(),
@@ -836,7 +918,9 @@ impl Audio {
             #[cfg(feature = "audio")]
             default_seen: if live { default_output_name() } else { None },
             #[cfg(feature = "audio")]
-            devices_seen: if live { output_devices() } else { Vec::new() },
+            cards_seen: cards,
+            #[cfg(feature = "audio")]
+            devices_seen: devices,
             #[cfg(feature = "audio")]
             device_ticks: 0,
         }
@@ -903,29 +987,20 @@ impl Audio {
         }
         let host = cpal::default_host();
         let mut errors = Vec::new();
-        // The default device first, then any other output a host lists:
-        // a default that cannot open (busy, or a stale ALSA default) should
-        // not leave the game silent when another device works.
-        let default = host.default_output_device();
-        let others = host.output_devices().into_iter().flatten();
+        // The default device first: it is what plays, and listing the others
+        // probes every PCM, which is slow and prints ALSA's errors for the
+        // plugins this system lacks.
         let mut tried = Vec::new();
-        for device in default.into_iter().chain(others) {
-            let name = device.name().unwrap_or_else(|_| "unnamed device".into());
-            if tried.contains(&name) {
-                continue;
-            }
-            tried.push(name.clone());
-            match open_device(&device, mixer.clone()) {
-                Ok((stream, config)) => {
-                    log::info!(
-                        "Horizon: audio output {name} ({} Hz, {} channels, {})",
-                        config.sample_rate().0,
-                        config.channels(),
-                        config.sample_format()
-                    );
-                    return Ok(stream);
-                }
-                Err(e) => errors.push(format!("{name}: {e}")),
+        if let Some(device) = host.default_output_device()
+            && let Some(stream) = try_open_device(&device, mixer.clone(), &mut tried, &mut errors)
+        {
+            return Ok(stream);
+        }
+        // A default that cannot open (busy, or a stale ALSA default) should not
+        // leave the game silent when another device works.
+        for device in host.output_devices().into_iter().flatten() {
+            if let Some(stream) = try_open_device(&device, mixer.clone(), &mut tried, &mut errors) {
+                return Ok(stream);
             }
         }
         if errors.is_empty() {
@@ -999,11 +1074,13 @@ impl Audio {
             heard: Default::default(),
             stopped: Default::default(),
             preview: Default::default(),
-            // No stream of its own: the device tracking stays with the game's.
+            // The device belongs to the first player's output, which looks after it.
             #[cfg(feature = "audio")]
-            default_seen: None,
+            default_seen: self.default_seen.clone(),
             #[cfg(feature = "audio")]
-            devices_seen: Vec::new(),
+            cards_seen: self.cards_seen.clone(),
+            #[cfg(feature = "audio")]
+            devices_seen: self.devices_seen.clone(),
             #[cfg(feature = "audio")]
             device_ticks: 0,
         }
@@ -1030,7 +1107,8 @@ impl Audio {
     /// at once a second.
     #[cfg(feature = "audio")]
     fn should_change_device(&mut self) -> bool {
-        // A splitscreen player's share has no stream: the game's own `Audio` reopens the output.
+        // A splitscreen share plays through the first player's output: it leaves the device,
+        // and the mixer's lost flag, to that output.
         if self.backend.owner != 0 {
             return false;
         }
@@ -1041,6 +1119,7 @@ impl Audio {
         if lost {
             log::info!("Horizon: audio device was lost");
             self.default_seen = default_output_name();
+            self.cards_seen = card_fingerprint();
             self.devices_seen = output_devices();
             return true;
         }
@@ -1050,6 +1129,17 @@ impl Audio {
         }
         self.device_ticks = 0;
         let default = default_output_name();
+        let cards = card_fingerprint();
+        // Listing the devices probes every one (on Linux every built-in PCM,
+        // printing ALSA's errors for the plugins this system lacks; on macOS
+        // every Core Audio device, about 90 ms with twenty of them); only the
+        // fingerprint's devices can change the list, and it is cheap.
+        if default == self.default_seen
+            && !cards_changed(self.cards_seen.as_deref(), cards.as_deref())
+        {
+            return false;
+        }
+        self.cards_seen = cards;
         let devices = output_devices();
         // Only a change in the device lists is looked at, as in vanilla: a
         // preferred device that is listed but cannot open is not retried.
@@ -1711,5 +1801,16 @@ mod tests {
         let mut data = [0.0; 2];
         mix(&mut m, &mut data, 1, 48_000);
         assert_eq!(data, [0.5; 2]);
+    }
+
+    #[test]
+    fn output_devices_are_looked_at_again_only_when_the_cards_change() {
+        // No fingerprint (not Linux, or the cards could not be read): the list
+        // has to be looked at as before.
+        assert!(cards_changed(None, None));
+        assert!(cards_changed(Some("0 [PCH ]"), None));
+        // The same cards list the same devices; a card added or removed does not.
+        assert!(!cards_changed(Some("0 [PCH ]"), Some("0 [PCH ]")));
+        assert!(cards_changed(Some("0 [PCH ]"), Some("0 [PCH ]\n 1 [USB ]")));
     }
 }
