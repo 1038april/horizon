@@ -1216,11 +1216,18 @@ impl Game<'_> {
 
     /// `ChatListener.handleChatMessageError`: a message that fails validation shows as the red,
     /// italic `chat.validation_error` in its chat type (queued under Chat Delay as any
-    /// message). Vanilla also marks the message's signature as processed but not shown, for the
-    /// acknowledgement the client sends the server (no `LastSeenMessagesTracker` is kept here yet);
-    /// it skips a blocked sender and one restricted to friends (not kept here either) and
+    /// message). Its signature counts as processed but not shown, for the acknowledgement the
+    /// client sends the server. Vanilla also
+    /// skips a blocked sender and one restricted to friends (not kept here either) and
     /// narrates the line.
-    fn handle_chat_message_error(&mut self, chat_type: &play::ChatTypeBound) {
+    fn handle_chat_message_error(
+        &mut self,
+        chat_type: &play::ChatTypeBound,
+        signature: Option<&Signature>,
+    ) {
+        if let Some(signature) = signature {
+            self.mark_message_processed(signature, false);
+        }
         let error = serde_json::json!({
             "translate": "chat.validation_error",
             "color": "red",
@@ -4007,7 +4014,7 @@ impl Game<'_> {
                         "Received player chat packet for unknown player with ID: {:032x}",
                         p.sender
                     );
-                    self.handle_chat_message_error(&p.chat_type);
+                    self.handle_chat_message_error(&p.chat_type, signature.as_ref());
                     return Ok(());
                 }
                 let now = std::time::SystemTime::now()
@@ -4027,7 +4034,7 @@ impl Game<'_> {
                     filter: &p.filter,
                 };
                 let Some(validated) = r.validate_chat(&incoming, now) else {
-                    self.handle_chat_message_error(&p.chat_type);
+                    self.handle_chat_message_error(&p.chat_type, signature.as_ref());
                     return Ok(());
                 };
                 let signature = signature.filter(|_| validated == secure_chat::Validated::Signed);
