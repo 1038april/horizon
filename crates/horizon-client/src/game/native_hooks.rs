@@ -6,6 +6,9 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 41 adds the item entities near a block (`native_item_entities`,
+//! `native_set_item_entity`).
+//!
 //! API 40 adds mod messages between a mod's server and client halves
 //! (`native_net_from_client`, `native_net_from_server`, and
 //! `native_net_send_to_player`, `native_net_send_to_server` in
@@ -191,7 +194,7 @@ pub(super) use horizon_world::level::flags;
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 40;
+pub(crate) const NATIVE_HOOKS_API: u32 = 41;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -1375,6 +1378,60 @@ impl Game<'_> {
         let _ = self.process_level_events();
         changed
     }
+    /// The item entities of the server level `dimension` whose box meets
+    /// the box `min`..`max`, in the level's order: vanilla's
+    /// `Level.getEntitiesOfClass(ItemEntity.class, box, ENTITY_STILL_ALIVE)`, as a
+    /// hopper's `getItemsAtAndAbove` asks for its block and the one above
+    /// (`[x, y, z]`..`[x + 1, y + 2, z + 1]`). Empty for a level not in place
+    /// (as `native_set_block`) and on a client of a server. API 41.
+    pub(super) fn native_item_entities(
+        &self,
+        dimension: &str,
+        min: [f64; 3],
+        max: [f64; 3],
+    ) -> Vec<NativeItemEntity> {
+        if (self.serving.is_none() && self.options.dedicated.is_none())
+            || dimension != self.dim.id()
+        {
+            return Vec::new();
+        }
+        self.dropped
+            .iter()
+            .filter(|e| e.stack.count > 0 && box_meets(&e.bounds(), min, max))
+            .map(|e| NativeItemEntity {
+                id: e.id,
+                position: [e.position.x, e.position.y, e.position.z],
+                stack: e.stack.clone(),
+                pickup_delay: e.pickup_delay,
+            })
+            .collect()
+    }
+    /// Sets the stack of item entity `id` in the server level `dimension`, as
+    /// a hopper's `addItem` leaves what it couldn't take (`ItemEntity.setItem`);
+    /// an empty stack (count 0) removes the entity (`setItem(EMPTY)`, then
+    /// `discard`). Players see it on their next tracker update. False when the
+    /// level in place has no such item entity, or on a client. API 41.
+    pub(super) fn native_set_item_entity(
+        &mut self,
+        dimension: &str,
+        id: u32,
+        stack: ItemStack,
+    ) -> bool {
+        if (self.serving.is_none() && self.options.dedicated.is_none())
+            || dimension != self.dim.id()
+        {
+            return false;
+        }
+        let Some(i) = self.dropped.iter().position(|e| e.id == id) else {
+            return false;
+        };
+        if stack.count == 0 {
+            self.dropped.remove(i);
+        } else {
+            self.dropped[i].stack = stack;
+        }
+        true
+    }
     /// Sets property `key` of the block at `pos` to `value`, as a furnace's
     /// tick sets its `lit` (`Level.setBlock` with `UPDATE_ALL`: neighbours
     /// and clients are told); false when the block has no such property or
@@ -2397,6 +2454,31 @@ fn config_dir(options: &Path) -> Result<PathBuf, String> {
 /// `v` within `lo..=hi`; `lo` when it is not a number.
 fn finite(v: f32, lo: f32, hi: f32) -> f32 {
     if v.is_finite() { v.clamp(lo, hi) } else { lo }
+}
+
+/// An item entity as `native_item_entities` lists it. API 41.
+/// Read by mods only.
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
+pub(super) struct NativeItemEntity {
+    /// The entity's ID, for `native_set_item_entity`.
+    pub id: u32,
+    pub position: [f64; 3],
+    pub stack: ItemStack,
+    /// Ticks before a player may pick it up (`ItemEntity.pickupDelay`);
+    /// hoppers take it whatever this is.
+    pub pickup_delay: u32,
+}
+
+/// `AABB.intersects`: the boxes overlap, touching faces excluded.
+fn box_meets(b: &horizon_core::geometry::Aabb, min: [f64; 3], max: [f64; 3]) -> bool {
+    let (lo, hi) = (b.min_position(), b.max_position());
+    lo.x < max[0]
+        && hi.x > min[0]
+        && lo.y < max[1]
+        && hi.y > min[1]
+        && lo.z < max[2]
+        && hi.z > min[2]
 }
 
 #[cfg(test)]

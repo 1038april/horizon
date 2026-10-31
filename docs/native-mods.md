@@ -223,6 +223,13 @@ server for every player: `native_player_died`, `native_mob_spawned`, `native_mob
 `native_item_dropped` (a throw; not the items scattered when a player dies) and `native_item_picked_up` (`canceled` leaves the stack on the ground). They name a player by UUID. Bundles that use them
 need `"hooks": 40`.
 
+API 41 adds the item entities near a block, for machines that pick up items as a hopper does:
+`native_item_entities(dimension, min, max)` lists those whose box meets `min`..`max` (vanilla's
+`Level.getEntitiesOfClass(ItemEntity.class, box)`), each with its entity ID, position, stack and pickup delay, and
+`native_set_item_entity(dimension, id, stack)` changes one's stack, or removes it when the stack is empty, as a hopper
+does with what it takes. Both act on the level in place, as `native_set_block` does. Bundles that use them need
+`"hooks": 41`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads
