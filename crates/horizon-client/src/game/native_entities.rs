@@ -89,6 +89,16 @@ fn position_ok(pos: [f64; 3]) -> bool {
         && (-20_000_000.0..20_000_000.0).contains(&pos[1])
 }
 
+/// The id of a summoned stack's root: its command target's, else `first`,
+/// the first id handed out, when an entity no command target stands for
+/// (`live`) holds it.
+fn root_id(target: Option<Target>, first: u32, live: impl Fn(u32) -> bool) -> Option<u32> {
+    match target {
+        Some(t) => target_id(t),
+        None => live(first).then_some(first),
+    }
+}
+
 /// The entity id a summoned stack's root is known by.
 fn target_id(t: Target) -> Option<u32> {
     match t {
@@ -146,10 +156,9 @@ impl Game<'_> {
         let target = self.spawn_entity_from_nbt(tag);
         self.native_mobs_joined(from, false);
         // The root is the first entity spawned, also for kinds no command
-        // target stands for (experience orbs).
-        target
-            .and_then(target_id)
-            .or((self.next_entity >= first).then_some(first))
+        // target stands for (experience orbs). An id handed out to an entity
+        // a mod then kept out is not given back, so the root must be there.
+        root_id(target, first, |id| self.orbs.iter().any(|o| o.id == id))
     }
     /// Moves entity `id`, one Horizon keeps without simulating (a display, a
     /// marker, an interaction), to `pos` facing `yaw` and `pitch` in degrees;
@@ -312,6 +321,17 @@ mod tests {
             panic!()
         };
         assert_eq!(rider.get(&"Pos".into()), Some(&pos));
+    }
+
+    #[test]
+    fn an_orb_root_has_an_id_only_while_it_is_in_the_level() {
+        // Spawned: the orb holds the first id.
+        assert_eq!(root_id(None, 36, |id| id == 36), Some(36));
+        // A mod kept it out: id 36 was handed out, but no entity holds it.
+        assert_eq!(root_id(None, 36, |_| false), None);
+        // A command target answers for itself.
+        assert_eq!(root_id(Some(Target::Mob(40)), 36, |_| false), Some(40));
+        assert_eq!(root_id(Some(Target::Player), 36, |_| true), None);
     }
 
     #[test]
