@@ -37,10 +37,11 @@ Two more Java servers, both dev-only downloads into .local/server-bench/jars (ne
 Both run with the same heap as vanilla (`--heap`).
 
 `pumpkin` runs Pumpkin (github.com/Pumpkin-MC/Pumpkin, GPL-3.0), a binary you built yourself and name with
-`--pumpkin`: a black box, nothing of it is read or shipped. A first start in a scratch folder writes its default
-configuration (started on 127.0.0.1 only, with no telemetry); every run gets that file with the same settings as the others (seed, view and simulation
-distance 10, creative, offline, no encryption, 127.0.0.1) and Pumpkin's Bedrock and LAN listeners, query,
-plugins and telemetry off. docs/performance/server-vs-pumpkin.md has the comparison and its commands.
+`--pumpkin`: a black box, nothing of it is read or shipped. A first start in a scratch folder (on 127.0.0.1
+only, without telemetry) writes its default configuration; every run gets that file with the same settings
+as the others (seed, view and simulation distance 10, creative, offline, no encryption, 127.0.0.1) and
+Pumpkin's Bedrock and LAN listeners, query, plugins and telemetry off. docs/performance/server-vs-pumpkin.md
+has the comparison and its commands.
 """
 
 import argparse
