@@ -1592,7 +1592,9 @@ impl Game<'_> {
                 uuid,
                 self.persist_raw(id),
             );
-            self.remove_dropped(i);
+            // A gateway keeps the item in its level (teleportSameDimension
+            // moves it): it doesn't leave, so no native_entity_leave_level.
+            self.dropped.remove(i);
             self.forget_entity(id);
             tag
         } else if let Some(i) = self.mobs.iter().position(|m| m.id == id) {
