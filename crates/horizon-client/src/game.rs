@@ -13993,7 +13993,12 @@ impl Game<'_> {
             KeyCode::KeyT if self.screen == Screen::Inventory => self.recipe_focus_search(),
             KeyCode::KeyT if self.screen == Screen::Playing => self.open_chat_method(""),
             // key.advancements.
-            KeyCode::KeyL if self.screen == Screen::Playing => self.open_advancements(false),
+            KeyCode::KeyL if self.screen == Screen::Playing => {
+                self.open_advancements(false);
+                // Opened from the keybinds, like the inventory: vanilla releases
+                // an active use in the same tick.
+                self.release_use_for_keybind_screen();
+            }
             KeyCode::KeyL if self.screen == Screen::Advancements => self.close_advancements(),
             KeyCode::Slash if self.screen == Screen::Playing => self.open_chat_method("/"),
             // key.toggleGui is a KeyMapping: it clicks only with no screen open.
