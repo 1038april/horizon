@@ -1270,6 +1270,8 @@ struct Widget {
     kind: WKind,
     /// Scrolls with the list (clipped to the list area).
     list: bool,
+    /// The list row it sits in (`ContainerObjectSelectionList`'s entry).
+    row: usize,
 }
 /// What the game must do after an interaction.
 #[derive(Clone, Debug, PartialEq)]
@@ -1387,6 +1389,9 @@ pub struct OptionsUi {
     /// Splitscreen: another player's options. Language and resource packs are the whole
     /// process's (every player's text and textures), so they're P1's to change.
     pub split_guest: bool,
+    /// The list's rows as last laid out: each row's top and bottom (GUI
+    /// pixels), for the narration's row under the mouse.
+    row_bands: Vec<[f32; 2]>,
 }
 impl Default for OptionsUi {
     fn default() -> Self {
@@ -1425,6 +1430,7 @@ impl Default for OptionsUi {
             calibration_fullscreen: None,
             agent_status: Vec::new(),
             split_guest: false,
+            row_bands: Vec::new(),
         }
     }
 }
@@ -1440,6 +1446,7 @@ fn button(x: f32, y: f32, w: f32, label: Text, act: Act) -> Widget {
             act,
         },
         list: false,
+        row: 0,
     }
 }
 fn inactive(mut w: Widget) -> Widget {
@@ -1470,6 +1477,7 @@ fn option_widget(s: &Settings, opt: Opt, x: f32, y: f32, w: f32) -> Widget {
                 opt,
             },
             list: false,
+            row: 0,
         },
         Kind::Cycle => button(x, y, w, opt.label(s), Act::Cycle(opt)),
     }
@@ -1497,6 +1505,185 @@ enum Row {
     /// A line of grey text (a path).
     Note(String),
     Buttons(Widget, Option<Widget>),
+}
+/// A widget's tooltip (`setTooltip`), unwrapped: drawn while hovered, and
+/// its narration's hint.
+fn tooltip_text(s: &Settings, wd: &Widget) -> Option<Text> {
+    let WKind::Button { act, .. } = &wd.kind else {
+        let WKind::Slider { opt, .. } = &wd.kind else {
+            return None;
+        };
+        let key = opt.tooltip_key(s);
+        return lang::has(&key).then(|| tr(&key));
+    };
+    let mut tip = None;
+    if let Act::Extra(item) = act {
+        tip = Some(Text::literal(item.description()));
+    }
+    if let Act::Push(page) = act
+        && let Some(text) = horizon_page_tooltip(*page)
+    {
+        tip = Some(tr(text));
+    }
+    let key = match act {
+        Act::Cycle(opt) => Some(opt.tooltip_key(s)),
+        Act::Push(Page::Language) => Some("options.language.tooltip".into()),
+        Act::Push(Page::Accessibility) => Some("options.accessibility.tooltip".into()),
+        _ => None,
+    };
+    if let Some(key) = key.filter(|key| lang::has(key)) {
+        tip = Some(tr(&key));
+    }
+    if let Act::Cycle(Opt::GraphicsBackend) = act {
+        tip = Some(graphics_api_tooltip(s));
+    }
+    match act {
+        Act::Cycle(opt) if !opt.available() => Some(tr("horizon.options.unavailable")),
+        Act::ToggleMod(i) => match s.mods.installed.get(*i) {
+            Some(installed) => {
+                let description = installed
+                    .problem
+                    .as_deref()
+                    .unwrap_or(&installed.description);
+                Some(Text::literal(format!("{}\n{description}", installed.title)))
+            }
+            None => tip,
+        },
+        Act::Key(name) => {
+            let conflicts = s.keys.conflicts(name);
+            if conflicts.is_empty() {
+                return tip;
+            }
+            let names = conflicts
+                .iter()
+                .map(|c| lang::get(c))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Some(Text::translate(
+                "controls.keybinds.duplicateKeybinds",
+                &[Text::literal(names)],
+            ))
+        }
+        _ => tip,
+    }
+}
+/// The value part of an option's message (`CycleButton.createLabelForValue`):
+/// its `options.generic_value` message without the caption.
+fn option_value(opt: Opt, s: &Settings) -> String {
+    let full = opt.label(s).plain();
+    let marker = "\u{1}";
+    let template = generic(opt.caption(), Text::literal(marker)).plain();
+    match template.split_once(marker) {
+        Some((before, after))
+            if full.len() >= before.len() + after.len()
+                && full.starts_with(before)
+                && full.ends_with(after) =>
+        {
+            full[before.len()..full.len() - after.len()].to_owned()
+        }
+        _ => full,
+    }
+}
+/// What widget `wd` narrates, over what `ui::button` or `ui::slider`
+/// recorded for it (`n`): a cycle button the value a click moves to (worked
+/// out only while it may be narrated: under the mouse or focused), a key
+/// bind's buttons `narrator.controls.*`, its tooltip as a hint; a list row's
+/// widget belongs to the list keyed `list`.
+fn narrate_widget(
+    n: &mut crate::widgets::Narratable,
+    s: &Settings,
+    wd: &Widget,
+    hover: bool,
+    list: u64,
+    framebuffer: [i32; 2],
+) {
+    use crate::widgets::What;
+    if let WKind::Button { label, active, act } = &wd.kind {
+        let t = |key: &str, args: &[Text]| Text::translate(key, args).plain();
+        let bind = |name: Text, bound: bool| {
+            if bound {
+                let button = Text::translate("gui.narrate.button", std::slice::from_ref(label));
+                t("narrator.controls.bound", &[name, button])
+            } else {
+                t("narrator.controls.unbound", &[name])
+            }
+        };
+        let active = *active;
+        match act {
+            Act::Cycle(opt) if active => {
+                let next = if hover || crate::widgets::narration_focused(n.rect) {
+                    let mut next = s.clone();
+                    opt.cycle(&mut next, false, framebuffer);
+                    option_value(*opt, &next)
+                } else {
+                    String::new()
+                };
+                n.what = What::Cycle {
+                    message: label.plain(),
+                    next,
+                    active,
+                };
+            }
+            Act::Key(name) => {
+                let bound = s.keys.get(name) != "key.keyboard.unknown";
+                n.what = What::Named {
+                    title: bind(tr(name), bound),
+                    active,
+                };
+            }
+            Act::PadKey(action) => {
+                let bound = s.controller.binding(action).is_some();
+                n.what = What::Named {
+                    title: bind(tr(gamepad::action_caption(action)), bound),
+                    active,
+                };
+            }
+            Act::ResetKey(name) => {
+                n.what = What::Named {
+                    title: t("narrator.controls.reset", &[tr(name)]),
+                    active,
+                };
+            }
+            Act::ResetPadKey(action) => {
+                n.what = What::Named {
+                    title: t(
+                        "narrator.controls.reset",
+                        &[tr(gamepad::action_caption(action))],
+                    ),
+                    active,
+                };
+            }
+            _ => {}
+        }
+    }
+    n.hint = tooltip_text(s, wd).map(|tip| tip.plain());
+    if wd.list {
+        // Stable while the list scrolls: its row and column.
+        n.key = crate::widgets::key_of(&(list, wd.row, wd.x.round() as i32));
+        n.parent = Some((list, wd.row));
+    }
+}
+/// A list's rows as they are laid out: the row of each widget pushed and
+/// each row's band, for the narration (`ContainerObjectSelectionList`'s
+/// entries and the one under the mouse).
+#[derive(Default)]
+struct ListRows {
+    start: usize,
+    top: f32,
+    bands: Vec<[f32; 2]>,
+}
+impl ListRows {
+    /// A row starts at `y` with the next widget pushed.
+    fn begin(&mut self, out: &[Widget], y: f32) {
+        self.start = out.len();
+        self.top = y;
+    }
+    /// The row ends at `y`: the widgets pushed since `begin` are in it.
+    fn end(&mut self, out: &mut [Widget], y: f32) {
+        let row = self.bands.len();
+        out[self.start..].iter_mut().for_each(|w| w.row = row);
+        self.bands.push([self.top, y]);
+    }
 }
 fn pairs(opts: &[Opt]) -> Vec<Row> {
     opts.chunks(2)
@@ -2105,6 +2292,7 @@ impl OptionsUi {
     /// Build every widget of the current page.
     fn layout(&mut self, s: &Settings, w: f32, h: f32) -> (Vec<Widget>, f32, f32, f32) {
         let mut out = Vec::new();
+        let mut rows = ListRows::default();
         let page = self.page();
         let cx = (w / 2.0).floor();
         if matches!(page, Page::Video | Page::Controls | Page::KeyBinds) {
@@ -2127,6 +2315,7 @@ impl OptionsUi {
                         centered: true,
                     },
                     list: false,
+                    row: 0,
                 });
                 out.push(option_widget(s, Opt::Fov, cx - 154.0, 29.0, 150.0));
                 out.push(button(
@@ -2185,6 +2374,7 @@ impl OptionsUi {
                         centered: true,
                     },
                     list: false,
+                    row: 0,
                 });
                 let y = (33.0 + 30.0f32).min(h - 33.0 - 76.0);
                 let x = cx - 105.0;
@@ -2223,6 +2413,7 @@ impl OptionsUi {
                         centered: true,
                     },
                     list: false,
+                    row: 0,
                 });
                 let mut mappings: Vec<(&str, &str)> =
                     MAPPINGS.iter().map(|(n, _, c)| (*n, *c)).collect();
@@ -2251,6 +2442,7 @@ impl OptionsUi {
                             centered: true,
                         },
                         list: false,
+                        row: 0,
                     });
                 }
                 let list_start = out.len();
@@ -2259,6 +2451,7 @@ impl OptionsUi {
                 for (name, category) in mappings {
                     if category != last_category {
                         last_category = category;
+                        rows.begin(&out, y);
                         let label =
                             Text::translate(&format!("key.category.minecraft.{category}"), &[])
                                 .with_style(&Style {
@@ -2277,9 +2470,12 @@ impl OptionsUi {
                                 centered: true,
                             },
                             list: false,
+                            row: 0,
                         });
                         y += 20.0;
+                        rows.end(&mut out, y);
                     }
+                    rows.begin(&out, y);
                     out.push(Widget {
                         x: row_left + 2.0,
                         y: y + 6.0,
@@ -2291,6 +2487,7 @@ impl OptionsUi {
                             centered: false,
                         },
                         list: false,
+                        row: 0,
                     });
                     let key = s.keys.get(name).to_owned();
                     let mut message = keybinds::display_name(&key);
@@ -2327,6 +2524,7 @@ impl OptionsUi {
                                 centered: false,
                             },
                             list: false,
+                            row: 0,
                         });
                     }
                     let reset = button(
@@ -2342,6 +2540,7 @@ impl OptionsUi {
                         reset
                     });
                     y += 20.0;
+                    rows.end(&mut out, y);
                 }
                 content = y + self.scroll - top + 2.0;
                 out[list_start..].iter_mut().for_each(|w| w.list = true);
@@ -2366,6 +2565,7 @@ impl OptionsUi {
                         centered: true,
                     },
                     list: false,
+                    row: 0,
                 });
                 let row_left = cx - 170.0;
                 let scrollbar_x = row_left + 340.0 + 6.0 + 2.0;
@@ -2373,6 +2573,7 @@ impl OptionsUi {
                 let mut y = top + 2.0 - self.scroll;
                 let pad = &s.controller;
                 for (action, _) in gamepad::ACTIONS {
+                    rows.begin(&out, y);
                     out.push(Widget {
                         x: row_left + 2.0,
                         y: y + 6.0,
@@ -2384,6 +2585,7 @@ impl OptionsUi {
                             centered: false,
                         },
                         list: false,
+                        row: 0,
                     });
                     let mut message = match pad.binding(action) {
                         Some(b) => {
@@ -2424,6 +2626,7 @@ impl OptionsUi {
                         reset
                     });
                     y += 20.0;
+                    rows.end(&mut out, y);
                 }
                 content = y + self.scroll - top + 2.0;
                 out[list_start..].iter_mut().for_each(|w| w.list = true);
@@ -2450,6 +2653,7 @@ impl OptionsUi {
                         centered: true,
                     },
                     list: false,
+                    row: 0,
                 });
                 self.language_search.x = cx - 100.0;
                 self.language_search.y = 17.0;
@@ -2473,6 +2677,7 @@ impl OptionsUi {
                     {
                         continue;
                     }
+                    rows.begin(&out, y);
                     out.push(Widget {
                         x: cx - 110.0,
                         y,
@@ -2484,8 +2689,10 @@ impl OptionsUi {
                             code: l.code.clone(),
                         },
                         list: false,
+                        row: 0,
                     });
                     y += 18.0;
+                    rows.end(&mut out, y);
                 }
                 content = y + self.scroll - top + 2.0;
                 out[list_start..].iter_mut().for_each(|w| w.list = true);
@@ -2500,6 +2707,7 @@ impl OptionsUi {
                         centered: true,
                     },
                     list: false,
+                    row: 0,
                 });
                 out.push(button(
                     cx - 154.0,
@@ -2531,10 +2739,12 @@ impl OptionsUi {
                         centered: true,
                     },
                     list: false,
+                    row: 0,
                 });
                 let list_start = out.len();
                 let mut y = top + 2.0 - self.scroll;
                 for row in self.list_rows(s) {
+                    rows.begin(&out, y);
                     match row {
                         Row::Header(key) => {
                             let padding = if y + self.scroll <= top + 2.0 {
@@ -2558,6 +2768,7 @@ impl OptionsUi {
                                     centered: true,
                                 },
                                 list: false,
+                                row: 0,
                             });
                             y += padding + 18.0;
                         }
@@ -2573,6 +2784,7 @@ impl OptionsUi {
                                     centered: true,
                                 },
                                 list: false,
+                                row: 0,
                             });
                             y += 16.0;
                         }
@@ -2599,6 +2811,7 @@ impl OptionsUi {
                             y += 25.0;
                         }
                     }
+                    rows.end(&mut out, y);
                 }
                 content = y + self.scroll - top + 2.0;
                 out[list_start..].iter_mut().for_each(|w| w.list = true);
@@ -2624,11 +2837,80 @@ impl OptionsUi {
                 widget.y += previous_scroll - self.scroll;
             }
         }
+        self.row_bands = rows
+            .bands
+            .into_iter()
+            .map(|band| band.map(|y| y + previous_scroll - self.scroll))
+            .collect();
         (out, top, bottom, content)
     }
     fn clamp_scroll(&mut self, top: f32, bottom: f32, content: f32) {
         let max = (content - (bottom - top)).max(0.0);
         self.scroll = self.scroll.clamp(0.0, max);
+    }
+    /// The page's list as the narrator reads it: Language's
+    /// `ObjectSelectionList` ("Selected: <language>"), or the
+    /// `ContainerObjectSelectionList` the rows' widgets belong to, with the row
+    /// under the mouse (`getEntryAtPosition`: within the row's width).
+    fn narrate_list(
+        &self,
+        widgets: &[Widget],
+        key: u64,
+        (top, bottom): (f32, f32),
+        w: f32,
+        cursor: (f32, f32),
+    ) {
+        use crate::widgets::{ListKind, Narratable, Row as Narrated};
+        let rect = [0.0, top, w, bottom - top];
+        let in_list = cursor.1 >= top && cursor.1 < bottom;
+        if self.page() == Page::Language {
+            crate::widgets::narratable(|| {
+                let rows: Vec<(&Widget, &Text, bool)> = widgets
+                    .iter()
+                    .filter_map(|wd| match &wd.kind {
+                        WKind::LanguageRow {
+                            label, selected, ..
+                        } => Some((wd, label, *selected)),
+                        _ => None,
+                    })
+                    .collect();
+                let narrated = |(wd, label, _): &(&Widget, &Text, bool)| {
+                    Narrated::new(
+                        wd.row,
+                        Text::translate("narrator.select", &[(*label).clone()]).plain(),
+                    )
+                };
+                let hovered = rows
+                    .iter()
+                    .find(|(wd, ..)| in_list && ui::hovered(cursor, wd.x, wd.y, wd.w, wd.h));
+                let selected = rows.iter().find(|(_, _, selected)| *selected);
+                Narratable::list(
+                    ListKind::Object,
+                    rows.len(),
+                    hovered.map(narrated),
+                    selected.map(narrated),
+                    rect,
+                )
+                .key(key)
+            });
+            return;
+        }
+        // OptionsList rows are 310 wide, KeyBindsList's 340.
+        let half = if matches!(self.page(), Page::KeyBinds | Page::PadBinds) {
+            170.0
+        } else {
+            155.0
+        };
+        let hovered_row = (in_list && (cursor.0 - (w / 2.0).floor()).abs() < half)
+            .then(|| {
+                self.row_bands
+                    .iter()
+                    .position(|[a, b]| cursor.1 >= *a && cursor.1 < *b)
+            })
+            .flatten();
+        crate::widgets::narratable(|| {
+            Narratable::container_list(self.row_bands.len(), hovered_row, rect).key(key)
+        });
     }
     pub fn draw(
         &mut self,
@@ -2726,6 +3008,14 @@ impl OptionsUi {
             ui::list_background(batch, atlas, top, bottom, in_world);
         }
         let visible = |wd: &Widget| !wd.list || (wd.y < bottom && wd.y + wd.h > top);
+        // The list's narration: the language list is an ObjectSelectionList,
+        // the others ContainerObjectSelectionLists whose rows' widgets are
+        // recorded as they are drawn.
+        let list_key = crate::widgets::key_of(&format!("options/{page:?}/list"));
+        let framebuffer = [(w * batch.scale) as i32, (h * batch.scale) as i32];
+        if list {
+            self.narrate_list(&widgets, list_key, (top, bottom), w, cursor);
+        }
         let mut tooltip = None;
         for wd in &widgets {
             if !visible(wd) {
@@ -2734,95 +3024,25 @@ impl OptionsUi {
             let start = batch.vertices.len();
             let hover = ui::hovered(cursor, wd.x, wd.y, wd.w, wd.h)
                 && (!wd.list || cursor.1 >= top && cursor.1 < bottom);
-            if hover {
-                if let WKind::Button {
-                    act: Act::Extra(item),
-                    ..
-                } = &wd.kind
-                {
-                    tooltip = Some(atlas.font.split(&Text::literal(item.description()), 170.0));
-                }
-                if let WKind::Button {
-                    act: Act::Push(page),
-                    ..
-                } = &wd.kind
-                    && let Some(text) = horizon_page_tooltip(*page)
-                {
-                    tooltip = Some(atlas.font.split(&tr(text), 170.0));
-                }
-                let key = match &wd.kind {
+            if hover && let Some(tip) = tooltip_text(s, wd) {
+                tooltip = Some(match &wd.kind {
+                    // The duplicate keybinds tooltip keeps its own lines.
                     WKind::Button {
-                        act: Act::Cycle(opt),
-                        ..
-                    }
-                    | WKind::Slider { opt, .. } => Some(opt.tooltip_key(s)),
-                    WKind::Button {
-                        act: Act::Push(Page::Language),
-                        ..
-                    } => Some("options.language.tooltip".into()),
-                    WKind::Button {
-                        act: Act::Push(Page::Accessibility),
-                        ..
-                    } => Some("options.accessibility.tooltip".into()),
-                    _ => None,
-                };
-                if let Some(key) = key.filter(|key| lang::has(key)) {
-                    tooltip = Some(atlas.font.split(&tr(&key), 170.0));
-                }
-                if let WKind::Button {
-                    act: Act::Cycle(Opt::GraphicsBackend),
-                    ..
-                } = &wd.kind
-                {
-                    tooltip = Some(atlas.font.split(&graphics_api_tooltip(s), 170.0));
-                }
-                if let WKind::Button {
-                    act: Act::Cycle(opt),
-                    ..
-                } = &wd.kind
-                    && !opt.available()
-                {
-                    tooltip = Some(atlas.font.split(&tr("horizon.options.unavailable"), 170.0));
-                }
-                if let WKind::Button {
-                    act: Act::ToggleMod(i),
-                    ..
-                } = &wd.kind
-                    && let Some(installed) = s.mods.installed.get(*i)
-                {
-                    let description = installed
-                        .problem
-                        .as_deref()
-                        .unwrap_or(&installed.description);
-                    tooltip = Some(atlas.font.split(
-                        &Text::literal(format!("{}\n{description}", installed.title)),
-                        170.0,
-                    ));
-                }
+                        act: Act::Key(_), ..
+                    } => tip
+                        .plain()
+                        .split('\n')
+                        .map(|l| Text::literal(l.to_owned()))
+                        .collect::<Vec<_>>(),
+                    _ => atlas.font.split(&tip, 170.0),
+                });
             }
             match &wd.kind {
-                WKind::Button { label, active, act } => {
+                WKind::Button { label, active, .. } => {
                     ui::button(batch, atlas, wd.x, wd.y, wd.w, wd.h, label, *active, hover);
-                    if hover && let Act::Key(name) = act {
-                        let conflicts = s.keys.conflicts(name);
-                        if !conflicts.is_empty() {
-                            let names = conflicts
-                                .iter()
-                                .map(|c| lang::get(c))
-                                .collect::<Vec<_>>()
-                                .join(", ");
-                            let full = Text::translate(
-                                "controls.keybinds.duplicateKeybinds",
-                                &[Text::literal(names)],
-                            );
-                            tooltip = Some(
-                                full.plain()
-                                    .split('\n')
-                                    .map(|l| Text::literal(l.to_owned()))
-                                    .collect::<Vec<_>>(),
-                            );
-                        }
-                    }
+                    crate::widgets::last_narratable(|n| {
+                        narrate_widget(n, s, wd, hover, list_key, framebuffer);
+                    });
                 }
                 WKind::Slider { label, value, opt } => {
                     let dragging = self.dragging == Some(*opt);
@@ -2839,6 +3059,9 @@ impl OptionsUi {
                         true,
                         dragging,
                     );
+                    crate::widgets::last_narratable(|n| {
+                        narrate_widget(n, s, wd, hover, list_key, framebuffer);
+                    });
                 }
                 WKind::Text {
                     text,
@@ -2849,6 +3072,20 @@ impl OptionsUi {
                         batch.fill(atlas, wd.x, wd.y, wd.w, wd.h, *color);
                     } else if *centered {
                         let tw = atlas.font.width_text(text);
+                        // A list's header row (OptionsList.HeaderEntry,
+                        // KeyBindsList.CategoryEntry): a FocusableTextWidget
+                        // narrating its text, 4 pixels of padding round it.
+                        if wd.list && *color == u32::MAX {
+                            crate::widgets::narratable(|| {
+                                let x = wd.x + ((wd.w - tw) / 2.0).floor();
+                                crate::widgets::Narratable::text(
+                                    text.plain(),
+                                    [x - 4.0, wd.y - 4.0, tw + 8.0, 17.0],
+                                )
+                                .key(crate::widgets::key_of(&(list_key, wd.row)))
+                                .child_of(list_key, wd.row)
+                            });
+                        }
                         batch.text_styled(
                             atlas,
                             text,
@@ -2906,6 +3143,9 @@ impl OptionsUi {
         if self.page() == Page::Language {
             let mut search = self.language_search.clone();
             search.draw(batch, atlas, None);
+            // LanguageSelectScreen's header search box (no message), added
+            // before the list.
+            crate::widgets::last_narratable(|n| n.order = -1);
             if search.value.is_empty() && !search.focused {
                 batch.text_styled(
                     atlas,
@@ -2921,6 +3161,13 @@ impl OptionsUi {
         if matches!(self.page(), Page::Video | Page::Controls | Page::KeyBinds) {
             let mut search = self.settings_search.clone();
             search.draw(batch, atlas, None);
+            // Horizon's search box sits in the header, before the list.
+            crate::widgets::last_narratable(|n| {
+                n.order = -1;
+                if let crate::widgets::What::EditBox { message, .. } = &mut n.what {
+                    *message = tr("horizon.options.search").plain();
+                }
+            });
             if search.value.is_empty() && !search.focused {
                 batch.text_styled(
                     atlas,
