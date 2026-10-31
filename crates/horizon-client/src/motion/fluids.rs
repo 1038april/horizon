@@ -9,7 +9,6 @@ use horizon_world::{
     },
     entity_fluid_tick::{self, EntityFluidTickWorld},
     fluid::{FluidHeightWorld, FluidKind, FluidState, FluidStateTable},
-    fluid_box::{self, BoatFluidBoxWorld},
     fluid_flow::{FluidFlowWorld, flow_at},
     fluid_shape::FluidShapeCache,
     water_splash::{self, SplashParticle, WaterSplashWorld},
@@ -72,24 +71,6 @@ impl FluidResources {
         self.ice.get(state.0 as usize).copied().unwrap_or(false)
     }
 }
-/// The boat a passenger rides, as `AbstractBoat.modifyPassengerFluidInteractionBox`
-/// reads it: whether the boat is underwater (`isUnderWater`) and its box.
-#[derive(Clone, Copy, Debug)]
-pub struct PassengerFluidBox {
-    pub under_water: bool,
-    pub bounds: Aabb,
-}
-/// The adapter `fluid_box::boat_passenger_box` asks for a boat's state.
-struct RiddenBoat(PassengerFluidBox);
-impl BoatFluidBoxWorld for RiddenBoat {
-    type Error = std::convert::Infallible;
-    fn is_under_water(&mut self) -> std::result::Result<bool, Self::Error> {
-        Ok(self.0.under_water)
-    }
-    fn boat_bounds(&self) -> Aabb {
-        self.0.bounds
-    }
-}
 /// The player's `EntityFluidInteraction` and the water flags around it.
 #[derive(Clone)]
 pub struct PlayerFluids {
@@ -102,10 +83,16 @@ pub struct PlayerFluids {
     pub first_tick: bool,
     /// The dimension's `FAST_LAVA` (the Nether), set by the game.
     pub fast_lava: bool,
-    /// The boat the player rides, set by the game before each base tick; `None`
-    /// when the vehicle is not a boat. `Entity.getFluidInteractionBox` lets it
-    /// trim the passenger's fluid box.
-    pub boat: Option<PassengerFluidBox>,
+    /// The boat the player sits in (`Entity.getVehicle`), set by the game.
+    pub boat: Option<RiddenBoat>,
+}
+/// What `AbstractBoat.modifyPassengerFluidInteractionBox` reads of a boat.
+#[derive(Clone, Copy, Debug)]
+pub struct RiddenBoat {
+    /// `AbstractBoat.isUnderWater`.
+    pub under_water: bool,
+    /// The top of the boat's box (`getBoundingBox().maxY`).
+    pub max_y: f64,
 }
 impl Default for PlayerFluids {
     fn default() -> Self {
@@ -246,7 +233,13 @@ impl MotionWorld<'_, '_, '_> {
     pub fn fluid_base_tick(&mut self) -> Result<()> {
         self.player.fluids.was_eye_in_water = self.player.is_eye_in_fluid(WATER);
         self.update_fluids()?;
+        // `Player.updateSwimming`'s flying guard over `Entity.updateSwimming`,
+        // whose both branches need `!isPassenger()`: a rider keeps no swim, so
+        // the server's copy of a guest who boards a boat while swimming is not
+        // left in the swimming box (eye 0.4) in the seat, at the waterline,
+        // where the boat drowned and suffocated them (#4427).
         self.player.swimming = !self.player.flying
+            && !self.player.is_passenger
             && self.player.sprinting
             && if self.player.swimming {
                 self.player.fluids.was_touching_water
@@ -316,16 +309,22 @@ impl FluidInteractionWorld for MotionWorld<'_, '_, '_> {
     type Error = Box<dyn std::error::Error>;
     type Chunk = ();
     fn interaction_box(&mut self) -> Result<Option<Aabb>> {
-        // Entity.getFluidInteractionBox: a passenger asks the vehicle, and a
-        // boat keeps only the part above its own top.
-        let bounds = self.player.bounds().deflate(Vec3::new(0.001, 0.001, 0.001));
-        let Some(boat) = self.player.fluids.boat else {
-            return Ok(Some(bounds));
+        // Entity.getFluidInteractionBox: the box less 0.001, then the vehicle's
+        // say (`AbstractBoat.modifyPassengerFluidInteractionBox`).
+        let b = self.player.bounds().deflate(Vec3::new(0.001, 0.001, 0.001));
+        let Some(boat) = self.player.fluids.boat.filter(|boat| !boat.under_water) else {
+            return Ok(Some(b));
         };
-        Ok(fluid_box::boat_passenger_box(
-            &mut RiddenBoat(boat),
-            bounds,
-        )?)
+        let (lo, hi) = (b.min_position(), b.max_position());
+        // A boat that reaches the passenger's head shelters all of it; else
+        // only what lies above the boat's top counts.
+        if boat.max_y >= hi.y {
+            return Ok(None);
+        }
+        Ok(Some(Aabb::new(
+            Vec3::new(lo.x, lo.y.max(boat.max_y), lo.z),
+            hi,
+        )))
     }
     fn loaded_chunk(&mut self, x: i32, z: i32) -> Result<Option<()>> {
         Ok(self.scene.chunks.contains_key(&(x, z)).then_some(()))
