@@ -3318,7 +3318,9 @@ impl OptionsUi {
                     let at = ui::slider_value(wd.x, wd.w, x);
                     if let Some(options) = &mut s.shader_options {
                         if self.shift {
+                            // Sounds as a released slider does: no drag follows.
                             options.reset_option(&name);
+                            events.extend([Event::ButtonClick, Event::Changed]);
                             break;
                         }
                         options.set_position(&name, at);

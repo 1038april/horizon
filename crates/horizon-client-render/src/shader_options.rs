@@ -200,17 +200,37 @@ impl ShaderOptions {
         if measure(&full) <= width {
             return (full, false);
         }
-        let caption = self.named(&format!("option.{name}"), name).plain();
+        // The pack's text, cut a character at a time with the `§` codes it holds kept.
+        let key = format!("option.{name}");
+        let caption = self.lang.get(&key).unwrap_or(name);
         let value = self.value_text(name);
         let mut chars: Vec<char> = caption.chars().collect();
-        while chars.pop().is_some() {
-            let cut: String = chars.iter().collect();
-            let label = Text::literal(format!("{}...: ", cut.trim_end())).append(value.clone());
+        loop {
+            while chars.len() >= 2 && chars[chars.len() - 2] == '§' {
+                chars.truncate(chars.len() - 2);
+            }
+            if chars.pop().is_none() {
+                return (full, true);
+            }
+            // Without the spaces and codes it ends with.
+            let mut end = chars.len();
+            loop {
+                if end >= 2 && chars[end - 2] == '§' {
+                    end -= 2;
+                } else if end > 0 && chars[end - 1].is_whitespace() {
+                    end -= 1;
+                } else {
+                    break;
+                }
+            }
+            let cut: String = chars[..end].iter().collect();
+            let label = Text::legacy(&format!("{cut}..."))
+                .append(": ")
+                .append(value.clone());
             if measure(&label) <= width {
                 return (label, true);
             }
         }
-        (full, true)
     }
 
     /// `Name: value`, in the pack's words, the value yellow when it is not the default.
@@ -348,6 +368,12 @@ mod tests {
         let (fitted, cut) = o.option_label_within("LEVEL", 12.0, measure);
         assert!(cut);
         assert_eq!(fitted.plain(), "Level...: 2");
+        o.lang = Lang::parse("option.LEVEL=§aLevel §lof detail§r\n");
+        let (fitted, _) = o.option_label_within("LEVEL", 12.0, measure);
+        assert_eq!(fitted.plain(), "Level...: 2");
+        assert_eq!(fitted.spans[0].style, Text::legacy("§aL").spans[0].style);
+        let (fitted, _) = o.option_label_within("LEVEL", 14.0, measure);
+        assert_eq!(fitted.plain(), "Level of...: 2");
     }
 
     #[test]
