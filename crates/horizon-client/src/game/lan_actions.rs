@@ -1431,6 +1431,14 @@ impl Game<'_> {
                         g.guest_use = Some(GuestUse::OnBlock(hand));
                         let swings = g.swings_started;
                         let consumed = matches!(g.use_item(), Ok(Some(_)));
+                        // handleUseItemOn: a consuming useItemOn triggers
+                        // ANY_BLOCK_USE with the hand's stack as it now is.
+                        if consumed && !g.use_failed {
+                            let stack = g
+                                .with_hand(hand, |g| g.held().cloned())
+                                .unwrap_or_else(|| ItemStack::new("minecraft:air", 0));
+                            g.trigger_any_block_use(p.pos, &stack);
+                        }
                         g.forced_hit = None;
                         g.guest_use = None;
                         (g.swings_started != swings, consumed, attempt)
