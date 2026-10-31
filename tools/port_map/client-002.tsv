@@ -77,7 +77,7 @@ ClientPacketListener.applyPlayerInfoUpdate	inline	crates/horizon-client/src/game
 ClientPacketListener.initializeChatSession	port	crates/horizon-client/src/game/remote.rs::Remote::new_chat_validator	the session each INITIALIZE_CHAT entry carries is kept and checked against the services' profile-key keys when the player's chat is first read
 ClientPacketListener.enforcesSecureChat	missing		minor: the Login flag enforces_secure_chat is not read
 ClientPacketListener.handleGameRuleValues	port	crates/horizon-client/src/game/lan_screen.rs::Game::remote_world_options_rules	
-ClientPacketListener.handleSoundEntityEvent	missing		unsure: no SoundEntity arm; a sound attached to an entity would be silent unless mob_sounds.rs plays it
+ClientPacketListener.handleSoundEntityEvent	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	SoundEntity arm: the sound plays where the tracked entity is
 ClientPacketListener.handleAddObjective	port	crates/horizon-client/src/game/remote.rs::Game::remote_objective	add, remove and update of an objective
 ClientPacketListener.handleSetScore	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	SetScore arm
 ClientPacketListener.handleResetScore	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	ResetScore arm
@@ -92,7 +92,7 @@ ClientPacketListener.handleSetSimulationDistance	missing		minor: the server's si
 ClientPacketListener.handleSetChunkCacheCenter	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	SetChunkCacheCenter arm
 ClientPacketListener.handleBlockChangedAck	port	crates/horizon-client/src/game/remote.rs::Game::end_predictions	
 ClientPacketListener.handleBundlePacket	inline	crates/horizon-client/src/net.rs::receive_play	bundle delimiters are dropped; the packets inside arrive as a stream and are handled one by one, in order
-ClientPacketListener.handleProjectilePowerPacket	missing		minor: the projectile's acceleration power is not read (ProjectilePower has no arm)
+ClientPacketListener.handleProjectilePowerPacket	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	ProjectilePower arm: a hurting projectile's acceleration power, by id
 ClientPacketListener.handleChunkBatchFinished	port	crates/horizon-client/src/game/remote.rs::Game::handle_packet	ChunkBatchFinished arm; gap: minor: answers with a fixed 64 chunks per tick, not a measured rate
 ClientPacketListener.handleTestInstanceBlockStatus	skip:debug		status for the test instance block editor (developer blocks); Horizon has no editor
 ClientPacketListener.handleDebugChunkValue	skip:debug		debug overlay values from the server
