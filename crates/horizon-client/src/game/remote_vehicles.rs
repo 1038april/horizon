@@ -73,7 +73,7 @@ impl Game<'_> {
         }
         // Interaction.isPickable: an invisible box the server clicks through
         // to its scripts, for both uses and attacks.
-        let reach = if self.creative { 5.0 } else { 3.0 };
+        let reach = self.entity_reach;
         for (&id, i) in &self.interactions {
             if let Some(d) = ray_box(eye, dir, reach, i.bounds()) {
                 let p = i.position;
@@ -84,7 +84,7 @@ impl Game<'_> {
             // EndCrystal.isPickable: its 2 x 2 box, with the server's entity
             // id, not special_targets' local projectile target id.
             // Entity.interact passes on a crystal, so right clicks use the item.
-            let reach = if self.creative { 5.0 } else { 3.0 };
+            let reach = self.entity_reach;
             for c in self.crystals.iter().filter(|c| c.id != 0) {
                 let p = c.position;
                 let bounds = Aabb::new(
@@ -138,6 +138,13 @@ impl Game<'_> {
                 display.vehicle = Some(vehicle_id);
             } else if display.vehicle == Some(vehicle_id) {
                 display.vehicle = None;
+            }
+        }
+        for a in &mut self.armor_stands {
+            if passengers.contains(&(a.id as i32)) {
+                a.vehicle = Some(vehicle_id);
+            } else if a.vehicle == Some(vehicle_id) {
+                a.vehicle = None;
             }
         }
         for (&id, i) in &mut self.interactions {
@@ -341,6 +348,8 @@ impl Game<'_> {
         mob.removed = false;
         self.world.random = random;
         self.mobs.insert(i, mob);
+        // #4821: footstep, gallop, breathe, splash and landing sounds from mob.tick
+        let _ = self.handle_mob_events(events);
     }
 }
 
