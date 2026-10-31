@@ -92,6 +92,9 @@ pub(super) struct CombatTracker {
     /// The projectile hitting the player now is another player's that
     /// `ServerPlayer.canHarmPlayer` refuses (the `pvp` rule, an ally).
     pub(super) refuse_player_hit: bool,
+    /// The hit on the player now runs its post-attack effects (thorns) only
+    /// if the player lives through it (`WitherSkull.onHitEntity`).
+    pub(super) post_attack_if_alive: bool,
     /// A firework rocket's burst is hurting the player now: the rocket is
     /// the direct entity (`rocket_hurt_player`).
     pub(super) rocket_hit: bool,
