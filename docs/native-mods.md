@@ -234,6 +234,13 @@ API 42 adds the item entities near a block, for machines that pick up items as a
 does with what it takes. Both act on the level in place, as `native_set_block` does. Bundles that use them need
 `"hooks": 42`.
 
+API 43 adds what a server mod needs for a public server's screens: `native_sidebar` shows one player a sidebar of up
+to 15 lines (a text, and one where the score would be) or takes it away, `native_tab_list` sets the lines over and
+under their Tab list, `native_tick_stats` reads the server's tick rate and average tick time (`/tick query`'s), and
+`native_sleep_ignored` leaves a player out of the sleep count until they are in bed (players away from the keyboard).
+The players `native_server_players` lists carry where they look (`yaw`, `pitch`). Bundles that use them need
+`"hooks": 43`.
+
 ## A bundle
 
 A bundle is a folder with a `horizon-mixin.toml`. Besides its helpers and modules (horizon-mixins' README) it can
@@ -628,6 +635,11 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   the 36 inventory slots and the off hand, never the armour, and only at **plain** stacks: no damage and no
   component (name, enchantment...), so a shop never takes a worn or enchanted item for a new one. Each returns how
   many it counted, took or gave; the player's screen follows as for any change to their inventory.
+- API 43: `native_sidebar(uuid, sidebar)`, a sidebar only that player's client holds (the server's scoreboard never
+  sees it; a mod sends it again when they rejoin), in place of the one shown before; None takes it away.
+  `native_tab_list(uuid, header, footer)`, the lines over and under their Tab list. `native_tick_stats()`, the tick
+  rate and the average tick time in ms. `native_sleep_ignored(uuid, ignored)`, out of `players_sleeping_percentage`'s
+  count until in bed, outside a player's hook only. Players carry `yaw` and `pitch`.
 - API 21: `native_acting_player()`, the player whose state is swapped in (inside `native_perform_command`,
   `native_right_click_block`, `native_use_item_on`, `native_destroy_block`...; None elsewhere);
   `native_run_command(line)`, a command run as the server's console (level 4, no output), only where no player is

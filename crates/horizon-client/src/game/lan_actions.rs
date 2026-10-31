@@ -2935,12 +2935,12 @@ impl Game<'_> {
             count(self.sleeping.is_some(), self.sleep_timer);
         }
         if let Some(host) = self.lan.as_ref() {
-            for g in host
-                .hub
-                .guests
-                .iter()
-                .filter(|g| g.placed && !g.spectator())
-            {
+            // A native mod's ignored players count only once in bed.
+            for g in host.hub.guests.iter().filter(|g| {
+                g.placed
+                    && !g.spectator()
+                    && (g.bed.is_some() || !host.sleep_ignored.contains(&g.uuid))
+            }) {
                 count(g.bed.is_some(), g.sleep_timer);
             }
         }
