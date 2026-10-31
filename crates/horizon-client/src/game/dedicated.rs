@@ -610,6 +610,7 @@ impl Game<'_> {
     pub(super) fn run_dedicated(&mut self) -> Result<()> {
         let result = self.run_dedicated_inner();
         if let Err(error) = &result {
+            self.native_players_leaving();
             self.native_lifecycle_world_failed(&error.to_string());
             self.native_lifecycle_close_failed(&error.to_string());
         }
@@ -1716,8 +1717,10 @@ impl Game<'_> {
         // MinecraftServer.stopServer's start: everyone is still here.
         self.native_server_stopping(true);
         log("INFO", "Stopping server");
+        self.native_players_leaving();
         log("INFO", "Saving players");
-        if let Some(host) = self.lan.take() {
+        if let Some(mut host) = self.lan.take() {
+            self.flush_native_net(&mut host);
             for g in &host.hub.guests {
                 // The vehicle the guest rides, for the file that names it.
                 let vehicle = self.root_vehicle_uuid(g.vehicle);

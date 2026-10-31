@@ -863,7 +863,7 @@ impl Items {
             loot,
             songs: load_songs(root),
             instruments: load_instruments(root),
-            enchantments: Arc::new(crate::enchant::Enchantments::load(root)),
+            enchantments: Arc::new(crate::enchant::Enchantments::load_with(root, overlay)),
         })
     }
     pub fn get(&self, id: &str) -> Option<&ItemInfo> {
@@ -893,7 +893,7 @@ impl Items {
             loot: Default::default(),
             songs: HashMap::new(),
             instruments: HashMap::new(),
-            enchantments: Arc::new(crate::enchant::Enchantments::load(root)),
+            enchantments: Arc::new(crate::enchant::Enchantments::load_with(root, overlay)),
         })
     }
     /// An item table with only tags, for unit tests of item rules.
