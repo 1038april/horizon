@@ -69,9 +69,9 @@ webhook = ""                 # the channel's webhook URL (a secret: anyone with 
 events = ["chat", "join", "leave", "death"]   # what is posted; "kick" too if you like
 enabled = true               # false pauses it and keeps the webhook
 
-# Horizon's anticheat (docs/anticheat.md) is on: `combat` drops attacks no vanilla client sends, kicks,
-# and bans at the second kick; timer, ground and prediction only write logs/anticheat.log until they're
-# trusted. To change it:
+# Horizon's anticheat (docs/anticheat.md) is on: `combat` drops attacks no vanilla client sends and
+# `ground` the false ground claims of a no-fall or a walk on water; both kick, and ban at the second kick.
+# timer and prediction only write logs/anticheat.log until they're trusted. To change it:
 # [anticheat]
 # enabled = true             # false: the server checks only what vanilla's checks
 # alerts = true              # tell online operators (alert_level = 2) in their chat; the console always is
