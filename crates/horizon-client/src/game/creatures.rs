@@ -2,7 +2,7 @@
 //! chunk-generation spawning (`NaturalSpawner`), mob events (attacks,
 //! breeding, conversions, drops), projectiles, player interactions
 //! (feeding, shearing, milking, spawn eggs, throwing) and rendering.
-use super::{Dim, Game, dispenser, view_vector};
+use super::{Dim, Game, InteractTarget, dispenser, view_vector};
 use horizon_assets::item_model::DisplayContext;
 use horizon_client::{
     Result,
@@ -227,6 +227,20 @@ fn flame_geometry(
 pub(super) fn seen(m: &Mob, player: Option<[i32; 4]>) -> Seen {
     m.seen(player)
 }
+/// Whether a mob a packet named may take the click: `mob_hit` skips a mob in
+/// its death animation, the one the player rides (it shares the player's root
+/// vehicle) and the camera entity the pick starts from, so a packet that names
+/// one of those does nothing rather than reaching the feed, shear, leash or
+/// name paths the pick path refuses.
+pub(super) fn named_mob_pickable(
+    alive: bool,
+    id: u32,
+    riding: Option<u32>,
+    camera: Option<u32>,
+) -> bool {
+    alive && Some(id) != riding && Some(id) != camera
+}
+
 impl Game<'_> {
     pub(super) fn player_view(&self) -> Option<PlayerView> {
         let p = self.player.as_ref()?;
@@ -4505,12 +4519,28 @@ impl Game<'_> {
         };
         self.audio.play(sound, Some(at), 1.0, 1.0);
     }
-    /// Right click on a mob (Mob.interact / mobInteract). Returns true when consumed.
-    pub(super) fn interact_mob(&mut self) -> Result<bool> {
-        let Some((index, distance)) = self.mob_hit() else {
+    /// Right click on a mob (Mob.interact / mobInteract), on the mob under the
+    /// crosshair or on the one a guest's interact packet named: returns true
+    /// when consumed.
+    pub(super) fn interact_mob(&mut self, target: Option<InteractTarget>) -> Result<bool> {
+        let Some((index, distance)) = (match target {
+            // The id the packet named, under the filters the crosshair pick
+            // applies (`mob_hit`): a mob in its death animation is not clicked
+            // by either path, so naming one in a packet must not reach the
+            // feed, shear, leash or name paths either.
+            Some(t) => Self::named_entity(&self.mobs, t.id, |m| m.id)
+                .filter(|&i| {
+                    let m = &self.mobs[i];
+                    named_mob_pickable(m.alive(), m.id, self.riding, self.remote_camera_id())
+                })
+                .map(|i| (i, 0.0)),
+            None => self.mob_hit(),
+        }) else {
             return Ok(false);
         };
-        if let Some(hit) = self.pick_unfiltered()
+        // Only a client's own pick is stopped by a block: the range check passed.
+        if target.is_none()
+            && let Some(hit) = self.pick_unfiltered()
             && let Some(eye) = self.eye_position()
         {
             let d = ((hit.point[0] - eye[0]).powi(2)

@@ -6,7 +6,8 @@
 //! host, and every world change they cause reaches all players through the
 //! block log, the level events and the entity tracker.
 use super::{
-    Dim, Game, GuestUse, Hit, Mining, Screen, lan::LanHost, respawn_anchor::RespawnConfig,
+    Dim, Game, GuestUse, Hit, InteractTarget, Mining, Screen, lan::LanHost,
+    respawn_anchor::RespawnConfig,
 };
 use horizon_client::{
     command::vanilla,
@@ -1781,10 +1782,15 @@ impl Game<'_> {
                     .is_some()
                 {
                     // handleInteract: the entity and that hand only; a click the
-                    // entity passes comes back as UseItem.
+                    // entity passes comes back as UseItem. The entity is the
+                    // packet's own id, which the range check above passed.
                     let hand = if p.hand == 1 { Hand::Off } else { Hand::Main };
+                    let target = InteractTarget {
+                        id: p.id,
+                        location: p.location,
+                    };
                     let swung = self.as_guest(host, conn, |g| {
-                        g.guest_use = Some(GuestUse::Entity(hand));
+                        g.guest_use = Some(GuestUse::Entity(hand, target));
                         let swings = g.swings_started;
                         let _ = g.use_item();
                         g.guest_use = None;
