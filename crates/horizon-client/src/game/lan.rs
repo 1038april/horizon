@@ -2097,6 +2097,7 @@ impl Game<'_> {
                 host.host_mode = state.game_mode;
                 host.hub.set_host_game_mode(state.uuid, state.game_mode);
             }
+            self.wake_woken_guests(&mut host);
             host = self.lan_process_events(host, events, state.as_ref(), entities, spawn);
             host.states = states;
         }
@@ -2725,11 +2726,12 @@ impl Game<'_> {
         let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
         for (conn, m) in &host.models {
             let entity_start = out.len();
-            let light = self.world.light(
-                m.position.x.floor() as i32,
-                (m.position.y + 1.62).floor() as i32,
-                m.position.z.floor() as i32,
+            let probe = super::perspective::entity_light_block(
+                m.position,
+                m.extra.crouching,
+                m.eye_height(),
             );
+            let light = self.world.light(probe[0], probe[1], probe[2]);
             let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
             horizon_client::mobs::render::render_with(
                 m,
