@@ -60,6 +60,11 @@ struct Flags {
     entity_distance: AtomicU32,
     /// `MinecraftServer.isCurrentlySaving`: the server is autosaving.
     saving: AtomicBool,
+    /// The generators of the levels the server has run, by dimension: what
+    /// F3's chunk generation entry asks `ServerChunkCache.getGenerator`.
+    terrain: Mutex<
+        std::collections::HashMap<&'static str, Arc<horizon_client::vanillagen::VanillaTerrain>>,
+    >,
     /// What the server's `LevelLoadListener` reports, for the window's
     /// `LevelLoadingScreen` (`LevelLoadTracker.serverProgress/statusView`).
     load: Arc<horizon_client::level_loading::ServerLoadView>,
@@ -77,6 +82,13 @@ pub(super) struct Integrated {
     pub world_name: String,
 }
 impl Integrated {
+    /// The generator of the server's level in `dimension`, once it has run.
+    pub fn terrain(
+        &self,
+        dimension: &str,
+    ) -> Option<Arc<horizon_client::vanillagen::VanillaTerrain>> {
+        self.flags.terrain.lock().ok()?.get(dimension).cloned()
+    }
     /// The server's load progress and chunk status map.
     pub fn load_view(&self) -> &Arc<horizon_client::level_loading::ServerLoadView> {
         &self.flags.load
@@ -567,6 +579,11 @@ impl Game<'_> {
                     self.debug_charts.smoothed_tick_ms.to_bits(),
                     Ordering::Relaxed,
                 );
+                if let (Some(terrain), Ok(mut terrains)) =
+                    (self.end.locator(), flags.terrain.lock())
+                {
+                    terrains.insert(self.dim.id(), terrain);
+                }
             }
             self.apply_publish();
             self.publish_load_view();
@@ -586,6 +603,8 @@ impl Game<'_> {
         ready: &Sender<Ready>,
         opening: Opening,
     ) -> Result<()> {
+        // MinecraftServer.loadLevel's start: nothing is loaded yet.
+        self.native_server_about_to_start(false);
         self.native_lifecycle_open_started();
         // `load_world`, with the world `serve` started preparing.
         self.join_world_rest()?;
@@ -681,6 +700,8 @@ impl Game<'_> {
     fn stop_integrated(&mut self) -> Result<()> {
         // The close request: lifecycle observation stops.
         self.native_lifecycle.begin_close();
+        // MinecraftServer.stopServer's start: everyone is still here.
+        self.native_server_stopping(false);
         // IntegratedServer.stopServer: teardownPublishedState.
         if let Some(s) = self.serving.take() {
             s.flags.published.store(0, Ordering::Relaxed);
@@ -965,7 +986,8 @@ impl Game<'_> {
                 .find(|g| g.uuid == owner)
                 .map(|g| g.conn)
         {
-            host.hub.set_game_mode(conn, mode);
+            host.hub
+                .set_game_mode(conn, mode, &self.world, Some(self.collision));
         }
     }
     /// `IntegratedServer.setWorldAllowCommands`: the owner is an operator

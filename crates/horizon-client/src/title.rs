@@ -374,6 +374,7 @@ pub enum Action {
     },
     Connect {
         address: String,
+        lan: bool,
     },
     /// Create World's Data Packs screen on the new world's pack folder.
     DataPacks {
@@ -1959,6 +1960,18 @@ impl Title {
         cursor: (f32, f32),
         hide_splash: bool,
     ) {
+        self.draw_with_items(atlas, None, batch, cursor, hide_splash);
+    }
+    /// [`Title::draw`] with the item models, which draw the item icons of the
+    /// Superflat screens the way `GuiGraphics.renderItem` does.
+    pub fn draw_with_items(
+        &self,
+        atlas: &HudAtlas,
+        items: Option<&crate::item_render::ItemRenderer>,
+        batch: &mut HudBatch,
+        cursor: (f32, f32),
+        hide_splash: bool,
+    ) {
         let (w, h) = (batch.width.ceil(), batch.height.ceil());
         if let Some(rules) = self.rules.borrow_mut().as_mut() {
             return rules.draw(batch, atlas, cursor);
@@ -2198,7 +2211,7 @@ impl Title {
                 options,
                 ..
             } => self.draw_create(atlas, batch, cursor, name, seed, *focus, options),
-            Mode::CreateFlat { flat, .. } => flat::draw(self, atlas, batch, cursor, flat),
+            Mode::CreateFlat { flat, .. } => flat::draw(self, atlas, items, batch, cursor, flat),
             Mode::Edit { name, focused, .. } => {
                 crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
                 centered(
@@ -2865,7 +2878,9 @@ impl Title {
                     self.mode = Mode::Main;
                     Action::None
                 }
-                crate::multiplayer::Outcome::Connect(address) => Action::Connect { address },
+                crate::multiplayer::Outcome::Connect { address, lan } => {
+                    Action::Connect { address, lan }
+                }
                 crate::multiplayer::Outcome::None => Action::None,
             },
             (Mode::Main, Some(5)) => {
@@ -2985,6 +3000,7 @@ impl Title {
                             &level,
                             world.commands,
                             &self.saves.join(&world.folder),
+                            &self.resources,
                         );
                         self.mode = Mode::Create {
                             name: level.name,
@@ -3331,7 +3347,9 @@ impl Title {
         match &self.mode {
             Mode::Create { .. } => self.create_action(),
             Mode::Multiplayer(screen) => match screen.confirm() {
-                crate::multiplayer::Outcome::Connect(address) => Action::Connect { address },
+                crate::multiplayer::Outcome::Connect { address, lan } => {
+                    Action::Connect { address, lan }
+                }
                 _ => Action::None,
             },
             _ => Action::None,
@@ -3469,27 +3487,39 @@ impl Title {
                 .as_ref()
                 .and_then(|s| s.click(atlas, cursor, size));
             match click {
+                // ExperimentsScreen: a switch only flips the screen's own
+                // list; the selection is written back when Done is pressed.
                 Some(experiments::Click::Switch(i)) => {
-                    let flipped = self
+                    if let Some(f) = self
                         .experiments
                         .borrow_mut()
                         .as_mut()
                         .and_then(|s| s.flags.get_mut(i))
-                        .map(|f| {
-                            f.enabled = !f.enabled;
-                            (f.id.clone(), f.enabled)
-                        });
-                    if let (Some((id, on)), Mode::Create { options, .. }) =
-                        (flipped, &mut self.mode)
                     {
-                        options.data_packs.retain(|p| p != &id);
-                        if on {
-                            options.data_packs.push(id);
-                        }
+                        f.enabled = !f.enabled;
                     }
                     return true;
                 }
                 Some(experiments::Click::Outcome(outcome)) => {
+                    // ExperimentsScreen.onDone: the other packs keep their
+                    // order, the selected features are appended in reverse
+                    // screen order. Cancel drops the switches.
+                    if outcome == experiments::Outcome::Done
+                        && let Mode::Create { options, .. } = &mut self.mode
+                        && let Some(flags) = self.experiments.borrow().as_ref().map(|s| {
+                            s.flags
+                                .iter()
+                                .map(|f| (f.id.clone(), f.enabled))
+                                .collect::<Vec<_>>()
+                        })
+                    {
+                        for (id, _) in &flags {
+                            options.data_packs.retain(|p| p != id);
+                        }
+                        for (id, _) in flags.iter().rev().filter(|(_, e)| *e) {
+                            options.data_packs.push(id.clone());
+                        }
+                    }
                     *self.experiments.get_mut() = None;
                     // `applyNewPackConfig`'s load screen: the data is read
                     // again for the packs the screen picked (Done only).
