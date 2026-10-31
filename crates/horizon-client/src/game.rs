@@ -7544,6 +7544,11 @@ impl Game<'_> {
                 self.audio.play(sound, None, 1.0, 1.0);
             }
         }
+        if let Some(title) = &self.title {
+            for found in title.lan_found_narrations((w, h)) {
+                self.say_system_queued(&found);
+            }
+        }
         if self.title.is_some() {
             // TitleScreen.extractRenderState, then ToastManager over it: vanilla
             // draws the toast manager on every screen, so a pack download or a

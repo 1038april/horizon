@@ -1078,6 +1078,14 @@ impl Title {
             }
         })
     }
+    /// The server list's narration of LAN worlds found since the last call
+    /// (`JoinMultiplayerScreen.tick`'s `updateNetworkServers`).
+    pub fn lan_found_narrations(&self, size: (f32, f32)) -> Vec<Text> {
+        match &self.mode {
+            Mode::Multiplayer(screen) => screen.lan_found_narrations(size),
+            _ => Vec::new(),
+        }
+    }
     /// Whether the system toast holds the `ToastManager`'s first slot.
     pub fn has_toast(&self) -> bool {
         self.toast.is_some()
