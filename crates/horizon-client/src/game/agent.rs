@@ -424,6 +424,7 @@ impl Game<'_> {
             Screen::CommandBlock => "command-block",
             Screen::BlockEditor => "block-editor",
             Screen::Win => "win",
+            Screen::DebugOptions => "debug-options",
         }
     }
     pub(super) fn inventory_counts(&self) -> BTreeMap<String, i64> {
@@ -603,6 +604,17 @@ impl Game<'_> {
             Mode::BackupBeforeUpgrade { world, .. } => {
                 json!({ "mode": "backup-before-upgrade", "folder": world.folder, "name": world.name })
             }
+            Mode::OptimizeConfirm {
+                world, erase_cache, ..
+            } => {
+                json!({ "mode": "optimize-world-confirm", "folder": world.folder, "name": world.name, "erase_cache": erase_cache })
+            }
+            Mode::Optimize { world } => {
+                json!({ "mode": "optimize-world", "folder": world.folder, "name": world.name })
+            }
+            Mode::LowDiskSpace { world } => {
+                json!({ "mode": "low-disk-space", "folder": world.folder, "name": world.name })
+            }
             Mode::Recover { world, issues } => {
                 let issue = |i: &Option<horizon_client::save::DatIssue>| match i {
                     None => json!(null),
@@ -627,6 +639,7 @@ impl Game<'_> {
                 json!({ "mode": "multiplayer-warning", "check": check })
             }
             Mode::Onboarding(_) => json!({ "mode": "accessibility-onboarding" }),
+            Mode::BanNotice(_) => json!({ "mode": "ban-notice" }),
         }
     }
 

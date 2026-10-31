@@ -2,13 +2,13 @@
 use super::{
     biome::BiomeId,
     block_feature::FeatureBlockBindings,
-    generator::{ChunkWork, GeneratorData, GeneratorError},
+    generator::{ChunkWork, GeneratorData, GeneratorError, shard_of},
     structure::{
         StructureResources,
         jigsaw::PoolPiece,
         start::{
             Piece, Rings, StartContext, StructureRegistry, StructureStart, beardifier,
-            create_starts,
+            create_starts, try_generate,
         },
         stronghold::RingSearch,
     },
@@ -19,7 +19,7 @@ use std::collections::BTreeMap;
 use std::{
     collections::{BTreeSet, HashMap},
     sync::{
-        Arc, Condvar, Mutex, OnceLock, RwLock,
+        Arc, Condvar, Mutex, OnceLock, RwLock, TryLockError,
         atomic::{AtomicUsize, Ordering},
     },
 };
@@ -130,9 +130,7 @@ impl StartCache {
         }
     }
     fn shard(&self, key: (i32, i32)) -> &RwLock<HashMap<(i32, i32), Starts>> {
-        let hash =
-            (key.0 as u32).wrapping_mul(0x9E37_79B9) ^ (key.1 as u32).wrapping_mul(0x85EB_CA6B);
-        &self.shards[(hash >> (32 - START_SHARDS.trailing_zeros())) as usize]
+        &self.shards[shard_of(key, START_SHARDS)]
     }
     fn get(&self, key: (i32, i32)) -> Option<Starts> {
         self.shard(key).read().unwrap().get(&key).cloned()
@@ -288,16 +286,31 @@ impl StructureState {
         context: &mut impl super::structure::start::StartContext,
         chunk: ChunkPos,
     ) -> Starts {
+        self.build_starts(context, chunk, true)
+            .expect("waits for another worker's build")
+    }
+    /// `starts_at`, or `None` when another worker is building them and
+    /// `wait` is false.
+    fn build_starts(
+        &self,
+        context: &mut impl super::structure::start::StartContext,
+        chunk: ChunkPos,
+        wait: bool,
+    ) -> Option<Starts> {
         if let Some(found) = self.starts.get((chunk.x, chunk.z)) {
-            return found;
+            return Some(found);
         }
         // Ring searches enlist other workers and wait for them: never hold a
         // chunk-work lock while helping, even when this chunk has no starts.
         let rings = self.rings_for(context, chunk);
         let work = self.start_work.at((chunk.x, chunk.z));
-        let _work = work.lock().unwrap();
+        let _work = match work.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::WouldBlock) if !wait => return None,
+            Err(_) => work.lock().unwrap(),
+        };
         if let Some(found) = self.starts.get((chunk.x, chunk.z)) {
-            return found;
+            return Some(found);
         }
         let starts: Starts = Arc::new(
             create_starts(
@@ -313,7 +326,29 @@ impl StructureState {
             .map(Arc::new)
             .collect(),
         );
-        self.starts.insert_first((chunk.x, chunk.z), starts)
+        Some(self.starts.insert_first((chunk.x, chunk.z), starts))
+    }
+    /// `Structure.generate` for `/place structure`: the start `structure`
+    /// builds in `chunk`, whether or not a structure set would place one
+    /// there (vanilla calls the structure's own generate, not the set's
+    /// placement, with its `biome -> true` predicate). Nothing is cached: the
+    /// chunk's own starts are untouched.
+    pub(super) fn structure_start(
+        &self,
+        context: &mut impl StartContext,
+        structure: &str,
+        chunk: ChunkPos,
+    ) -> Option<StructureStart> {
+        let index = (self.registry.structures.iter()).position(|s| s.name == structure)?;
+        try_generate(
+            &self.registry,
+            &self.resources,
+            &self.bindings,
+            context,
+            index,
+            chunk,
+            true,
+        )
     }
     /// Puts a saved start of `structure` in `chunk`, in place of the one
     /// this generator builds there from the same structure sets (a set
@@ -357,13 +392,16 @@ impl StructureState {
     /// ChunkGenerator.findNearestMapStructure: the nearest start of one of
     /// `names` from block `from` (rings: every ring chunk; random spreads:
     /// sectors in growing squares up to `radius`). Returns the structure and
-    /// its locate position (the start chunk's corner at y 0).
+    /// its locate position (the start chunk's corner at y 0). `skip` says a
+    /// start (structure name, its chunk) can't be referenced again
+    /// (`StructureStart.canBeReferenced`): the search goes on past it.
     pub(super) fn locate(
         &self,
         context: &mut impl super::structure::start::StartContext,
         names: &[String],
         from: [i32; 3],
         radius: i32,
+        skip: &dyn Fn(&str, ChunkPos) -> bool,
     ) -> Option<(String, [i32; 3])> {
         let seed = context.seed();
         let rings = self.rings(context).clone();
@@ -376,7 +414,7 @@ impl StructureState {
         let found_at = |this: &Self, context: &mut _, chunk: ChunkPos| -> Option<String> {
             this.starts_at(context, chunk)
                 .iter()
-                .find(|s| wanted(s.structure))
+                .find(|s| wanted(s.structure) && !skip(&s.name, chunk))
                 .map(|s| s.name.clone())
         };
         for &si in &self.possible_sets {
@@ -390,20 +428,19 @@ impl StructureState {
                     let Some(chunks) = rings.get(&set.name) else {
                         continue;
                     };
-                    let mut nearest: Option<(f64, ChunkPos)> = None;
+                    let mut nearest: Option<(f64, ChunkPos, String)> = None;
                     for &c in chunks {
                         let d = dist([c.x * 16 + 8, 32, c.z * 16 + 8]);
-                        if nearest.is_none_or(|(n, _)| d < n)
+                        if nearest.as_ref().is_none_or(|(n, ..)| d < *n)
                             && self
                                 .registry
                                 .is_structure_chunk(set, seed, c.x, c.z, &rings)
+                            && let Some(name) = found_at(self, context, c)
                         {
-                            nearest = Some((d, c));
+                            nearest = Some((d, c, name));
                         }
                     }
-                    if let Some((_, c)) = nearest
-                        && let Some(name) = found_at(self, context, c)
-                    {
+                    if let Some((_, c, name)) = nearest {
                         let p = set.locate_pos(c);
                         let d = dist(p);
                         if best.as_ref().is_none_or(|(b, ..)| d < *b) {
@@ -455,18 +492,23 @@ impl StructureState {
         chunk: ChunkPos,
     ) -> Vec<Arc<StructureStart>> {
         let (bx, bz) = (chunk.x * 16, chunk.z * 16);
+        let around: Vec<ChunkPos> = (chunk.x - 8..=chunk.x + 8)
+            .flat_map(|sx| (chunk.z - 8..=chunk.z + 8).map(move |sz| ChunkPos::new(sx, sz)))
+            .collect();
+        // Workers generating neighbouring chunks ask for the same starts in the
+        // same order: build those no other worker is building first, and wait
+        // for the others only then, rather than all queueing behind each one.
+        let found: Vec<Option<Starts>> = around
+            .iter()
+            .map(|&at| self.build_starts(context, at, false))
+            .collect();
         let mut out = Vec::new();
-        for sx in chunk.x - 8..=chunk.x + 8 {
-            for sz in chunk.z - 8..=chunk.z + 8 {
-                for start in self.starts_at(context, ChunkPos::new(sx, sz)).iter() {
-                    let b = start.bounding_box;
-                    if b.max[0] >= bx
-                        && b.min[0] <= bx + 15
-                        && b.max[2] >= bz
-                        && b.min[2] <= bz + 15
-                    {
-                        out.push(start.clone());
-                    }
+        for (&at, found) in around.iter().zip(found) {
+            let starts = found.unwrap_or_else(|| self.starts_at(context, at));
+            for start in starts.iter() {
+                let b = start.bounding_box;
+                if b.max[0] >= bx && b.min[0] <= bx + 15 && b.max[2] >= bz && b.min[2] <= bz + 15 {
+                    out.push(start.clone());
                 }
             }
         }

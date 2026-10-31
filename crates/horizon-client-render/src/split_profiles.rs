@@ -407,7 +407,7 @@ impl SplitProfiles {
     }
 
     /// A key: true when the page took it. On New Profile Escape goes back to the list and Enter
-    /// creates; on the list Escape is the options screen's (it closes the page).
+    /// creates; on the list Escape is the options screen's (it closes the page) and counts as Cancel.
     pub fn key(&mut self, key: winit::keyboard::KeyCode, text: Option<&str>) -> bool {
         use winit::keyboard::KeyCode as K;
         if self.forgetting.is_some() {
@@ -417,6 +417,10 @@ impl SplitProfiles {
             return true;
         }
         let Some(field) = &mut self.new else {
+            // The options screen closes the page: the game hears it as Cancel.
+            if key == K::Escape {
+                self.choice = Some(None);
+            }
             return false;
         };
         match key {
@@ -612,5 +616,10 @@ mod tests {
         press(&mut p, &atlas, "New Profile...");
         assert!(p.key(winit::keyboard::KeyCode::Escape, None));
         assert!(!p.key(winit::keyboard::KeyCode::Escape, None));
+        assert_eq!(
+            p.take_choice(),
+            Some(None),
+            "Escape on the list cancels, as Cancel does"
+        );
     }
 }
