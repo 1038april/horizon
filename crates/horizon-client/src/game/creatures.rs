@@ -1548,9 +1548,10 @@ impl Game<'_> {
                     at,
                     effects,
                     hidden,
+                    ambient,
                     color,
                 } => {
-                    self.spawn_creeper_cloud(at, effects, hidden, color);
+                    self.spawn_creeper_cloud(at, effects, hidden, ambient, color);
                 }
                 MobEvent::Explode(at, radius, species) => {
                     // The exploding mob causes the damage (Creeper.explodeCreeper).

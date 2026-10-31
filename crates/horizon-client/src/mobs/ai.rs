@@ -2446,6 +2446,9 @@ fn tick_effects(m: &mut Mob) {
     m.extra
         .hidden_effects
         .retain(|h| effects.iter().any(|e| e.0 == *h));
+    m.extra
+        .ambient_effects
+        .retain(|h| effects.iter().any(|e| e.0 == *h));
     m.extra.effects = effects;
 }
 

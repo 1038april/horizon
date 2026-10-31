@@ -60,6 +60,8 @@ pub(super) struct PotionCloud {
     /// The effects above that were added hidden (`MobEffectInstance.isVisible` false: no
     /// particles); the instances the cloud applies are copies and keep that.
     hidden: Vec<&'static str>,
+    /// The effects above that were ambient (`MobEffectInstance.isAmbient`).
+    ambient: Vec<&'static str>,
     /// `AreaEffectCloud.radiusPerTick`: `-radius / duration` when it was made.
     radius_per_tick: f32,
     /// The potion's colour (`PotionContents.getColor`).
@@ -1033,7 +1035,13 @@ impl Game<'_> {
                 continue;
             }
             potion.victims.push((victim, c.age + REAPPLICATION_DELAY));
-            self.cloud_affect(victim, &effects, &potion.hidden, c.at, &potion.source);
+            self.cloud_affect(
+                victim,
+                &effects,
+                (&potion.hidden, &potion.ambient),
+                c.at,
+                &potion.source,
+            );
             // setRadiusOnUse(-0.5).
             c.radius -= 0.5;
             if c.radius < 0.5 {
@@ -1050,6 +1058,7 @@ impl Game<'_> {
         at: [f64; 3],
         effects: Vec<(&'static str, i32, i32)>,
         hidden: Vec<&'static str>,
+        ambient: Vec<&'static str>,
         color: u32,
     ) {
         self.breath_clouds.push(Breath {
@@ -1062,6 +1071,7 @@ impl Game<'_> {
             potion: Some(PotionCloud {
                 effects,
                 hidden,
+                ambient,
                 radius_per_tick: -2.5 / 300.0,
                 color,
                 victims: Vec::new(),
@@ -1076,7 +1086,7 @@ impl Game<'_> {
         &mut self,
         victim: Victim,
         effects: &[(&'static str, i32, i32)],
-        hidden: &[&'static str],
+        (hidden, ambient): (&[&'static str], &[&'static str]),
         at: [f64; 3],
         source: &Text,
     ) {
@@ -1102,6 +1112,7 @@ impl Game<'_> {
                     } else {
                         let mut instance = EffectInstance::new(e.id, scaled(*duration), *amp);
                         instance.visible = !hidden.contains(id);
+                        instance.ambient = ambient.contains(id);
                         g.add_player_effect(instance);
                     }
                 }
@@ -1134,10 +1145,13 @@ impl Game<'_> {
                             if mob_can_be_affected(tags, &m.kind.id, id)
                                 && let Some(name) = mob_effect_id(id)
                             {
-                                m.add_effect(name, scaled(*duration), *amp);
-                                if hidden.contains(id) && !m.extra.hidden_effects.contains(&name) {
-                                    m.extra.hidden_effects.push(name);
-                                }
+                                m.add_effect_with(
+                                    name,
+                                    scaled(*duration),
+                                    *amp,
+                                    ambient.contains(id),
+                                    !hidden.contains(id),
+                                );
                             }
                         }
                     }
@@ -1382,6 +1396,7 @@ impl Game<'_> {
                     potion: Some(PotionCloud {
                         effects: def.effects.to_vec(),
                         hidden: Vec::new(),
+                        ambient: Vec::new(),
                         radius_per_tick: -3.0 / 600.0,
                         color,
                         victims: Vec::new(),

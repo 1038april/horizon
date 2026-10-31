@@ -918,6 +918,9 @@ pub struct Extra {
     pub effects: Vec<(&'static str, i32, i32)>,
     /// The effects above given with `hideParticles`: no swirls for them.
     pub hidden_effects: Vec<&'static str>,
+    /// The effects above that are ambient (`MobEffectInstance.isAmbient`: a beacon's), whose swirls
+    /// are faint.
+    pub ambient_effects: Vec<&'static str>,
     /// `LivingEntity.DATA_EFFECT_PARTICLES` and `DATA_EFFECT_AMBIENCE_ID` as a
     /// server gave them: the swirls around it, and whether they are all faint.
     pub effect_particles: Vec<crate::particles::ParticleOptions>,
@@ -1345,6 +1348,8 @@ pub enum MobEvent {
         effects: Vec<(&'static str, i32, i32)>,
         /// The effects among them added hidden (`hideParticles`).
         hidden: Vec<&'static str>,
+        /// The effects among them that are ambient.
+        ambient: Vec<&'static str>,
         color: u32,
     },
     /// Melee or ranged damage to another mob.
@@ -2778,6 +2783,49 @@ impl Mob {
     pub fn is_invisible(&self) -> bool {
         self.invisible || self.has_effect("minecraft:invisibility")
     }
+    /// `LivingEntity.addEffect` of a `MobEffectInstance` with its flags: the effect as
+    /// `add_effect` has it, and `MobEffectInstance.update`'s rules for the flags of one already
+    /// there: it takes the new ambient flag when the new one is not ambient or the effect
+    /// changed, and always the new visibility.
+    pub fn add_effect_with(
+        &mut self,
+        effect: &'static str,
+        ticks: i32,
+        amplifier: i32,
+        ambient: bool,
+        visible: bool,
+    ) {
+        let effect = horizon_client_core::potions::namespaced(effect);
+        let before = self
+            .extra
+            .effects
+            .iter()
+            .find(|e| e.0 == effect)
+            .map(|e| (e.1, e.2));
+        self.add_effect(effect, ticks, amplifier);
+        let after = self
+            .extra
+            .effects
+            .iter()
+            .find(|e| e.0 == effect)
+            .map(|e| (e.1, e.2));
+        let present_ambient = self.extra.ambient_effects.contains(&effect);
+        // A new effect takes its flags as they are; one already there by update's rules.
+        let take_ambient = match before {
+            None => true,
+            Some(_) => (!ambient && present_ambient) || before != after,
+        };
+        if take_ambient {
+            self.extra.ambient_effects.retain(|h| *h != effect);
+            if ambient {
+                self.extra.ambient_effects.push(effect);
+            }
+        }
+        self.extra.hidden_effects.retain(|h| *h != effect);
+        if !visible {
+            self.extra.hidden_effects.push(effect);
+        }
+    }
     pub fn add_effect(&mut self, effect: &'static str, ticks: i32, amplifier: i32) {
         let effect = horizon_client_core::potions::namespaced(effect);
         if let Some(e) = self.extra.effects.iter_mut().find(|e| e.0 == effect) {
@@ -3718,6 +3766,36 @@ mod magic_absorb_tests {
         k.id = "minecraft:witch".into();
         k.species = Species::Witch;
         Mob::new(1, kind, Vec3::ZERO, 0.0)
+    }
+
+    /// `MobEffectInstance.update` for the flags of an effect a mob has: a new instance that is
+    /// not ambient takes the ambient flag off an ambient one, one that is ambient does not unless
+    /// the effect itself changes, and visibility is always the new instance's.
+    #[test]
+    fn an_effect_added_again_updates_its_ambient_and_visible_flags_as_vanilla() {
+        let mut m = witch();
+        let speed = "minecraft:speed";
+        // A new effect takes its flags as they are.
+        m.add_effect_with("speed", 600, 0, true, false);
+        assert!(
+            m.extra.ambient_effects.contains(&speed) && m.extra.hidden_effects.contains(&speed)
+        );
+        // The same effect, no stronger and no longer, ambient again and visible: ambient stays
+        // (nothing changed), the visibility follows.
+        m.add_effect_with("speed", 100, 0, true, true);
+        assert_eq!(m.extra.effects, vec![(speed, 600, 0)]);
+        assert!(
+            m.extra.ambient_effects.contains(&speed) && !m.extra.hidden_effects.contains(&speed)
+        );
+        // Not ambient: it takes the flag off, though nothing else changed.
+        m.add_effect_with("speed", 100, 0, false, true);
+        assert!(!m.extra.ambient_effects.contains(&speed));
+        // Ambient over a not ambient one that does not change: not taken; one that changes: taken.
+        m.add_effect_with("speed", 100, 0, true, true);
+        assert!(!m.extra.ambient_effects.contains(&speed));
+        m.add_effect_with("speed", 900, 0, true, true);
+        assert!(m.extra.ambient_effects.contains(&speed));
+        assert_eq!(m.extra.effects, vec![(speed, 900, 0)]);
     }
 
     /// `Witch.getDamageAfterMagicAbsorb`: `#witch_resistant_to` (`magic`,

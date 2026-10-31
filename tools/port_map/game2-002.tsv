@@ -53,7 +53,7 @@ Creeper.getMaxFallDistance	missing		minor: the creeper's own comfortable fall di
 Creeper.defineSynchedData	skip:other		swell, powered and ignited are Mob fields
 Creeper.addAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	gap: minor: Fuse and ExplosionRadius are written as constants 30 and 3, not the creeper's values
 Creeper.thunderHit	port	crates/horizon-client/src/game/lightning.rs::Game::thunder_hit	
-Creeper.spawnLingeringCloud	port	crates/horizon-client/src/mobs/hostile.rs::explode	MobEvent::LingeringCloud after the Explode: radius 2.5, wait 10, 300 ticks, -radius/duration a tick, the creeper's effects at 0.25 of their duration (game/potions.rs::spawn_creeper_cloud); the effects' visible flag is carried to the cloud and to what it affects; gap: minor: the ambient flag (a mob keeps none)
+Creeper.spawnLingeringCloud	port	crates/horizon-client/src/mobs/hostile.rs::explode	MobEvent::LingeringCloud after the Explode: radius 2.5, wait 10, 300 ticks, -radius/duration a tick, the creeper's effects at 0.25 of their duration with their ambient and visible flags (game/potions.rs::spawn_creeper_cloud); a mob keeps ambient_effects now (NBT, /effect, expiry, conversion, the synchronized particles)
 ElderGuardian.createAttributes	skip:data		attribute defaults come from data tables
 Enderman.registerGoals	port	crates/horizon-client/src/mobs/enderman.rs::register	gap: minor: no anger-reset target goal (priority 4)
 Enderman.createAttributes	skip:data		attribute defaults come from data tables
