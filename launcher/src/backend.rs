@@ -2896,6 +2896,9 @@ pub enum Msg {
     PackDone(Result<Box<crate::modpacks::Imported>, String>),
     /// How many play Horizon now, or none when the server can't be reached (`telemetry`).
     Playing(Option<u64>),
+    /// How many play on the official server now, or none when it doesn't answer its status ping
+    /// (`telemetry::watch_official`).
+    OfficialPlayers(Option<u64>),
     /// Where the native-mods build is (`native_mods::Step::label`).
     NativeProgress(String),
     /// The native-mods build ended: the version built, or why not.
