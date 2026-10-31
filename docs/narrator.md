@@ -128,7 +128,10 @@ vanilla's widget trees but not always all the way:
   them; most follow vanilla's add order, a few approximate it.
 - Some screens narrate less than vanilla's: a dialog's body text, the
   command box's suggestion list (`narration.suggestion`), the stats screen
-  while it loads, and the server list's "incompatible version" status.
+  while it loads (and the focus it gives its tabs once loaded), and the
+  server list's "incompatible version" status.
+- A click focuses the widget under the mouse even where a scrolled list
+  hides it behind the header or footer.
 - The macOS backend has no `crashed` state: a failing synthesizer message
   would end vanilla's narration for good, and raises nothing in Horizon.
 - The first narration of a screen runs after its first frame (vanilla's runs
