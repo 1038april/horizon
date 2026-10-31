@@ -27,7 +27,7 @@ use horizon_client::{
     inv_sort,
     items::ItemStack,
     keybinds,
-    menu::Input,
+    menu::{Env, Input, Menu},
     stations::hover_name,
 };
 use winit::{event::MouseButton, keyboard::KeyCode};
@@ -246,6 +246,27 @@ impl Game<'_> {
         }
         true
     }
+    /// A Shift click on a stack a full furnace, blast furnace or smoker
+    /// refuses: Horizon moves it between the hotbar and the inventory, where
+    /// vanilla leaves it. Always on, whatever the extras say, and made of
+    /// ordinary clicks because the server's own quick move wouldn't move it.
+    /// True when it took the click.
+    pub(super) fn furnace_overflow(&mut self, slot: usize) -> bool {
+        let landing = self.landing_of(slot, |menu, env, from| {
+            menu.furnace_overflow_landing(env, from)
+        });
+        if landing.is_empty() || !self.tweak_click(slot, 0, Input::Pickup) {
+            return false;
+        }
+        for target in landing {
+            self.tweak_put(target, false);
+        }
+        // What didn't fit goes back where it was.
+        if self.carried.is_some() {
+            self.tweak_put(slot, false);
+        }
+        true
+    }
     /// `slot` is a result slot of the open menu.
     fn tweak_result(&mut self, slot: usize) -> bool {
         let mut result = false;
@@ -267,12 +288,19 @@ impl Game<'_> {
     /// Where vanilla's quick move would put `slot`'s items, tried on a copy
     /// of the menu that's dropped (`Some(false)` keeps nothing).
     fn tweak_landing(&mut self, slot: usize) -> Vec<usize> {
+        self.landing_of(slot, |menu, env, from| menu.quick_move_landing(env, from))
+    }
+    /// The game slots of a landing the menu works out, on a copy that's dropped.
+    fn landing_of(
+        &mut self,
+        slot: usize,
+        menu_landing: impl FnOnce(&mut Menu, &Env, usize) -> Vec<usize>,
+    ) -> Vec<usize> {
         let slots = self.slots();
         let mut landing = Vec::new();
         self.menu_session(|menu, env, to_menu| {
             let from = to_menu(slot)?;
-            landing = menu
-                .quick_move_landing(env, from)
+            landing = menu_landing(menu, env, from)
                 .into_iter()
                 .filter_map(|i| slots.iter().copied().find(|&g| to_menu(g) == Some(i)))
                 .collect();

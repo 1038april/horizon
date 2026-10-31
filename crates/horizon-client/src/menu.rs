@@ -1390,6 +1390,61 @@ impl Menu {
         partial
     }
 
+    /// Horizon's own, not vanilla's: where a Shift click sends a stack that
+    /// `AbstractFurnaceMenu.quickMoveStack` leaves in place because its input
+    /// or fuel slot has no room. A smeltable fuel (a log) tries the fuel slot,
+    /// which vanilla never offers it. Otherwise it goes between the hotbar and
+    /// the inventory, as the items a furnace doesn't take do: partial stacks
+    /// first, then the first empty slot. Empty when vanilla moves it or nothing
+    /// has room. This runs the move, so call it on a menu that is thrown away
+    /// afterwards.
+    pub fn furnace_overflow_landing(&mut self, env: &Env, index: usize) -> Vec<usize> {
+        let Kind::Furnace(recipe) = self.kind else {
+            return Vec::new();
+        };
+        if self.carried.is_some() || !(3..39).contains(&index) {
+            return Vec::new();
+        }
+        let Some(mut stack) = self.slot(index).cloned() else {
+            return Vec::new();
+        };
+        let smelts = env
+            .recipes
+            .cook(&format!("minecraft:{recipe}"), &stack)
+            .is_some();
+        let fuel = Self::is_fuel(env, &stack);
+        if !smelts && !fuel {
+            return Vec::new();
+        }
+        if self.takes_one(env, if smelts { 0 } else { 1 }, &stack) {
+            return Vec::new();
+        }
+        let range = if smelts && fuel && self.takes_one(env, 1, &stack) {
+            1..2
+        } else if index < 30 {
+            30..39
+        } else {
+            3..30
+        };
+        let before: Vec<u32> = range
+            .clone()
+            .map(|i| self.slot(i).map_or(0, |s| s.count))
+            .collect();
+        self.move_to(env, &mut stack, range.start, range.end, false);
+        let (mut partial, mut empty) = (Vec::new(), Vec::new());
+        for (i, had) in range.zip(before) {
+            if self.slot(i).map_or(0, |s| s.count) > had {
+                if had > 0 {
+                    partial.push(i);
+                } else {
+                    empty.push(i);
+                }
+            }
+        }
+        partial.extend(empty);
+        partial
+    }
+
     /// `Slot.getMaxStackSize(stack)`.
     fn slot_max(&self, env: &Env, s: usize, stack: &ItemStack) -> u32 {
         let own = match self.slots[s].role {
@@ -3154,6 +3209,97 @@ pub(crate) mod tests {
             assert_eq!(landing("dirt", 5, 3), [30]);
             // Out of the fuel slot: moveItemStackTo(3, 39, false).
             assert_eq!(landing("coal", 5, 1), [3]);
+        });
+    }
+
+    #[test]
+    fn furnace_overflow_goes_between_the_hotbar_and_the_inventory() {
+        with_menu(Kind::Furnace("blasting"), |env, menu| {
+            menu.creative = false;
+            // A full input: vanilla leaves the stack, the hotbar's goes to the
+            // inventory's top left, the inventory's to the hotbar's left.
+            menu.set_slot(env, 0, stack("raw_iron", 64));
+            menu.set_slot(env, 30, stack("raw_iron", 5));
+            menu.click(env, 30, 0, Input::QuickMove).unwrap();
+            assert_eq!(menu.slot(30).map(|s| s.count), Some(5));
+            assert_eq!(menu.furnace_overflow_landing(env, 30), [3]);
+            menu.set_slot(env, 30, None);
+            menu.set_slot(env, 12, stack("raw_iron", 5));
+            assert_eq!(menu.furnace_overflow_landing(env, 12), [30]);
+        });
+        with_menu(Kind::Furnace("smelting"), |env, menu| {
+            menu.creative = false;
+            // An input holding another item is as full, and fuel works alike.
+            menu.set_slot(env, 0, stack("raw_gold", 1));
+            menu.set_slot(env, 30, stack("raw_iron", 5));
+            assert_eq!(menu.furnace_overflow_landing(env, 30), [3]);
+            menu.set_slot(env, 3, None);
+            menu.set_slot(env, 1, stack("coal", 64));
+            menu.set_slot(env, 31, stack("coal", 5));
+            assert_eq!(menu.furnace_overflow_landing(env, 31), [3]);
+        });
+        with_menu(Kind::Furnace("smelting"), |env, menu| {
+            menu.creative = false;
+            // Partial stacks first, past an empty slot.
+            menu.set_slot(env, 0, stack("raw_iron", 64));
+            menu.set_slot(env, 5, stack("raw_iron", 62));
+            menu.set_slot(env, 30, stack("raw_iron", 5));
+            assert_eq!(menu.furnace_overflow_landing(env, 30), [5, 3]);
+        });
+    }
+
+    #[test]
+    fn furnace_overflow_gives_a_smeltable_fuel_the_fuel_slot() {
+        with_menu(Kind::Furnace("smelting"), |env, menu| {
+            menu.creative = false;
+            menu.set_slot(env, 30, stack("oak_log", 5));
+            // An open input is vanilla's: the log is something to smelt.
+            assert!(menu.furnace_overflow_landing(env, 30).is_empty());
+            // A busy input: the fuel slot, empty or holding logs with room.
+            menu.set_slot(env, 0, stack("raw_iron", 1));
+            assert_eq!(menu.furnace_overflow_landing(env, 30), [1]);
+            menu.set_slot(env, 1, stack("oak_log", 62));
+            assert_eq!(menu.furnace_overflow_landing(env, 30), [1]);
+            // No room for fuel either: on to the inventory.
+            menu.set_slot(env, 1, stack("coal", 1));
+            assert_eq!(menu.furnace_overflow_landing(env, 30), [3]);
+        });
+        with_menu(Kind::Furnace("blasting"), |env, menu| {
+            menu.creative = false;
+            // Nothing to blast in a log: vanilla's own move to the fuel slot.
+            menu.set_slot(env, 0, stack("raw_iron", 1));
+            menu.set_slot(env, 30, stack("oak_log", 5));
+            assert!(menu.furnace_overflow_landing(env, 30).is_empty());
+        });
+    }
+
+    #[test]
+    fn furnace_overflow_leaves_what_vanilla_moves() {
+        with_menu(Kind::Furnace("smelting"), |env, menu| {
+            menu.creative = false;
+            // Room in the input, even for part of the stack.
+            menu.set_slot(env, 30, stack("raw_iron", 5));
+            assert!(menu.furnace_overflow_landing(env, 30).is_empty());
+            menu.set_slot(env, 0, stack("raw_iron", 63));
+            assert!(menu.furnace_overflow_landing(env, 30).is_empty());
+            // Not a furnace item, and the furnace's own slots.
+            menu.set_slot(env, 31, stack("dirt", 5));
+            assert!(menu.furnace_overflow_landing(env, 31).is_empty());
+            assert!(menu.furnace_overflow_landing(env, 0).is_empty());
+            // A stack in hand, or nowhere to go.
+            menu.set_slot(env, 0, stack("raw_iron", 64));
+            menu.carried = stack("dirt", 1);
+            assert!(menu.furnace_overflow_landing(env, 30).is_empty());
+            menu.carried = None;
+            for i in 3..30 {
+                menu.set_slot(env, i, stack("stone", 64));
+            }
+            assert!(menu.furnace_overflow_landing(env, 30).is_empty());
+        });
+        with_menu(Kind::Crafting, |env, menu| {
+            menu.creative = false;
+            menu.set_slot(env, 37, stack("raw_iron", 5));
+            assert!(menu.furnace_overflow_landing(env, 37).is_empty());
         });
     }
 

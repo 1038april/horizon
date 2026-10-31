@@ -7509,6 +7509,11 @@ impl Game<'_> {
         if let [(Some(slot), button, input)] = ops {
             self.crafter_slot_clicked(*slot, *button, *input);
         }
+        if let [(Some(slot), _, Input::QuickMove)] = ops
+            && self.furnace_overflow(*slot)
+        {
+            return true;
+        }
         let (container, menu) = self.remote_menu();
         let mut clicks = Vec::with_capacity(ops.len());
         for &(slot, button, input) in ops {
