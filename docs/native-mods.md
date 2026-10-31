@@ -140,6 +140,36 @@ frame. Nothing answered draws Horizon's own. Bundles that use it need `"hooks": 
 
 API 28 adds `native_block_in_tag` and `native_item_in_tag` for server tick hooks. They read the world's merged block and item tags, including data packs and content mods. An unknown tag returns false. An empty item stack tests the `minecraft:air` item, as vanilla does. Calls with an inactive or stale tick context return an error. Bundles that use them need `"hooks": 28`.
 
+API 29 adds right-clicking an entity, on the server for every player: `native_interact_entity` hears a right click on
+an entity (its id and type, and the stack in the hand) where `Player.interactOn` starts, once per hand. A mod that claims
+it swings the hand instead of the entity's and the item's own interaction. Bundles that use it need `"hooks": 29`.
+
+API 30 adds left-clicking a block, on the server for every player: `native_left_click_block` hears the start of a dig
+(the block, the face hit) once the game allowed it, before the block is attacked (a note block plays) or broken in
+creative. A mod that cancels it keeps the block: on the server it isn't attacked, dug or broken, and the player's client
+gets it back. The clicking player's own client still predicts the crack until then.
+Bundles that use it need `"hooks": 30`.
+
+API 31 adds a player's server tick: `native_player_tick` runs once a tick for every living player in the world, at the
+end of their `ServerPlayer.tick`, with the helpers reading that player. Bundles that use it need `"hooks": 31`.
+
+API 32 adds shape updates a mod can answer through `native_update_shape`: on an authoritative server, each time a
+block's state is worked out from a neighbour (`BlockBehaviour.updateShape`): neighbour shape updates after a
+`setBlock`, a block fitted to all its neighbours as a piston lands it or a chunk is post-processed, and the blocks at
+a feature's edge as it is placed in the live world, such as a tree grown from a sapling
+(`StructureTemplate.updateShapeAtEdge`). It gets the dimension, position, state, the neighbour's direction, position
+and state, before the block computes it. `state` may not be in the world yet (a piston landing it), so decide from
+`state`, not from the block at `pos`. Answer only for your own blocks and leave `new` empty otherwise: a state put
+there is the block's new state, applied as vanilla applies the result (air breaks the block, with its drops, on a
+neighbour update; post-processing and a feature's edge write air without drops), and the block's own `updateShape`
+doesn't run, nor the ticks it would schedule. The level is read-only, as vanilla's `LevelReader` is there; the hook
+schedules ticks with its `ticks` through the level's `native_schedule_block_tick(ticks, pos, block, delay)` and
+`native_schedule_fluid_tick(ticks, pos, fluid, delay)` (vanilla's `ScheduledTickAccess.scheduleTick`; false for an
+unknown name or a position that isn't loaded). It runs often, at least six times per `setBlock` that updates shapes
+(more for redstone wire's diagonals and knock-on updates): keep it short. A LAN guest shows vanilla's shape for a
+moment, until the server's update arrives. The deprecated in-frame path and chunk generation fire none. Bundles that
+use it need `"hooks": 32`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads

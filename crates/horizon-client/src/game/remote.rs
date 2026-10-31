@@ -835,6 +835,9 @@ impl Game<'_> {
         self.streaming.paused = true;
         self.world = World::new(self.res.facts().air, 0);
         self.player = None;
+        // The vehicle went with the level: an id kept here would seat the
+        // next login on an entity that is not there.
+        self.riding = None;
         // Out of the server's bed: InBedChatScreen goes with the level.
         self.sleeping = None;
         self.sleep_timer = 0;
@@ -2441,9 +2444,11 @@ impl Game<'_> {
                     r.reconfiguring = None;
                 }
                 // handleLogin makes a new MultiPlayerGameMode (carried index 0) and a
-                // new LocalPlayer (slot 0, no effects).
+                // new LocalPlayer (slot 0, no effects, riding nothing: the server
+                // pairs a vehicle again with ClientboundSetPassengersPacket).
                 self.selected = 0;
                 self.potions.effects.clear();
+                self.riding = None;
                 if let Some(r) = self.remote.as_mut() {
                     r.carried = Some(0);
                     r.own_invisible = false;
@@ -5365,6 +5370,10 @@ impl Game<'_> {
                 continue;
             }
             m.previous = m.position;
+            // `Entity.deltaMovementOnPreviousTick`: the elytra's flight yaw
+            // lerps from it, so another player's model does not snap when a
+            // new tick's velocity arrives.
+            m.extra.previous_velocity = m.velocity;
             m.previous_yaw = m.yaw;
             m.previous_body_yaw = m.body_yaw;
             m.previous_head_yaw = m.head_yaw;
@@ -8651,11 +8660,14 @@ mod tests {
 
     #[test]
     fn the_server_stopping_the_use_lowers_the_shield() {
-        // Player.disableShield's stopUsingItem: flags 0 while the off-hand
-        // shield is raised (LocalPlayer.onSyncedDataUpdated → stopUsingItem).
+        // Player.disableShield's stopUsingItem: flags 0 or 2 while the
+        // off-hand shield is raised (LocalPlayer.onSyncedDataUpdated →
+        // stopUsingItem). stopUsingItem clears bit 0 and leaves bit 1, so a
+        // main-hand stop is 0 and an off-hand stop is 2.
         let off = super::super::shield::OFFHAND_SLOT;
         assert_eq!(synced_local_use(Some((off, 12)), 0, 3, |_| true), None);
         assert_eq!(synced_local_use(Some((3, 5)), 0, 3, |_| true), None);
+        assert_eq!(synced_local_use(Some((off, 12)), 2, 3, |_| true), None);
     }
 
     #[test]
