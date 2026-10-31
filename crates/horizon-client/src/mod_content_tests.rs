@@ -81,6 +81,19 @@ fn install_test_components() {
 
 #[test]
 fn component_validation_isolates_mods() {
+    const CHILD: &str = "HORIZON_COMPONENT_ISOLATION_TEST";
+    if std::env::var_os(CHILD).is_none() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "mod_content::tests::component_validation_isolates_mods",
+            ])
+            .env(CHILD, "1")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        return;
+    }
     install_test_components();
     let scratch = std::env::temp_dir().join(format!(
         "horizon-component-isolation-{}",
