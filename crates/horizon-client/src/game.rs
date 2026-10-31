@@ -170,6 +170,7 @@ mod names;
 mod native_hooks;
 mod native_lifecycle;
 mod native_menus;
+mod native_mobs;
 mod native_panel;
 mod native_panel_recipes;
 mod native_recipes;
@@ -1036,6 +1037,28 @@ impl LevelAccess for GameLevel<'_> {
             self.native_piston_move(self.dimension, piston, step, push, destroy, &mut canceled);
         }
         !canceled
+    }
+    fn adjust_signal_source(&self, state: BlockStateId, vanilla: bool) -> bool {
+        let mut source = vanilla;
+        if self.native_authoritative {
+            self.native_is_signal_source(state, &mut source);
+        }
+        source
+    }
+    fn adjust_signal(
+        &self,
+        pos: BlockPos,
+        state: BlockStateId,
+        direction: Direction,
+        direct: bool,
+        vanilla: i32,
+    ) -> i32 {
+        let mut signal = vanilla;
+        if self.native_authoritative {
+            let face = direction.opposite();
+            self.native_block_signal(self.dimension, pos, state, face, direct, &mut signal);
+        }
+        signal.clamp(0, 15)
     }
     fn before_random_tick(
         &mut self,
@@ -15282,6 +15305,13 @@ impl ApplicationHandler for Game<'_> {
                         return Ok(());
                     };
                     self.native_key_event(key, event.state == ElementState::Pressed, event.repeat);
+                    // Screen.keyPressed sees the physical key, repeats included.
+                    if event.state == ElementState::Pressed
+                        && self.screen == Screen::Inventory
+                        && self.merchant_key(key)
+                    {
+                        return Ok(());
+                    }
                     // key.smoothCamera toggles the cinematic camera.
                     if self.screen == Screen::Playing
                         && event.state == ElementState::Pressed

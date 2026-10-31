@@ -205,7 +205,15 @@ gives each one's id and JSON, for the mod to read as it likes, and `native_recip
 usual fields, tags included (a bare id is read as `minecraft:`; items the game doesn't know are left out, and the helper gives nothing if none is left). The recipes are the server's table: on the server thread, a dedicated server or a LAN host; a client, the single-player window included, sees only the content mods' recipes, not the world's data packs'. All three give nothing outside a world. The game doesn't craft them or show them in the recipe book; `/reload` reads a data pack's again.
 Bundles that use them need `"hooks": 36`.
 
-API 37 adds `native_visuals`: a world-frame hook that appends block-rim and
+API 37 adds [mobs](#mobs) for server mods: spawn one, read the mobs of a level in place, and move, hurt or remove one by its id.
+Bundles that use them need `"hooks": 37`.
+
+API 38 adds redstone from a mod's block, on authoritative servers. `native_block_signal` may change the signal a block gives on
+a face, weak or direct, and `native_is_signal_source` lets redstone wire connect to it. Both are asked very often, so check the
+block first and answer from the mod's own state. When the output changes, and once the block is placed (a direct signal past a conductor isn't read before), `native_update_signal_neighbors(dimension, pos)` makes the blocks around
+it read it again; it acts on the level in place and is refused for another dimension. Bundles that use them need `"hooks": 38`.
+
+API 39 adds `native_visuals`: a world-frame hook that appends block-rim and
 colored-light requests. Rims trace the client's existing block outline edges,
 depth-tested against terrain. Lights add camera-local RGB illumination to the
 normal terrain/entity shaders, not gameplay light. Only the first eight rims
@@ -220,7 +228,7 @@ already-loaded terrain sprites. Transparent pixels in an overlay leave its
 base unchanged; opaque pixels are drawn full-bright without changing gameplay
 light or the surrounding rock. The source pack must supply the overlay texture
 under `assets/<namespace>/textures/emissive/`. When no mod requests overlays,
-the terrain shader skips the lookup. Bundles using these hooks need `"hooks": 37`.
+the terrain shader skips the lookup. Bundles using these hooks need `"hooks": 39`.
 
 ## What the launcher does
 
@@ -444,6 +452,25 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
 - **`native_fill_bucket(stack, pos, canceled)`** and **`native_attack_entity(entity, kind, pos, canceled)`** (API 22):
   a player's bucket at a block, and their blow on an entity, with the acting player swapped in. Canceled, the bucket
   does nothing and the blow does no harm.
+
+### Mobs
+
+API 37, `crates/horizon-client/src/game/native_mobs.rs`: helpers for server mods, for the level in place, on a server only (on a
+client they do nothing, and the readers give nothing). Each takes the `dimension` (`minecraft:overworld`) of the level it means, as
+`native_set_block` does, and is refused when another level is in place. The per-level tick hooks (API 23) run with a defined level in
+place; `native_server_tick` does not define one, so name the dimension and expect a refusal there.
+
+- `native_spawn_mob(dimension, kind, pos, &NativeSpawn)` spawns a mob and returns its id. `NativeSpawn` holds an optional name and health, and the
+  `no_ai`, `invisible`, `silent`, `invulnerable` and `no_gravity` flags; its default is a plain mob. The mob is finalized as a natural spawn
+  is, and kept when its chunk unloads. Nothing is spawned outside `/summon`'s bounds, in a chunk that isn't loaded, or a monster on peaceful.
+- `native_mob(dimension, id)` and `native_mobs(dimension)` read the living mobs: id, dimension, kind, position, yaw, health and maximum health.
+- `native_teleport_mob(dimension, id, pos)` (as `/tp`: it dismounts and drops its path), `native_push_mob(dimension, id, velocity)` and
+  `native_set_mob_health(dimension, id, health)` change one, and answer false for no such mob or a value that isn't finite. Health must be
+  above 0.
+- `native_kill_mob(dimension, id)` kills as `/kill` does, with its loot; `native_remove_mob(dimension, id)` takes the mob away with no death
+  and no loot (it is not saved either).
+- While the game ticks its mobs they are out of the level: from a hook inside that tick, a spawned mob joins after the tick, and the others
+  read as gone.
 
 ### Server menus
 
