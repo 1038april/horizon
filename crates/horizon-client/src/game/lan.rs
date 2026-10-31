@@ -635,12 +635,26 @@ fn mob_meta(
                 ));
             }
         }
-        // AbstractCubeMob.ID_SIZE.
+        // AbstractCubeMob.ID_SIZE; SulfurCube also syncs FROM_BUCKET and
+        // MAX_FUSE (clients tick the fuse for the swell / white flash).
         "minecraft:slime" | "minecraft:magma_cube" | "minecraft:sulfur_cube" => {
             if e.size > 1 {
                 meta.push((18, serializer::INT, Value::Int(e.size)));
             }
             defaults.push((18, serializer::INT, Value::Int(1)));
+            if kind == "minecraft:sulfur_cube" {
+                let from_bucket = e.scratch[3] != 0;
+                if from_bucket {
+                    meta.push((19, serializer::BOOLEAN, Value::Bool(true)));
+                }
+                defaults.push((19, serializer::BOOLEAN, Value::Bool(false)));
+                // SulfurCube.MAX_FUSE: set when primed; 0 means unprimed.
+                let fuse = horizon_client::mobs::sulfur_cube::fuse(m);
+                if fuse >= 0 {
+                    meta.push((20, serializer::INT, Value::Int(fuse)));
+                }
+                defaults.push((20, serializer::INT, Value::Int(0)));
+            }
         }
         // Creeper.DATA_SWELL_DIR, DATA_IS_POWERED and DATA_IS_IGNITED: the
         // guest swells the creeper from them. The direction always goes in,
@@ -2226,19 +2240,27 @@ impl Game<'_> {
         let players: Vec<_> = host_player
             .into_iter()
             .chain(guests.filter_map(|g| g.motion.as_deref().map(|m| (g.entity_id, g.position, m))))
-            .map(|(id, at, p)| (id, at, p.health.hurt_animation_time, p.hurt_log.last()))
+            .map(|(id, at, p)| {
+                (
+                    id,
+                    at,
+                    p.health.hurt_animation_time,
+                    p.health.dead_or_dying(),
+                    p.hurt_log.last(),
+                )
+            })
             .collect();
-        for (id, at, hurt, record) in players {
+        for (id, at, hurt, dead, record) in players {
             let old = host
                 .mob_state
                 .get(&self.dim)
                 .and_then(|s| s.get(&(id as u32)));
-            if hurt > old.map_or(0, |o| o.0) {
+            if hurt > old.map_or(0, |o| o.0) && !dead {
                 // Starving keeps no record: any type flashes the same.
                 let kind = record.map_or("minecraft:generic", |r| r.source.as_str());
                 host.hub.damage_event(id, kind, None, None, at);
             }
-            seen.insert(id as u32, (hurt, false, None));
+            seen.insert(id as u32, (hurt, dead, None));
         }
         host.mob_state.insert(self.dim, seen);
         // Level.broadcastEntityEvent(player, 2) of a spear's stab.
