@@ -234,7 +234,7 @@ use horizon_core::{
 use horizon_world::{
     fluid::FluidKind,
     level::{BlockId, LevelAccess, Ticks},
-    nbt::{Compound, Tag},
+    nbt::Compound,
     registry::{BlockRegistry, BlockStateId},
 };
 use std::{
@@ -543,22 +543,6 @@ pub(crate) struct NativeMod {
     /// lists them first; `native_mod_key` reads the player's choice.
     pub(crate) keys: Vec<[String; 3]>,
 }
-
-/// Failure to access a native item component.
-#[derive(Debug)]
-pub(crate) enum NativeComponentError {
-    UnknownType,
-    InvalidValue(horizon_protocol::Error),
-}
-impl std::fmt::Display for NativeComponentError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::UnknownType => f.write_str("unregistered component type"),
-            Self::InvalidValue(error) => write!(f, "invalid component value: {error}"),
-        }
-    }
-}
-impl std::error::Error for NativeComponentError {}
 
 /// An item the panel shows (`native_panel_items`): its id
 /// (`minecraft:diamond`), a count (1 draws none) and its components beyond
@@ -1734,87 +1718,6 @@ impl Game<'_> {
         self.particles
             .add(&ParticleOptions::simple(kind), at, [0.0, 0.01, 0.0]);
     }
-    /// Read a native component, including the item's default when not patched.
-    pub(super) fn native_component<'a>(
-        &'a self,
-        stack: &'a ItemStack,
-        id: &str,
-    ) -> Result<Option<&'a Tag>, NativeComponentError> {
-        if horizon_protocol::item::custom::id(id).is_none() {
-            return Err(NativeComponentError::UnknownType);
-        }
-        if let Some(data) = stack.data() {
-            if data.other(&format!("!{id}")).is_some() {
-                return Ok(None);
-            }
-            if let Some(value) = data.other(id) {
-                return Ok(Some(value));
-            }
-        }
-        Ok(self
-            .items()
-            .get(&stack.item)
-            .and_then(|item| item.custom_components.get(id)))
-    }
-
-    /// Set a registered native component after checking the network NBT limits.
-    pub(super) fn native_set_component(
-        &self,
-        stack: &mut ItemStack,
-        id: &str,
-        value: Tag,
-    ) -> Result<(), NativeComponentError> {
-        if horizon_protocol::item::custom::id(id).is_none() {
-            return Err(NativeComponentError::UnknownType);
-        }
-        horizon_protocol::item::custom::validate(&value)
-            .map_err(NativeComponentError::InvalidValue)?;
-        let default = self
-            .items()
-            .get(&stack.item)
-            .and_then(|item| item.custom_components.get(id));
-        let value = (default != Some(&value)).then_some(value);
-        let removed = format!("!{id}");
-        if stack.data().and_then(|data| data.other(id)) == value.as_ref()
-            && stack.data().and_then(|data| data.other(&removed)).is_none()
-        {
-            return Ok(());
-        }
-        let data = stack.data_mut();
-        data.wire = Default::default();
-        data.set_other(&removed, None);
-        data.set_other(id, value);
-        stack.tidy();
-        Ok(())
-    }
-
-    /// Remove a native component, including its item default.
-    pub(super) fn native_remove_component(
-        &self,
-        stack: &mut ItemStack,
-        id: &str,
-    ) -> Result<(), NativeComponentError> {
-        if horizon_protocol::item::custom::id(id).is_none() {
-            return Err(NativeComponentError::UnknownType);
-        }
-        let default = self
-            .items()
-            .get(&stack.item)
-            .is_some_and(|item| item.custom_components.contains_key(id));
-        let removed = format!("!{id}");
-        if stack.data().and_then(|data| data.other(id)).is_none()
-            && stack.data().and_then(|data| data.other(&removed)).is_some() == default
-        {
-            return Ok(());
-        }
-        let data = stack.data_mut();
-        data.wire = Default::default();
-        data.set_other(id, None);
-        data.set_other(&removed, default.then(|| Tag::Compound(Default::default())));
-        stack.tidy();
-        Ok(())
-    }
-
     /// The stack the acting player carries in `slot`, by
     /// `native_inventory_tick`'s numbers: none for an empty slot or another
     /// number. Change it as you like: a count of 0 empties the slot at the end
