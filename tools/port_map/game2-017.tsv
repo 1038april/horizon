@@ -106,7 +106,7 @@ SculkShriekerBlockEntity.VibrationUser.onReceiveVibration	port	crates/horizon-cl
 ShelfBlockEntity.loadAdditional	skip:other		no own code: the raw saved tag keeps Items (shelf_signal reads it)
 ShelfBlockEntity.saveAdditional	skip:other		no own code: the raw saved tag keeps Items (shelf_signal reads it)
 ShelfBlockEntity.getUpdateTag	missing		minor: unsure: no client update tag for shelves
-ShelfBlockEntity.setChanged	missing		player: shelves cannot be used: no item insert or take on a shelf; no shelf interaction code found
+ShelfBlockEntity.setChanged	inline	crates/horizon-client/src/game/machines.rs::Containers::container_changed	the shelf's own arm marks the block entity updated so clients see the swap
 ShelfBlockEntity.applyImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::place	Items as container component
 ShelfBlockEntity.collectImplicitComponents	port	crates/horizon-client/src/block_entity_item.rs::collect	Items as container component
 ShulkerBoxBlockEntity.updateAnimation	port	crates/horizon-client-render/src/block_entity_anim.rs::Shulker::tick	lid progress

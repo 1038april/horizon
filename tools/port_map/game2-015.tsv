@@ -105,9 +105,9 @@ ShelfBlock.isPathfindable	skip:data		path types come from the per-state path dat
 ShelfBlock.createBlockStateDefinition	skip:data		block state definition is data (blocks table in horizon-items)
 ShelfBlock.getStateForPlacement	port	crates/horizon-world/src/level/place.rs::Sim::placement_class	shelf arm of the placement rules
 ShelfBlock.rotate	port	crates/horizon-world/src/worldgen/structure.rs::StateTransforms::rotate	facing rotation from the generated state table
-ShelfBlock.useItemOn	port	crates/horizon-client/src/game/remote.rs::remote_use_item_on	ticked in #3516; `ShelfBlock.useItemOn` is cited at crates/horizon-client/src/game/remote.rs:6669 (in a comment, so `where` names the enclosing fn)
-ShelfBlock.swapSingleItem	missing		player: the held item is not exchanged with the item in the clicked shelf slot
-ShelfBlock.swapHotbar	missing		player: a powered shelf chain does not swap its items with the hotbar
+ShelfBlock.useItemOn	port	crates/horizon-client/src/game/shelf.rs::Game::use_shelf	a single slot swap, the multi-block hotbar swap while powered (`block.shelf.multi_swap`) and the creative keep, with the block entity and comparator told
+ShelfBlock.swapSingleItem	inline	crates/horizon-client/src/game/shelf.rs::Game::use_shelf	the unpowered single-slot swap is the other arm of `use_shelf`
+ShelfBlock.swapHotbar	inline	crates/horizon-client/src/game/shelf.rs::Game::use_shelf	the powered chain's hotbar swap is the `powered` arm of `use_shelf`
 ShelfBlock.getFluidState	port	crates/horizon-world/src/registry_fluid.rs::RegistryFluidWorld::fluid_state	waterlogged state from block data
 ShelfBlock.updateShape	port	crates/horizon-world/src/level/shapes.rs::Sim::update_shape_class	
 ShulkerBoxBlock.useWithoutItem	port	crates/horizon-client/src/game.rs::Game::open_menu	opens the box and awards the open stat; canOpen via shulker_can_open
