@@ -201,7 +201,7 @@ impl Game<'_> {
     }
     /// Nearer than the targeted block?
     pub(super) fn before_block(&self, distance: f64) -> bool {
-        self.pick().is_none_or(|h| {
+        self.pick_unfiltered().is_none_or(|h| {
             let eye = self.aim().map(|(eye, _)| eye).unwrap_or_default();
             (0..3)
                 .map(|a| (h.point[a] - eye[a]).powi(2))

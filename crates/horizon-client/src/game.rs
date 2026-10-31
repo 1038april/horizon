@@ -2593,12 +2593,23 @@ impl Game<'_> {
         }
         let (origin, dir) = self.aim()?;
         // GameRenderer.pick: the block ray runs out to the larger of the two
-        // interaction ranges.
+        // interaction ranges; filterHitResult then drops a hit past the
+        // block's.
         self.clip_ray(origin, dir, self.block_reach.max(self.entity_reach))
             .filter(|hit| {
                 let distance: [f64; 3] = std::array::from_fn(|i| hit.point[i] - origin[i]);
                 distance.iter().map(|v| v * v).sum::<f64>() <= self.block_reach.powi(2)
             })
+    }
+    /// The same traversal without `filterHitResult`: the block hit that
+    /// bounds the entity ray in `GameRenderer.pick`, out to the larger
+    /// interaction range — a wall between the two still hides the entity.
+    fn pick_unfiltered(&self) -> Option<Hit> {
+        if let Some(hit) = self.forced_hit {
+            return Some(hit);
+        }
+        let (origin, dir) = self.aim()?;
+        self.clip_ray(origin, dir, self.block_reach.max(self.entity_reach))
     }
     /// The first block outline hit within `reach` along the unit `dir`.
     fn clip_ray(&self, origin: [f64; 3], dir: [f64; 3], reach: f64) -> Option<Hit> {
