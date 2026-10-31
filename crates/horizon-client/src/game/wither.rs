@@ -224,9 +224,6 @@ impl Game<'_> {
             }
             None => {}
         }
-        if let Some(id) = owner {
-            self.note_attacker("minecraft:explosion", id);
-        }
         self.combat.explosion_owner = owner;
         // The blast's source names a player owner, for the dragon's kill credit.
         self.set_blast_by_player(live_owner == Some(Who::Player));

@@ -94,6 +94,9 @@ pub(super) struct CombatTracker {
     /// The hit on the player now runs its post-attack effects (thorns) only
     /// if the player lives through it (`WitherSkull.onHitEntity`).
     pub(super) post_attack_if_alive: bool,
+    /// A firework rocket's burst is hurting the player now: the rocket is
+    /// the direct entity (`rocket_hurt_player`).
+    pub(super) rocket_hit: bool,
     /// The player whose melee hit is landing on the player now: where they
     /// stand and the seconds their weapon disables a shield for
     /// (`getSecondsToDisableBlocking`).
@@ -115,6 +118,10 @@ pub(super) struct CombatTracker {
     /// skull, wither or TNT minecart, the sources that empty a hive they
     /// destroy (`BeehiveBlock.getDrops`).
     pub(super) hive_emptying_blast: bool,
+    /// The blast now going off comes from a primed TNT minecart, which
+    /// neither resists on nor breaks a rail or the block under one
+    /// (`MinecartTNT.getBlockExplosionResistance`, `shouldBlockExplode`).
+    pub(super) rail_proof_blast: bool,
     /// The mob that owns the projectile exploding now (`getIndirectSourceEntity`):
     /// the mobs the blast hurts record it as their attacker.
     pub(super) explosion_owner: Option<u32>,
@@ -332,31 +339,32 @@ impl Game<'_> {
                 .find(|m| m.id == *id)
                 .map(|m| self.mob_entity(m))
         });
-        let projectile = matches!(
-            e.damage_type.as_str(),
-            "minecraft:arrow"
-                | "minecraft:trident"
-                | "minecraft:mob_projectile"
-                | "minecraft:fireball"
-                | "minecraft:unattributed_fireball"
-                | "minecraft:wither_skull"
-                | "minecraft:wind_charge"
-                | "minecraft:thrown"
-                | "minecraft:spit"
-        );
-        let direct = if projectile {
-            Some(EntityView {
-                kind: e.damage_type.clone(),
+        let projectile = match e.damage_type.as_str() {
+            // The rocket is the direct entity of its `fireworks` damage.
+            "minecraft:fireworks" => Some("minecraft:firework_rocket"),
+            t @ ("minecraft:arrow"
+            | "minecraft:trident"
+            | "minecraft:mob_projectile"
+            | "minecraft:fireball"
+            | "minecraft:unattributed_fireball"
+            | "minecraft:wither_skull"
+            | "minecraft:wind_charge"
+            | "minecraft:thrown"
+            | "minecraft:spit") => Some(t),
+            _ => None,
+        };
+        let direct = match projectile {
+            Some(kind) => Some(EntityView {
+                kind: kind.to_owned(),
                 ..Default::default()
-            })
-        } else {
-            source.clone()
+            }),
+            None => source.clone(),
         };
         Some(DamageView {
             kind: e.damage_type.clone(),
             direct,
             source,
-            is_direct: !projectile,
+            is_direct: projectile.is_none(),
             original: e.damage,
             actual: e.damage,
             blocked: false,
@@ -564,9 +572,15 @@ impl Game<'_> {
             .map(|e| {
                 let attacker = e.source.attacker.and_then(|w| name(self, w));
                 // AbstractArrow.onHitEntity: an arrow nobody shot is its own
-                // cause.
-                let direct = (attacker.is_none() && e.source.kind == DamageKind::Arrow)
-                    .then(|| Text::translate("entity.minecraft.arrow", &[]));
+                // cause; a rocket nobody fired still names itself.
+                let direct = match e.source.kind {
+                    _ if attacker.is_some() => None,
+                    DamageKind::Arrow => Some(Text::translate("entity.minecraft.arrow", &[])),
+                    DamageKind::Fireworks => {
+                        Some(Text::translate("entity.minecraft.firework_rocket", &[]))
+                    }
+                    _ => None,
+                };
                 Entry {
                     damage_type: super::creatures::source_damage_type(e.source).to_owned(),
                     damage: e.damage,
