@@ -128,7 +128,6 @@ impl Opt {
                 | Opt::HideMatchedNames
                 | Opt::OnlySecureChat
                 | Opt::SaveChatDrafts
-                | Opt::MonochromeLogo
                 | Opt::RotateWithMinecarts
                 // Saved, but no Horizon system reads them yet: no Realms, no
                 // friends list, no directional audio, no now-playing toast.
@@ -141,9 +140,6 @@ impl Opt {
                 | Opt::ChunkFade
                 | Opt::ImprovedTransparency
                 | Opt::ChunkBuilder
-                // Saved, but the terrain sampler has no RGSS or anisotropic filtering yet.
-                | Opt::TextureFiltering
-                | Opt::MaxAnisotropy
                 // Saved, but the mouse doesn't read it yet.
                 | Opt::CtrlClickEmulatesRightClick
         )
@@ -924,6 +920,7 @@ impl Opt {
             | Opt::HideLightningFlashes
             | Opt::HideSplashTexts
             | Opt::HighContrastBlockOutlines
+            | Opt::MonochromeLogo
             | Opt::HideMatchedNames
             | Opt::OnlySecureChat
             | Opt::SaveChatDrafts
@@ -1441,6 +1438,9 @@ pub struct OptionsUi {
     pub resource_error: Option<String>,
     /// When the pack screen's search box took the focus (its cursor blink).
     pack_focus: Instant,
+    /// The selection carried over from a pack screen made again over a changed pack list
+    /// (`update_pack_infos`) differs from the settings'.
+    pack_reselected: bool,
     pub in_world: bool,
     /// Scroll the selected language into the middle on the next layout.
     center_language: bool,
@@ -1484,6 +1484,7 @@ impl Default for OptionsUi {
             data_pack_stamp: (Vec::new(), Instant::now()),
             resource_error: None,
             pack_focus: Instant::now(),
+            pack_reselected: false,
             in_world: false,
             center_language: false,
             graphics: Default::default(),
@@ -1517,6 +1518,10 @@ fn inactive(mut w: Widget) -> Widget {
 }
 fn option_widget(s: &Settings, opt: Opt, x: f32, y: f32, w: f32) -> Widget {
     if !opt.available() {
+        return inactive(button(x, y, w, opt.label(s), Act::Cycle(opt)));
+    }
+    // VideoSettingsScreen.tick: Max Anisotropy only works with Anisotropic filtering.
+    if opt == Opt::MaxAnisotropy && s.file.int("textureFiltering") != 2 {
         return inactive(button(x, y, w, opt.label(s), Act::Cycle(opt)));
     }
     match opt.kind(s) {
@@ -1572,6 +1577,23 @@ impl OptionsUi {
     fn settings_search_active(&self) -> bool {
         self.settings_search.focused
             && matches!(self.page(), Page::Video | Page::Controls | Page::KeyBinds)
+    }
+    /// Whether the resource pack screen is open (not Create World's data packs on the same
+    /// page).
+    pub fn resource_packs_open(&self) -> bool {
+        self.page() == Page::Packs && self.data_pack_dir.is_none()
+    }
+    /// The packs in `resourcepacks/` changed while the pack screen is open
+    /// (`PackSelectionScreen`'s directory watcher): the screen is made again over
+    /// `infos`, keeping the selection made on it so far.
+    pub fn update_pack_infos(&mut self, infos: Vec<crate::pack_screen::PackInfo>) {
+        if let Some(p) = self.pack_screen.take()
+            && p.changed
+        {
+            self.pack_selection = p.commit();
+            self.pack_reselected = true;
+        }
+        self.pack_infos = infos;
     }
     pub fn page(&self) -> Page {
         *self.stack.last().unwrap_or(&Page::Main)
@@ -2095,7 +2117,9 @@ impl OptionsUi {
                     .map(|(i, installed)| {
                         let mut label = Text::literal(format!("{}: ", installed.title))
                             .append(on_off(s.mods.is_on(i)));
-                        if installed.problem.is_some() {
+                        if installed.problem.as_deref() == Some(crate::mod_list::NOT_BUILT) {
+                            label = label.append(tr("horizon.mods.not_built"));
+                        } else if installed.problem.is_some() {
                             label = label.append(tr("horizon.mods.stopped"));
                         } else if installed.dev {
                             label = label.append(tr("horizon.mods.dev"));
@@ -2717,6 +2741,7 @@ impl OptionsUi {
             return;
         }
         if let Some(level) = Self::graphics_level(self.page()) {
+            self.graphics.binding = self.selected_key;
             self.graphics
                 .draw(level, s, batch, atlas, cursor, self.in_world);
             return;
@@ -2990,6 +3015,15 @@ impl OptionsUi {
         }
         if let Some(level) = Self::graphics_level(self.page()) {
             use crate::graphics_ui::Action;
+            // Waiting on a key: a mouse button binds, as on Key Binds.
+            if self.selected_key.is_some() && !drag {
+                let button = if right {
+                    winit::event::MouseButton::Right
+                } else {
+                    winit::event::MouseButton::Left
+                };
+                return self.bind_mouse(s, button);
+            }
             let mut events = Vec::new();
             for action in self
                 .graphics
@@ -3001,6 +3035,7 @@ impl OptionsUi {
                     Action::SliderDrag => events.push(Event::SliderDrag),
                     Action::OpenAdvanced => self.push(Page::GraphicsAdvanced),
                     Action::OpenHdr => self.push(Page::GraphicsHdr),
+                    Action::BindKey(name) => self.selected_key = Some(name),
                     Action::OpenSimple => {
                         if self.stack.len() >= 2
                             && self.stack[self.stack.len() - 2] == Page::Graphics
@@ -3331,6 +3366,7 @@ impl OptionsUi {
                             self.push(Page::Graphics);
                         }
                     }
+                    Action::BindKey(name) => self.selected_key = Some(name),
                     Action::Done => events.extend(self.back(s)),
                 }
             }
@@ -3465,7 +3501,7 @@ impl OptionsUi {
                 } else {
                     "resourcePack.title"
                 };
-                self.pack_screen = Some(crate::pack_screen::PackScreen::new(
+                let mut screen = crate::pack_screen::PackScreen::new(
                     &m,
                     crate::text::Text::translate(title, &[]),
                     w,
@@ -3473,7 +3509,9 @@ impl OptionsUi {
                     self.in_world,
                     self.pack_infos.clone(),
                     &self.pack_selection,
-                ));
+                );
+                screen.changed = std::mem::take(&mut self.pack_reselected);
+                self.pack_screen = Some(screen);
             }
         }
         self.pack_screen.as_mut().expect("made above")
@@ -3589,7 +3627,7 @@ impl OptionsUi {
             keys.insert(key.clone(), value);
             return vec![Event::Changed];
         }
-        if !s.extras.set_key(name, value.clone()) {
+        if !s.extras.set_key(name, value.clone()) && !s.horizon.set_key(name, value.clone()) {
             s.keys.set(name, &value);
         }
         vec![Event::Changed]
@@ -3689,6 +3727,7 @@ impl OptionsUi {
                             self.push(Page::Graphics);
                         }
                     }
+                    Action::BindKey(name) => self.selected_key = Some(name),
                     Action::Done => events.extend(self.back(s)),
                 }
             }
@@ -4041,10 +4080,12 @@ mod tests {
                 assert_eq!(loaded.file.double(opt.file_key().unwrap()), expected);
             }
         }
+        assert!(Opt::MonochromeLogo.available());
         for opt in [
             Opt::TextBackground,
             Opt::HideLightningFlashes,
             Opt::HideSplashTexts,
+            Opt::MonochromeLogo,
         ] {
             let key = opt.file_key().unwrap();
             let before = s.file.bool(key);
@@ -4600,9 +4641,21 @@ mod tests {
             assert_eq!(s.file.int("maxAnisotropyBit"), bit, "{preset}");
             assert_eq!(s.file.int("textureFiltering"), filtering, "{preset}");
         }
-        // Nothing samples the terrain atlas with them yet, so the buttons stay greyed out.
-        assert!(!Opt::TextureFiltering.available());
-        assert!(!Opt::MaxAnisotropy.available());
+        assert!(Opt::TextureFiltering.available());
+        assert!(Opt::MaxAnisotropy.available());
+        // The anisotropy slider only works with Anisotropic filtering (VideoSettingsScreen.tick).
+        let grey = |s: &Settings| {
+            matches!(
+                option_widget(s, Opt::MaxAnisotropy, 0.0, 0.0, 150.0).kind,
+                WKind::Button { active: false, .. }
+            )
+        };
+        s.file
+            .set("textureFiltering", crate::options_file::V::Int(1));
+        assert!(grey(&s));
+        s.file
+            .set("textureFiltering", crate::options_file::V::Int(2));
+        assert!(!grey(&s));
     }
 
     #[test]
@@ -5504,7 +5557,7 @@ mod tests {
             MouseButton::Back,
             MouseButton::Forward,
         ] {
-            for name in [SORT_KEY, "key.jump"] {
+            for name in [SORT_KEY, crate::graphics::HDR_KEY, "key.jump"] {
                 let mut ui = OptionsUi::default();
                 let mut s = Settings::default();
                 ui.selected_key = Some(name);
@@ -5513,6 +5566,7 @@ mod tests {
                 let value = keybinds::mouse_name(button);
                 match name {
                     SORT_KEY => assert_eq!(s.extras.sort_key, value),
+                    crate::graphics::HDR_KEY => assert_eq!(s.horizon.hdr_key, value),
                     _ => assert_eq!(s.keys.get(name), value),
                 }
                 assert_eq!(Extras::parse(&s.extras.serialize()), s.extras);
