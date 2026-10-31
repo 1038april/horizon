@@ -117,18 +117,22 @@ pub struct Flat {
 /// sides it shows the eye (`mesher::Sides`), so it counts sections.
 pub const MIN_SECTIONS: usize = 1600;
 
-/// Whether flat draws apply: the backend emulates multi-draw, and vertex
-/// shaders can read storage buffers large enough for an index page.
+/// Whether flat draws exist: vertex shaders can read storage buffers large
+/// enough for an index page. A shader pack's terrain draws flat wherever they
+/// do, since only there does it read each quad's face normal and `mc_Entity`;
+/// frames without one draw flat only where `for_vanilla` says.
 /// `HORIZON_FLAT_DRAWS=1` draws every frame flat, `0` none.
 pub fn wanted(adapter: &wgpu::Adapter, device: &wgpu::Device) -> bool {
-    match std::env::var("HORIZON_FLAT_DRAWS").as_deref() {
-        Ok("0") => return false,
-        Ok("1") => return supported(adapter, device),
-        _ => {}
-    }
-    let info = adapter.get_info();
-    (info.backend == wgpu::Backend::Metal || is_broken_intel_vulkan(&info))
-        && supported(adapter, device)
+    std::env::var("HORIZON_FLAT_DRAWS").as_deref() != Ok("0") && supported(adapter, device)
+}
+
+/// Whether frames without a shader pack's terrain draw flat: where the backend
+/// emulates multi-draw (Metal, past `MIN_SECTIONS`), on Intel Gen11's Vulkan
+/// driver, or with `HORIZON_FLAT_DRAWS=1`. Elsewhere per-section draws stay.
+pub fn for_vanilla(info: &wgpu::AdapterInfo) -> bool {
+    std::env::var("HORIZON_FLAT_DRAWS").as_deref() == Ok("1")
+        || info.backend == wgpu::Backend::Metal
+        || is_broken_intel_vulkan(info)
 }
 
 /// Intel Gen11 (Ice Lake) ANV Vulkan driver has broken `first_instance` for instance-step
