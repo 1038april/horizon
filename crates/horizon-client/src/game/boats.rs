@@ -727,7 +727,8 @@ impl Game<'_> {
     }
     /// `Entity.handleOnInsideBubbleColumn`: a column under more water lifts
     /// boat `i` up to 0.7 or drags it down to -0.3 (`AbstractBoat` does not
-    /// override `onInsideBubbleColumn`); `BubbleColumn::push` below the surface.
+    /// override `onInsideBubbleColumn`), applied by the column's own push below
+    /// the surface.
     pub(super) fn boat_inside_bubble_column(&mut self, i: usize, column: BubbleColumn) {
         if !self.boat_can_simulate_movement(self.boats[i].id) {
             return;
