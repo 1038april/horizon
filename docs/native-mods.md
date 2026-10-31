@@ -251,6 +251,13 @@ API 44 adds the server starting and stopping, on the single player server thread
 and each stop by `WorldCloseFinal`; a server whose loop fails reports `WorldCloseFailed` instead of stopping. Bundles
 that use them need `"hooks": 44`.
 
+API 45 sends mod block entities to clients. Each mod block has a block entity type of its own, named after it, after
+vanilla's; a client makes its copy of the block entity with `native_block_entity`, as the server does.
+`native_block_entity_update_tag` gives what clients get of one (`BlockEntity.getUpdateTag`, read from the block entity
+alone): it is asked when a chunk holding it is sent and when its block changes, and the client merges it into the
+copy's `nbt`. A saved chunk sent past the view distance asks it on its own thread, so read only `entity`. Keep it to what clients show (a machine running, its facing, a tank's level), not a menu's progress:
+menus have their own data slots. Bundles that use it need `"hooks": 45`.
+
 ## A bundle
 
 A bundle is a folder with a `horizon-mixin.toml`. Besides its helpers and modules (horizon-mixins' README) it can
