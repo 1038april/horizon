@@ -195,6 +195,7 @@ impl<'a> Split<'a> {
             let moved = before.get(i).is_none_or(|b| b.0 != surface);
             if let Some(game) = self.game_mut(i) {
                 into_window(game, window.clone(), moved);
+                game.options.split_in_main_window = surface == 0;
                 game.view_at = at;
             }
             if moved && i == self.focus && before.get(i).is_some() {

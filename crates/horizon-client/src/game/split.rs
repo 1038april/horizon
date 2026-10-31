@@ -414,6 +414,7 @@ impl<'a> Split<'a> {
         };
         let window = main.window.clone();
         window.set_visible(true);
+        self.window1_shown = true;
         self.host.window = Some(window.clone());
         let old = self.host.renderer.take().ok_or("no renderer")?;
         old.take_back(main.compositor);
@@ -610,12 +611,27 @@ impl ApplicationHandler for Split<'_> {
                         );
                     }
                 }
-                if let Some((player, id)) = self.player(self.focus) {
+                // Only into the focused player's own window: a click in another window
+                // is not that player's attack or use.
+                let here = self.views().get(self.focus).is_some_and(|v| v.0 == surface);
+                if here && let Some((player, id)) = self.player(self.focus) {
                     player.window_event(event_loop, id, event);
                 }
             }
             _ => {
-                if let Some((player, id)) = self.player(self.focus) {
+                // Presses (keys, wheel) from a window the focused player is not in stay there;
+                // releases still pass, so a key held across a window change can't stick.
+                let here = self.views().get(self.focus).is_some_and(|v| v.0 == surface);
+                let press = match &event {
+                    WindowEvent::KeyboardInput { event: key, .. } => {
+                        key.state == ElementState::Pressed
+                    }
+                    WindowEvent::MouseWheel { .. } => true,
+                    _ => false,
+                };
+                if (here || !press)
+                    && let Some((player, id)) = self.player(self.focus)
+                {
                     player.window_event(event_loop, id, event);
                 }
             }
