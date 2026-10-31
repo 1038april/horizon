@@ -3596,7 +3596,7 @@ impl Renderer {
         let meshes = self
             .sections
             .values_mut()
-            .chain(self.lods.values_mut().map(|tile| &mut tile.mesh));
+            .chain(self.lods.values_mut().flat_map(|tile| tile.meshes_mut()));
         for s in meshes.filter(|s| s.page == page) {
             let vertices = u64::from(s.solid + s.translucent) * 4;
             if vertices * stride > budget {
