@@ -239,6 +239,21 @@ impl Game<'_> {
     pub(super) fn loot_item_filter(&self, predicate: &Value, s: &ItemStack) -> bool {
         adv::item(predicate, &item_view(s), &View(self))
     }
+    /// `BaseContainerBlockEntity.canOpen`: whether the `lock` of the block
+    /// entity at `key` keeps a player with this main hand out (`LockCode`).
+    pub(super) fn container_locked_for(
+        &self,
+        key: (i32, i32, i32),
+        spectator: bool,
+        hand: Option<&ItemStack>,
+    ) -> bool {
+        let Some(lock) = self.world.block_lock(key) else {
+            return false;
+        };
+        let lock = horizon_client::item_render::tag_json(lock);
+        let hand = hand.map(item_view);
+        !adv::can_unlock(&lock, spectator, hand.as_ref(), &View(self))
+    }
 }
 pub(super) fn item_view(s: &ItemStack) -> ItemView {
     ItemView {
@@ -316,6 +331,7 @@ impl Game<'_> {
             &self.world_root,
             &self.options.resources,
             self.cmds.vanilla_disabled,
+            &self.level.enabled_features,
         );
         self.adv.pending_tree = std::thread::Builder::new()
             .name("horizon-advancements".into())
@@ -1764,7 +1780,8 @@ impl Game<'_> {
             }
         }
     }
-    /// The slots held by shown advancement, recipe and pack toasts, as bits.
+    /// The slots held by shown advancement, recipe, pack and narrator toasts,
+    /// as bits.
     pub(super) fn toast_slots_used(&self) -> u32 {
         let packs = self.server_packs.toast_slots();
         self.adv
@@ -1772,6 +1789,7 @@ impl Game<'_> {
             .iter()
             .filter_map(|t| t.slot)
             .chain(packs)
+            .chain(self.narrator_toast.as_ref().and_then(|t| t.slot))
             .fold(self.tutorial_toast_slots(), |used, slot| used | 1 << slot)
     }
     /// The `AdvancementToast` or `RecipeToast` at `index` in its slot at `y`.
