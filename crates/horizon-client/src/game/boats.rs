@@ -1363,3 +1363,52 @@ impl Game<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn boat() -> Boat {
+        Boat::new(1, Arc::from("oak"), Vec3::ZERO, 0.0)
+    }
+
+    /// `AbstractBoat.tickBubbleColumn` on a client: the wobble grows while the
+    /// bubble time runs and fades after.
+    #[test]
+    fn the_wobble_grows_while_the_bubble_time_runs_and_fades_after() {
+        let mut b = boat();
+        b.bubble_time = BUBBLE_TIME;
+        for _ in 0..30 {
+            b.tick_bubble_wobble();
+        }
+        // 0.05 a tick, capped at 1.
+        assert_eq!(b.bubble_multiplier, 1.0);
+        // 10 * sin(0.5 * tickCount) * multiplier.
+        let expected = 10.0 * (0.5 * 30.0f64).sin() as f32;
+        assert!((b.bubble_angle - expected).abs() < 1.0e-4);
+        // The render angle lerps between the last two ticks.
+        let mid = b.bubble_angle(0.5);
+        assert!((mid - (b.bubble_angle_old + b.bubble_angle) / 2.0).abs() < 1.0e-5);
+        // Once the bubble time is 0 the multiplier fades by 0.1 a tick.
+        b.bubble_time = 0;
+        for _ in 0..4 {
+            b.tick_bubble_wobble();
+        }
+        assert!((b.bubble_multiplier - 0.6).abs() < 1.0e-5);
+        for _ in 0..10 {
+            b.tick_bubble_wobble();
+        }
+        assert_eq!(b.bubble_multiplier, 0.0);
+        assert_eq!(b.bubble_angle, 0.0);
+    }
+
+    #[test]
+    fn a_boat_that_never_saw_a_column_does_not_wobble() {
+        let mut b = boat();
+        for _ in 0..10 {
+            b.tick_bubble_wobble();
+        }
+        assert_eq!(b.bubble_angle, 0.0);
+        assert_eq!(b.bubble_angle(0.5), 0.0);
+    }
+}
