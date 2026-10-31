@@ -1114,6 +1114,14 @@ impl Game<'_> {
     pub(super) fn native_tooltip(&self, stack: &ItemStack, lines: &mut Vec<(Text, u32)>) {
         let _ = (stack, lines);
     }
+    /// The small bar `GuiGraphicsExtractor.itemDecorations` draws under an
+    /// item, wherever the game shows one: `bar` arrives holding vanilla's value
+    /// (the damage bar, or a bundle's fullness already applied) and may be
+    /// replaced (width `0..=13`, colour `rgb`) or set to `None` to hide it.
+    /// Asked each frame a stack is drawn. Client-side. @API:item_bar@.
+    pub(super) fn native_item_bar(&self, stack: &ItemStack, bar: &mut Option<(i32, u32)>) {
+        let _ = (stack, bar);
+    }
     /// A player uses `stack` (right click) with `self.hand` on the block at
     /// `pos`, `face` the face clicked (`[0, 1, 0]` is the top), once the
     /// block itself let the click through (a chest still opens): where
@@ -1508,6 +1516,21 @@ fn mob_source(damage: &Damage) -> HurtSource<'static> {
     }
 }
 
+/// Whether `id` is a sound event's id, `namespace:path` as `Identifier`
+/// allows: the namespace of `[a-z0-9_.-]`, the path also with `/`.
+fn sound_id(id: &str) -> bool {
+    let Some((namespace, path)) = id.split_once(':') else {
+        return false;
+    };
+    let allowed = |c: char, slash: bool| {
+        c.is_ascii_lowercase() || c.is_ascii_digit() || "_.-".contains(c) || (slash && c == '/')
+    };
+    !namespace.is_empty()
+        && !path.is_empty()
+        && namespace.chars().all(|c| allowed(c, false))
+        && path.chars().all(|c| allowed(c, true))
+}
+
 fn dimension_id(dimension: LevelDimension) -> &'static str {
     match dimension {
         LevelDimension::Overworld => "minecraft:overworld",
@@ -1519,9 +1542,13 @@ fn dimension_id(dimension: LevelDimension) -> &'static str {
 /// Server-level helpers for native mods.
 #[allow(dead_code)]
 impl GameLevel<'_> {
-    /// Play a registered vanilla sound for nearby players in this server level.
-    /// The return value means queued, not heard. Unknown sound events are
-    /// rejected at dispatch when the server registry is available.
+    /// Play a sound event for nearby players in this server level. The return
+    /// value means queued, not heard. A `minecraft:` event must be registered:
+    /// an unknown one is dropped at dispatch. Another namespace's event (a
+    /// mod's, `mymod:machine_hum`) is sent by name, as vanilla sends a sound
+    /// that isn't in its registry (`Holder.direct`, a variable range): players
+    /// hear it if their resources define it (`assets/mymod/sounds.json`, a
+    /// content mod's). API @API:mod_sounds@.
     pub(super) fn native_play_sound(
         &mut self,
         sound: &str,
@@ -1530,7 +1557,7 @@ impl GameLevel<'_> {
         volume: f32,
         pitch: f32,
     ) -> bool {
-        if !self.native_authoritative || !sound.starts_with("minecraft:") {
+        if !self.native_authoritative || !sound_id(sound) {
             return false;
         }
         if source >= horizon_client::settings::SOUND_SOURCES.len() {
@@ -3131,6 +3158,30 @@ fn box_meets(b: &horizon_core::geometry::Aabb, min: [f64; 3], max: [f64; 3]) -> 
 
 #[cfg(test)]
 mod tests {
+
+    /// `native_play_sound` takes vanilla's and mods' sound ids, nothing else.
+    #[test]
+    fn sound_ids_are_identifiers() {
+        for id in [
+            "minecraft:block.note_block.harp",
+            "mymod:machine/hum",
+            "my_mod.x-1:a",
+        ] {
+            assert!(super::sound_id(id), "{id}");
+        }
+        for id in [
+            "",
+            "hum",
+            ":hum",
+            "mymod:",
+            "MyMod:hum",
+            "mymod:Hum",
+            "my/mod:hum",
+            "a:b c",
+        ] {
+            assert!(!super::sound_id(id), "{id}");
+        }
+    }
 
     /// A mod's property write: none for a key or value the block lacks, the
     /// state itself when it already has the value, else the new state.
