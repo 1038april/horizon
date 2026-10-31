@@ -2264,6 +2264,11 @@ struct Game<'a> {
     /// `remote_handle_input`): picked once, so a creative break does not
     /// move the use that follows it past the broken block.
     tick_hit: Option<Option<Hit>>,
+    /// `Player.entityInteractionRange` and `blockInteractionRange`, refreshed
+    /// each tick from the attribute (a server's reach modifier, creative's
+    /// +2): the pick helpers' `&self` reach.
+    entity_reach: f64,
+    block_reach: f64,
     /// The part of a right click a guest's packet asks for (game/lan_actions.rs).
     guest_use: Option<GuestUse>,
     /// Level events of this tick for the guests, and the guest acting now.
@@ -2470,8 +2475,9 @@ impl Game<'_> {
         }
         Some((self.eye_position()?, view_vector(self.yaw, self.pitch)))
     }
+    /// `Player.blockInteractionRange`: the block pick's and mining's reach.
     fn reach(&self) -> f64 {
-        if self.creative { 5.0 } else { 4.5 }
+        self.block_reach
     }
     /// Outline shapes that depend on more than the block state, as one box
     /// in block space: `LightBlock` and `ScaffoldingBlock.getShape` are a full
@@ -2544,7 +2550,9 @@ impl Game<'_> {
             return hit;
         }
         let (origin, dir) = self.aim()?;
-        self.clip_ray(origin, dir, self.reach())
+        // GameRenderer.pick: the block ray runs out to the larger of the two
+        // interaction ranges.
+        self.clip_ray(origin, dir, self.block_reach.max(self.entity_reach))
     }
     /// The first block outline hit within `reach` along the unit `dir`.
     fn clip_ray(&self, origin: [f64; 3], dir: [f64; 3], reach: f64) -> Option<Hit> {
@@ -5953,6 +5961,10 @@ impl Game<'_> {
         if self.agent.hold_server {
             return Ok(());
         }
+        // `Player.entityInteractionRange`/`blockInteractionRange` for the tick's
+        // picks: the attribute carries creative's and a server's modifiers.
+        self.entity_reach = self.interaction_range("minecraft:entity_interaction_range", 3.0, 5.0);
+        self.block_reach = self.interaction_range("minecraft:block_interaction_range", 4.5, 5.0);
         self.tick_debug_keys()?;
         self.tick_debug_charts();
         self.tick_tutorial();
@@ -9501,13 +9513,15 @@ impl Game<'_> {
     }
     fn mob_hit(&self) -> Option<(usize, f64)> {
         let (eye, dir) = self.aim()?;
-        let reach: f64 = if self.creative { 5.0 } else { 3.0 };
+        let reach: f64 = self.entity_reach;
         let mut best: Option<(usize, f64)> = None;
         for (i, m) in self.mobs.iter().enumerate() {
             // ProjectileUtil.getEntityHitResult: the mob the player rides
             // shares its root vehicle and is never the hit, nor is the
-            // camera entity the pick starts from.
-            if !m.alive() || Some(m.id) == self.riding || Some(m.id) == self.remote_camera_id() {
+            // camera entity the pick starts from. EntitySelector.CAN_BE_PICKED
+            // is isPickable — `!isRemoved`, not alive: a health-0 fake player
+            // still answers a click.
+            if m.removed || Some(m.id) == self.riding || Some(m.id) == self.remote_camera_id() {
                 continue;
             }
             if let Some(t) = ray_box(eye, dir, reach, m.bounds())
@@ -15575,6 +15589,8 @@ impl<'a> Game<'a> {
             world_icon: None,
             forced_hit: None,
             tick_hit: None,
+            entity_reach: 3.0,
+            block_reach: 4.5,
             guest_use: None,
             lan_events: Vec::new(),
             lan_songs: Vec::new(),
