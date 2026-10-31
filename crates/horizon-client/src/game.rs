@@ -78,6 +78,7 @@ mod campfire_douse;
 mod cartography;
 mod cat_spawner;
 mod chat;
+mod chat_filter;
 mod chiseled_bookshelf;
 mod client_ambient;
 mod clipboard;
@@ -143,6 +144,7 @@ mod item_particles;
 mod jigsaw_blocks;
 mod jigsaw_edit;
 mod jukebox;
+mod key_focus;
 mod lan;
 mod lan_actions;
 mod lan_attributes;
@@ -183,6 +185,7 @@ mod moving_pistons;
 mod music;
 mod names;
 mod narrator;
+mod native_entities;
 mod native_explosions;
 mod native_hooks;
 mod native_lifecycle;
@@ -222,6 +225,7 @@ mod potions;
 mod powder_snow;
 mod prediction;
 mod pumpkin;
+mod quick_actions;
 mod raids;
 mod recipe_book;
 mod remote;
@@ -241,6 +245,7 @@ mod respawn_anchor;
 mod saves_control;
 mod saving;
 mod scoreboard;
+mod screen_info;
 mod screens;
 mod sculk;
 mod sculk_fixture;
@@ -2134,7 +2139,7 @@ struct Game<'a> {
     loading_progress: f32,
     /// `CreateWorldScreen.openCreateWorldScreen`'s data read, on a worker,
     /// while the title says `createWorld.preparing`.
-    creation_job: Option<std::thread::JoinHandle<()>>,
+    creation_job: Option<std::thread::JoinHandle<std::result::Result<(), String>>>,
     /// When `loading_progress` last eased (the server thread's load, 50 ms a step).
     loading_progress_at: Option<std::time::Instant>,
     /// The world spawn search's origin chunk and fallback height, once known.
@@ -2233,6 +2238,8 @@ struct Game<'a> {
     tutorial_toasts: Vec<tutorial::HintToast>,
     /// The `SystemToastId.NARRATOR_TOGGLE` toast, wherever the player is.
     narrator_toast: Option<horizon_client::toasts::SystemToast>,
+    /// The open screen's narration (`Screen`'s narration state and timing).
+    narration: horizon_client::screen_narrator::ScreenNarrator,
     /// Where the options screen returns: true = title, false = pause menu.
     options_from_title: bool,
     dragging: bool,
@@ -7329,7 +7336,9 @@ impl Game<'_> {
     fn apply_cursor_icon(&mut self) {
         use horizon_client::widgets::Cursor;
         let wanted = horizon_client::widgets::take_cursor();
-        let effective = if self.settings.allow_cursor_changes {
+        // The widgets under the keyboard's hidden pointer aren't under the
+        // mouse (`handleCursor` asks only for a hovered widget).
+        let effective = if self.settings.allow_cursor_changes && !self.key_focus_driving() {
             wanted
         } else {
             Cursor::Arrow
@@ -7458,13 +7467,16 @@ impl Game<'_> {
         let cooldown =
             horizon_client::cooldowns::group(stack, info.and_then(|i| i.use_cooldown.as_ref()));
         let partial = self.clock.fraction() as f32;
+        // BundleItem overrides the bar with its fullness.
+        let mut bar = horizon_client::bundle::Contents::of(self.items(), stack)
+            .map(|c| c.bar())
+            .unwrap_or_else(|| hud_overlays::damage_bar(stack.damage as i32, max_damage));
+        // Client-only: a mod may replace or hide the bar vanilla just chose.
+        self.native_item_bar(stack, &mut bar);
         let decorations = hud_overlays::ItemDecorations {
             count: stack.count,
             count_text,
-            // BundleItem overrides the bar with its fullness.
-            bar: horizon_client::bundle::Contents::of(self.items(), stack)
-                .map(|c| c.bar())
-                .unwrap_or_else(|| hud_overlays::damage_bar(stack.damage as i32, max_damage)),
+            bar,
             cooldown: self.cooldowns.percent(&cooldown, partial),
         };
         let mut draws = vec![hud_layout::GuiDraw::Push(vec![
@@ -7543,6 +7555,11 @@ impl Game<'_> {
             }
             if let Some(sound) = title.update_toast(self.settings.notification_display_time) {
                 self.audio.play(sound, None, 1.0, 1.0);
+            }
+        }
+        if let Some(title) = &self.title {
+            for found in title.lan_found_narrations((w, h)) {
+                self.say_system_queued(&found);
             }
         }
         if self.title.is_some() {
@@ -7802,6 +7819,9 @@ impl Game<'_> {
             // PauseScreen(false): only its title, at the top.
             Screen::Paused => {
                 let title = self.translate("menu.paused", "Game Paused");
+                horizon_client::widgets::begin_screen(|| {
+                    horizon_client::widgets::ScreenInfo::new("paused", title.clone())
+                });
                 let tw = HudBatch::text_width(&self.gui.atlas, &title);
                 batch.text(
                     &self.gui.atlas,
@@ -8141,6 +8161,7 @@ impl Game<'_> {
         }
     }
     fn draw_inventory(&mut self, batch: &mut HudBatch) {
+        screen_info::begin_container("container");
         if self.draw_station(batch) {
             return;
         }
@@ -8202,6 +8223,7 @@ impl Game<'_> {
                         )
                         .resolve_legacy()
                     });
+                    screen_info::name_container(|| title.plain());
                     let tw = atlas.font.width_text(&title);
                     batch.text_styled(
                         atlas,
@@ -8280,6 +8302,7 @@ impl Game<'_> {
                     };
                     part(batch, texture, 0.0, 0.0, 176.0, 166.0, ox, oy);
                     let title = self.translate("container.crafting", "Crafting");
+                    screen_info::name_container(|| title.clone());
                     let tx = if self.craft_size == 3 { 29.0 } else { 97.0 };
                     batch.text(atlas, &title, ox + tx, oy + 6.0, grey, false);
                     if self.craft_size == 3 {
@@ -9054,6 +9077,33 @@ impl Game<'_> {
             self.container_changed(key);
         }
         done
+    }
+    /// The pick block key bound to a keyboard key, over a slot of the open
+    /// menu (`AbstractContainerScreen.keyPressed`): `CLONE` with button 0. The
+    /// search tab's box takes the key instead.
+    fn inventory_pick_key(&mut self) {
+        let menu = (self.screen == Screen::Inventory
+            || (self.screen == Screen::Creative && !self.creative_screen.tab().search))
+            && !self.dialog_open();
+        let Some(size) = self
+            .renderer
+            .as_ref()
+            .map(|r| [r.config.width, r.config.height])
+        else {
+            return;
+        };
+        let batch = HudBatch::new(size);
+        let Some(slot) = self
+            .slot_at(&batch, self.cursor.0, self.cursor.1)
+            .filter(|_| menu)
+        else {
+            return;
+        };
+        if self.menu_click(Some(slot), 0, horizon_client::menu::Input::Clone)
+            && let Some(key) = self.container
+        {
+            self.container_changed(key);
+        }
     }
     /// The plain inventory mouse press: starts a quick craft drag when a
     /// stack is held, gathers on a double click, else the normal click.
@@ -10719,6 +10769,18 @@ impl Game<'_> {
             (sky.star_brightness > 0.0).then(|| (frame(sky.star_angle), sky.star_brightness));
         (out, stars)
     }
+    /// `onAbort`: the confirm screen's Back or Escape reopens the Data
+    /// Packs screen with the selection it had.
+    fn reopen_data_packs(&mut self, event_loop: &dyn EventLoopCtl) -> Result<()> {
+        let action = self
+            .title
+            .as_mut()
+            .and_then(|t| t.reopen_data_packs_action());
+        if let Some(action) = action {
+            self.title_action(event_loop, action)?;
+        }
+        Ok(())
+    }
     /// What the title screen asked for, from a click or Enter.
     fn title_action(&mut self, event_loop: &dyn EventLoopCtl, action: Action) -> Result<()> {
         match action {
@@ -11358,6 +11420,9 @@ impl Game<'_> {
         if let Some(r) = self.renderer.as_mut() {
             r.clear_sections(self.world.layout());
         }
+        // Clear sync data (registries, dialog tags) so dialogs don't leak
+        // between worlds.
+        lan::forget_sync_data();
         self.title = Some(
             Title::new(
                 std::env::current_dir()?.join("saves"),
@@ -13223,6 +13288,8 @@ impl Game<'_> {
         lines
     }
     fn draw_creative(&mut self, batch: &mut HudBatch) {
+        // CreativeModeInventoryScreen: `CommonComponents.EMPTY` for a title.
+        screen_info::begin_container("creative");
         let (ox, oy) = Self::creative_origin(batch);
         let selected = self.creative_screen.selected;
         // Only what is drawn of the tabs: their stacks stay where they are.
@@ -13308,6 +13375,9 @@ impl Game<'_> {
             search.focused = true;
             search.text_color = u32::MAX;
             search.max_length = clipboard::CREATIVE_SEARCH_CHARS;
+            if horizon_client::widgets::narrating() {
+                search.message = screen_info::tr("itemGroup.search", &[]);
+            }
             search.draw(batch, atlas, None);
         }
         // The hovered stack, and whether it is a grid slot (`CustomCreativeSlot`).
@@ -13608,7 +13678,14 @@ impl Game<'_> {
         self.level.selected_slot = self.selected as i32;
         let mode = self.mode_id();
         // The vehicle the player rides (`ServerPlayer.saveParentVehicle`).
-        let vehicle = self.root_vehicle_uuid(self.riding);
+        let others = self
+            .lan
+            .as_ref()
+            .map(|h| self.ridden_by_others(&h.hub.guests, self.dim.id(), None, false))
+            .unwrap_or_default();
+        let vehicle = self.parent_vehicle_tag(self.riding, &others);
+        // Only the local player's file is this one's to rewrite.
+        let local = self.serving.is_none() && self.options.dedicated.is_none();
         let level = &mut self.level;
         level.creative = self.creative;
         level.game_mode = mode;
@@ -13619,7 +13696,24 @@ impl Game<'_> {
         level.xp_level = self.experience.level;
         level.xp_progress = self.experience.progress;
         level.xp_total = self.experience.total;
-        level.root_vehicle = vehicle.or(self.pending_vehicle);
+        level.root_vehicle = vehicle.as_ref().map(|v| v.2).or(self.pending_vehicle);
+        // The ride's tree, or none once the file's own came back.
+        match vehicle {
+            Some((tag, ..)) => {
+                let extra = level
+                    .player_extra
+                    .get_or_insert_with(|| horizon_world::nbt::Tag::Compound(Default::default()));
+                if let horizon_world::nbt::Tag::Compound(map) = extra {
+                    map.insert("RootVehicle".into(), tag);
+                }
+            }
+            None if local && self.pending_vehicle.is_none() => {
+                if let Some(horizon_world::nbt::Tag::Compound(map)) = &mut level.player_extra {
+                    map.remove(&"RootVehicle".into());
+                }
+            }
+            None => {}
+        }
         if let Some(p) = &self.player {
             level.position = Some([p.position.x, p.position.y, p.position.z]);
             level.health = p.health.health();
@@ -13728,9 +13822,10 @@ impl Game<'_> {
             && self.options.execution_role == execution_role::ExecutionRole::IntegratedServer
             && let Some(host) = self.lan.take()
         {
+            // The vehicle tree goes into a player's file when they leave
+            // (`take_parent_vehicle`); here it stays in the chunk saves.
             for g in host.hub.guests.iter().filter(|g| g.placed) {
-                let vehicle = self.root_vehicle_uuid(g.vehicle);
-                horizon_client::lan::playerdata::save(g, &self.world_root, vehicle);
+                horizon_client::lan::playerdata::save(g, &self.world_root);
             }
             self.lan = Some(host);
         }
@@ -13810,7 +13905,14 @@ impl Game<'_> {
         }
         // Minecraft.doWorldLoad: the LevelLoadingScreen while single player's
         // server starts, with the server's chunk map and progress.
-        if self.integrated_starting.is_some() {
+        if let Some(starting) = &self.integrated_starting {
+            // The server's progress once it has some (`hasProgress`).
+            let progress = Some(starting.handle.load_view())
+                .filter(|v| v.has_progress())
+                .map(|v| v.server_progress());
+            horizon_client::widgets::begin_screen(|| {
+                screen_info::level_loading(progress, &screen_info::tr)
+            });
             if let Some(renderer) = &mut self.renderer {
                 let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
                 let (w, h) = (hud.width, hud.height);
@@ -13844,6 +13946,20 @@ impl Game<'_> {
             return Ok(false);
         }
         if let Some(loader) = &self.world_loader {
+            // The world opens before its LevelLoadingScreen has progress;
+            // FileFixerProgressScreen narrates its title.
+            if loader.upgrade.is_file_fixing() && !loader.cancelled {
+                horizon_client::widgets::begin_screen(|| {
+                    horizon_client::widgets::ScreenInfo::new(
+                        "file_fixer",
+                        screen_info::tr("upgradeWorld.title", &[]),
+                    )
+                });
+            } else {
+                horizon_client::widgets::begin_screen(|| {
+                    screen_info::level_loading(None, &screen_info::tr)
+                });
+            }
             if let Some(renderer) = &mut self.renderer {
                 let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
                 // WorldOpenFlows.upgradeAndOpenWorld: the file fixers run on
@@ -13879,6 +13995,9 @@ impl Game<'_> {
         }
         if self.pending_entry.is_some() {
             if let (Some(renderer), Some(loader)) = (&mut self.renderer, &self.rest_loader) {
+                horizon_client::widgets::begin_screen(|| {
+                    screen_info::level_loading(Some(loader.progress.fraction()), &screen_info::tr)
+                });
                 let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
                 horizon_client::level_loading::draw_progress(
                     &mut hud,
@@ -13918,6 +14037,12 @@ impl Game<'_> {
         // player's own model stay smooth while the level is frozen.
         let camera_alpha = self.clock.camera_fraction();
         let view = self.camera_view(camera_alpha as f32);
+        let eye = view.map(|_| {
+            (
+                glam::DVec3::from_array(self.view.eye),
+                self.view.eye_rotation,
+            )
+        });
         let (camera, underwater, view_yaw, view_pitch) = match view {
             Some((c, yaw, pitch)) => {
                 let s =
@@ -14235,6 +14360,9 @@ impl Game<'_> {
             yaw,
             pitch,
             fov_degrees,
+            eye: eye.filter(|_| !title).map_or(camera, |e| e.0),
+            eye_rotation: eye.filter(|_| !title).map_or([yaw, pitch], |e| e.1),
+            first_person: eye.is_none() || title || !self.view.detached,
             bob,
             spin,
             sky,
@@ -14438,6 +14566,10 @@ impl Game<'_> {
         reason: horizon_client::level_loading::Reason,
     ) {
         use horizon_client::level_loading::{self, STATUS_RADIUS};
+        // The level's progress, as the bar shows it (`hasProgress`).
+        horizon_client::widgets::begin_screen(|| {
+            screen_info::level_loading(Some(self.level_load_progress()), &screen_info::tr)
+        });
         self.draw_level_loading_background(batch, reason);
         let atlas = &self.gui.atlas;
         let (cx, cz) = self.streaming.center;
@@ -14599,6 +14731,12 @@ impl Game<'_> {
             // key.advancements.
             KeyCode::KeyL if self.screen == Screen::Playing => self.open_advancements(false),
             KeyCode::KeyL if self.screen == Screen::Advancements => self.close_advancements(),
+            // key.quickActions: only open if a datapack provides dialog actions.
+            KeyCode::KeyG if self.screen == Screen::Playing => {
+                if self.has_quick_actions() {
+                    self.open_quick_actions();
+                }
+            }
             KeyCode::Slash if self.screen == Screen::Playing => self.open_chat_method("/"),
             // key.toggleGui is a KeyMapping: it clicks only with no screen open.
             KeyCode::F1 if self.screen == Screen::Playing => self.toggle_hide_gui(),
@@ -15241,6 +15379,13 @@ impl Game<'_> {
         ) {
             self.last_input = Instant::now();
         }
+        // The real mouse takes the pointer back from the keyboard's focus.
+        self.key_focus_mouse(event_loop, &event);
+        // The screen's narration hears of the input before the screen takes
+        // it; the pointer events the keyboard's focus sends aren't the mouse.
+        if !self.key_focus_quiet() {
+            narrator::narrate_input(&mut self.narration, &event, self.cursor);
+        }
         // FileFixerProgressScreen: Cancel is the only way out (`shouldCloseOnEsc`
         // is false), so it takes the pointer and Escape does nothing.
         if let Some(loader) = &self.world_loader
@@ -15345,6 +15490,17 @@ impl Game<'_> {
                 }
                 _ => {}
             }
+            return;
+        }
+        // Screen.keyPressed: Tab, the arrows and Enter move and press the
+        // menu's focus, unless the focused widget or the screen keeps them.
+        if let WindowEvent::KeyboardInput {
+            event: key_event, ..
+        } = &event
+            && key_event.state == ElementState::Pressed
+            && let PhysicalKey::Code(key) = key_event.physical_key
+            && self.key_focus_key(event_loop, key)
+        {
             return;
         }
         let result: Result<()> = (|| {
@@ -15625,6 +15781,7 @@ impl Game<'_> {
                         self.audio.play_button_click();
                     }
                     self.title_action(event_loop, action)?;
+                    self.reopen_data_packs(event_loop)?;
                 }
                 WindowEvent::MouseInput { .. } if self.title.is_some() => {}
                 WindowEvent::MouseInput { state, button, .. } if self.book.is_some() => {
@@ -16020,6 +16177,7 @@ impl Game<'_> {
                             PhysicalKey::Code(KeyCode::Escape) => {
                                 if let Some(t) = self.title.as_mut() {
                                     t.escape();
+                                    self.reopen_data_packs(event_loop)?;
                                 }
                                 self.save_title_options();
                             }
@@ -16079,6 +16237,8 @@ impl Game<'_> {
                                     action,
                                 ) {
                                     self.play_mouse(button, pressed)?;
+                                } else if container_key_clones(button, action) {
+                                    self.inventory_pick_key();
                                 }
                             }
                         }
@@ -16642,6 +16802,7 @@ impl<'a> Game<'a> {
             tutorial,
             tutorial_toasts: Vec::new(),
             narrator_toast: None,
+            narration: Default::default(),
             options_from_title: false,
             dragging: false,
             avatar: Default::default(),
@@ -17068,12 +17229,25 @@ impl Game<'_> {
         if self.creation_job.is_none() {
             let dir = self.options.resources.join("worldgen");
             let registry = self.pack.assets.registry;
+            // The chosen packs' worldgen over the game's own:
+            // `applyNewPackConfig` reloads with the new pack config.
+            let overrides = title
+                .creation_packs()
+                .map(|(dir, packs)| {
+                    world_loading::creation_worldgen_overrides(
+                        dir.as_deref(),
+                        &self.options.resources,
+                        &packs,
+                        self.res.biomes(),
+                    )
+                })
+                .unwrap_or_default();
             self.creation_job = std::thread::Builder::new()
                 .name("world-creation".into())
                 .spawn(move || {
-                    if let Err(e) = horizon_client::vanillagen::shared_data(&dir, registry) {
-                        log::warn!("Horizon: preparing world creation failed: {e}");
-                    }
+                    horizon_client::vanillagen::shared_data_with(&dir, &overrides, registry)
+                        .map(|_| ())
+                        .map_err(|e| e.to_string())
                 })
                 .ok();
             return;
@@ -17085,11 +17259,30 @@ impl Game<'_> {
         {
             return;
         }
-        if let Some(job) = self.creation_job.take() {
-            let _ = job.join();
-        }
+        let outcome = self.creation_job.take().and_then(|job| job.join().ok());
         if let Some(title) = self.title.as_mut() {
-            title.finish_preparing();
+            match outcome {
+                Some(Ok(())) => title.finish_preparing(),
+                // `applyNewPackConfig`'s failure: back out of the read with
+                // the message, the Create screen's options intact.
+                outcome => {
+                    let e = outcome
+                        .and_then(|r| r.err())
+                        .unwrap_or_else(|| "the read never ran".to_owned());
+                    log::warn!("Horizon: preparing world creation failed: {e}");
+                    // Clear the flag first: `failed` sets the error screen
+                    // with Create as its back target, which
+                    // `finish_preparing` would replace with a fresh world.
+                    title.finish_preparing();
+                    title.failed(format!(
+                        "{}: {e}",
+                        horizon_client::lang::get_or(
+                            "createWorld.preparing",
+                            "Preparing for world creation..."
+                        )
+                    ));
+                }
+            }
         }
     }
 
@@ -17988,6 +18181,9 @@ fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         yaw: 0.0,
         pitch: 10.0,
         fov_degrees: 85.0,
+        eye: glam::DVec3::new(0.5, 100.0, 0.5),
+        eye_rotation: [0.0, 10.0],
+        first_person: true,
         bob: glam::Mat4::IDENTITY,
         spin: glam::Mat4::IDENTITY,
         sky: horizon_client::environment::Sky::default(),
@@ -18434,6 +18630,7 @@ impl Loading {
         };
         let mut batch = HudBatch::new(size);
         self.draw_menu(&mut batch);
+        self.menu.frame_drawn((batch.width, batch.height));
         let mut frame = loading_frame(&batch);
         frame.yaw = self.panorama_rotation.update(
             self.started.elapsed().as_secs_f32(),
@@ -18855,6 +19052,13 @@ fn drop_held_behind_dialog(
     }
 }
 
+/// `AbstractContainerScreen.keyPressed` for a key bound to a mouse mapping: a press or repeat of
+/// key.pickItem's key clones the hovered slot; keys bound to key.attack and key.use do nothing
+/// there (#5378).
+fn container_key_clones(button: MouseButton, action: KeyAction) -> bool {
+    button == MouseButton::Middle && action != KeyAction::Release
+}
+
 /// `VoxelShape.clip` of a fluid source's shape for a ray that starts in the
 /// source's own block `cell`: the face and point it hits, in `pick_fluid`'s
 /// `Hit` terms. `FlowingFluid.getShape` is the whole block under the same
@@ -19234,6 +19438,20 @@ mod tests {
         assert!(!toggles.is_down(SNEAK));
         toggles.screen_closed(options);
         assert!(toggles.is_down(SNEAK));
+    }
+    /// A key bound to key.pickItem clones over a container screen, as the
+    /// middle button does; a key bound to attack or use does nothing there (#5378).
+    #[test]
+    fn a_key_bound_to_pick_block_clones_behind_a_container_screen() {
+        assert!(container_key_clones(MouseButton::Middle, KeyAction::Press));
+        assert!(container_key_clones(MouseButton::Middle, KeyAction::Repeat));
+        assert!(!container_key_clones(
+            MouseButton::Middle,
+            KeyAction::Release
+        ));
+        for button in [MouseButton::Left, MouseButton::Right] {
+            assert!(!container_key_clones(button, KeyAction::Press));
+        }
     }
     #[test]
     fn sleep_fade_lasts_ten_ticks_after_waking() {
