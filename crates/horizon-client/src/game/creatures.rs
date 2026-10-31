@@ -1317,8 +1317,9 @@ impl Game<'_> {
         let mut killed = false;
         let mut hurt = false;
         let mut infested = false;
+        let aim = self.attacker_aim(source.attacker);
         if let Some(t) = self.mobs.iter_mut().find(|m| m.id == target) {
-            let hit = t.damage(amount, source);
+            let hit = t.damage_aimed(amount, source, aim);
             hurt = hit;
             if hit {
                 killed = !t.alive();
@@ -3734,6 +3735,7 @@ impl Game<'_> {
             attacker: p.owner,
             from: Some([p.previous.x, p.previous.y, p.previous.z]),
         };
+        let aim = self.attacker_aim(source.attacker);
         match (&p.kind, hit) {
             // ThrownTrident.onHitEntity: 8 damage (Impaling on aquatic mobs),
             // dealt whether or not the hurt lands, then it bounces off.
@@ -3754,11 +3756,9 @@ impl Game<'_> {
                         [p.previous.x, p.previous.y, p.previous.z],
                         "minecraft:trident",
                     ),
-                    Who::Mob(id) => self
-                        .mobs
-                        .iter_mut()
-                        .find(|m| m.id == id)
-                        .is_some_and(|m| m.damage(amount, source)),
+                    Who::Mob(id) => self.mobs.iter_mut().find(|m| m.id == id).is_some_and(|m| {
+                        m.damage_projectile(amount, source, aim, [p.velocity.x, p.velocity.z])
+                    }),
                 };
                 let outcome = if hurt {
                     EntityHit::Hurt
@@ -3796,11 +3796,9 @@ impl Game<'_> {
                         hurt
                     }
                     Who::Mob(id) => {
-                        let hurt = self
-                            .mobs
-                            .iter_mut()
-                            .find(|m| m.id == id)
-                            .is_some_and(|m| m.damage(amount, source));
+                        let hurt = self.mobs.iter_mut().find(|m| m.id == id).is_some_and(|m| {
+                            m.damage_projectile(amount, source, aim, [p.velocity.x, p.velocity.z])
+                        });
                         dodged = !hurt
                             && self.mobs.iter().find(|m| m.id == id).is_some_and(|m| {
                                 m.species() == Species::Enderman
@@ -3948,7 +3946,7 @@ impl Game<'_> {
                     } else {
                         0.0
                     };
-                    m.damage(amount, source);
+                    m.damage_projectile(amount, source, aim, [p.velocity.x, p.velocity.z]);
                 }
                 self.thrown_break_event(p.id, atp);
                 self.item_burst(atp, "minecraft:snowball");
@@ -3959,7 +3957,7 @@ impl Game<'_> {
                 } = hit
                     && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
                 {
-                    m.damage(0.0, source);
+                    m.damage_projectile(0.0, source, aim, [p.velocity.x, p.velocity.z]);
                 }
                 // ThrownEgg.onHit: 1/8 chance of a chick, 1/32 of four.
                 if self.world.random.next_int_bound(8).unwrap_or(1) == 0 {
@@ -3985,7 +3983,7 @@ impl Game<'_> {
                 } = hit
                     && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
                 {
-                    m.damage(0.0, source);
+                    m.damage_projectile(0.0, source, aim, [p.velocity.x, p.velocity.z]);
                 }
                 if p.owner == Some(Who::Player) && self.player.is_some() {
                     // ThrownEnderpearl: 5% endermite where the player was
@@ -4045,7 +4043,8 @@ impl Game<'_> {
                             if !m.kind.flags.fire_immune {
                                 m.ignite_for_ticks(100);
                             }
-                            let hurt = m.damage(5.0, source);
+                            let hurt =
+                                m.damage_projectile(5.0, source, aim, [p.velocity.x, p.velocity.z]);
                             if !hurt {
                                 m.fire_ticks = remaining;
                             }
@@ -4094,12 +4093,9 @@ impl Game<'_> {
                             );
                         }
                         Who::Mob(id) => {
-                            if self
-                                .mobs
-                                .iter_mut()
-                                .find(|m| m.id == id)
-                                .is_some_and(|m| m.damage(6.0, source))
-                            {
+                            if self.mobs.iter_mut().find(|m| m.id == id).is_some_and(|m| {
+                                m.damage_projectile(6.0, source, aim, [p.velocity.x, p.velocity.z])
+                            }) {
                                 self.player_hurt_mob(p, id);
                             }
                         }
@@ -4203,7 +4199,7 @@ impl Game<'_> {
                 }
                 Who::Mob(id) => {
                     if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
-                        m.damage(1.0, source);
+                        m.damage_projectile(1.0, source, aim, [p.velocity.x, p.velocity.z]);
                     }
                 }
             },
@@ -4223,7 +4219,7 @@ impl Game<'_> {
                 }
                 Who::Mob(id) => {
                     if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
-                        && m.damage(4.0, source)
+                        && m.damage_projectile(4.0, source, aim, [p.velocity.x, p.velocity.z])
                     {
                         m.add_effect("minecraft:levitation", 200, 0);
                         // Shulker.hurtServer: a shulker hit by a bullet.
