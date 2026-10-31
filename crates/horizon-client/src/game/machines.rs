@@ -5,6 +5,7 @@
 use super::Game;
 
 mod crafter;
+pub(in crate::game) mod native_fluids;
 use horizon_client::{
     Result,
     containers::{BlockEntity, HOPPER_SLOTS, ModContainer},

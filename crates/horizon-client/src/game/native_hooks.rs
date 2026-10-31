@@ -6,6 +6,12 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 41 adds fluid tanks on a mod block's block entity
+//! (`native_block_entity_fluids`), and the fluid helpers in
+//! `machines/native_fluids.rs`: `native_fluid_tanks`,
+//! `native_fluid_insert`, `native_fluid_extract`, which also read and
+//! change a cauldron.
+//!
 //! API 40 adds mod messages between a mod's server and client halves
 //! (`native_net_from_client`, `native_net_from_server`, and
 //! `native_net_send_to_player`, `native_net_send_to_server` in
@@ -150,7 +156,7 @@ use horizon_client::{
     atlas_sources::qualified,
     block_entities::Pos,
     chat::ChatSource,
-    containers::{BlockEntity, MOD_MENUS, ModBlockEntity, ModContainer},
+    containers::{BlockEntity, MOD_MENUS, ModBlockEntity, ModContainer, ModFluidTanks},
     crafting::{CustomRecipe, Ingredient, recipe_result},
     extras::Corner,
     extras_hud::Corners,
@@ -191,7 +197,7 @@ pub(super) use horizon_world::level::flags;
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 40;
+pub(crate) const NATIVE_HOOKS_API: u32 = 41;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -822,6 +828,21 @@ impl Game<'_> {
         container: &mut Option<ModContainer>,
     ) {
         let _ = (block, container);
+    }
+    /// Block `block`'s block entity has fluid tanks: set `fluids` when the
+    /// block is yours, in the container's shape — each tank's capacity in
+    /// millibuckets, the tanks each face reaches, and the tanks a fill may
+    /// reach and a drain may take. Asked once for each mod block when the
+    /// ticking table is built; at most 16 tanks, capacities at most a
+    /// million, and tank numbers past the count are left out. The tanks'
+    /// contents are kept in the entity's saved compound, under `fluids`, and
+    /// the fluid helpers below read and write them. API 41.
+    pub(super) fn native_block_entity_fluids(
+        &self,
+        block: &str,
+        fluids: &mut Option<ModFluidTanks>,
+    ) {
+        let _ = (block, fluids);
     }
     /// A server tick of the block entity at `pos`, in vanilla's order among
     /// the others (`Level.tickBlockEntities`), when its `id` is yours: read
@@ -1920,6 +1941,38 @@ impl Game<'_> {
             });
             if let Some(c) = container {
                 out.insert(i, Arc::clone(c));
+            }
+        }
+        out
+    }
+    /// The fluid tanks of the mod blocks' block entities, by block state
+    /// (`native_block_entity_fluids`), checked as the containers are.
+    pub(super) fn native_fluid_tables(&self) -> FxHashMap<u32, Arc<ModFluidTanks>> {
+        let registry = self.pack.assets.registry;
+        let mut by_block: FxHashMap<String, Option<Arc<ModFluidTanks>>> = FxHashMap::default();
+        let mut out = FxHashMap::default();
+        for i in 0..registry.len() as u32 {
+            let Some(state) = registry.state(horizon_world::registry::BlockStateId(i)) else {
+                continue;
+            };
+            if state.name.starts_with("minecraft:") {
+                continue;
+            }
+            let tanks = by_block.entry(state.name.clone()).or_insert_with(|| {
+                let mut fluids = None;
+                self.native_block_entity_fluids(&state.name, &mut fluids);
+                fluids.map(|mut f| {
+                    f.tanks.truncate(16);
+                    f.tanks.retain(|&c| (1..=1_000_000).contains(&c));
+                    let n = f.tanks.len();
+                    for list in f.faces.iter_mut().chain([&mut f.inputs, &mut f.outputs]) {
+                        list.retain(|&t| t < n);
+                    }
+                    Arc::new(f)
+                })
+            });
+            if let Some(t) = tanks {
+                out.insert(i, Arc::clone(t));
             }
         }
         out
