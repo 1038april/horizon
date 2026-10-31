@@ -482,6 +482,27 @@ pub(super) fn packed_biomes(
     }
     Arc::new(base.with_packs(packed.iter().map(|(i, v)| (i.as_str(), v))))
 }
+/// The Create screen's chosen packs' worldgen entries over the game's own
+/// (`applyNewPackConfig` reloads the world with the new pack config): the
+/// packs the temp folder and the resources root hold, the selection the
+/// Create screen made.
+pub(super) fn creation_worldgen_overrides(
+    pack_dir: Option<&std::path::Path>,
+    resources: &std::path::Path,
+    data_packs: &[String],
+    biomes: &horizon_client::biome::Biomes,
+) -> horizon_world::worldgen::overrides::WorldgenOverrides {
+    let empty = std::path::PathBuf::new();
+    let packs =
+        horizon_client::datapack::discover_with_features(pack_dir.unwrap_or(&empty), resources);
+    let enabled: Vec<_> = data_packs
+        .iter()
+        .filter_map(|id| packs.iter().find(|p| &p.id == id))
+        .collect();
+    let (overrides, _) =
+        horizon_client::datapack::worldgen_overrides(&enabled, |b| biomes.contains(b));
+    overrides
+}
 /// The worldgen entries of the world's enabled data packs, logging what
 /// the generator leaves out of them.
 fn world_worldgen_overrides(
@@ -576,6 +597,13 @@ pub(super) fn make_streaming(
         horizon_client::save::dimension_dir(world_root, dim.id()),
         shape,
     ));
+    if dim == Dim::End {
+        // Migrate before any chunk reader can cache the old block entities. A side file it
+        // can't read stays where it is and costs only its old exits: the End still opens.
+        if let Err(e) = save.migrate_end_gateway_exits() {
+            log::warn!("Horizon: End gateway exits not migrated: {e}");
+        }
+    }
     // The world's packs over the game's biomes (`RegistryDataLoader`
     // layering): the generator names the ids and the client draws them.
     let biomes = packed_biomes(
@@ -635,6 +663,15 @@ pub(super) fn make_streaming(
             })?);
         if dim == Dim::Overworld && structures {
             inner.search_rings_behind();
+        }
+        // Chunks an older version saved: the new chunks around them blend in.
+        if dim == Dim::Overworld {
+            inner.set_old_world(Arc::new(horizon_client::old_world::SavedOldWorld::new(
+                save.clone(),
+                pack.assets.clone(),
+                res.biomes().clone(),
+                inner.generator_data().clone(),
+            )));
         }
         inner.set_reference_file(world_root.join("data").join(format!(
             "horizon_structure_references_{}.json",
