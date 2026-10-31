@@ -50,15 +50,30 @@ impl SecureChat {
 
 /// Crypt.SaltSupplier.getLong: a SecureRandom long.
 fn salt() -> i64 {
-    let mut bytes = [0u8; 8];
-    let _ = horizon_protocol::crypto::random_bytes(&mut bytes);
-    i64::from_be_bytes(bytes)
+    i64::from_be_bytes(random())
+}
+
+/// Bytes from the OS. A failure is logged, not hidden: what it leaves is not random.
+fn random<const N: usize>() -> [u8; N] {
+    let mut bytes = [0u8; N];
+    if let Err(e) = horizon_protocol::crypto::random_bytes(&mut bytes) {
+        log::error!("Secure chat has no randomness: {e}");
+    }
+    bytes
+}
+
+/// Encoder.pack; a message that can't be signed goes without, and says so.
+fn sign(keys: &ChatKeyPair, encoder: &mut Encoder, body: &Body) -> Option<Signature> {
+    let signature = encoder.sign(&keys.private, body);
+    if signature.is_none() {
+        log::error!("Failed to sign a chat message");
+    }
+    signature
 }
 
 /// UUID.randomUUID: version 4, IETF variant.
 fn random_uuid() -> u128 {
-    let mut bytes = [0u8; 16];
-    let _ = horizon_protocol::crypto::random_bytes(&mut bytes);
+    let mut bytes: [u8; 16] = random();
     bytes[6] = bytes[6] & 0x0f | 0x40;
     bytes[8] = bytes[8] & 0x3f | 0x80;
     u128::from_be_bytes(bytes)
@@ -140,8 +155,9 @@ impl Game<'_> {
         let chat = &mut r.secure_chat;
         let seen = chat.tracker.update();
         let signature = chat.session.as_mut().and_then(|(keys, encoder)| {
-            encoder.sign(
-                &keys.private,
+            sign(
+                keys,
+                encoder,
                 &Body {
                     content: &content,
                     timestamp,
@@ -193,7 +209,7 @@ impl Game<'_> {
                     salt,
                     last_seen: &seen.last_seen,
                 };
-                if let Some(signature) = encoder.sign(&keys.private, &body) {
+                if let Some(signature) = sign(keys, encoder, &body) {
                     signatures.push((name, signature.to_vec()));
                 }
             }
