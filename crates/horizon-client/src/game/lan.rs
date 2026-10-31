@@ -2385,6 +2385,50 @@ impl Game<'_> {
             self.fox_eat_particles(id as u32);
         }
     }
+    /// `LivingEntity.onEquippedItemBroken` for the acting player (the guest whose turn it
+    /// is, else the host): `level.broadcastEntityEvent` with `entityEventForEquipmentBreak`
+    /// of the slot, which each client answers with `breakItem` (the sound and the crumbs,
+    /// `remote_equipment_break`). Without a hub to tell, or in a window that runs the world
+    /// itself, the sound and the crumbs are played here.
+    pub(super) fn player_equipment_broke(
+        &mut self,
+        slot: horizon_world::player_inventory::EquipmentSlot,
+        stack: &horizon_client::items::ItemStack,
+    ) {
+        use horizon_world::player_inventory::EquipmentSlot;
+        let event = match slot {
+            EquipmentSlot::MainHand => 47,
+            EquipmentSlot::OffHand => 48,
+            EquipmentSlot::Head => 49,
+            EquipmentSlot::Chest => 50,
+            EquipmentSlot::Legs => 51,
+            EquipmentSlot::Feet => 52,
+            EquipmentSlot::Body => 65,
+            EquipmentSlot::Saddle => 68,
+        };
+        let Some(at) = self
+            .player
+            .as_ref()
+            .map(|p| [p.position.x, p.position.y, p.position.z])
+        else {
+            return;
+        };
+        let told = if self.lan_acting.is_some() {
+            self.guest_equipment_breaks.push((event, at));
+            true
+        } else if let Some(host) = &self.lan {
+            host.hub.entity_event(host.host_entity, event, at);
+            true
+        } else {
+            false
+        };
+        if told && !self.options.execution_role.is_client() {
+            return;
+        }
+        // LivingEntity.breakItem: the stack's break sound where it stands, then the crumbs.
+        self.break_sound_at(stack, at);
+        self.eat_particles(stack, 5);
+    }
     /// `ServerPlayer.crit` (or `magicCrit` when `magic`): this window's
     /// emitter, and an animation for the attacker's client and observers once
     /// the hub is back in place.
