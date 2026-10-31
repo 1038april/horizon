@@ -73,21 +73,22 @@ pub(super) fn content_root(
                 continue;
             }
         };
-        if known.is_none() {
-            match mod_content::known_components(root) {
-                Ok(types) => known = Some(types),
+        let known = match &mut known {
+            Some(types) => types,
+            None => match mod_content::known_components(root) {
+                Ok(types) => known.insert(types),
                 Err(e) => {
                     log::warn!("Horizon: content mods not loaded: {e}");
                     register_mob_effects(&[]);
                     return root.to_owned();
                 }
-            }
-        }
+            },
+        };
         let candidate = ContentMod {
             id: m.id.clone(),
             content,
         };
-        if let Err(e) = mod_content::accept_mod(&mut mods, candidate, known.as_ref().unwrap()) {
+        if let Err(e) = mod_content::accept_mod(&mut mods, candidate, known) {
             log::warn!("Horizon: mod {} content not loaded: {e}", m.id);
         }
     }

@@ -67,9 +67,21 @@ fn item_components_patch_the_template_entry() {
     }
 }
 
+fn install_test_components() {
+    static INSTALLED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    INSTALLED.get_or_init(|| {
+        use horizon_protocol::item::custom::{self, InstallError};
+        match custom::install(1000, vec!["native:test".into()]) {
+            Ok(()) => {}
+            Err(InstallError::AlreadyInstalled) => assert!(custom::id("native:test").is_some()),
+            Err(error) => panic!("could not install test components: {error}"),
+        }
+    });
+}
+
 #[test]
 fn component_validation_isolates_mods() {
-    horizon_protocol::item::custom::install(1000, vec!["native:test".into()]).unwrap();
+    install_test_components();
     let scratch = std::env::temp_dir().join(format!(
         "horizon-component-isolation-{}",
         std::process::id()
