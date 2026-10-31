@@ -705,7 +705,11 @@ impl Game<'_> {
         self.carts.retain(|x| x.id != c.id);
         // ExplosionInteraction.TNT: the tnt_explosion_drop_decay rule.
         let interaction = self.destroy_type("tnt_explosion_drop_decay");
+        // MinecartTNT.isPrimed (fuse > -1): a cart that ran into a wall or
+        // fell unprimed blows rails up like any blast.
+        self.combat.rail_proof_blast = c.fuse >= 0;
         let _ = self.with_hive_emptying_blast(|g| g.server_explode(at, power, interaction, false));
+        self.combat.rail_proof_blast = false;
     }
     /// `AbstractMinecart.push` from each player walking into a cart
     /// (`LivingEntity.pushEntities`): the window's player and every server

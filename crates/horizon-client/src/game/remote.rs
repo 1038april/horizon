@@ -22,6 +22,7 @@ use horizon_client::{
     motion::{MotionWorld, PlayerMotion},
     net::{Event, Session},
     save::SaveDir,
+    screen_effects,
     sprint::Keys,
     streaming::{ChunkGenerator, Proto, Streaming},
     tab_list::SPECTATOR,
@@ -567,16 +568,27 @@ impl Game<'_> {
         name: &str,
         cookies: Option<horizon_client::net::Cookies>,
     ) -> Result<()> {
+        self.connect_server_with_options(address, name, cookies, false)
+    }
+    /// `ConnectScreen.startConnecting`: keep LAN discovery's server kind through loading.
+    pub(super) fn connect_server_with_options(
+        &mut self,
+        address: &str,
+        name: &str,
+        cookies: Option<horizon_client::net::Cookies>,
+        lan: bool,
+    ) -> Result<()> {
         super::world_loading::preload_server_loot(&self.options.resources);
         if self.defer_world_entry(super::PendingWorldEntry::Server {
             address: address.to_owned(),
             name: name.to_owned(),
             cookies: cookies.clone(),
+            lan,
         })? {
             return Ok(());
         }
         self.join_world_rest()?;
-        if let Err(error) = self.join_server(address, name, None, cookies) {
+        if let Err(error) = self.join_server(address, name, None, cookies, lan) {
             log::warn!("Horizon: could not join server: {error}");
             if self.title.is_none() {
                 self.title = Some(
@@ -602,7 +614,7 @@ impl Game<'_> {
         pipe: horizon_protocol::connection::Pipe,
         name: &str,
     ) -> Result<()> {
-        self.join_server("local", name, Some(pipe), None)
+        self.join_server("local", name, Some(pipe), None, false)
     }
     fn join_server(
         &mut self,
@@ -610,6 +622,7 @@ impl Game<'_> {
         name: &str,
         local: Option<horizon_protocol::connection::Pipe>,
         cookies: Option<horizon_client::net::Cookies>,
+        lan: bool,
     ) -> Result<()> {
         self.reset_tutorial();
         self.perf.world_opening();
@@ -647,7 +660,7 @@ impl Game<'_> {
                 Session::connect_local(pipe, name, info.clone(), lang.clone(), root.clone())
             }
             None => {
-                self.extras_connecting(address, name);
+                self.extras_connecting(address, name, lan);
                 match cookies {
                     Some(cookies) => Session::connect_transferred(
                         address,
@@ -658,14 +671,21 @@ impl Game<'_> {
                         cookies,
                         root.clone(),
                     ),
-                    None => Session::connect(
-                        address,
-                        name,
-                        auth.clone(),
-                        info.clone(),
-                        lang.clone(),
-                        root.clone(),
-                    ),
+                    None => {
+                        let connect = if lan {
+                            Session::connect_lan
+                        } else {
+                            Session::connect
+                        };
+                        connect(
+                            address,
+                            name,
+                            auth.clone(),
+                            info.clone(),
+                            lang.clone(),
+                            root.clone(),
+                        )
+                    }
                 }
             }
         };
@@ -740,12 +760,15 @@ impl Game<'_> {
             quiet_commands: false,
             mod_net: false,
             builtin: Arc::new(builtin),
+            status: lang
+                .get("connect.connecting")
+                .cloned()
+                .unwrap_or_else(|| "Connecting to the server...".into()),
             lang,
             registries: Arc::new(Dynamic::default()),
             joined: false,
             reconfiguring: None,
             logged_in: false,
-            status: "Connecting to the server...".into(),
             entity_id: 0,
             camera: None,
             use_item: None,
@@ -993,12 +1016,17 @@ impl Game<'_> {
         e.visible = p.flags & 2 != 0;
         let list = &mut self.potions.effects.list;
         match list.iter_mut().find(|x| x.id == id) {
-            // forceAddEffect's copyBlendState: an updated darkness keeps its fade.
+            // forceAddEffect's copyBlendState: an updated effect keeps its fade.
             Some(existing) => *existing = e,
             None => {
+                // ClientboundUpdateMobEffectPacket.shouldBlend (flag 8).
+                let blend = p.flags & 8 != 0;
                 if id == "darkness" {
-                    // ClientboundUpdateMobEffectPacket.shouldBlend (flag 8).
-                    self.sculk.darkness = super::sculk::darkness_blend_added(&e, p.flags & 8 != 0);
+                    self.sculk.darkness = super::sculk::darkness_blend_added(&e, blend);
+                } else if id == "nausea" {
+                    let (o_nausea, nausea) = screen_effects::nausea_blend_added(&e, blend);
+                    self.screen_fx.o_nausea = o_nausea;
+                    self.screen_fx.nausea = nausea;
                 }
                 list.push(e);
             }
@@ -3246,6 +3274,15 @@ impl Game<'_> {
             }
             // The same packet for another entity: Entity.lerpMotion.
             C::SetEntityMotion(p) => self.remote_motion(p.id, p.velocity),
+            // ClientPacketListener.handleProjectilePowerPacket: the power a
+            // hurting projectile accelerates by, sent bundled with its motion.
+            C::ProjectilePower(p) => {
+                super::remote_projectiles::remote_projectile_power(
+                    &mut self.creatures.projectiles,
+                    p.id,
+                    p.power,
+                );
+            }
             // ClientPacketListener.handleDamageEvent: LivingEntity.handleDamageEvent
             // jolts the walk animation and restarts the hurt flash, and the
             // hurt player's own client plays its hurt sound (`Player.getHurtSound`:
@@ -4972,7 +5009,9 @@ impl Game<'_> {
         self.push_piston_entities(pushes);
         self.sync_moving_pistons();
         self.tick_hand();
-        self.tick_particles();
+        if running {
+            self.tick_particles();
+        }
         self.tick_client_ambient();
         self.tick_client_effects();
         // Player.tick's sleep counter (the darkening and the wake-up fade).
@@ -6511,12 +6550,37 @@ impl Game<'_> {
                 return true;
             }
             if held_block {
+                let consumable = held
+                    .as_ref()
+                    .and_then(|stack| self.items().get(&stack.item).cloned())
+                    .filter(|info| info.consumable.is_some());
+                // ItemStack.useOn passes in adventure mode unless the item may
+                // be placed on this block: useItem eats it (a block item without
+                // a consumable keeps ending the click here).
+                if !reacts
+                    && consumable.is_some()
+                    && !self.may_build()
+                    && !self.with_hand(hand, |g| g.can_place_on_in_adventure(hit.pos))
+                {
+                    return false;
+                }
                 let placed = if reacts {
                     None
                 } else {
                     held.as_ref()
                         .and_then(|stack| self.remote_can_place(&hit, stack))
                 };
+                // BlockItem.useOn: a consumable that could not be placed is used
+                // (Item.use), which the server does for this same packet. CONSUME
+                // does not swing, and a full player's FAIL still ends the click.
+                // Adventure's can_place_on leaves the placing to the server.
+                if !reacts
+                    && placed.is_none()
+                    && self.may_build()
+                    && let Some(info) = &consumable
+                {
+                    self.with_hand(hand, |g| g.start_eating(info));
+                }
                 if let Some(placed) = &placed {
                     self.predict_place(placed, seq);
                     self.with_hand(hand, Game::consume_held);
@@ -7405,12 +7469,10 @@ impl Game<'_> {
     /// `causeExtraKnockback`: the 0.6 horizontal speed cut and the sprint
     /// stop. Without it the next move outruns the server's player.
     fn remote_player_attack(&mut self, mob: usize) {
-        let id = self.mobs[mob].id as i32;
-        if !self
-            .remote
-            .as_ref()
-            .is_some_and(|r| r.level_players.contains_key(&id))
-        {
+        // Java dispatches this through the target's RemotePlayer type. The
+        // level_players map is profile bookkeeping and can lag the entity;
+        // mobs must stay out because their hurtClient returns false.
+        if self.mobs[mob].kind.id != "minecraft:player" {
             return;
         }
         // `getAttackStrengthScale(0.5)`: here the ticker is `hand_strength`'s
@@ -8181,7 +8243,8 @@ impl Game<'_> {
         let title = horizon_client::text::Text::translate("connect.reconfiguring", &[]);
         let ((tx, ty), (bx, by)) = self.reconfigure_layout((w, h));
         batch.text_styled(atlas, &title, tx, ty, u32::MAX, true);
-        let label = horizon_client::text::Text::translate("gui.disconnect", &[]);
+        // CommonComponents.GUI_DISCONNECT
+        let label = horizon_client::text::Text::translate("menu.disconnect", &[]);
         let active = self.ticks.saturating_sub(since) >= 600;
         let hover = horizon_client::ui::hovered(self.cursor, bx, by, 150.0, 20.0);
         horizon_client::ui::button(batch, atlas, bx, by, 150.0, 20.0, &label, active, hover);

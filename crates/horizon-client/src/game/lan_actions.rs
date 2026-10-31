@@ -449,6 +449,12 @@ impl Game<'_> {
         self.right = play.using.is_some() || self.using.is_some();
         // The guest's vehicle (Entity.vehicle) for its turn.
         let riding = std::mem::replace(&mut self.riding, g.vehicle);
+        // `Entity.isPassenger()` for that turn, from the same vehicle: the
+        // guest's body keeps no swim (`Entity.updateSwimming` needs it false).
+        // Taken from `g.vehicle` each turn, so boarding and getting out land.
+        if let Some(p) = self.player.as_mut() {
+            p.is_passenger = g.vehicle.is_some();
+        }
         let host_station = self.station.take();
         // The guest's bed, sleep counter and respawn point; the host's
         // respawn point, anchor and action bar stay theirs.
@@ -862,7 +868,8 @@ impl Game<'_> {
         }
         if new_mode != g.game_mode {
             let conn = g.conn;
-            host.hub.set_game_mode(conn, new_mode);
+            host.hub
+                .set_game_mode(conn, new_mode, &self.world, Some(self.collision));
         }
         // LivingEntity.checkTotemDeathProtection's entity event, to every
         // client around, the guest's own included; this window draws it too.
@@ -2831,7 +2838,8 @@ impl Game<'_> {
         // ServerGamePacketListenerImpl.handleClientCommand: a hardcore world's
         // respawned player only watches.
         if self.level.hardcore {
-            host.hub.set_game_mode(conn, SPECTATOR);
+            host.hub
+                .set_game_mode(conn, SPECTATOR, &self.world, Some(self.collision));
         }
         if let Some(config) = elsewhere {
             self.respawn_trip(conn, config);

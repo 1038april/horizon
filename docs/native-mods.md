@@ -154,7 +154,9 @@ gets it back. The clicking player's own client still predicts the crack until th
 Bundles that use it need `"hooks": 30`.
 
 API 31 adds a player's server tick: `native_player_tick` runs once a tick for every living player in the world, at the
-end of their `ServerPlayer.tick`, with the helpers reading that player. Bundles that use it need `"hooks": 31`.
+end of their `ServerPlayer.tick`, with the helpers reading that player. Players still tick while the game is frozen
+(`/tick freeze`), as in vanilla. A dead player isn't called, and neither is one killed earlier in the same tick; it
+runs again once they respawn. Bundles that use it need `"hooks": 31`.
 
 API 32 adds shape updates a mod can answer through `native_update_shape`: on an authoritative server, each time a
 block's state is worked out from a neighbour (`BlockBehaviour.updateShape`): neighbour shape updates after a
@@ -185,8 +187,8 @@ vanilla crop grows with `flags::UPDATE_CLIENTS` (neighbours' shapes update, so a
 gets `neighborChanged` and comparators aren't told), a furnace sets its `lit` with `flags::UPDATE_ALL` (both). Horizon
 sends every write to players whatever the flags: `UPDATE_CLIENTS` (2), `UPDATE_INVISIBLE` (4) and `UPDATE_IMMEDIATE`
 (8) change nothing yet. It writes at any loaded position, returns false off an authoritative server (the `Game` one too: a window that isn't a server), for a property or
-value the block doesn't have or a position that isn't loaded, and true without writing when the property already has
-the value. Elsewhere, `Game::native_set_block_property_with(pos, key, value, flags)` does the same, as a brewing
+value the block doesn't have, a position that isn't loaded, or a property that already has the value (nothing is written:
+vanilla's `Level.setBlock` returns false for an unchanged state, as `native_set_block` does), and true when the block changed. Elsewhere, `Game::native_set_block_property_with(pos, key, value, flags)` does the same, as a brewing
 stand's tick sets its bottles with `flags::UPDATE_CLIENTS`. The deprecated in-frame path fires none. Bundles that use
 them need `"hooks": 33`.
 
@@ -241,6 +243,13 @@ API 43 adds `native_level_random(dimension)`, the server level's own random (van
 as a Java mod's would. It is `None` on a client of a server and for a level that isn't open: the Nether and the End
 open when someone first goes there and close after 300 ticks with nobody in them. Bundles
 that use it need `"hooks": 43`.
+
+API 44 adds the server starting and stopping, on the single player server thread and on a dedicated server:
+`native_server_about_to_start(dedicated)` before the worlds load (NeoForge's `ServerAboutToStartEvent`), and
+`native_server_stopping(dedicated)` when an orderly stop begins, with the players still connected and not yet saved
+(`ServerStoppingEvent`). Each start is followed by `native_world_lifecycle`'s `WorldOpenReady` or `WorldOpenFailed`,
+and each stop by `WorldCloseFinal`; a server whose loop fails reports `WorldCloseFailed` instead of stopping. Bundles
+that use them need `"hooks": 44`.
 
 ## A bundle
 
