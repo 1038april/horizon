@@ -1054,6 +1054,7 @@ impl Game<'_> {
         let projectile = match d.kind {
             DamageKind::Arrow => Some("minecraft:arrow"),
             DamageKind::Fireball => Some("minecraft:fireball"),
+            DamageKind::Fireworks => Some("minecraft:firework_rocket"),
             _ => None,
         };
         let direct = match projectile {
@@ -1153,6 +1154,10 @@ impl Game<'_> {
                 }),
                 DamageKind::Fireball => Some(LootEntity {
                     kind: "minecraft:fireball".into(),
+                    ..LootEntity::default()
+                }),
+                DamageKind::Fireworks => Some(LootEntity {
+                    kind: "minecraft:firework_rocket".into(),
                     ..LootEntity::default()
                 }),
                 _ => source.clone(),
@@ -2676,17 +2681,21 @@ impl Game<'_> {
         damage_type: &str,
         known: Option<Option<u32>>,
     ) -> bool {
+        let rocket = std::mem::take(&mut self.combat.rocket_hit);
         // ServerPlayer.canHarmPlayer refused another player's projectile.
         if self.creative || self.combat.refuse_player_hit {
             return false;
         }
-        let projectile = self
-            .res
-            .stations()
-            .enchantments
-            .damage_tags
-            .get("minecraft:is_projectile")
-            .is_some_and(|t| t.contains(damage_type));
+        // A projectile entity dealt it: `#is_projectile`, or a firework
+        // rocket (its `fireworks` type is not in the tag).
+        let projectile = rocket
+            || self
+                .res
+                .stations()
+                .enchantments
+                .damage_tags
+                .get("minecraft:is_projectile")
+                .is_some_and(|t| t.contains(damage_type));
         let blocking = self.player_blocking(from, damage_type, false);
         let raised = blocking.is_some();
         // Melee: the attacker stands at `from` (another player's hit has no mob behind it).
@@ -2767,7 +2776,17 @@ impl Game<'_> {
                 .map(|m| self.mob_entity(m));
             self.trigger_entity_hurt_player(&horizon_client::advancements::DamageView {
                 kind: damage_type.to_owned(),
-                direct: source.clone().filter(|_| !projectile),
+                // Arrows and the like name no direct entity here; a
+                // rocket's burst names the rocket.
+                direct: if rocket {
+                    Some(horizon_client::advancements::EntityView {
+                        kind: "minecraft:firework_rocket".to_owned(),
+                        position: from.unwrap_or_default(),
+                        ..Default::default()
+                    })
+                } else {
+                    source.clone().filter(|_| !projectile)
+                },
                 is_direct: !projectile,
                 source,
                 original: amount,

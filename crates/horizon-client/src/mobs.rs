@@ -639,6 +639,16 @@ impl Damage {
             from: Some(from),
         }
     }
+    /// `DamageSources.fireworks(rocket, owner)`: `attacker` is the owner
+    /// (none for a rocket nobody fired), `from` the rocket's position, which
+    /// the knockback pushes away from (`calculateHorizontalHurtKnockbackDirection`).
+    pub fn fireworks(attacker: Option<Who>, from: [f64; 3]) -> Self {
+        Self {
+            kind: DamageKind::Fireworks,
+            attacker,
+            from: Some(from),
+        }
+    }
     pub fn mob(id: u32, from: [f64; 3]) -> Self {
         Self {
             kind: DamageKind::MobAttack,
