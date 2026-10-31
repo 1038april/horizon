@@ -28,25 +28,79 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-/// The registries and tags, loaded once per world (a world open or a
-/// `/reload` forgets them, as `forget_sync_data` does).
-static SYNC: Mutex<Option<std::result::Result<Arc<SyncData>, String>>> = Mutex::new(None);
+/// What `sync_data` loaded: whether it was with data packs over the game's
+/// data, and the registries and tags.
+type Synced = (bool, std::result::Result<Arc<SyncData>, String>);
+
+/// The registries and tags, loaded once per world (a world with packs open
+/// or a `/reload` forgets them, as `forget_sync_data` does).
+static SYNC: Mutex<Option<Synced>> = Mutex::new(None);
 
 /// The registries and tags a server sends, loaded from `root` the first
-/// time, with the world's data packs' recipes and advancements over them.
+/// time, with the world's data packs' recipes, advancements and dialogs over
+/// them. What was read with packs is read again for a world without them
+/// (their dialogs would stay); a world with packs forgets what was read
+/// before it at open (`finish_open_world`).
 pub(super) fn sync_data(
     root: &std::path::Path,
     overlay: &horizon_world::loot::PackOverlay,
 ) -> std::result::Result<Arc<SyncData>, String> {
+    let packs = !overlay.files.is_empty();
     let mut sync = SYNC.lock().unwrap_or_else(|e| e.into_inner());
-    sync.get_or_insert_with(|| SyncData::load(root, overlay).map(Arc::new))
+    if sync
+        .as_ref()
+        .is_some_and(|(with_packs, _)| *with_packs != packs)
+    {
+        *sync = None;
+    }
+    sync.get_or_insert_with(|| (packs, SyncData::load(root, overlay).map(Arc::new)))
+        .1
         .clone()
 }
 
-/// Let go of what `sync_data` loaded: for a preload no world used
-/// (game/world_loading.rs).
+/// Let go of what `sync_data` loaded: a preload no world used
+/// (game/world_loading.rs), what was read before a world with packs opened,
+/// or before a `/reload` without a hub.
 pub(super) fn forget_sync_data() {
     *SYNC.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+/// `/reload` (MinecraftServer.reloadResources) under a running hub: the
+/// tags, recipes and advancements read again with the world's packs, the
+/// synchronized registries `kept` (the hub's) as they were, and that becomes
+/// what `sync_data` gives.
+pub(super) fn reload_sync_data(
+    root: &std::path::Path,
+    overlay: &horizon_world::loot::PackOverlay,
+    kept: &SyncData,
+) -> std::result::Result<Arc<SyncData>, String> {
+    // Kept pack dialogs count as packs: a world opened without packs after
+    // a `/reload` that dropped them must read its own registries again.
+    let packs = !overlay.files.is_empty() || kept.has_pack_entries();
+    let sync = SyncData::load(root, overlay).map(|mut sync| {
+        sync.keep_registries(root, kept);
+        Arc::new(sync)
+    });
+    *SYNC.lock().unwrap_or_else(|e| e.into_inner()) = Some((packs, sync.clone()));
+    sync
+}
+
+impl Game<'_> {
+    /// The commands' `minecraft:dialog` ids as the clients get them in the
+    /// configuration phase (`sync`, the world's packs' dialogs among them):
+    /// `/dialog show` parses an id against these and sends its index.
+    pub(super) fn sync_dialog_ids(&mut self, sync: &SyncData) {
+        let Some(names) = sync.dynamic.registries.get("minecraft:dialog") else {
+            return;
+        };
+        let ids = names.iter().map(|(name, _)| name.clone()).collect();
+        self.ui
+            .registries
+            .by_registry
+            .entry("minecraft:dialog".to_owned())
+            .or_default()
+            .ids = ids;
+    }
 }
 
 /// The registries and tags a server sends without data packs over them, read
@@ -76,9 +130,10 @@ impl SyncPreload {
             return;
         }
         if let Ok(read) = self.0.join() {
-            SYNC.lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get_or_insert_with(|| read.map(Arc::new));
+            let mut sync = SYNC.lock().unwrap_or_else(|e| e.into_inner());
+            if sync.as_ref().is_none_or(|(with_packs, _)| *with_packs) {
+                *sync = Some((false, read.map(Arc::new)));
+            }
         }
     }
 }
@@ -1257,6 +1312,7 @@ impl Game<'_> {
         host: Option<u128>,
     ) -> Result<()> {
         let sync = sync_data(&self.options.resources, &self.pack_files())?;
+        self.sync_dialog_ids(&sync);
         let biome_names: Vec<String> = self
             .res
             .biomes()
@@ -1513,6 +1569,8 @@ impl Game<'_> {
         if let Some(g) = host.hub.guests.iter().find(|g| g.uuid == uuid && g.placed) {
             playerdata::store(g, &mut self.level, vehicle);
             self.save_guest_records(host, g);
+        } else if let Some(saved) = host.owner.as_ref().and_then(|o| o.saved.as_ref()) {
+            self.level.position = saved.position;
         }
     }
 
@@ -1807,14 +1865,17 @@ impl Game<'_> {
                     event @ (HostEvent::Chat { .. } | HostEvent::Warn(_) | HostEvent::Error(_)) => {
                         self.lan_log_event(event);
                     }
-                    HostEvent::PlayerChat { sender, .. } => {
-                        if let Some(conn) = host
-                            .hub
-                            .guests
-                            .iter()
-                            .find(|g| g.uuid == sender)
-                            .map(|g| g.conn)
-                        {
+                    HostEvent::PlayerChat { sender, text } => {
+                        if let Some(g) = host.hub.guests.iter().find(|g| g.uuid == sender) {
+                            if self.options.dedicated.is_some() {
+                                super::dedicated::events::record(
+                                    "chat",
+                                    &g.name,
+                                    sender,
+                                    serde_json::json!({ "message": text }),
+                                );
+                            }
+                            let conn = g.conn;
                             self.detect_rate_spam(&mut host, conn, false);
                         }
                     }
@@ -1825,6 +1886,12 @@ impl Game<'_> {
                         {
                             // PlayerList.placeNewPlayer, then the broadcast join message.
                             super::dedicated::player_joined(g.uuid, &g.name);
+                            super::dedicated::events::record(
+                                "join",
+                                &g.name,
+                                g.uuid,
+                                serde_json::json!({ "address": g.address.ip().to_string() }),
+                            );
                             let [x, y, z] = g.position;
                             super::dedicated::log(
                                 "INFO",
@@ -1878,6 +1945,12 @@ impl Game<'_> {
                         host.play.remove(&guest.conn);
                         self.guest_combat.remove(&guest.conn);
                         if self.options.dedicated.is_some() && guest.placed {
+                            super::dedicated::events::record(
+                                "leave",
+                                &guest.name,
+                                guest.uuid,
+                                serde_json::json!({ "reason": guest.left_reason }),
+                            );
                             super::dedicated::log(
                                 "INFO",
                                 &format!("{} lost connection: {}", guest.name, guest.left_reason),

@@ -333,7 +333,7 @@ impl Game<'_> {
             || before(self.redirectable_hit().map(|h| h.1))
     }
     /// `LocalPlayer.isHandsBusy`: paddling a boat.
-    fn hands_busy(&self) -> bool {
+    pub(super) fn hands_busy(&self) -> bool {
         self.riding
             .is_some_and(|id| self.boats.iter().any(|b| b.id == id))
             && [
