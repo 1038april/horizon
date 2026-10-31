@@ -1,7 +1,7 @@
 FireworkRocketEntity.<init>	port	crates/horizon-client/src/game/fireworks.rs::Game::new_rocket	launch velocity triangle and lifetime 10*(1+flight)+randoms; the owner and attached target are set by the callers
 FireworkRocketEntity.defineSynchedData	skip:java		SynchedEntityData definitions; Horizon keeps the rocket fields on the Rocket struct
 FireworkRocketEntity.shouldRender	port	crates/horizon-client/src/game/fireworks.rs::Game::rocket_geometry	attached rockets are not drawn; camera range is the caller's check
-FireworkRocketEntity.onHitEntity	missing		player: a firework shot from a crossbow or dispenser flies through mobs and bursts only on a block or at its timer end; Horizon has no entity hit test for rockets
+FireworkRocketEntity.onHitEntity	port	crates/horizon-client/src/game/fireworks.rs::Game::tick_rockets	a rocket fired from a crossbow or dispenser tests entity hits in flight and bursts on what it strikes
 FireworkRocketEntity.onHitBlock	inline	crates/horizon-client/src/game/fireworks.rs::Game::tick_rockets	a block hit ends the angled rocket early and explodes it; vanilla explodes only when it has explosions and skips the block entityInside effect
 FireworkRocketEntity.dealExplosionDamage	port	crates/horizon-client/src/game/fireworks.rs::Game::explode_rocket	damage 5+2 per explosion; attached target takes the full blast, others within 5 blocks with line of sight
 FireworkRocketEntity.addAdditionalSaveData	missing		minor: rocket life, lifetime and item are not written to a save; Horizon does not save flying rockets
@@ -36,7 +36,7 @@ Projectile.applyOnProjectileSpawned	port	crates/horizon-client/src/game/enchant_
 Projectile.hitTargetOrDeflectSelf	port	crates/horizon-client/src/game/creatures.rs::Game::tick_projectiles	gap: minor: deflection is checked for breezes only; the onHit dispatch is creatures.rs projectile_hit
 Projectile.onRedirectProjectile	port	crates/horizon-client/src/game/deflect.rs::Game::deflect	gap: minor: the player's attack turns the projectile; a projectile hitting another redirectable one is not modelled
 Projectile.recreateFromPacket	port	crates/horizon-client/src/game/remote_projectiles.rs::Game::spawn_remote_projectile	the owner id from the add-entity data is set on the remote projectile
-Projectile.mayBreak	missing		player: a projectile hitting a decorated pot, chorus flower or pointed dripstone does not break it; no projectile break path found
+Projectile.mayBreak	port	crates/horizon-client/src/game/creatures.rs::Game::projectile_breaks_block	impact projectiles break chorus flowers, decorated pots (cracked first) and speleothems, gated on mayInteract, mayBreak and the projectiles_can_break_blocks rule
 Projectile.calculateHorizontalHurtKnockbackDirection	inline	crates/horizon-client/src/game/creatures.rs::Game::projectile_hit	gap: minor: knockback goes from the shot's previous point, while vanilla uses the projectile's horizontal motion
 ProjectileUtil.getHitResultOnMoveVector	port	crates/horizon-client/src/projectiles.rs::Projectile::tick	sweep along the movement: block clip, then entity boxes; gap: minor: entity margin is a fixed 0.3, vanilla ramps it up over the first ticks
 ProjectileUtil.getHitResultOnViewVector	port	crates/horizon-client/src/game/pick_entity.rs::pick_entity_hit	gap: minor: the brush reach is the caller's; there is no separate view-vector trace
@@ -101,7 +101,7 @@ ThrownEnderpearl.isAllowedToTeleportOwner	missing		minor: a pearl whose owner is
 ThrownEnderpearl.playSound	port	crates/horizon-client/src/game/creatures.rs::Game::projectile_hit	teleport sound at the landing point
 ThrownEnderpearl.teleport	port	crates/horizon-client/src/game/creatures.rs::Game::projectile_hit	moves the player to the pearl's previous position and clears velocity and fall distance
 ThrownEnderpearl.canTeleport	missing		minor: a pearl from the End to the Overworld needs the owner's seen-credits flag before it may teleport
-ThrownEnderpearl.onInsideBlock	missing		player: a pearl that flies into an end gateway does not send its owner through it
+ThrownEnderpearl.onInsideBlock	port	crates/horizon-client/src/game/end.rs::Game::pearl_owner_in_gateway	a pearl that flies into an End gateway sends its owner through and fires enter_block
 Raid.<init>	port	crates/horizon-client/src/raid.rs::Raid::new	centre, difficulty-based group count, cooldown and active flag
 Raid.getAllRaiders	port	crates/horizon-client/src/game/raids.rs::Game::raid_members	the raiders of this raid, from the mobs carrying its id
 Raid.getValidSpawnPos	port	crates/horizon-client/src/raid.rs::Raid::find_spawn_pos	eight tries around the centre, as findRandomSpawnPos(level, 8)

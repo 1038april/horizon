@@ -14,7 +14,7 @@ Leashable.angularFriction	inline	crates/horizon-client/src/mobs/leash.rs::tick	g
 Leashable.checkElasticInteractions	port	crates/horizon-client/src/mobs/leash.rs::tick	gap: minor: one attachment pair only; no quad leash for a horse, llama or sniffer led by a happy ghast
 Leashable.getHolderMovement	port	crates/horizon-client/src/mobs/leash.rs::holder_state	gap: minor: the holder's velocity is always used; a NoAI mob holder should count as standing still
 Leashable.computeElasticInteraction	port	crates/horizon-client/src/mobs/leash.rs::spring	gap: minor: single attachment pair (0, 0.5, 0.5 of the mob and 0, 0.5, 0 of the holder); the four-point version is missing
-Leashable.createQuadLeashOffsets	missing		player: a horse, llama or sniffer led by a happy ghast is drawn with one rope to its middle and pulled by one spring instead of four ropes to its corners
+Leashable.createQuadLeashOffsets	port	crates/horizon-client/src/mobs/leash.rs::Holder::create_quad_leash_offsets	four attachment points around an entity, front-left first, clockwise from above
 Leashable.leashableLeashedTo	port	crates/horizon-client/src/game/leads.rs::Game::player_leashed	only the player as holder (box of 32); mob and knot holders are filtered inline in interact_leash and interact_knot
 Leashable.leashableInArea	port	crates/horizon-client/src/game/leads.rs::Game::player_leashed	the 32 block box around a point, for the player's lead only
 Leashable.Wrench.torqueFromForce	inline	crates/horizon-client/src/mobs/leash.rs::spring	lever.z * force.x - lever.x * force.z
@@ -49,7 +49,7 @@ LivingEntity.dealDefaultKnockback	inline	crates/horizon-client/src/mobs.rs::Mob:
 LivingEntity.applyItemBlocking	port	crates/horizon-client/src/health.rs::Environment::apply_blocking	gap: minor: the player's shield only; a mob holding a shield never blocks
 LivingEntity.playSecondaryHurtSound	port	crates/horizon-client/src/game/enchant_effects.rs::Game::thorns	enchant.thorns.hit at the attacker
 LivingEntity.resolveMobResponsibleForDamage	inline	crates/horizon-client/src/mobs.rs::Mob::damage_with	gap: minor: last_hurt_by comes from any attacker; no #no_anger damage types or wind charge exemption
-LivingEntity.resolvePlayerResponsibleForDamage	inline	crates/horizon-client/src/mobs.rs::Mob::damage_with	gap: player: damage by a player's tamed wolf or cat sets no last-hurt-by-player, so the kill drops no experience and no player-only loot
+LivingEntity.resolvePlayerResponsibleForDamage	inline	crates/horizon-client/src/game/creatures.rs::Game::resolve_player_responsible	a tamed wolf's or cat's hit is its owner's (setLastHurtByPlayer), so the kill drops experience and player-only loot
 LivingEntity.breakItem	port	crates/horizon-client/src/game.rs::Game::damage_held	gap: player: a tool or armor breaking shows no crumb particles and always plays entity.item.break, not the item's own break sound
 LivingEntity.dropExperience	inline	crates/horizon-client/src/mobs/drops.rs::die	orbs only when a player killed it and mob_drops is on
 LivingEntity.getKnockback	port	crates/horizon-client/src/game/enchant_effects.rs::Game::extra_knockback	gap: minor: the Knockback enchant halved (player and gear::knockback for mobs); the attack_knockback attribute counts only for the hoglin shove
@@ -79,7 +79,7 @@ LivingEntity.calculateEntityAnimation	port	crates/horizon-client/src/mobs/living
 LivingEntity.causeExtraKnockback	port	crates/horizon-client/src/game/enchant_effects.rs::Game::extra_knockback_direction	target pushed along the attacker's yaw; the attacker stops sprinting
 LivingEntity.wasRecentlyStabbed	inline	crates/horizon-client/src/game/spear.rs::Game::spear_tick	Game::stabbed with contact_cooldown_ticks
 LivingEntity.rememberStabbedEntity	inline	crates/horizon-client/src/game/spear.rs::Game::spear_tick	stabbed.insert(key, now)
-LivingEntity.stabbedEntities	missing		player: the count of mobs stabbed in one use is never read, so the Spear Many Mobs advancement (spear_mobs trigger) never unlocks
+LivingEntity.stabbedEntities	port	crates/horizon-client/src/game/spear.rs::Game::spear_tick	the living entities stabbed in one use feed the minecraft:spear_mobs trigger
 LivingEntity.stabAttack	port	crates/horizon-client/src/game/spear.rs::Game::stab_mob	gap: minor: the player's spear only; mobs never stab
 LivingEntity.handleHandSwap	skip:other		the LAN server sends both changed slots in one SetEquipment instead of entity event 55; clients end in the same state
 LivingEntity.handleEquipmentChanges	port	crates/horizon-client/src/lan/entity.rs::ServerEntity::send_equipment	changed slots as one SetEquipment
@@ -95,7 +95,7 @@ LivingEntity.getLocalBoundsForPose	missing		minor: no pose boxes; a dismounting 
 LivingEntity.wouldNotSuffocateAtTargetPose	port	crates/horizon-client/src/pose.rs::MotionWorld::can_fit_pose	gap: minor: the player's poses only; a camel changing pose is not checked
 LivingEntity.canUsePortal	port	crates/horizon-client/src/game/nether_portal.rs::Game::mob_can_use_portal	gap: minor: a sleeping mob is not excluded
 LivingEntity.setPosToBed	port	crates/horizon-client/src/mobs/villager.rs::start_sleeping	x and z at the bed's centre, y 0.6875 above its base (sleep height plus 0.125)
-LivingEntity.entityEventForEquipmentBreak	missing		player: on a server another player's or mob's tool or armor breaking (entity events 47 to 52, 65 and 68) makes no break sound or crumbs
+LivingEntity.entityEventForEquipmentBreak	inline	crates/horizon-client/src/game/creatures.rs::Game::hurt_mob_armor	a mob's worn armour that breaks from a hit broadcasts 49 to 52 (armour) and 65 (body); the player's own hands (47, 48), the saddle (68) and a guest's tool breaking on the host are not broadcast yet
 LivingEntity.onEquippedItemBroken	inline	crates/horizon-client/src/game.rs::Game::damage_held	gap: minor: the stack is cleared and modifiers rebuilt, but no break event is broadcast
 LivingEntity.stopLocationBasedEffects	inline	crates/horizon-client/src/game.rs::Game::apply_equipment	all applied modifiers are dropped and re-added from what is worn
 LivingEntity.getEquipmentSlotForItem	inline	crates/horizon-client/src/game/mob_gear.rs::Game::equip_from_table	resolveSlot: the item's equip_slot, else the main hand

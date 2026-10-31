@@ -37,15 +37,15 @@ Frog.getTongueTarget	inline	crates/horizon-client/src/mobs/frog.rs::ShootTongue:
 Frog.get	port	crates/horizon-client/src/mobs/finalize.rs::species_variant_component	frog/variant component
 Frog.applyImplicitComponent	missing		minor: a frog/variant component on a spawn egg or item is ignored
 Frog.customServerAiStep	port	crates/horizon-client/src/mobs/frog.rs::server_ai_step	the attackables sensor and memory timers; the activities run as goals
-Frog.getBreedOffspring	missing		player: frogs never breed: they take slimeballs and show hearts, but no breed goal exists, so no frogspawn is ever laid by frogs
+Frog.getBreedOffspring	port	crates/horizon-client/src/mobs/goals.rs::Breed::tick	the mother becomes pregnant with frogspawn instead of a baby
 Frog.spawnChildFromBreeding	missing		player: frogs never become pregnant (IS_PREGNANT) and so never lay frogspawn; no breed goal means this is never reached, and the generic baby spawn would be wrong for frogs anyway
 Frog.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	variant by biome (live spawns set it in spawning.rs::finalize from biome.frog); the long jump cooldown it sets has no user
 Frog.createAttributes	skip:data		attributes come from entity-types.json
 Frog.checkFrogSpawnRules	port	crates/horizon-client/src/mobs/spawn_rules.rs::check_spawn_rules	frogs_spawnable_on below and bright enough
 Frog.FrogNodeEvaluator.getStart	missing		minor: frogs use the plain ground navigation, so a frog in water does not start its path at the box corner
 Frog.FrogNodeEvaluator.getPathType	missing		minor: blocks above #frog_prefer_jump_to (lily pad, dripleaf) are not treated as open path nodes
-Frog.FrogPathNavigation.canCutCorner	missing		minor: no frog navigation, so water-border nodes allow cutting corners
-Frog.FrogPathNavigation.createPathFinder	missing		player: frogs path as plain walkers (NavKind::Ground, no water malus 4 or trapdoor block); vanilla frogs use amphibious pathing with a shallow-water preference
+Frog.FrogPathNavigation.canCutCorner	port	crates/horizon-client/src/mobs/nav.rs::Navigation::can_cut_corner	with the frog on the amphibious finder the corners it refuses are the generic set (fire, damage, walkable doors), which is the frog's own three
+Frog.FrogPathNavigation.createPathFinder	port	crates/horizon-client/src/mobs/frog.rs::register	amphibious navigation with the frog's prefersShallowSwimming (water below sea level - 10 costs more)
 FrogAi.initCoreActivity	inline	crates/horizon-client/src/mobs/frog.rs::register	gap: minor: Panic runs at 1.25 where AnimalPanic uses 2.0; look and move sinks are the controls
 FrogAi.initIdleActivity	inline	crates/horizon-client/src/mobs/frog.rs::register	gap: player: Croak, stroll and look at player (6 blocks) are there; no slimeball tempt, no mate search and no TryFindLand
 FrogAi.initSwimActivity	inline	crates/horizon-client/src/mobs/frog.rs::register	gap: minor: no separate swim activity: Float and the land stroll stand in, no random swim at 0.75 or find-land
@@ -91,7 +91,7 @@ CopperGolem.defineSynchedData	port	crates/horizon-client/src/game/lan.rs::mob_me
 CopperGolem.canTurnToStatue	inline	crates/horizon-client/src/mobs/copper_golem.rs::update_weathering	oxidized, standing in air, 0.0058 chance per tick on the level random
 CopperGolem.playHeadSpinSound	port	crates/horizon-client/src/mobs/copper_golem.rs::ai_step	gap: minor: local spin sound by oxidation level, but a silent golem still plays it
 CopperGolem.getLeashOffset	missing		minor: a lead hangs at the default offset, not 0.75 of the eye height with no forward shift
-CopperGolemAi.initCoreActivity	port	crates/horizon-client/src/mobs/animal_brain.rs::copper_golem_package	gap: player: panic 1.5, look sink, move sink and the two countdowns are there; InteractWithDoor is not, so a golem's path through a closed wooden door ends at the door
+CopperGolemAi.initCoreActivity	port	crates/horizon-client/src/mobs/animal_brain.rs::copper_golem_package	InteractWithDoor sits in the golem's core activity, so its path through a closed wooden door no longer stops at the door
 CopperGolemAi.initIdleActivity	port	crates/horizon-client/src/mobs/animal_brain.rs::copper_golem_package	transport between chests, look at player, then stroll (2 blocks) or do nothing while the transport cooldown runs
 CopperGolemAi.getTargetReachedInteractions	inline	crates/horizon-client/src/mobs/transport_items.rs::reached_interaction	pickup, pickup nothing, place, place nothing from what the chest holds and what the golem carries
 CopperGolemAi.onReachedTargetInteraction	inline	crates/horizon-client/src/mobs/transport_items.rs::Transport::on_reached	tick 1 opens the chest and sets the state, tick 9 plays the sound, tick 60 closes it
