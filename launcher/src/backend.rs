@@ -449,13 +449,19 @@ pub fn installable_updates(releases: &[Release]) -> Vec<Release> {
 /// How often a launcher left open looks for new releases: they come out several times a day.
 pub const CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
-/// The community, sponsor and website links, from `launcher/links.json` on main, so they can change
-/// without a launcher release. An empty address hides its button.
+/// The community, sponsor and website links and the official server's address, from
+/// `launcher/links.json` on main, so they can change without a launcher release. An empty address
+/// hides its button (an empty `official_server`: no official server offered).
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 pub struct Links {
     pub discord: String,
     pub sponsor: String,
     pub website: String,
+    /// The official server's address, as servers.dat lists it (`server_list::add_official`).
+    pub official_server: String,
+    /// The addresses it had before: a list holding one moves to `official_server`. A move appends
+    /// the old address here.
+    pub official_server_previous: Vec<String>,
 }
 
 impl Default for Links {
@@ -465,6 +471,11 @@ impl Default for Links {
             discord: "https://discord.gg/playhorizon".into(),
             sponsor: "https://github.com/sponsors/ludovic111".into(),
             website: "https://playhorizon.dev".into(),
+            official_server: crate::server_list::OFFICIAL_ADDRESS.into(),
+            official_server_previous: crate::server_list::OFFICIAL_PREVIOUS
+                .iter()
+                .map(|a| a.to_string())
+                .collect(),
         }
     }
 }
@@ -479,9 +490,21 @@ impl Links {
                 ("discord", &mut links.discord),
                 ("sponsor", &mut links.sponsor),
                 ("website", &mut links.website),
+                ("official_server", &mut links.official_server),
             ] {
                 if let Some(url) = map.get(key).and_then(|v| v.as_str()) {
                     *slot = url.trim().to_string();
+                }
+            }
+            // A list of addresses; anything else keeps the built-in one.
+            if let Some(serde_json::Value::Array(previous)) = map.get("official_server_previous") {
+                if previous.iter().all(serde_json::Value::is_string) {
+                    links.official_server_previous = previous
+                        .iter()
+                        .filter_map(|a| a.as_str())
+                        .map(|a| a.trim().to_string())
+                        .filter(|a| !a.is_empty())
+                        .collect();
                 }
             }
         }
@@ -4259,10 +4282,7 @@ pub fn {f}("
         assert_eq!(defaults.sponsor, "https://github.com/sponsors/ludovic111");
         assert_eq!(defaults.website, "https://playhorizon.dev");
         // The file on main says the same thing as the defaults.
-        let file = Links::parse(
-            r#"{"discord": "https://discord.gg/playhorizon", "sponsor": "https://github.com/sponsors/ludovic111", "website": "https://playhorizon.dev"}"#,
-        );
-        assert_eq!(file, defaults);
+        assert_eq!(Links::parse(include_str!("../links.json")), defaults);
         // Unreadable or missing, offline included: the defaults.
         assert_eq!(Links::parse(""), defaults);
         assert_eq!(Links::parse("<html>404</html>"), defaults);

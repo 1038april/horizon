@@ -789,7 +789,12 @@ impl Launcher {
                     }
                     self.releases = r.map_or_else(Load::Failed, Load::Ready)
                 }
-                Msg::Links(links) => self.links = links,
+                Msg::Links(links) => {
+                    // The official server may have moved: its list entry and its count follow.
+                    self.multiplayer.stale();
+                    telemetry::set_official_server(&links.official_server);
+                    self.links = links;
+                }
                 // The page reads is_prepared when drawn; `changed` redraws it.
                 Msg::Reused(_) => self.installed = backend::installed(),
                 Msg::Keychain(said) => self.keychain = said,
