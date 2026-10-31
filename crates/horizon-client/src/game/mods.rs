@@ -17,7 +17,14 @@ pub(super) struct ModsState {
 }
 
 /// Freeze native component IDs before reading content or opening a connection.
+/// With no mod registering any, nothing is installed, which every reader
+/// treats as no custom components, and `registries.json` isn't read.
 pub(super) fn register_components(root: &std::path::Path) -> horizon_client::Result<()> {
+    let mut names = Vec::new();
+    Game::native_component_types(&mut names);
+    if names.is_empty() {
+        return Ok(());
+    }
     let path =
         horizon_protocol::registry::Builtin::find(root).ok_or("registries.json not found")?;
     let builtin = horizon_protocol::registry::Builtin::load(&path)?;
@@ -25,8 +32,6 @@ pub(super) fn register_components(root: &std::path::Path) -> horizon_client::Res
         .get("minecraft:data_component_type")
         .ok_or("missing data component registry")?;
     let first = i32::try_from(types.names.len())?;
-    let mut names = Vec::new();
-    Game::native_component_types(&mut names);
     horizon_protocol::item::custom::install(first, names)
         .map_err(|error| format!("invalid native component registration: {error}"))?;
     Ok(())
