@@ -78,6 +78,7 @@ mod campfire_douse;
 mod cartography;
 mod cat_spawner;
 mod chat;
+mod chat_filter;
 mod chiseled_bookshelf;
 mod client_ambient;
 mod clipboard;
@@ -182,6 +183,7 @@ mod mounts;
 mod moving_pistons;
 mod music;
 mod names;
+mod narrator;
 mod native_hooks;
 mod native_lifecycle;
 mod native_menus;
@@ -239,6 +241,7 @@ mod respawn_anchor;
 mod saves_control;
 mod saving;
 mod scoreboard;
+mod screen_info;
 mod screens;
 mod sculk;
 mod sculk_fixture;
@@ -758,8 +761,22 @@ enum GuestUse {
     OnBlock(Hand),
     Item(Hand),
     /// `handleInteract`: `Player.interactOn` with the hand, nothing else (the
-    /// client sends UseItem itself when the entity passed).
-    Entity(Hand),
+    /// client sends UseItem itself when the entity passed), on the entity the
+    /// packet named: `ServerGamePacketListenerImpl.handleInteract` resolves
+    /// `packet.entityId()` once and range checks it, so the click never picks
+    /// an entity again from the view.
+    Entity(Hand, InteractTarget),
+}
+
+/// The entity an interact packet names and where its client clicked it (the
+/// packet's location, measured from the entity's position): what
+/// `ServerGamePacketListenerImpl.handleInteract` takes from
+/// `ServerboundInteractPacket` and hands to `Player.interactOn`, which passes
+/// the point on to `interactAt`.
+#[derive(Clone, Copy)]
+struct InteractTarget {
+    id: i32,
+    location: [f64; 3],
 }
 
 /// The client world as seen by the vanilla block-behaviour library.
@@ -2215,6 +2232,10 @@ struct Game<'a> {
     settings: Settings,
     tutorial: tutorial::Tutorial,
     tutorial_toasts: Vec<tutorial::HintToast>,
+    /// The `SystemToastId.NARRATOR_TOGGLE` toast, wherever the player is.
+    narrator_toast: Option<horizon_client::toasts::SystemToast>,
+    /// The open screen's narration (`Screen`'s narration state and timing).
+    narration: horizon_client::screen_narrator::ScreenNarrator,
     /// Where the options screen returns: true = title, false = pause menu.
     options_from_title: bool,
     dragging: bool,
@@ -5229,8 +5250,10 @@ impl Game<'_> {
         // A guest's use packets name one hand and touch no entity: the client
         // sends one per hand and part of its click, and Interact for entities.
         let guest = self.guest_use;
-        if let Some(GuestUse::Entity(hand)) = guest {
-            return Ok(self.with_hand(hand, Game::interact_entity)?.then_some(hand));
+        if let Some(GuestUse::Entity(hand, target)) = guest {
+            return Ok(self
+                .with_hand(hand, |g| g.interact_entity(Some(target)))?
+                .then_some(hand));
         }
         let on_block = matches!(guest, Some(GuestUse::OnBlock(_)));
         if !on_block
@@ -5240,7 +5263,7 @@ impl Game<'_> {
         {
             return Ok(Some(Hand::Main));
         }
-        if guest.is_none() && self.interact_entity()? {
+        if guest.is_none() && self.interact_entity(None)? {
             return Ok(Some(Hand::Main));
         }
         // An EntityHitResult may fall through to Item.use, never to useItemOn.
@@ -5250,7 +5273,7 @@ impl Game<'_> {
             self.pick()
         };
         let hands = match guest {
-            Some(GuestUse::OnBlock(hand) | GuestUse::Item(hand) | GuestUse::Entity(hand)) => {
+            Some(GuestUse::OnBlock(hand) | GuestUse::Item(hand) | GuestUse::Entity(hand, _)) => {
                 vec![hand]
             }
             None => Hand::BOTH.to_vec(),
@@ -5258,7 +5281,7 @@ impl Game<'_> {
         let entity = guest.is_none() && self.entity_targeted();
         for hand in hands {
             // The off hand's turn starts on the entity too (Minecraft.startUseItem).
-            if entity && hand == Hand::Off && self.with_hand(hand, Game::interact_entity)? {
+            if entity && hand == Hand::Off && self.with_hand(hand, |g| g.interact_entity(None))? {
                 return Ok(Some(hand));
             }
             // A client of a server never hits a fence knot with its crosshair:
@@ -5273,15 +5296,28 @@ impl Game<'_> {
         }
         Ok(None)
     }
-    /// `Player.interactOn` for the entity under the crosshair with the
-    /// acting hand: whether it took the click.
-    fn interact_entity(&mut self) -> Result<bool> {
+    /// The index in `list` of the entity an interact packet's `target` names,
+    /// by its server id (`Level.getEntity(id)`), or None for an id this level
+    /// does not hold: `handleInteract` finds nothing then either.
+    fn named_entity<T>(list: &[T], target: i32, id: impl Fn(&T) -> u32) -> Option<usize> {
+        list.iter().position(|e| id(e) as i32 == target)
+    }
+    /// `Player.interactOn` with the acting hand: whether it took the click. A
+    /// guest's interact packet names its entity (`target`), which the helpers
+    /// use as it is; the local player picks from the crosshair instead, the
+    /// way `Minecraft.hitResult` does.
+    fn interact_entity(&mut self, target: Option<InteractTarget>) -> Result<bool> {
         // Native mods, where Player.interactOn starts: before the entity's
-        // own interact and the item's interactLivingEntity.
-        if let Some(Some(id)) = self.pick_entity_hit()
-            && let Some(target) = self.level_entity(id)
+        // own interact and the item's interactLivingEntity. The entity is the
+        // one the packet named, or the one the crosshair picked.
+        let named = match target {
+            Some(t) => Some(t.id),
+            None => self.pick_entity_hit().flatten(),
+        };
+        if let Some(id) = named
+            && let Some(entity) = self.level_entity(id)
         {
-            let kind = self.target_type(target);
+            let kind = self.target_type(entity);
             let stack = self.held().cloned();
             let mut claimed = false;
             self.native_interact_entity(id, &kind, stack.as_ref(), &mut claimed);
@@ -5290,13 +5326,15 @@ impl Game<'_> {
                 return Ok(true);
             }
         }
-        Ok(self.interact_frame()
-            || self.interact_armor_stand()
-            || self.interact_cushion()
-            || self.interact_boat()
-            || self.interact_cart()
-            || self.interact_mob()?
-            || self.interact_knot())
+        Ok(self.interact_frame(target)
+            || self.interact_armor_stand(target)
+            || self.interact_cushion(target)
+            || self.interact_boat(target)
+            || self.interact_cart(target)
+            || self.interact_mob(target)?
+            // Knots are reached only through the crosshair pick for now: a
+            // guest's Interact naming a knot's id is a known gap.
+            || target.is_none() && self.interact_knot())
     }
     /// `ItemStack.applyAfterUseComponentSideEffects`: a used stack with a
     /// `use_cooldown` component starts its entry (`UseCooldown.apply`). A
@@ -7460,6 +7498,9 @@ impl Game<'_> {
         self.draw_pack_prompt(&mut batch);
         self.draw_code_of_conduct(&mut batch);
         self.draw_link_prompt(&mut batch);
+        // The ToastManager draws over every screen, the title and the
+        // options included: the narrator's toast follows the player there.
+        self.draw_narrator_toast(&mut batch);
         // Gui.extractRenderState: the debug overlay comes after the screen
         // and the toasts, so it is over everything, menus included.
         self.draw_debug_overlay(&mut batch, size);
@@ -7505,6 +7546,11 @@ impl Game<'_> {
             }
             if let Some(sound) = title.update_toast(self.settings.notification_display_time) {
                 self.audio.play(sound, None, 1.0, 1.0);
+            }
+        }
+        if let Some(title) = &self.title {
+            for found in title.lan_found_narrations((w, h)) {
+                self.say_system_queued(&found);
             }
         }
         if self.title.is_some() {
@@ -7764,6 +7810,9 @@ impl Game<'_> {
             // PauseScreen(false): only its title, at the top.
             Screen::Paused => {
                 let title = self.translate("menu.paused", "Game Paused");
+                horizon_client::widgets::begin_screen(|| {
+                    horizon_client::widgets::ScreenInfo::new("paused", title.clone())
+                });
                 let tw = HudBatch::text_width(&self.gui.atlas, &title);
                 batch.text(
                     &self.gui.atlas,
@@ -8103,6 +8152,7 @@ impl Game<'_> {
         }
     }
     fn draw_inventory(&mut self, batch: &mut HudBatch) {
+        screen_info::begin_container("container");
         if self.draw_station(batch) {
             return;
         }
@@ -8164,6 +8214,7 @@ impl Game<'_> {
                         )
                         .resolve_legacy()
                     });
+                    screen_info::name_container(|| title.plain());
                     let tw = atlas.font.width_text(&title);
                     batch.text_styled(
                         atlas,
@@ -8242,6 +8293,7 @@ impl Game<'_> {
                     };
                     part(batch, texture, 0.0, 0.0, 176.0, 166.0, ox, oy);
                     let title = self.translate("container.crafting", "Crafting");
+                    screen_info::name_container(|| title.clone());
                     let tx = if self.craft_size == 3 { 29.0 } else { 97.0 };
                     batch.text(atlas, &title, ox + tx, oy + 6.0, grey, false);
                     if self.craft_size == 3 {
@@ -13197,6 +13249,8 @@ impl Game<'_> {
         lines
     }
     fn draw_creative(&mut self, batch: &mut HudBatch) {
+        // CreativeModeInventoryScreen: `CommonComponents.EMPTY` for a title.
+        screen_info::begin_container("creative");
         let (ox, oy) = Self::creative_origin(batch);
         let selected = self.creative_screen.selected;
         // Only what is drawn of the tabs: their stacks stay where they are.
@@ -13282,6 +13336,9 @@ impl Game<'_> {
             search.focused = true;
             search.text_color = u32::MAX;
             search.max_length = clipboard::CREATIVE_SEARCH_CHARS;
+            if horizon_client::widgets::narrating() {
+                search.message = screen_info::tr("itemGroup.search", &[]);
+            }
             search.draw(batch, atlas, None);
         }
         // The hovered stack, and whether it is a grid slot (`CustomCreativeSlot`).
@@ -13582,7 +13639,14 @@ impl Game<'_> {
         self.level.selected_slot = self.selected as i32;
         let mode = self.mode_id();
         // The vehicle the player rides (`ServerPlayer.saveParentVehicle`).
-        let vehicle = self.root_vehicle_uuid(self.riding);
+        let others = self
+            .lan
+            .as_ref()
+            .map(|h| self.ridden_by_others(&h.hub.guests, self.dim.id(), None, false))
+            .unwrap_or_default();
+        let vehicle = self.parent_vehicle_tag(self.riding, &others);
+        // Only the local player's file is this one's to rewrite.
+        let local = self.serving.is_none() && self.options.dedicated.is_none();
         let level = &mut self.level;
         level.creative = self.creative;
         level.game_mode = mode;
@@ -13593,7 +13657,24 @@ impl Game<'_> {
         level.xp_level = self.experience.level;
         level.xp_progress = self.experience.progress;
         level.xp_total = self.experience.total;
-        level.root_vehicle = vehicle.or(self.pending_vehicle);
+        level.root_vehicle = vehicle.as_ref().map(|v| v.2).or(self.pending_vehicle);
+        // The ride's tree, or none once the file's own came back.
+        match vehicle {
+            Some((tag, ..)) => {
+                let extra = level
+                    .player_extra
+                    .get_or_insert_with(|| horizon_world::nbt::Tag::Compound(Default::default()));
+                if let horizon_world::nbt::Tag::Compound(map) = extra {
+                    map.insert("RootVehicle".into(), tag);
+                }
+            }
+            None if local && self.pending_vehicle.is_none() => {
+                if let Some(horizon_world::nbt::Tag::Compound(map)) = &mut level.player_extra {
+                    map.remove(&"RootVehicle".into());
+                }
+            }
+            None => {}
+        }
         if let Some(p) = &self.player {
             level.position = Some([p.position.x, p.position.y, p.position.z]);
             level.health = p.health.health();
@@ -13702,9 +13783,10 @@ impl Game<'_> {
             && self.options.execution_role == execution_role::ExecutionRole::IntegratedServer
             && let Some(host) = self.lan.take()
         {
+            // The vehicle tree goes into a player's file when they leave
+            // (`take_parent_vehicle`); here it stays in the chunk saves.
             for g in host.hub.guests.iter().filter(|g| g.placed) {
-                let vehicle = self.root_vehicle_uuid(g.vehicle);
-                horizon_client::lan::playerdata::save(g, &self.world_root, vehicle);
+                horizon_client::lan::playerdata::save(g, &self.world_root);
             }
             self.lan = Some(host);
         }
@@ -13784,7 +13866,14 @@ impl Game<'_> {
         }
         // Minecraft.doWorldLoad: the LevelLoadingScreen while single player's
         // server starts, with the server's chunk map and progress.
-        if self.integrated_starting.is_some() {
+        if let Some(starting) = &self.integrated_starting {
+            // The server's progress once it has some (`hasProgress`).
+            let progress = Some(starting.handle.load_view())
+                .filter(|v| v.has_progress())
+                .map(|v| v.server_progress());
+            horizon_client::widgets::begin_screen(|| {
+                screen_info::level_loading(progress, &screen_info::tr)
+            });
             if let Some(renderer) = &mut self.renderer {
                 let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
                 let (w, h) = (hud.width, hud.height);
@@ -13818,6 +13907,20 @@ impl Game<'_> {
             return Ok(false);
         }
         if let Some(loader) = &self.world_loader {
+            // The world opens before its LevelLoadingScreen has progress;
+            // FileFixerProgressScreen narrates its title.
+            if loader.upgrade.is_file_fixing() && !loader.cancelled {
+                horizon_client::widgets::begin_screen(|| {
+                    horizon_client::widgets::ScreenInfo::new(
+                        "file_fixer",
+                        screen_info::tr("upgradeWorld.title", &[]),
+                    )
+                });
+            } else {
+                horizon_client::widgets::begin_screen(|| {
+                    screen_info::level_loading(None, &screen_info::tr)
+                });
+            }
             if let Some(renderer) = &mut self.renderer {
                 let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
                 // WorldOpenFlows.upgradeAndOpenWorld: the file fixers run on
@@ -13853,6 +13956,9 @@ impl Game<'_> {
         }
         if self.pending_entry.is_some() {
             if let (Some(renderer), Some(loader)) = (&mut self.renderer, &self.rest_loader) {
+                horizon_client::widgets::begin_screen(|| {
+                    screen_info::level_loading(Some(loader.progress.fraction()), &screen_info::tr)
+                });
                 let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
                 horizon_client::level_loading::draw_progress(
                     &mut hud,
@@ -13892,6 +13998,12 @@ impl Game<'_> {
         // player's own model stay smooth while the level is frozen.
         let camera_alpha = self.clock.camera_fraction();
         let view = self.camera_view(camera_alpha as f32);
+        let eye = view.map(|_| {
+            (
+                glam::DVec3::from_array(self.view.eye),
+                self.view.eye_rotation,
+            )
+        });
         let (camera, underwater, view_yaw, view_pitch) = match view {
             Some((c, yaw, pitch)) => {
                 let s =
@@ -14209,6 +14321,9 @@ impl Game<'_> {
             yaw,
             pitch,
             fov_degrees,
+            eye: eye.filter(|_| !title).map_or(camera, |e| e.0),
+            eye_rotation: eye.filter(|_| !title).map_or([yaw, pitch], |e| e.1),
+            first_person: eye.is_none() || title || !self.view.detached,
             bob,
             spin,
             sky,
@@ -14412,6 +14527,10 @@ impl Game<'_> {
         reason: horizon_client::level_loading::Reason,
     ) {
         use horizon_client::level_loading::{self, STATUS_RADIUS};
+        // The level's progress, as the bar shows it (`hasProgress`).
+        horizon_client::widgets::begin_screen(|| {
+            screen_info::level_loading(Some(self.level_load_progress()), &screen_info::tr)
+        });
         self.draw_level_loading_background(batch, reason);
         let atlas = &self.gui.atlas;
         let (cx, cz) = self.streaming.center;
@@ -15201,6 +15320,11 @@ impl Game<'_> {
                 return;
             }
         }
+        // KeyboardHandler.keyPress: the narrator hotkey, on every screen and
+        // in game, before the screen takes the key.
+        if let WindowEvent::KeyboardInput { event, .. } = &event {
+            self.narrator_hotkey(event);
+        }
         if matches!(
             event,
             WindowEvent::KeyboardInput { .. }
@@ -15210,6 +15334,8 @@ impl Game<'_> {
         ) {
             self.last_input = Instant::now();
         }
+        // The screen's narration hears of the input before the screen takes it.
+        narrator::narrate_input(&mut self.narration, &event, self.cursor);
         // FileFixerProgressScreen: Cancel is the only way out (`shouldCloseOnEsc`
         // is false), so it takes the pointer and Escape does nothing.
         if let Some(loader) = &self.world_loader
@@ -16612,6 +16738,8 @@ impl<'a> Game<'a> {
             settings,
             tutorial,
             tutorial_toasts: Vec::new(),
+            narrator_toast: None,
+            narration: Default::default(),
             options_from_title: false,
             dragging: false,
             avatar: Default::default(),
@@ -17990,6 +18118,9 @@ fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         yaw: 0.0,
         pitch: 10.0,
         fov_degrees: 85.0,
+        eye: glam::DVec3::new(0.5, 100.0, 0.5),
+        eye_rotation: [0.0, 10.0],
+        first_person: true,
         bob: glam::Mat4::IDENTITY,
         spin: glam::Mat4::IDENTITY,
         sky: horizon_client::environment::Sky::default(),
@@ -18232,6 +18363,7 @@ fn leave_fullscreen_after(
 
 fn run_event_loop(mut game: Game<'_>) -> Result<()> {
     let result = EventLoop::new()?.run_app(&mut game);
+    narrator::stop();
     leave_fullscreen_after(&result, &mut game.settings);
     result?;
     horizon_client::discord_presence::stop();
@@ -18435,6 +18567,7 @@ impl Loading {
         };
         let mut batch = HudBatch::new(size);
         self.draw_menu(&mut batch);
+        self.menu.frame_drawn((batch.width, batch.height));
         let mut frame = loading_frame(&batch);
         frame.yaw = self.panorama_rotation.update(
             self.started.elapsed().as_secs_f32(),
@@ -18662,6 +18795,7 @@ fn run_loading(
     };
     let mut app = App::Loading(Box::new(loading));
     let result = EventLoop::new()?.run_app(&mut app);
+    narrator::stop();
     match &mut app {
         App::Ready(game) => leave_fullscreen_after(&result, &mut game.settings),
         App::Loading(loading) => leave_fullscreen_after(&result, &mut loading.settings),
@@ -18736,6 +18870,10 @@ pub fn run() -> Result<()> {
         }
     }
     let early_settings = Settings::load(&std::env::current_dir()?.join("options.txt"));
+    // Minecraft's constructor opens the narrator; a server has none.
+    if options.execution_role.is_client() {
+        narrator::start(&early_settings);
+    }
     // "Playing Horizon" on Discord: never for a server; an automated run only talks to a test's fake Discord.
     if options.dedicated.is_none() {
         let automated = options.benchmark.is_some()
@@ -19096,6 +19234,39 @@ mod tests {
         assert!(!equipment_modifier_applies("offhand", "mainhand"));
     }
     use horizon_client::keymapping::{KeyAction, SNEAK, SPRINT, ToggleKeys};
+
+    /// A guest's interact packet names its entity and the server keeps it:
+    /// `ServerGamePacketListenerImpl.handleInteract` resolves
+    /// `packet.entityId()` once and `Player.interactOn` clicks that entity,
+    /// while a fresh pick would take the nearest one. Two cows stand one
+    /// behind the other; the packet names the far one.
+    #[test]
+    fn an_interact_packet_clicks_the_entity_it_names_not_the_nearest() {
+        // (server id, distance from the guest) in the level's own order.
+        let cows = [(17u32, 1.5f64), (23, 2.5)];
+        assert_eq!(Game::named_entity(&cows, 23, |c| c.0), Some(1));
+        // The near cow is reachable too, when that is the one named.
+        assert_eq!(Game::named_entity(&cows, 17, |c| c.0), Some(0));
+        // An id the level does not hold clicks nothing (Level.getEntity).
+        assert_eq!(Game::named_entity(&cows, 31, |c| c.0), None);
+    }
+
+    /// The id path keeps the crosshair pick's filters, so a packet cannot name
+    /// a mob the pick would refuse: one in its death animation, the one the
+    /// player rides, or the camera entity. Without them a guest could shear,
+    /// feed or leash a dying mob that `mob_hit` never returns.
+    #[test]
+    fn an_interact_packet_cannot_name_a_mob_the_pick_would_refuse() {
+        use super::creatures::named_mob_pickable;
+        assert!(named_mob_pickable(true, 17, None, None));
+        // Dead: `Mob.alive()` is health > 0.
+        assert!(!named_mob_pickable(false, 17, None, None));
+        // Ridden, and the camera entity (`remote_camera_id`).
+        assert!(!named_mob_pickable(true, 17, Some(17), None));
+        assert!(!named_mob_pickable(true, 17, None, Some(17)));
+        // Another mob being ridden or watched does not block this one.
+        assert!(named_mob_pickable(true, 17, Some(23), Some(29)));
+    }
 
     /// A mod screen on a hopper or dispenser menu owns its slots: the stock
     /// grid stands back so `slot_position` reaches the mod's own slots

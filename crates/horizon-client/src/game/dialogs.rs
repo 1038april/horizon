@@ -111,6 +111,18 @@ impl Game<'_> {
         let d = &self.dialogs;
         d.open.is_some() || d.waiting.is_some() || d.warning
     }
+    /// Whether the dialog's focus is one of its text inputs, which takes the
+    /// keys.
+    pub(super) fn dialog_typing(&self) -> bool {
+        let d = &self.dialogs;
+        !d.warning
+            && d.waiting.is_none()
+            && d.open.as_ref().is_some_and(|o| {
+                o.focus
+                    .and_then(|f| o.fields.get(f))
+                    .is_some_and(Option::is_some)
+            })
+    }
 
     /// `showDialog`: the dialog replaces an open one (and a waiting screen);
     /// under the warning screen, it is what Back returns to.

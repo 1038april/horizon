@@ -7,6 +7,7 @@ use horizon_client::{
     hud::{HudBatch, rgba},
     text::{self, Text},
     ui,
+    widgets::{self, ScreenInfo},
 };
 use winit::keyboard::KeyCode;
 
@@ -174,6 +175,7 @@ impl Game<'_> {
         let (w, h) = (batch.width, batch.height);
         ui::menu_background(batch, atlas, 0.0, 0.0, w, h, true);
         let title = Text::translate("menu.game", &[]);
+        widgets::begin_screen(|| ScreenInfo::new("pause", title.plain()));
         let tw = atlas.font.width_text(&title);
         batch.text_styled(
             atlas,
@@ -229,6 +231,24 @@ impl Game<'_> {
                 active,
                 hover,
             );
+            // PauseScreen adds the icon row after Statistics: the icons'
+            // messages (their tooltips too), the friends button's own.
+            widgets::last_narratable_at(3 + i, |n| {
+                let t = |key: &str| Text::translate(key, &[]).plain();
+                let key = [
+                    "menu.reportBugs",
+                    "menu.sendFeedback",
+                    "",
+                    "menu.playerReporting",
+                ][i];
+                *n = if i == FRIENDS_ICON {
+                    widgets::Narratable::named(t("gui.friends.open.narration"), n.rect, active)
+                        .hint(t("gui.friends.open.tooltip"))
+                } else {
+                    widgets::Narratable::button(t(key), n.rect, active).hint(t(key))
+                }
+                .hovered(hover);
+            });
             // SpriteIconButton.CenteredIcon: the 15x15 sprite at
             // x + width / 2 - 15 / 2 in integer pixels, untinted even
             // when the button is inactive.
@@ -448,6 +468,14 @@ impl Game<'_> {
         // screen over, on the same background.
         if let Some(opened) = self.ui.death_confirm {
             let (title, labels) = death_confirm_texts();
+            // ConfirmScreen.getNarrationMessage: its title and its (empty)
+            // message.
+            widgets::begin_screen(|| {
+                ScreenInfo::new(
+                    "death/confirm",
+                    widgets::join_for_narration(&[&title.plain(), ""]),
+                )
+            });
             let size = self.gui_size();
             let mut confirm = Confirm::new(&atlas.font, size, &title, &Text::literal(""));
             confirm.focus = self.death_focus.map(|f| f as usize);
@@ -466,6 +494,7 @@ impl Game<'_> {
             "deathScreen.title"
         };
         let title = Text::translate(title, &[]);
+        widgets::begin_screen(|| ScreenInfo::new("death", title.plain()));
         let tw = atlas.font.width_text(&title);
         ui::text_scaled(
             batch,

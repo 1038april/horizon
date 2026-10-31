@@ -2,7 +2,7 @@
 //! chunk-generation spawning (`NaturalSpawner`), mob events (attacks,
 //! breeding, conversions, drops), projectiles, player interactions
 //! (feeding, shearing, milking, spawn eggs, throwing) and rendering.
-use super::{Dim, Game, dispenser, view_vector};
+use super::{Dim, Game, InteractTarget, dispenser, view_vector};
 use horizon_assets::item_model::DisplayContext;
 use horizon_client::{
     Result,
@@ -227,6 +227,20 @@ fn flame_geometry(
 pub(super) fn seen(m: &Mob, player: Option<[i32; 4]>) -> Seen {
     m.seen(player)
 }
+/// Whether a mob a packet named may take the click: `mob_hit` skips a mob in
+/// its death animation, the one the player rides (it shares the player's root
+/// vehicle) and the camera entity the pick starts from, so a packet that names
+/// one of those does nothing rather than reaching the feed, shear, leash or
+/// name paths the pick path refuses.
+pub(super) fn named_mob_pickable(
+    alive: bool,
+    id: u32,
+    riding: Option<u32>,
+    camera: Option<u32>,
+) -> bool {
+    alive && Some(id) != riding && Some(id) != camera
+}
+
 impl Game<'_> {
     pub(super) fn player_view(&self) -> Option<PlayerView> {
         let p = self.player.as_ref()?;
@@ -1741,8 +1755,14 @@ impl Game<'_> {
                     owner,
                 } => self.add_fangs(at, yaw, delay, owner),
                 MobEvent::Shoot(..) => {}
-                MobEvent::ExplosionSource { mob, charged, name } => {
+                MobEvent::ExplosionSource {
+                    mob,
+                    charged,
+                    name,
+                    in_water,
+                } => {
                     self.combat.explosion_source = Some(mob);
+                    self.combat.explosion_in_water = in_water;
                     // The creeper causes the blast's damage, but it is out of
                     // the mob list already: its name comes with the event.
                     self.combat.exploded.push((mob, name));
@@ -1795,6 +1815,7 @@ impl Game<'_> {
                     };
                     self.combat.explosion_source = None;
                     self.combat.explosion_source_named = false;
+                    self.combat.explosion_in_water = false;
                     self.combat.explosion_cause = None;
                     result?
                 }
@@ -4263,12 +4284,14 @@ impl Game<'_> {
                     }
                 }
                 self.combat.explosion_owner = owner;
+                self.combat.explosion_in_water = p.touching_water;
                 // The blast's source names the owner, so a dragon it kills
                 // remembers the player who shot it.
                 self.set_blast_by_player(p.owner == Some(Who::Player));
                 let result = self.explode(atp, *power as f32);
                 self.set_blast_by_player(false);
                 self.combat.explosion_owner = None;
+                self.combat.explosion_in_water = false;
                 result?;
             }
             (
@@ -4505,12 +4528,28 @@ impl Game<'_> {
         };
         self.audio.play(sound, Some(at), 1.0, 1.0);
     }
-    /// Right click on a mob (Mob.interact / mobInteract). Returns true when consumed.
-    pub(super) fn interact_mob(&mut self) -> Result<bool> {
-        let Some((index, distance)) = self.mob_hit() else {
+    /// Right click on a mob (Mob.interact / mobInteract), on the mob under the
+    /// crosshair or on the one a guest's interact packet named: returns true
+    /// when consumed.
+    pub(super) fn interact_mob(&mut self, target: Option<InteractTarget>) -> Result<bool> {
+        let Some((index, distance)) = (match target {
+            // The id the packet named, under the filters the crosshair pick
+            // applies (`mob_hit`): a mob in its death animation is not clicked
+            // by either path, so naming one in a packet must not reach the
+            // feed, shear, leash or name paths either.
+            Some(t) => Self::named_entity(&self.mobs, t.id, |m| m.id)
+                .filter(|&i| {
+                    let m = &self.mobs[i];
+                    named_mob_pickable(m.alive(), m.id, self.riding, self.remote_camera_id())
+                })
+                .map(|i| (i, 0.0)),
+            None => self.mob_hit(),
+        }) else {
             return Ok(false);
         };
-        if let Some(hit) = self.pick_unfiltered()
+        // Only a client's own pick is stopped by a block: the range check passed.
+        if target.is_none()
+            && let Some(hit) = self.pick_unfiltered()
             && let Some(eye) = self.eye_position()
         {
             let d = ((hit.point[0] - eye[0]).powi(2)
@@ -5724,9 +5763,9 @@ impl Game<'_> {
                 }
             }
             if is_player {
-                // PlayerRenderer's CapeLayer, WingsLayer and SpinAttackEffectLayer.
-                // Only the cape hides with the body; WingsLayer and
-                // SpinAttackEffectLayer have no `isInvisible` check.
+                // PlayerRenderer's CapeLayer, WingsLayer, ParrotOnShoulderLayer
+                // and SpinAttackEffectLayer. Only the cape hides with the body;
+                // the others have no `isInvisible` check.
                 let chest = mob.extra.chest.as_deref();
                 if !layers_only {
                     self.player_cape_geometry(mob, chest, camera, alpha as f32, packed, out);
@@ -5739,6 +5778,7 @@ impl Game<'_> {
                     self.player_ears_geometry(mob, &name, camera, alpha as f32, packed, out);
                 }
                 self.player_elytra_geometry(mob, chest, camera, alpha as f32, packed, out);
+                self.shoulder_parrots_geometry(mob, camera, alpha as f32, packed, out);
                 self.spin_attack_geometry(mob, camera, alpha as f32, packed, out);
                 self.stuck_in_body_geometry(mob, mob.id as i32, camera, alpha as f32, packed, out);
             }
