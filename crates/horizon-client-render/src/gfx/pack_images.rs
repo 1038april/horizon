@@ -156,9 +156,17 @@ pub(super) fn resize_images(
     made
 }
 
-/// Copies the images a pass samples and stores, for that pass to sample.
-pub(super) fn copy(encoder: &mut wgpu::CommandEncoder, images: &[PackImage]) {
-    for image in images {
+/// The most images a pack may have.
+pub(super) const IMAGES: usize = 64;
+
+/// Copies the images of `mask` (bit n: image n), which a pass samples and stores, for that pass
+/// to sample.
+pub(super) fn copy(encoder: &mut wgpu::CommandEncoder, images: &[PackImage], mask: u64) {
+    for (_, image) in images
+        .iter()
+        .enumerate()
+        .filter(|(k, _)| mask & 1 << k != 0)
+    {
         if let (Some(view), Some(copy)) = (&image.view, &image.copy) {
             encoder.copy_texture_to_texture(
                 view.texture().as_image_copy(),

@@ -266,9 +266,9 @@ struct Pass {
     sink: bool,
     /// Instances to draw for a geometry stage folded into the vertex stage; 0 without one.
     geometry: u32,
-    /// The pack's images (bit n: `image.*` n) this pass samples and stores: sampled from the copy
-    /// taken at the frame's start.
-    image_copies: u16,
+    /// The pack's images (bit n: `image.*` n) this pass samples and stores: sampled from a copy
+    /// taken just before it.
+    image_copies: u64,
 }
 
 impl Pass {
@@ -1343,7 +1343,7 @@ fn build_pass(
 }
 
 /// The pack's images a pass both samples and stores.
-fn image_copies(samplers: &[Binding], images: &[(u32, Image)]) -> u16 {
+fn image_copies(samplers: &[Binding], images: &[(u32, Image)]) -> u64 {
     samplers
         .iter()
         .filter_map(|s| match s.source {
@@ -1524,7 +1524,7 @@ impl PackPost {
                 .filter(|_| i < 2)
                 .map_or(formats[i], |f| f[i])
         });
-        let (mut storage, mut copied, mut image_copied) = (0u16, 0u16, 0u16);
+        let (mut storage, mut copied, mut image_copied) = (0u16, 0u16, 0u64);
         // An image this device can't make: the programs using it are skipped.
         let mut image_defs = std::mem::take(&mut post.images);
         let mut left_out = Vec::new();
@@ -1536,6 +1536,16 @@ impl PackPost {
                 false
             }
         });
+        // A mask of a pass's images holds this many.
+        let kept = image_defs.len().min(pack_images::IMAGES);
+        for def in image_defs.drain(kept..) {
+            notes.push(format!(
+                "image `{}`: past the {} images a pack may have",
+                def.name,
+                pack_images::IMAGES
+            ));
+            left_out.push(def);
+        }
         let images = pack_images::images(image_defs);
         let buffers = pack_images::Buffers::new(device, std::mem::take(&mut post.buffer_objects));
         let indices = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -2164,6 +2174,7 @@ impl PackPost {
         pass: &mut Pass,
         out: [u32; 2],
     ) -> wgpu::BindGroup {
+        pack_images::copy(encoder, &self.images, pass.image_copies);
         if let Some(targets) = &self.targets {
             for i in (0..BUFFERS).filter(|i| pass.copies & 1 << i != 0) {
                 if let (Some(t), Some(copy)) = (&targets.color[i], &targets.scratch[i]) {
@@ -3238,13 +3249,11 @@ impl PackPost {
         if self.targets.is_none() {
             return;
         }
-        // Images start the frame cleared, before the shadow pass writes them; a pass that also
-        // samples one it writes samples the copy of last frame's, taken first.
+        // Images start the frame cleared, before the shadow pass writes them.
         if let Some(dump) = &mut self.dump {
             dump.read(device);
             dump.copy(device, encoder, &self.images);
         }
-        pack_images::copy(encoder, &self.images);
         pack_images::clear(encoder, &self.images);
         self.run_shadow(device, queue, encoder, terrain);
         let Some(targets) = &self.targets else { return };
