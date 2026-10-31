@@ -258,6 +258,26 @@ alone): it is asked when a chunk holding it is sent and when its block changes, 
 copy's `nbt`. A saved chunk sent past the view distance asks it on its own thread, so read only `entity`. Keep it to what clients show (a machine running, its facing, a tank's level), not a menu's progress:
 menus have their own data slots. Bundles that use it need `"hooks": 45`.
 
+API 46 adds `native_visuals`: a world-frame hook that appends block-rim and
+colored-light requests. Rims trace the client's existing block outline edges,
+depth-tested against terrain. Lights add camera-local RGB illumination to the
+normal terrain/entity shaders, not gameplay light. Only the first eight rims
+and eight lights are examined; positions must be within 32 blocks of the player,
+values must be finite and bounded, and source chunks must be loaded. At most
+256 rim edges and 16 colored lights are rendered. Requests are frame-local,
+so disabling a native mod or leaving the world clears them without a retained
+state. Helpers `native_lit_block_name` and `native_flame_particle` read loaded
+blocks and emit a nearby vanilla flame particle; native mods must rate-limit
+emission. It also adds `native_emissive`: a world-frame hook for at most 32 pairs of
+already-loaded terrain sprites. Transparent pixels in an overlay leave its
+base unchanged; opaque pixels are drawn full-bright without changing gameplay
+light or the surrounding rock. The source pack must supply the overlay texture
+under `assets/<namespace>/textures/emissive/`. When no mod requests overlays,
+the terrain shader skips the lookup. Bundles using these hooks need `"hooks": 46`.
+When a native mod bundles a Horizon shader pack, naming its folder
+`native-<mod-id>` makes the Mods On/Off control pause that pack too (without
+changing the player's saved shader selection); other packs are unaffected.
+
 ## A bundle
 
 A bundle is a folder with a `horizon-mixin.toml`. Besides its helpers and modules (horizon-mixins' README) it can
