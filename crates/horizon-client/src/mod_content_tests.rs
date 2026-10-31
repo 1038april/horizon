@@ -1156,6 +1156,37 @@ fn content_root_registers_a_mod_mob_effect() {
     fs::remove_dir_all(&scratch).unwrap();
 }
 
+/// A mod that adds only an item still moves the item network ids, so a game
+/// without it must fail the content check rather than show other items.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn content_root_with_only_an_item_checks_its_identity() {
+    let Some(base) = prepared() else {
+        return;
+    };
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-item-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let m = folder_mod(
+        &scratch.join("gem"),
+        &[
+            ("horizon-mod.toml", &manifest("gem", "")),
+            (
+                "data/gem/horizon/item/opal.json",
+                r#"{"template": "minecraft:diamond"}"#,
+            ),
+        ],
+    );
+    let root = resource_root(&base, std::slice::from_ref(&m), &scratch.join("cache")).unwrap();
+    let ids = horizon_protocol::registry::Builtin::load(&root.join("registries.json")).unwrap();
+    assert!(ids.get("minecraft:item").unwrap().id("gem:opal").is_some());
+    assert!(root.join(crate::content_identity::MARKER).exists());
+    assert_ne!(
+        crate::content_identity::identity(&root).unwrap(),
+        crate::content_identity::identity(&base).unwrap()
+    );
+    fs::remove_dir_all(&scratch).unwrap();
+}
+
 /// A content mod folder from `(path, text)` pairs, read as the game reads it.
 fn folder_mod(dir: &Path, files: &[(&str, &str)]) -> ContentMod {
     for (name, text) in files {
