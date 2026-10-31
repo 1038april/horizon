@@ -3434,11 +3434,6 @@ impl Renderer {
             self.indices = Self::quad_indices(&self.device, self.index_quads);
         }
         let vertices = (mesh.solid.len() + mesh.translucent.len()) as u64;
-        let sides = if mesh.sides.quads() == solid {
-            mesh.sides
-        } else {
-            Sides::unsorted(solid)
-        };
         let encoder = self.section_copies.get_or_insert_with(|| {
             self.device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -3470,10 +3465,7 @@ impl Renderer {
             )
         });
         let stride = std::mem::size_of::<TerrainVertex>() as u64;
-        for (offset, part) in [
-            (0, &mesh.solid[..]),
-            (mesh.solid.len(), &mesh.translucent[..]),
-        ] {
+        for (offset, part) in [(0, &mesh.solid), (mesh.solid.len(), &mesh.translucent)] {
             if !part.is_empty() {
                 let bytes: &[u8] = bytemuck::cast_slice(part);
                 self.uploaded_bytes += bytes.len() as u64;
@@ -3497,7 +3489,11 @@ impl Renderer {
             page,
             start,
             solid,
-            sides,
+            sides: if mesh.sides.quads() == solid {
+                mesh.sides
+            } else {
+                Sides::unsorted(solid)
+            },
             translucent,
             sort: translucency::SortState::new(
                 mesh.translucent
