@@ -4,7 +4,7 @@
 //! `MinecartItem` placement, `VehicleEntity` breaking, the chest, hopper,
 //! furnace and TNT variants, saving, and `AbstractMinecartRenderer`'s old
 //! rail-following render with the display block.
-use super::{Game, Hit, Keys};
+use super::{Game, Hit, InteractTarget, Keys};
 use horizon_client::{
     blocks::Fluid,
     collisions::SceneCollisions,
@@ -1090,12 +1090,17 @@ impl Game<'_> {
             self.trigger_loot_table(&loot.table);
         }
     }
-    /// `interact`: ride, open, fuel or ignite the cart under the crosshair.
-    pub(super) fn interact_cart(&mut self) -> bool {
-        let Some((i, d)) = self.cart_hit() else {
+    /// `interact`: ride, open, fuel or ignite the cart under the crosshair, or
+    /// the one a guest's interact packet named.
+    pub(super) fn interact_cart(&mut self, target: Option<InteractTarget>) -> bool {
+        let Some((i, d)) = (match target {
+            Some(t) => Self::named_entity(&self.carts, t.id, |c| c.id).map(|i| (i, 0.0)),
+            None => self.cart_hit(),
+        }) else {
             return false;
         };
-        if !self.before_block(d) {
+        // Only a client's own pick is stopped by a block: the range check passed.
+        if target.is_none() && !self.before_block(d) {
             return false;
         }
         let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft);

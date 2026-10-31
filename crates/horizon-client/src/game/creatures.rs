@@ -2,7 +2,7 @@
 //! chunk-generation spawning (`NaturalSpawner`), mob events (attacks,
 //! breeding, conversions, drops), projectiles, player interactions
 //! (feeding, shearing, milking, spawn eggs, throwing) and rendering.
-use super::{Dim, Game, dispenser, view_vector};
+use super::{Dim, Game, InteractTarget, dispenser, view_vector};
 use horizon_assets::item_model::DisplayContext;
 use horizon_client::{
     Result,
@@ -4202,12 +4202,19 @@ impl Game<'_> {
         };
         self.audio.play(sound, Some(at), 1.0, 1.0);
     }
-    /// Right click on a mob (Mob.interact / mobInteract). Returns true when consumed.
-    pub(super) fn interact_mob(&mut self) -> Result<bool> {
-        let Some((index, distance)) = self.mob_hit() else {
+    /// Right click on a mob (Mob.interact / mobInteract), on the mob under the
+    /// crosshair or on the one a guest's interact packet named: returns true
+    /// when consumed.
+    pub(super) fn interact_mob(&mut self, target: Option<InteractTarget>) -> Result<bool> {
+        let Some((index, distance)) = (match target {
+            Some(t) => Self::named_entity(&self.mobs, t.id, |m| m.id).map(|i| (i, 0.0)),
+            None => self.mob_hit(),
+        }) else {
             return Ok(false);
         };
-        if let Some(hit) = self.pick()
+        // Only a client's own pick is stopped by a block: the range check passed.
+        if target.is_none()
+            && let Some(hit) = self.pick()
             && let Some(eye) = self.eye_position()
         {
             let d = ((hit.point[0] - eye[0]).powi(2)
