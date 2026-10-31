@@ -3853,6 +3853,28 @@ mod tests {
     }
 
     #[test]
+    fn only_a_player_owned_wither_skull_takes_the_dragons_health() {
+        // WitherSkull.onHitEntity: EnderDragon.hurt takes the wither's skull
+        // (not a player, not an explosion) but takes no health, even perched.
+        let skull = ProjectileKind::WitherSkull { dangerous: false };
+        let wither = super::super::wither::skull_source(Some(Who::Mob(7)), [0.0; 3]);
+        assert_eq!((wither.amount, wither.kind), (8.0, DamageKind::WitherSkull));
+        let mut d = dragon(Phase::Scanning { time: 0 });
+        let hurt = d.hurt_part(2, wither.amount, false, wither.kind, Some(&skull));
+        assert_eq!(hurt, Hurt::Landed { full: false });
+        assert_eq!(d.health, MAX_HEALTH);
+        // A player's skull: 8 on the head, 8 / 4 + 1 on the body.
+        let player = super::super::wither::skull_source(Some(Who::Player), [0.0; 3]);
+        let mut d = dragon(Phase::Scanning { time: 0 });
+        let hurt = d.hurt_part(0, player.amount, true, player.kind, Some(&skull));
+        assert_eq!(hurt, Hurt::Landed { full: true });
+        assert_eq!(d.health, MAX_HEALTH - 8.0);
+        let mut d = dragon(flying());
+        d.hurt_part(2, player.amount, true, player.kind, Some(&skull));
+        assert_eq!(d.health, MAX_HEALTH - 3.0);
+    }
+
+    #[test]
     fn the_cooldown_lets_only_the_excess_through() {
         // LivingEntity.hurtServer: damageCooldownTime > 10 keeps lastHurt.
         let mut d = dragon(flying());

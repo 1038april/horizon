@@ -1053,6 +1053,7 @@ impl Game<'_> {
         let projectile = match d.kind {
             DamageKind::Arrow => Some("minecraft:arrow"),
             DamageKind::Fireball => Some("minecraft:fireball"),
+            DamageKind::WitherSkull => Some("minecraft:wither_skull"),
             _ => None,
         };
         let direct = match projectile {
@@ -1152,6 +1153,10 @@ impl Game<'_> {
                 }),
                 DamageKind::Fireball => Some(LootEntity {
                     kind: "minecraft:fireball".into(),
+                    ..LootEntity::default()
+                }),
+                DamageKind::WitherSkull => Some(LootEntity {
+                    kind: "minecraft:wither_skull".into(),
                     ..LootEntity::default()
                 }),
                 _ => source.clone(),
@@ -2675,6 +2680,7 @@ impl Game<'_> {
         damage_type: &str,
         known: Option<Option<u32>>,
     ) -> bool {
+        let post_attack_if_alive = std::mem::take(&mut self.combat.post_attack_if_alive);
         // ServerPlayer.canHarmPlayer refused another player's projectile.
         if self.creative || self.combat.refuse_player_hit {
             return false;
@@ -2753,7 +2759,12 @@ impl Game<'_> {
                 }
             }
             // The thorns hurt the entity that caused the hit, if there is one.
-            if let Some(a) = attacker.or(owner) {
+            let killed = self.player.as_ref().is_some_and(|p| {
+                super::wither::killed(true, p.health.dead_or_dying(), p.health.totem_used)
+            });
+            if let Some(a) = attacker.or(owner)
+                && !(post_attack_if_alive && killed)
+            {
                 self.thorns(a);
             }
         }
@@ -3503,10 +3514,13 @@ impl Game<'_> {
         ) {
             return self.wind_charge_hit(p, hit);
         }
+        // A wither skull's hit on a part or crystal goes through
+        // `wither_skull_hit` below, as on any entity, and then explodes.
         if let Hit::Entity {
             who: Who::Mob(id), ..
         } = hit
             && id >= super::dragon::SPECIAL
+            && !matches!(p.kind, ProjectileKind::WitherSkull { .. })
         {
             let by_player = p.owner == Some(Who::Player);
             if p.arrow.is_some() {
@@ -5729,6 +5743,7 @@ pub(super) fn damage_type(kind: horizon_client::mobs::DamageKind, caused: bool) 
         K::SulfurCubeHot => "minecraft:sulfur_cube_hot",
         K::WindCharge => "minecraft:wind_charge",
         K::Wither => "minecraft:wither",
+        K::WitherSkull => "minecraft:wither_skull",
     }
 }
 /// A Horizon item stack as a loot stack (id, count, damage, enchantments).

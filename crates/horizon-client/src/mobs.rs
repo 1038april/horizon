@@ -577,6 +577,8 @@ pub enum DamageKind {
     WindCharge,
     /// `wither`: the wither effect.
     Wither,
+    /// `wither_skull`: an owned wither skull's hit (`DamageSources.witherSkull`).
+    WitherSkull,
 }
 impl DamageKind {
     /// DamageTypeTags.BYPASSES_INVULNERABILITY
@@ -735,7 +737,11 @@ impl Damage {
     pub fn is_projectile(&self) -> bool {
         matches!(
             self.kind,
-            DamageKind::Arrow | DamageKind::Thrown | DamageKind::Fireball | DamageKind::WindCharge
+            DamageKind::Arrow
+                | DamageKind::Thrown
+                | DamageKind::Fireball
+                | DamageKind::WindCharge
+                | DamageKind::WitherSkull
         )
     }
 }
