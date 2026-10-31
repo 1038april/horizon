@@ -353,6 +353,9 @@ fn combine(
         } else if matches!(*t, "gl_VertexID" | "gl_VertexIndex") {
             // The vertex the pack's vertex stage runs for, not this invocation.
             vs_text[i] = "hz_vs_vertex".into();
+        } else if matches!(*t, "gl_InstanceID" | "gl_InstanceIndex") {
+            // The game draws terrain uninstanced; this invocation's instance is a triangle.
+            vs_text[i] = "0".into();
         } else if renamed.contains(t) {
             vs_text[i] = format!("hz_vs_{t}");
         }
@@ -523,7 +526,8 @@ mod tests {
     #[test]
     fn a_geometry_stage_folds_into_the_vertex_stage() {
         let vsh = "#version 430\nout vec3 vPos;\nout vec4 vColor;\nvoid main() {\n    \
-                   vPos = gl_Vertex.xyz;\n    vColor = gl_Color;\n    gl_Position = ftransform();\n}\n";
+                   vPos = gl_Vertex.xyz;\n    vColor = gl_Color * float(gl_InstanceID + 1);\n    \
+                   gl_Position = ftransform();\n}\n";
         let gsh = "#version 430\nlayout(triangles) in;\nlayout(triangle_strip, max_vertices = 4) out;\n\
                    in vec3 vPos[];\nin vec4 vColor[];\nout vec4 gColor;\nvoid main() {\n    \
                    for (int i = 0; i < 3; i++) {\n        gColor = vColor[i];\n        \

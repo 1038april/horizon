@@ -734,33 +734,36 @@ fn load_shadow(
         loader.post.shadow_comp.extend(program);
     }
     let properties = loader.properties;
-    let mut load = |names: &[&str], inputs: Option<&GbuffersInputs>, terrain: bool| {
-        let inputs = inputs?;
-        names.iter().find_map(|name| {
-            // Cutout geometry (leaves) casts the shadow of its texels only: the cutout test,
-            // unless `alphaTest.<program>` says otherwise, as for the gbuffers programs.
-            let test = match properties.get(&format!("alphaTest.{name}")) {
-                Some(v) => crate::AlphaTest::parse(v.trim()).flatten(),
-                None => inputs.alpha_test.or(Some(crate::AlphaTest {
-                    op: ">",
-                    reference: 0.1,
-                })),
-            };
-            let mut inputs = inputs.clone();
-            inputs.alpha_test = test;
-            loader.geometry = geometry.filter(|_| terrain).cloned().map(|mut g| {
-                g.inputs.alpha_test = test;
-                g
-            });
-            let p = loader.load(name.to_string(), Group::Shadow, |v, f| {
-                translate_shadow(v, f, &inputs)
-            });
-            p.map(|mut p| {
-                p.blend = blend(properties, &p.name).flatten();
-                p
+    let mut load =
+        |names: &[&str], inputs: Option<&GbuffersInputs>, terrain: bool, cutout: bool| {
+            let inputs = inputs?;
+            names.iter().find_map(|name| {
+                // Cutout geometry (leaves) casts the shadow of its texels only: the cutout test,
+                // unless `alphaTest.<program>` says otherwise, as for the gbuffers programs.
+                // Translucent terrain keeps no test, as gbuffers_water does.
+                let test = match properties.get(&format!("alphaTest.{name}")) {
+                    Some(v) => crate::AlphaTest::parse(v.trim()).flatten(),
+                    None if !cutout => inputs.alpha_test,
+                    None => inputs.alpha_test.or(Some(crate::AlphaTest {
+                        op: ">",
+                        reference: 0.1,
+                    })),
+                };
+                let mut inputs = inputs.clone();
+                inputs.alpha_test = test;
+                loader.geometry = geometry.filter(|_| terrain).cloned().map(|mut g| {
+                    g.inputs.alpha_test = test;
+                    g
+                });
+                let p = loader.load(name.to_string(), Group::Shadow, |v, f| {
+                    translate_shadow(v, f, &inputs)
+                });
+                p.map(|mut p| {
+                    p.blend = blend(properties, &p.name).flatten();
+                    p
+                })
             })
-        })
-    };
+        };
     // `shadowTerrain`, `shadowTranslucent`, `shadowEntities` and `shadowBlockEntities` (3.2)
     // leave their part out of the shadow pass; all are on by default (OQ-19). `shadowPlayer`
     // and `shadowLightBlockEntities` (E, off by default) keep the player, and block entities
@@ -770,16 +773,16 @@ fn load_shadow(
     let only_player = !keep("shadowEntities") && set("shadowPlayer");
     let only_lit = !keep("shadowBlockEntities") && set("shadowLightBlockEntities");
     let shadow = keep("shadowTerrain")
-        .then(|| load(&["shadow"], terrain, true))
+        .then(|| load(&["shadow"], terrain, true, true))
         .flatten();
     let water = keep("shadowTranslucent")
-        .then(|| load(&["shadow_water", "shadow"], terrain, true))
+        .then(|| load(&["shadow_water", "shadow"], terrain, true, false))
         .flatten();
     let shadow_entities = (keep("shadowEntities") || only_player)
-        .then(|| load(&["shadow_entities", "shadow"], entities, false))
+        .then(|| load(&["shadow_entities", "shadow"], entities, false, true))
         .flatten();
     let shadow_block = (keep("shadowBlockEntities") || only_lit)
-        .then(|| load(&["shadow_block", "shadow"], entities, false))
+        .then(|| load(&["shadow_block", "shadow"], entities, false, true))
         .flatten();
     if shadow.is_none() && terrain.is_some() {
         loader
