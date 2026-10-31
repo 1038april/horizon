@@ -302,6 +302,7 @@ impl Game<'_> {
         let world = std::env::current_dir()?.join("saves").join(folder);
         self.world_biomes = Some(super::world_loading::packed_biomes(
             &world,
+            &self.options.resources,
             self.res.biomes(),
         ));
         let (res, pack, settings) = (self.res.clone(), self.pack.clone(), self.settings.clone());
@@ -585,6 +586,8 @@ impl Game<'_> {
         ready: &Sender<Ready>,
         opening: Opening,
     ) -> Result<()> {
+        // MinecraftServer.loadLevel's start: nothing is loaded yet.
+        self.native_server_about_to_start(false);
         self.native_lifecycle_open_started();
         // `load_world`, with the world `serve` started preparing.
         self.join_world_rest()?;
@@ -680,6 +683,8 @@ impl Game<'_> {
     fn stop_integrated(&mut self) -> Result<()> {
         // The close request: lifecycle observation stops.
         self.native_lifecycle.begin_close();
+        // MinecraftServer.stopServer's start: everyone is still here.
+        self.native_server_stopping(false);
         // IntegratedServer.stopServer: teardownPublishedState.
         if let Some(s) = self.serving.take() {
             s.flags.published.store(0, Ordering::Relaxed);
@@ -964,7 +969,8 @@ impl Game<'_> {
                 .find(|g| g.uuid == owner)
                 .map(|g| g.conn)
         {
-            host.hub.set_game_mode(conn, mode);
+            host.hub
+                .set_game_mode(conn, mode, &self.world, Some(self.collision));
         }
     }
     /// `IntegratedServer.setWorldAllowCommands`: the owner is an operator
