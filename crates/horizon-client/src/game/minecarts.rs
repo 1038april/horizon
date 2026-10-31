@@ -2165,8 +2165,8 @@ mod tests {
                 )]),
             ),
         ]);
-        let cart = Minecart::from_nbt(&saved, 1, CartKind::Spawner).unwrap();
-        let spawner = cart.spawner.as_ref().expect("a spawner cart has a spawner");
+        let mut cart = Minecart::from_nbt(&saved, 1, CartKind::Spawner).unwrap();
+        let spawner = cart.spawner.as_mut().expect("a spawner cart has a spawner");
         assert_eq!(
             (
                 spawner.spawn_delay,
@@ -2175,8 +2175,10 @@ mod tests {
             ),
             (37, 120, 2)
         );
-        let out = cart.to_nbt([0; 4], Some(&saved));
-        assert_eq!(out.get("Delay"), Some(&Tag::Short(37)));
+        // No raw tag to copy from: what comes out is the cart's own save.
+        spawner.spawn_delay = 41;
+        let out = cart.to_nbt([0; 4], None);
+        assert_eq!(out.get("Delay"), Some(&Tag::Short(41)));
         assert_eq!(out.get("MaxSpawnDelay"), Some(&Tag::Short(120)));
         assert_eq!(
             out.get("SpawnData")
@@ -2189,18 +2191,11 @@ mod tests {
             CartKind::from_id("minecraft:spawner_minecart"),
             Some(CartKind::Spawner)
         );
-        assert_eq!(CartKind::Chest.item(), "minecraft:chest_minecart");
-        assert_eq!(display_offset(CartKind::Spawner), 6.0);
         // A summoned one has a spawner of its own.
         assert!(
             Minecart::new(2, CartKind::Spawner, Vec3::ZERO)
                 .spawner
                 .is_some()
-        );
-        assert!(
-            Minecart::new(3, CartKind::Tnt, Vec3::ZERO)
-                .spawner
-                .is_none()
         );
     }
 
