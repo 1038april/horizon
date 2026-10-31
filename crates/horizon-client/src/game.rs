@@ -7309,8 +7309,9 @@ impl Game<'_> {
             // draws the toast manager on every screen, so a pack download or a
             // resource-reload failure still shows on the title (#4428).
             if let Some(title) = &self.title {
-                title.draw(
+                title.draw_with_items(
                     &self.gui.atlas,
+                    Some(&self.pack.item_renderer),
                     &mut batch,
                     self.cursor,
                     self.settings.file.bool("hideSplashTexts"),
