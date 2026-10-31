@@ -13756,9 +13756,10 @@ impl Game<'_> {
             && self.options.execution_role == execution_role::ExecutionRole::IntegratedServer
             && let Some(host) = self.lan.take()
         {
+            // The vehicle tree goes into a player's file when they leave
+            // (`take_parent_vehicle`); here it stays in the chunk saves.
             for g in host.hub.guests.iter().filter(|g| g.placed) {
-                let vehicle = self.root_vehicle_uuid(g.vehicle);
-                horizon_client::lan::playerdata::save(g, &self.world_root, vehicle);
+                horizon_client::lan::playerdata::save(g, &self.world_root);
             }
             self.lan = Some(host);
         }
