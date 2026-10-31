@@ -134,16 +134,12 @@ impl WorldRequest {
             // everything else disabled — the feature packs left out, and the
             // world packs the Data Packs screen held back (`install` copies
             // every pack of the folder, selected or not).
+            let packs = horizon_client::datapack::feature_packs(&options.resources);
             level.data_packs = Some({
-                let features: Vec<String> =
-                    horizon_client::datapack::feature_packs(&options.resources)
-                        .into_iter()
-                        .map(|p| p.id)
-                        .collect();
-                let mut disabled: Vec<String> = features
+                let mut disabled: Vec<String> = packs
                     .iter()
+                    .map(|p| p.id.clone())
                     .filter(|f| !o.data_packs.contains(f))
-                    .cloned()
                     .collect();
                 if let Some(dir) = o.pack_dir.as_deref() {
                     disabled.extend(
@@ -158,6 +154,20 @@ impl WorldRequest {
                 }
                 (o.data_packs.clone(), disabled)
             });
+            // WorldDataConfiguration's `enabled_features`: the flags of the
+            // picked feature packs over vanilla's (`FeatureFlags.REGISTRY`'s
+            // codec writes the whole set, `minecraft:vanilla` included, and
+            // omits the tag when it is the default).
+            let mut flags = vec!["minecraft:vanilla".to_owned()];
+            flags.extend(
+                packs
+                    .iter()
+                    .filter(|p| o.data_packs.contains(&p.id))
+                    .flat_map(|p| p.features()),
+            );
+            flags.sort();
+            flags.dedup();
+            level.enabled_features = flags;
         }
         // Worlds made without the Create New World screen (--world, the
         // control socket) take its default: commands on for Creative only.
