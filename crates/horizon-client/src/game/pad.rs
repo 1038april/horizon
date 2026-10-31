@@ -66,7 +66,9 @@ pub(in crate::game) enum PadEvent {
     Press(PadId, Button),
     /// Disconnected (out of battery, unplugged, out of range).
     Gone(PadId),
-    /// Connected again under the same id (Windows keeps it; macOS gives a new one).
+    /// Connected again under the same id (Windows keeps it; macOS gives a new one). On Linux
+    /// gilrs gives a new device the slot of a disconnected one of the same model, so there this
+    /// can be another controller of that model.
     Back(PadId),
 }
 

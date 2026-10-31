@@ -36,7 +36,9 @@ pub(super) enum Claim {
 /// `uuid` names the model, not the device (gilrs' SDL-style GUID), so it stands for "the same
 /// controller" only where a reconnect gets a new id (`model_match`: macOS; elsewhere the id
 /// survives and `PadEvent::Back` takes it), and only when one waiting player has that model:
-/// otherwise another DualSense would silently take a DualSense player's seat.
+/// otherwise another DualSense would silently take a DualSense player's seat. On Linux gilrs
+/// itself reuses a disconnected pad's slot for a new one of the same model, so there a
+/// `PadEvent::Back` can be that other controller: gilrs can't tell the two apart.
 pub(super) fn claim<Id>(
     lost: &[Lost<Id>],
     uuid: [u8; 16],
