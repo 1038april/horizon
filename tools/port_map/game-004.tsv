@@ -55,7 +55,7 @@ AreaEffectCloud.get	skip:other		entity data component accessor for predicates an
 AreaEffectCloud.applyImplicitComponents	inline	crates/horizon-client/src/game/potions.rs::Game::splash	the lingering branch takes the thrown stack's potion effects and colour; potion_duration_scale is fixed at 0.25
 AreaEffectCloud.applyImplicitComponent	inline	crates/horizon-client/src/game/potions.rs::Game::splash	same: potion contents only
 Avatar.defineSynchedData	port	crates/horizon-client/src/lan/hub.rs::Hub::player_state	gap: minor: skin parts (entry 16) are sent, the main hand entry is not
-Avatar.isModelPartShown	missing		player: Options > Skin Customization is an inactive button and the client always sends all parts shown, so hat, jacket, sleeve and pants layers and the cape cannot be switched off
+Avatar.isModelPartShown	port	crates/horizon-client/src/game/remote.rs::Game::update_remote_skins	the Skin Customization cape option reaches the drawn player
 Bucketable.loadDefaultDataFromBucketTag	port	crates/horizon-client/src/entity_nbt.rs::load_bucket_data	NoAI, Silent, NoGravity, Glowing, Invulnerable, PersistenceRequired and Health
 ContainerUser.getLivingEntity	skip:java		interface cast; every container user here is the player
 ConversionTracker.addAdditionalSaveData	inline	crates/horizon-client/src/entity_nbt.rs::mob_to_nbt	gap: minor: DrownedConversionTime and InWaterTime are kept from the loaded NBT or written as -1; live progress is not saved, and skeletons write no FreezingTime or StrayConversionTime
@@ -69,7 +69,7 @@ Display.onSyncedDataUpdated	port	crates/horizon-client/src/game/text_displays.rs
 Display.createTransformation	port	crates/horizon-client/src/text_display.rs::TextDisplayData::matrix	translation, left rotation, scale, right rotation plus the billboard turn
 Display.tick	port	crates/horizon-client/src/game/text_displays.rs::RemoteTextDisplay::tick	start tick, interpolation duration and render state refresh; text displays only
 Display.defineSynchedData	port	crates/horizon-client/src/text_display.rs::TextDisplayData::default	the defaults of entries 8 to 22
-Display.readAdditionalSaveData	missing		player: display entities saved in a world (made by commands, datapacks or maps) are not loaded; the local game has no display entity, only a remote server's text displays are drawn
+Display.readAdditionalSaveData	port	crates/horizon-client/src/text_display.rs::display_data	the synched data entries (ids 8 to 22) of a saved display, matrix transformation included
 Display.setTransformation	missing		minor: server side setter; there is no local display entity
 Display.addAdditionalSaveData	missing		minor: no local display entity to save
 Display.getInterpolatedBoundingBox	port	crates/horizon-client/src/text_display.rs::culling_box	width-centred XZ box from y to y+height at the interpolated origin; used by Game::display_in_view

@@ -36,7 +36,7 @@ Projectile.applyOnProjectileSpawned	port	crates/horizon-client/src/game/enchant_
 Projectile.hitTargetOrDeflectSelf	port	crates/horizon-client/src/game/creatures.rs::Game::tick_projectiles	gap: minor: deflection is checked for breezes only; the onHit dispatch is creatures.rs projectile_hit
 Projectile.onRedirectProjectile	port	crates/horizon-client/src/game/deflect.rs::Game::deflect	gap: minor: the player's attack turns the projectile; a projectile hitting another redirectable one is not modelled
 Projectile.recreateFromPacket	port	crates/horizon-client/src/game/remote_projectiles.rs::Game::spawn_remote_projectile	the owner id from the add-entity data is set on the remote projectile
-Projectile.mayBreak	missing		player: a projectile hitting a decorated pot, chorus flower or pointed dripstone does not break it; no projectile break path found
+Projectile.mayBreak	port	crates/horizon-client/src/game/creatures.rs::Game::projectile_breaks_block	impact projectiles break chorus flowers, decorated pots (cracked first) and speleothems, gated on mayInteract, mayBreak and the projectiles_can_break_blocks rule
 Projectile.calculateHorizontalHurtKnockbackDirection	inline	crates/horizon-client/src/game/creatures.rs::Game::projectile_hit	gap: minor: knockback goes from the shot's previous point, while vanilla uses the projectile's horizontal motion
 ProjectileUtil.getHitResultOnMoveVector	port	crates/horizon-client/src/projectiles.rs::Projectile::tick	sweep along the movement: block clip, then entity boxes; gap: minor: entity margin is a fixed 0.3, vanilla ramps it up over the first ticks
 ProjectileUtil.getHitResultOnViewVector	port	crates/horizon-client/src/game/pick_entity.rs::pick_entity_hit	gap: minor: the brush reach is the caller's; there is no separate view-vector trace
@@ -101,7 +101,7 @@ ThrownEnderpearl.isAllowedToTeleportOwner	missing		minor: a pearl whose owner is
 ThrownEnderpearl.playSound	port	crates/horizon-client/src/game/creatures.rs::Game::projectile_hit	teleport sound at the landing point
 ThrownEnderpearl.teleport	port	crates/horizon-client/src/game/creatures.rs::Game::projectile_hit	moves the player to the pearl's previous position and clears velocity and fall distance
 ThrownEnderpearl.canTeleport	missing		minor: a pearl from the End to the Overworld needs the owner's seen-credits flag before it may teleport
-ThrownEnderpearl.onInsideBlock	missing		player: a pearl that flies into an end gateway does not send its owner through it
+ThrownEnderpearl.onInsideBlock	port	crates/horizon-client/src/game/end.rs::Game::pearl_owner_in_gateway	a pearl that flies into an End gateway sends its owner through and fires enter_block
 Raid.<init>	port	crates/horizon-client/src/raid.rs::Raid::new	centre, difficulty-based group count, cooldown and active flag
 Raid.getAllRaiders	port	crates/horizon-client/src/game/raids.rs::Game::raid_members	the raiders of this raid, from the mobs carrying its id
 Raid.getValidSpawnPos	port	crates/horizon-client/src/raid.rs::Raid::find_spawn_pos	eight tries around the centre, as findRandomSpawnPos(level, 8)

@@ -12,7 +12,7 @@ Entity.setSharedFlagOnFire	inline	crates/horizon-client/src/game/lan.rs::mob_met
 Entity.isSupportedBy	inline	crates/horizon-client/src/game/piston_push.rs::Game::push_body	supporting block equal to the piston's block decides whether the body rides it
 Entity.getBlockBounciness	port	crates/horizon-world/src/movement_restitution.rs::restitute_movement	gap: player: only the player uses block restitution; mobs ignore it (Mob::do_move says so), so a mob falling on a slime block or bed does not bounce
 Entity.addMovementThisTick	port	crates/horizon-world/src/entity_move.rs::MovementHistory::add	the 100 record cap merges the first two (MovementHistory); only the player keeps a history, mobs and arrows sweep from the start to the end of their move
-Entity.hasMovedHorizontallyRecently	missing		player: dolphins never swim after and escort a boat or nautilus a player is steering (no FollowPlayerRiddenEntityGoal); nothing tracks horizontal speed
+Entity.hasMovedHorizontallyRecently	port	crates/horizon-client/src/mobs/dolphin.rs::FollowPlayerRidden::rider	FollowPlayerRiddenEntityGoal follows a ridden boat or nautilus
 Entity.isStateClimbable	port	crates/horizon-world/src/movement_emission.rs::climbable	climbable tag or powder snow
 Entity.applyPistonMovementRestriction	port	crates/horizon-world/src/piston_movement.rs::PistonMovement::limit	the 0.51 per axis budget for each game tick
 Entity.getAvailableSpaceBelow	missing		player: /gamemode creative from spectator while standing on the ground leaves the player flying (vanilla drops flight when the ground is under 1 block away and nothing blocks the box)

@@ -40,7 +40,7 @@ pathfinder/Node.distanceManhattan	port	crates/horizon-client/src/mobs/path.rs::N
 pathfinder/Node.asVec3	skip:debug	-	only the pathfinding debug renderer calls it
 pathfinder/Node.equals	port	crates/horizon-client/src/mobs/path.rs::Path::same_as	compares the node lists; Horizon nodes are PathNode values that also compare kind, vanilla compares position only
 Path.getEndNode	port	crates/horizon-client/src/mobs/path.rs::Path::end	-
-Path.truncateNodes	missing	-	player: RestrictSun sets avoid_sun (goals.rs) and undead use it (undead.rs), but nothing cuts the path at the first sunlit node, so undead wander into sunlight while it is bright
+Path.truncateNodes	port	crates/horizon-client/src/mobs/nav.rs::trim_path	GroundPathNavigation.trimPath with avoidSun: the path stops before the first node the sky sees
 Path.getPreviousNode	inline	crates/horizon-client/src/mobs/villager_brain.rs::B::try_start	path.nodes[path.next - 1] is read directly for the door check (InteractWithDoor)
 Path.equals	skip:java	-	Java equals; Path derives PartialEq and navigation compares paths with same_as
 Path.copy	skip:java	-	Path derives Clone
@@ -146,5 +146,5 @@ PortalShape.getDistanceUntilTop	inline	crates/horizon-world/src/level/portal.rs:
 TeleportTransition.playPortalSound	inline	crates/horizon-client/src/game/nether_portal.rs::Game::arrive_through_nether_portal	level event 1032 is sent on arrival
 TeleportTransition.withRotation	inline	crates/horizon-client/src/game/nether_portal.rs::Game::arrive_through_nether_portal	the turned yaw and motion are applied on arrival
 TeleportTransition.withPosition	inline	crates/horizon-client/src/game/nether_portal.rs::Game::arrive_through_nether_portal	the exit position is applied on arrival
-TeleportTransition.transitionAsPassenger	missing	-	player: a player riding a vehicle cannot use a nether portal here (riding blocks it), while vanilla carries the rider through with the vehicle
+TeleportTransition.transitionAsPassenger	port	crates/horizon-client/src/game/server_travel.rs::Game::carry_riders_through_portals	riders travel with the vehicle and ride it again on arrival
 DefaultRedstoneWireEvaluator.calculateTargetStrength	inline	crates/horizon-world/src/level/redstone.rs::Sim::wire_update_power	the 15 shortcut and the max with the incoming signal are inline

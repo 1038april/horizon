@@ -125,7 +125,7 @@ SetAttributesFunction.ModifierBuilder.build	skip:java		builder
 SetBannerPatternFunction.run	missing		minor: banner pattern layers from loot are not set; no vanilla loot table uses set_banner_pattern
 SetBannerPatternFunction.Builder	skip:java		builder
 SetBookCoverFunction.apply	missing		minor: no vanilla loot table uses set_book_cover
-SetComponentsFunction.run	port	crates/horizon-client/src/game/commands/items.rs::Game::apply_item_modifier	gap: player: only /item modify runs it; loot tables (trial chamber copper trim) do not apply the components
+SetComponentsFunction.run	port	crates/horizon-world/src/loot.rs::Context::run	loot tables apply set_components when the stack becomes an item (trial chamber trims included), not only /item modify
 SetComponentsFunction.setComponent	skip:java		builder factory
 SetContainerContents.run	missing		minor: no vanilla loot table uses set_contents
 SetContainerContents.Builder	skip:java		builder
