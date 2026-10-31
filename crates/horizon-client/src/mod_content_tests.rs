@@ -2805,3 +2805,42 @@ fn content_root_generates_a_biome_modifier_ore() {
     assert_eq!(ore(false), 0, "no modifier, no ore");
     let _ = fs::remove_dir_all(&scratch);
 }
+
+/// `biomes` may be one id or a list of ids as well as a tag (NeoForge's
+/// HolderSet forms); an id may leave out `minecraft:`.
+#[test]
+fn biome_modifiers_take_one_biome_or_a_list() {
+    let base = biome_base("biome-modifiers-lists");
+    let scratch = base.parent().unwrap().to_owned();
+    let m = zinc_mod(
+        &scratch.join("zinc"),
+        &[
+            (
+                "list",
+                r#"{"type":"neoforge:add_features","biomes":["minecraft:plains","nether_wastes"],
+                    "features":"zinc:ore_zinc","step":"underground_ores"}"#,
+            ),
+            (
+                "one",
+                r#"{"type":"neoforge:add_features","biomes":"minecraft:desert",
+                    "features":["minecraft:lake"],"step":"lakes"}"#,
+            ),
+        ],
+    );
+    let out = scratch.join("out");
+    build(&base, &[m], &out).unwrap();
+    let features = biome_features(&out);
+    assert_eq!(
+        features["minecraft:plains"][6],
+        serde_json::json!(["minecraft:ore_coal", "zinc:ore_zinc"])
+    );
+    assert_eq!(
+        features["minecraft:nether_wastes"][6],
+        serde_json::json!(["minecraft:ore_coal", "zinc:ore_zinc"])
+    );
+    assert_eq!(
+        features["minecraft:desert"],
+        serde_json::json!([["minecraft:fossil"], ["minecraft:lake"]])
+    );
+    let _ = fs::remove_dir_all(&scratch);
+}
