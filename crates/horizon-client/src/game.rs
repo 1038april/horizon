@@ -8905,13 +8905,13 @@ impl Game<'_> {
             }
         }
         if let Some(slot) = slot
-            && !shift
             && slot != 200
         {
             // An item tab's display slots take no drags or PICKUP_ALL.
             let display = slot >= Creative::DISPLAY;
             let now = std::time::Instant::now();
-            let double = !right
+            let double = !shift
+                && !right
                 && !display
                 && self.carried.is_some()
                 && self.last_inv_click.is_some_and(|(at, last, was_right)| {
@@ -8926,12 +8926,16 @@ impl Game<'_> {
             }
             if self.carried.is_some() {
                 let ty = i32::from(right);
-                let first = if !display && self.quick_craft_accepts(slot, ty, 0) {
-                    vec![slot]
+                // `mouseClicked` starts a quick craft drag whenever the hand holds a stack,
+                // Shift or not: `mouseDragged` fills the slots the cursor crosses, so a
+                // Shift held over the drag spreads the same way (#4166). The drag starts
+                // empty on a Shift press: a release with nothing spread is `mouseReleased`'s
+                // click on the hovered slot (Pickup, or QuickMove under Shift).
+                if !shift && !display && self.quick_craft_accepts(slot, ty, 0) {
+                    self.inv_drag = Some((ty, vec![slot]));
                 } else {
-                    Vec::new()
-                };
-                self.inv_drag = Some((ty, first));
+                    self.inv_drag = Some((ty, Vec::new()));
+                }
                 return;
             }
         }
