@@ -22,6 +22,7 @@ use horizon_client::{
     motion::{MotionWorld, PlayerMotion},
     net::{Event, Session},
     save::SaveDir,
+    screen_effects,
     sprint::Keys,
     streaming::{ChunkGenerator, Proto, Streaming},
     tab_list::SPECTATOR,
@@ -65,12 +66,40 @@ fn hurt_sound_for(
     damage: &horizon_world::damage_source::Catalog,
     source_type: i32,
 ) -> &'static str {
+    if let Some(Tag::String(effects)) = registries
+        .data("minecraft:damage_type", source_type)
+        .and_then(|t| t.get("effects"))
+        && let Ok(effects) = effects.to_string()
+    {
+        return horizon_client::health::hurt_sound(&effects);
+    }
     registries
         .name("minecraft:damage_type", source_type)
         .and_then(|name| damage.id(name).and_then(|id| damage.definition(id)))
         .map_or(horizon_client::health::hurt_sound("hurt"), |d| {
             horizon_client::health::hurt_sound(&d.effects)
         })
+}
+
+/// Position of the entity a `ClientboundSoundEntityPacket` names, if this level
+/// has it and `EntityBoundSoundInstance.canPlaySound` (`!entity.isSilent()`)
+/// holds. The local player is not a tracked entity; removed ids leave the
+/// tracked table.
+fn entity_position(
+    id: i32,
+    player: Option<(i32, [f64; 3])>,
+    mobs: &[Mob],
+    tracked: &HashMap<i32, Tracked>,
+) -> Option<[f64; 3]> {
+    if let Some((player_id, at)) = player
+        && player_id == id
+    {
+        return Some(at);
+    }
+    if let Some(m) = mobs.iter().find(|m| m.id as i32 == id) {
+        return (!m.silent).then_some([m.position.x, m.position.y, m.position.z]);
+    }
+    tracked.get(&id).map(|t| t.position)
 }
 
 /// `ClientboundOpenScreenPacket.title` as a container screen draws it: the
@@ -261,6 +290,13 @@ enum Received {
     Chunk(Arc<ChunkFormat>),
 }
 
+/// The signed-in account's `/minecraft/profile` fetch after joining.
+enum OwnProfile {
+    Idle,
+    Fetching(std::sync::mpsc::Receiver<Option<horizon_client::skins::Textures>>),
+    Done(Option<horizon_client::skins::Textures>),
+}
+
 pub(super) struct Remote {
     pub session: Session,
     pub brand: String,
@@ -368,6 +404,8 @@ pub(super) struct Remote {
     tab_players: HashMap<u128, horizon_client::tab_list::TabPlayer>,
     /// Each listed profile's unpacked `textures` property.
     skin_textures: HashMap<u128, horizon_client::skins::Textures>,
+    /// Active skin and cape from the services profile when the server sent none.
+    own_profile: OwnProfile,
     /// The skin texture each profile's players show, once its download is ready.
     skins: HashMap<u128, String>,
     listed: std::collections::HashSet<u128>,
@@ -499,6 +537,15 @@ impl Game<'_> {
             }),
         }
     }
+    /// Position of an entity `ClientboundSoundEntityPacket` names.
+    fn remote_entity_position(&self, id: i32) -> Option<[f64; 3]> {
+        let r = self.remote.as_ref()?;
+        let player = self
+            .player
+            .as_ref()
+            .map(|p| (r.entity_id, [p.position.x, p.position.y, p.position.z]));
+        entity_position(id, player, &self.mobs, &r.entities)
+    }
     /// The hurt sound the hurt player's own client plays from
     /// `ClientboundDamageEventPacket` (`LivingEntity.handleDamageEvent`):
     /// `Player.getHurtSound` is the damage type's effects, with the codec's
@@ -521,16 +568,27 @@ impl Game<'_> {
         name: &str,
         cookies: Option<horizon_client::net::Cookies>,
     ) -> Result<()> {
+        self.connect_server_with_options(address, name, cookies, false)
+    }
+    /// `ConnectScreen.startConnecting`: keep LAN discovery's server kind through loading.
+    pub(super) fn connect_server_with_options(
+        &mut self,
+        address: &str,
+        name: &str,
+        cookies: Option<horizon_client::net::Cookies>,
+        lan: bool,
+    ) -> Result<()> {
         super::world_loading::preload_server_loot(&self.options.resources);
         if self.defer_world_entry(super::PendingWorldEntry::Server {
             address: address.to_owned(),
             name: name.to_owned(),
             cookies: cookies.clone(),
+            lan,
         })? {
             return Ok(());
         }
         self.join_world_rest()?;
-        if let Err(error) = self.join_server(address, name, None, cookies) {
+        if let Err(error) = self.join_server(address, name, None, cookies, lan) {
             log::warn!("Horizon: could not join server: {error}");
             if self.title.is_none() {
                 self.title = Some(
@@ -556,7 +614,7 @@ impl Game<'_> {
         pipe: horizon_protocol::connection::Pipe,
         name: &str,
     ) -> Result<()> {
-        self.join_server("local", name, Some(pipe), None)
+        self.join_server("local", name, Some(pipe), None, false)
     }
     fn join_server(
         &mut self,
@@ -564,6 +622,7 @@ impl Game<'_> {
         name: &str,
         local: Option<horizon_protocol::connection::Pipe>,
         cookies: Option<horizon_client::net::Cookies>,
+        lan: bool,
     ) -> Result<()> {
         self.reset_tutorial();
         self.perf.world_opening();
@@ -601,7 +660,7 @@ impl Game<'_> {
                 Session::connect_local(pipe, name, info.clone(), lang.clone(), root.clone())
             }
             None => {
-                self.extras_connecting(address, name);
+                self.extras_connecting(address, name, lan);
                 match cookies {
                     Some(cookies) => Session::connect_transferred(
                         address,
@@ -612,14 +671,21 @@ impl Game<'_> {
                         cookies,
                         root.clone(),
                     ),
-                    None => Session::connect(
-                        address,
-                        name,
-                        auth.clone(),
-                        info.clone(),
-                        lang.clone(),
-                        root.clone(),
-                    ),
+                    None => {
+                        let connect = if lan {
+                            Session::connect_lan
+                        } else {
+                            Session::connect
+                        };
+                        connect(
+                            address,
+                            name,
+                            auth.clone(),
+                            info.clone(),
+                            lang.clone(),
+                            root.clone(),
+                        )
+                    }
                 }
             }
         };
@@ -694,12 +760,15 @@ impl Game<'_> {
             quiet_commands: false,
             mod_net: false,
             builtin: Arc::new(builtin),
+            status: lang
+                .get("connect.connecting")
+                .cloned()
+                .unwrap_or_else(|| "Connecting to the server...".into()),
             lang,
             registries: Arc::new(Dynamic::default()),
             joined: false,
             reconfiguring: None,
             logged_in: false,
-            status: "Connecting to the server...".into(),
             entity_id: 0,
             camera: None,
             use_item: None,
@@ -746,6 +815,7 @@ impl Game<'_> {
             players: HashMap::new(),
             tab_players: HashMap::new(),
             skin_textures: HashMap::new(),
+            own_profile: OwnProfile::Idle,
             skins: HashMap::new(),
             listed: Default::default(),
             online_mode: false,
@@ -946,12 +1016,17 @@ impl Game<'_> {
         e.visible = p.flags & 2 != 0;
         let list = &mut self.potions.effects.list;
         match list.iter_mut().find(|x| x.id == id) {
-            // forceAddEffect's copyBlendState: an updated darkness keeps its fade.
+            // forceAddEffect's copyBlendState: an updated effect keeps its fade.
             Some(existing) => *existing = e,
             None => {
+                // ClientboundUpdateMobEffectPacket.shouldBlend (flag 8).
+                let blend = p.flags & 8 != 0;
                 if id == "darkness" {
-                    // ClientboundUpdateMobEffectPacket.shouldBlend (flag 8).
-                    self.sculk.darkness = super::sculk::darkness_blend_added(&e, p.flags & 8 != 0);
+                    self.sculk.darkness = super::sculk::darkness_blend_added(&e, blend);
+                } else if id == "nausea" {
+                    let (o_nausea, nausea) = screen_effects::nausea_blend_added(&e, blend);
+                    self.screen_fx.o_nausea = o_nausea;
+                    self.screen_fx.nausea = nausea;
                 }
                 list.push(e);
             }
@@ -2656,6 +2731,26 @@ impl Game<'_> {
                     }
                 }
             }
+            // shortcut: vanilla's `EntityBoundSoundInstance` re-reads the entity's position
+            // every tick and stops with it, so the sound follows the entity; a play at the
+            // packet's arrival does not. Upgrade when the sound engine has a generic
+            // entity-bound instance (its tickable ones are one per mob kind, e.g. `Ticking::Bee`).
+            C::SoundEntity(p) => {
+                if let Some(name) = self.remote_sound_name(&p.sound)
+                    && let Some(at) = self.remote_entity_position(p.id)
+                {
+                    match usize::try_from(p.source)
+                        .ok()
+                        .filter(|s| *s < horizon_client::settings::SOUND_SOURCES.len())
+                    {
+                        Some(source) => {
+                            self.audio
+                                .play_on(source, &name, Some(at), p.volume, p.pitch)
+                        }
+                        None => self.audio.play(&name, Some(at), p.volume, p.pitch),
+                    }
+                }
+            }
             C::StopSound(p) => self
                 .audio
                 .stop_sounds(p.sound.as_deref(), p.source.map(|s| s as usize)),
@@ -3179,6 +3274,15 @@ impl Game<'_> {
             }
             // The same packet for another entity: Entity.lerpMotion.
             C::SetEntityMotion(p) => self.remote_motion(p.id, p.velocity),
+            // ClientPacketListener.handleProjectilePowerPacket: the power a
+            // hurting projectile accelerates by, sent bundled with its motion.
+            C::ProjectilePower(p) => {
+                super::remote_projectiles::remote_projectile_power(
+                    &mut self.creatures.projectiles,
+                    p.id,
+                    p.power,
+                );
+            }
             // ClientPacketListener.handleDamageEvent: LivingEntity.handleDamageEvent
             // jolts the walk animation and restarts the hurt flash, and the
             // hurt player's own client plays its hurt sound (`Player.getHurtSound`:
@@ -4191,42 +4295,70 @@ impl Game<'_> {
             }
         }
     }
-    /// The signed-in account's `textures`, once the services answered.
-    fn own_textures(&self) -> Option<horizon_client::skins::Textures> {
-        use horizon_client::skins::{self, NameOrId, Resolve};
-        let auth = horizon_client::auth::current()?;
-        let state = self
-            .skin_profiles
-            .borrow_mut()
-            .state(&NameOrId::Id(auth.uuid));
-        let Resolve::Done(Some(profile)) = state else {
-            return None;
+    fn poll_own_profile(&mut self) {
+        let Some(r) = self.remote.as_mut() else {
+            return;
         };
-        let (value, signature) = profile.textures()?;
-        Some(skins::unpack(&value, signature, &skins::TEXTURE_URIS))
+        match &mut r.own_profile {
+            OwnProfile::Idle => {
+                let Some(auth) = horizon_client::auth::current() else {
+                    r.own_profile = OwnProfile::Done(None);
+                    return;
+                };
+                let (send, recv) = std::sync::mpsc::channel();
+                std::thread::Builder::new()
+                    .name("Own profile".into())
+                    .spawn(move || {
+                        let _ = send.send(horizon_client::auth::own_textures(auth.as_ref()));
+                    })
+                    .ok();
+                r.own_profile = OwnProfile::Fetching(recv);
+            }
+            OwnProfile::Fetching(recv) => {
+                if let Ok(own) = recv.try_recv() {
+                    r.own_profile = OwnProfile::Done(own);
+                }
+            }
+            OwnProfile::Done(_) => {}
+        }
     }
     /// `PlayerInfo.getSkin` for every player entity, including NPCs that are
     /// never in the tab list: resolve each profile's textures and give the
     /// level's player models their skin.
     fn update_remote_skins(&mut self) {
+        let local = self.remote.as_ref().map(|r| r.profile);
+        self.poll_own_profile();
         let Some(r) = self.remote.as_mut() else {
             return;
         };
+        let local = local.unwrap_or(r.profile);
         let mut entries = skin_entries(
             &r.level_players,
             &r.skin_textures,
             &mut r.level_player_textures,
         );
-        let r = &*r;
-        let local = r.profile;
-        // Minecraft.profileFuture: the signed-in account's own profile, fetched from the
-        // services, gives the local player its skin where the server sends none (single
-        // player's offline-mode server).
-        if !entries.iter().any(|(u, t)| *u == local && t.skin.is_some())
-            && let Some(own) = self.own_textures()
-        {
-            entries.retain(|(u, _)| *u != local);
-            entries.push((local, own));
+        let own = match &r.own_profile {
+            OwnProfile::Done(Some(t)) => Some(t.clone()),
+            _ => None,
+        };
+        // Minecraft.profileFuture: the signed-in account's active skin and cape
+        // from `/minecraft/profile` when the server sent none (single player) or
+        // only a skin without the equipped cape.
+        if let Some(own) = own {
+            if let Some((_, t)) = entries.iter_mut().find(|(u, _)| *u == local) {
+                if t.skin.is_none() {
+                    t.skin = own.skin.clone();
+                    if own.skin.is_some() {
+                        t.slim = own.slim;
+                    }
+                }
+                if t.cape.is_none() {
+                    t.cape = own.cape.clone();
+                }
+            } else if own.skin.is_some() || own.cape.is_some() {
+                entries.retain(|(u, _)| *u != local);
+                entries.push((local, own));
+            }
         }
         let mut resolved: Vec<(u128, String)> = Vec::new();
         // PlayerSkin.model of each resolved skin: the textures' `slim`.
@@ -4877,7 +5009,9 @@ impl Game<'_> {
         self.push_piston_entities(pushes);
         self.sync_moving_pistons();
         self.tick_hand();
-        self.tick_particles();
+        if running {
+            self.tick_particles();
+        }
         self.tick_client_ambient();
         self.tick_client_effects();
         // Player.tick's sleep counter (the darkening and the wake-up fade).
@@ -7203,7 +7337,7 @@ impl Game<'_> {
                     let all = self.has_control_down();
                     self.remote_drop(all);
                 }
-                KeyCode::KeyE if self.riding_mount_with_menu() => {
+                KeyCode::KeyE if self.riding_mount_with_menu() || self.riding_chest_boat() => {
                     let id = self.remote.as_ref().map_or(0, |r| r.entity_id);
                     self.send(S::PlayerCommand(play::PlayerCommand {
                         id,
@@ -7310,12 +7444,10 @@ impl Game<'_> {
     /// `causeExtraKnockback`: the 0.6 horizontal speed cut and the sprint
     /// stop. Without it the next move outruns the server's player.
     fn remote_player_attack(&mut self, mob: usize) {
-        let id = self.mobs[mob].id as i32;
-        if !self
-            .remote
-            .as_ref()
-            .is_some_and(|r| r.level_players.contains_key(&id))
-        {
+        // Java dispatches this through the target's RemotePlayer type. The
+        // level_players map is profile bookkeeping and can lag the entity;
+        // mobs must stay out because their hurtClient returns false.
+        if self.mobs[mob].kind.id != "minecraft:player" {
             return;
         }
         // `getAttackStrengthScale(0.5)`: here the ticker is `hand_strength`'s
@@ -7427,10 +7559,11 @@ impl Game<'_> {
                 }
                 Ok(true)
             }
-            // MultiPlayerGameMode.isServerControlledInventory: riding a
-            // horse or llama, the server opens its inventory
-            // (ServerboundPlayerCommandPacket OPEN_INVENTORY).
-            KeyCode::KeyE if self.riding_mount_with_menu() => {
+            // Open the ridden vehicle's own screen (`HasCustomInventoryScreen`)
+            // instead of the player's inventory: riding a horse, llama or
+            // chest boat, the inventory key sends
+            // ServerboundPlayerCommandPacket OPEN_INVENTORY.
+            KeyCode::KeyE if self.riding_mount_with_menu() || self.riding_chest_boat() => {
                 if let Some(r) = self.remote.as_mut() {
                     r.pending_keys.push(key);
                 }
@@ -8085,7 +8218,8 @@ impl Game<'_> {
         let title = horizon_client::text::Text::translate("connect.reconfiguring", &[]);
         let ((tx, ty), (bx, by)) = self.reconfigure_layout((w, h));
         batch.text_styled(atlas, &title, tx, ty, u32::MAX, true);
-        let label = horizon_client::text::Text::translate("gui.disconnect", &[]);
+        // CommonComponents.GUI_DISCONNECT
+        let label = horizon_client::text::Text::translate("menu.disconnect", &[]);
         let active = self.ticks.saturating_sub(since) >= 600;
         let hover = horizon_client::ui::hovered(self.cursor, bx, by, 150.0, 20.0);
         horizon_client::ui::button(batch, atlas, bx, by, 150.0, 20.0, &label, active, hover);
@@ -8984,6 +9118,60 @@ mod tests {
         assert_eq!(
             hurt_sound_for(&registries, &catalog, types.len() as i32),
             "minecraft:entity.player.hurt"
+        );
+        // A server-defined damage type with inline NBT effects needs no entry in
+        // the client's built-in catalog.
+        let mut custom = horizon_world::nbt::Compound::new();
+        custom.insert(
+            "effects".into(),
+            horizon_world::nbt::Tag::String("burning".into()),
+        );
+        registries.add(horizon_protocol::packets::configuration::RegistryData {
+            registry: "minecraft:damage_type".into(),
+            entries: vec![horizon_protocol::packets::configuration::RegistryEntry {
+                id: "custom:lava_splash".into(),
+                data: Some(horizon_world::nbt::Tag::Compound(custom)),
+            }],
+        });
+        assert_eq!(
+            hurt_sound_for(&registries, &catalog, 0),
+            "minecraft:entity.player.hurt_on_fire"
+        );
+    }
+    /// `ClientboundSoundEntityPacket`: the sound is heard where the entity it
+    /// names is — the local player included, which is no tracked entity — and
+    /// an id this level doesn't have plays nothing at all.
+    #[test]
+    fn a_sound_entity_is_heard_where_its_entity_is() {
+        use std::collections::HashMap;
+        let mut tracked = HashMap::new();
+        tracked.insert(
+            7,
+            super::Tracked {
+                kind: "minecraft:cow".to_owned(),
+                position: [8.5, 64.0, -3.5],
+            },
+        );
+        let player = Some((2, [0.5, 70.0, 0.5]));
+        assert_eq!(
+            super::entity_position(2, player, &[], &tracked),
+            Some([0.5, 70.0, 0.5]),
+            "the local player is named by Remote.entity_id"
+        );
+        assert_eq!(
+            super::entity_position(7, player, &[], &tracked),
+            Some([8.5, 64.0, -3.5]),
+            "another entity the server spawned"
+        );
+        assert_eq!(
+            super::entity_position(9, player, &[], &tracked),
+            None,
+            "getEntity is null: handleSoundEntityEvent returns"
+        );
+        assert_eq!(
+            super::entity_position(2, None, &[], &tracked),
+            None,
+            "a player with no position yet"
         );
     }
     /// Q over a slot of the inventory on a server (#3357): the predicted THROW

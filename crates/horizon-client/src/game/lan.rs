@@ -16,6 +16,7 @@ use horizon_client::{
     },
     mobs::{Mob, Species, Who, leash::Holder},
     text::Text,
+    world::World,
 };
 use horizon_core::geometry::Vec3;
 use horizon_protocol::{
@@ -23,6 +24,7 @@ use horizon_protocol::{
     entity_data::{Value, serializer},
     packets::play::{self, Clientbound as C},
 };
+use horizon_world::block_collision::BlockCollisionRegistry;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -1127,7 +1129,11 @@ pub const HELP: &[&str] = &[
 /// (setting a mode does nothing when it is already theirs). A world open to
 /// LAN is an integrated server, which leaves out the players who have game
 /// master permission; a dedicated server does not.
-fn enforce_guest_game_mode(host: &mut LanHost) {
+fn enforce_guest_game_mode(
+    host: &mut LanHost,
+    world: &World,
+    collision: &BlockCollisionRegistry<'_>,
+) {
     if !host.hub.config.force_game_mode {
         return;
     }
@@ -1141,7 +1147,7 @@ fn enforce_guest_game_mode(host: &mut LanHost) {
         .map(|g| g.conn)
         .collect();
     for conn in stale {
-        host.hub.set_game_mode(conn, mode);
+        host.hub.set_game_mode(conn, mode, world, Some(collision));
     }
 }
 
@@ -1582,7 +1588,7 @@ impl Game<'_> {
             host.hub.config.default_game_mode = mode;
             // `setWorldGameType` and `DefaultGameModeCommands.setMode`: a
             // world that forces its mode puts the guests online in it.
-            enforce_guest_game_mode(host);
+            enforce_guest_game_mode(host, &self.world, self.collision);
         }
     }
 
@@ -1600,7 +1606,7 @@ impl Game<'_> {
             host.settings.force_game_mode = force;
             host.hub.config.guest_commands = effective;
             host.hub.config.force_game_mode = force;
-            enforce_guest_game_mode(host);
+            enforce_guest_game_mode(host, &self.world, self.collision);
             host.hub.resend_commands();
         }
     }
@@ -2004,10 +2010,24 @@ impl Game<'_> {
                 .take()
                 .expect("the hub is back after the menu events");
         }
-        self.lan_flush_effects(&mut host);
         if !paused {
             self.tick_guests(&mut host);
         }
+        self.lan = Some(host);
+        // A blast from a guest's attack, and a mace's wind burst.
+        self.flush_lan_explosions();
+        let _ = self.flush_wind_bursts();
+        // A sweep attack's reach to the other players from a guest's attack.
+        self.flush_sweeps();
+        // A reeled-in hook pulling a player.
+        self.flush_hook_pulls();
+        // Particles a guest's turn sent (sweep attack, damage indicator, a hook's splashes).
+        self.flush_lan_particles();
+        let mut host = self
+            .lan
+            .take()
+            .expect("the hub is back after the guest flushes");
+        self.lan_flush_effects(&mut host);
         self.lan_living_flags(&mut host);
         self.lan_stuck(&mut host, paused);
         self.tick_server_travel(&mut host);
@@ -2022,15 +2042,6 @@ impl Game<'_> {
         self.flush_native_net(&mut host);
         lan::flush_all(host.hub.guests.iter().map(|g| &g.sender));
         self.lan = Some(host);
-        // A blast from a guest's attack, and a mace's wind burst.
-        self.flush_lan_explosions();
-        let _ = self.flush_wind_bursts();
-        // A sweep attack's reach to the other players from a guest's attack.
-        self.flush_sweeps();
-        // A reeled-in hook pulling a player.
-        self.flush_hook_pulls();
-        // Particles a guest's turn sent (sweep attack, damage indicator, a hook's splashes).
-        self.flush_lan_particles();
         self.flush_native_sounds();
     }
 
@@ -2344,38 +2355,26 @@ impl Game<'_> {
             }
             seen.insert(m.id, (m.hurt_time, dead, swing));
         }
-        // LivingEntity.hurtServer for a player: a hit that restarted the hurt
-        // time and was not blocked by a shield broadcasts the damage event,
-        // so the clients around (and the player's own) flash it red.
-        let host_player = self.player.as_ref().map(|p| {
-            (
-                host.host_entity,
-                [p.position.x, p.position.y, p.position.z],
-                p,
-            )
-        });
-        let guests = host.hub.guests.iter().filter(|g| host.hub.here(g));
-        let players: Vec<_> = host_player
-            .into_iter()
-            .chain(guests.filter_map(|g| g.motion.as_deref().map(|m| (g.entity_id, g.position, m))))
-            .map(|(id, at, p)| {
-                (
-                    id,
-                    at,
-                    p.health.hurt_animation_time,
-                    p.health.dead_or_dying(),
-                    p.hurt_log.last(),
-                )
-            })
-            .collect();
-        for (id, at, hurt, dead, record) in players {
+        // LivingEntity.hurtServer for the in-frame LAN host's player (guests
+        // broadcast directly from HealthEvent::DamageBroadcast): a hit that
+        // restarted the hurt time and was not blocked by a shield broadcasts
+        // the damage event, so the clients around flash it red.
+        if let Some(p) = self.player.as_ref() {
+            let id = host.host_entity;
+            let at = [p.position.x, p.position.y, p.position.z];
+            let hurt = p.health.hurt_animation_time;
+            let dead = p.health.dead_or_dying();
             let old = host
                 .mob_state
                 .get(&self.dim)
                 .and_then(|s| s.get(&(id as u32)));
             if hurt > old.map_or(0, |o| o.0) && !dead {
-                // Starving keeps no record: any type flashes the same.
-                let kind = record.map_or("minecraft:generic", |r| r.source.as_str());
+                let kind = p
+                    .health
+                    .hurt
+                    .last_source
+                    .and_then(|s| self.motion.health.damage.definition(s))
+                    .map_or("minecraft:generic", |d| d.name.as_str());
                 host.hub.damage_event(id, kind, None, None, at);
             }
             seen.insert(id as u32, (hurt, dead, None));
@@ -2414,11 +2413,12 @@ impl Game<'_> {
         // covers what the player tracks (`ChunkTrackingView`, within its view
         // distance + 1) and those chunks' lit neighbours.
         let radius = host.hub.config.view_distance + 1;
+        let rule = self.ui.rules.bool("spectators_generate_chunks");
         self.streaming.extra = host
             .hub
             .guests
             .iter()
-            .filter(|g| host.hub.here(g))
+            .filter(|g| host.hub.here(g) && super::game_mode::loads_chunks(rule, g.spectator()))
             .map(|g| (g.chunk(), radius))
             .chain(
                 self.arrival_chunks(self.dim)

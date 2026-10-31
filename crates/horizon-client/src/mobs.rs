@@ -33,6 +33,7 @@ pub mod doors;
 pub mod drops;
 pub mod enderman;
 pub mod equine;
+pub mod equip;
 pub mod farm;
 pub mod finalize;
 pub mod fox;
@@ -635,6 +636,16 @@ impl Damage {
     pub fn indirect_magic(attacker: Option<Who>, from: [f64; 3]) -> Self {
         Self {
             kind: DamageKind::IndirectMagic,
+            attacker,
+            from: Some(from),
+        }
+    }
+    /// `DamageSources.fireworks(rocket, owner)`: `attacker` is the owner
+    /// (none for a rocket nobody fired), `from` the rocket's position, which
+    /// the knockback pushes away from (`calculateHorizontalHurtKnockbackDirection`).
+    pub fn fireworks(attacker: Option<Who>, from: [f64; 3]) -> Self {
+        Self {
+            kind: DamageKind::Fireworks,
             attacker,
             from: Some(from),
         }
@@ -2194,6 +2205,8 @@ pub struct MobWorld<'a> {
     pub biomes: &'a crate::biome::Biomes,
     /// The `mob_griefing` game rule.
     pub mob_griefing: bool,
+    /// The `universal_anger` game rule (`NeutralMob.isAngryAtAllPlayers`).
+    pub universal_anger: bool,
     /// The `mob_drops` game rule (`shouldDropLoot`).
     pub mob_drops: bool,
     /// The `max_entity_cramming` game rule.
@@ -2432,6 +2445,14 @@ impl Mob {
     ) -> bool {
         axolotl::before_damage(self, amount, &source);
         raider::note_hurt(self);
+        // SulfurCube.hurtServer: the priming and a block's immune knockback
+        // come before LivingEntity's checks, so a primed (invulnerable) cube
+        // is still knocked about.
+        if self.species() == Species::SulfurCube
+            && !sulfur_cube::accepts_damage(self, &source, amount)
+        {
+            return false;
+        }
         // LivingEntity.isInvulnerableTo: only #bypasses_invulnerability gets past it.
         if !self.alive()
             || self.removed
