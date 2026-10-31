@@ -60,6 +60,7 @@ impl PlayerMotion {
         }
         let h = &mut self.health;
         let mut world = TickWorld {
+            entity: self.entity_id,
             resources,
             rules,
             invulnerable: self.invulnerable || self.spectator,
@@ -77,6 +78,7 @@ impl PlayerMotion {
     }
 }
 struct TickWorld<'a> {
+    entity: i32,
     resources: &'a HealthResources,
     rules: HealthRules,
     invulnerable: bool,
@@ -144,6 +146,8 @@ impl FoodWorld for TickWorld<'_> {
         self.events
             .push(MotionEvent::Health(HealthEvent::StarvationDamage(amount)));
         let mut environment = Environment {
+            entity: self.entity,
+            causing: 0,
             invulnerable: false,
             rules: self.rules,
             source: self

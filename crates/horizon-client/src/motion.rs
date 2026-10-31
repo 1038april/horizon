@@ -394,6 +394,8 @@ pub struct PlayerMotion {
     /// server hurts it (`Entity.hurt` does nothing on a client) and ticks its
     /// food (`ServerPlayer.tick`). Its hurt animation comes from the server.
     pub client_side: bool,
+    /// The player's entity id (a guest's, set as its turn starts).
+    pub entity_id: i32,
     /// `Entity.applyEffectsFromBlocks` runs after travel (always in the game;
     /// differential fixtures turn it off where their reference does).
     pub block_effects: bool,
@@ -573,6 +575,7 @@ impl PlayerMotion {
             server_copy: false,
             wall_hit_events: None,
             client_side: false,
+            entity_id: 0,
             block_effects: true,
             powder_snow_entered: Vec::new(),
             hurt_log: Vec::new(),

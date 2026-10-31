@@ -2453,6 +2453,18 @@ impl Mob {
         if self.species() == Species::Armadillo {
             amount = armadillo::reduce_damage(self, amount);
         }
+        // LivingEntity.hurtServer, past its guards: a native mod's hook.
+        if crate::health::hurt_server_canceled(
+            crate::health::Hurting::Mob(self, &source),
+            &mut amount,
+        ) {
+            // Ghast.hurtServer: true for a reflected fireball whatever
+            // super.hurtServer did.
+            return reflected;
+        }
+        if amount < 0.0 {
+            amount = 0.0;
+        }
         // #damages_helmet: falling anvils, blocks and stalactites.
         if matches!(
             source.kind,
@@ -2470,6 +2482,9 @@ impl Mob {
             )
         {
             amount *= 5.0;
+        }
+        if !amount.is_finite() {
+            amount = f32::MAX;
         }
         let (worn, worn_toughness) = self.worn_armor();
         // Shulker.setRawPeekAmount: a closed shell adds the covered armor modifier.

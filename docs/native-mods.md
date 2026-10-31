@@ -223,6 +223,51 @@ server for every player: `native_player_died`, `native_mob_spawned`, `native_mob
 `native_item_dropped` (a throw; not the items scattered when a player dies) and `native_item_picked_up` (`canceled` leaves the stack on the ground). They name a player by UUID. Bundles that use them
 need `"hooks": 40`.
 
+API 41 adds damage a mod can change or cancel through `native_living_incoming_damage` (NeoForge's
+`LivingIncomingDamageEvent`): where `LivingEntity.hurtServer` starts, once its guards passed (invulnerable, dead or
+dying, fire with fire resistance; Horizon's mobs don't check the fire resistance effect there yet), with the hurt
+entity's id and type (`minecraft:player` for a player), the damage type (`minecraft:fall`), the source's causing
+entity (`causing`, vanilla's `DamageSource.getEntity`: a skeleton for its arrow) and direct entity (`direct`,
+`getDirectEntity`: the arrow; the attacker itself in melee), and the amount. The entity ids are 0 for none, and for
+the sources listed below that Horizon doesn't track yet. A mod may change the amount, or set `canceled`: nothing of
+`hurtServer` itself happens then (no damage, hurt sound, knockback, invulnerable time, statistics or criteria), and
+the caller acts as on a refused hit, so a blast still pushes a mob whose hit was canceled, as vanilla pushes one that
+refused it. A ghast's canceled hit by a fireball it was sent back counts as landed (`Ghast.hurtServer`). A negative
+amount hurts by 0 and a NaN or infinite one by `Float.MAX_VALUE`, as vanilla clamps them. It fires for the players and
+mobs the game hurts; the ender dragon doesn't reach it yet. It has no `self`: the game is in the middle of the hit. It
+runs on the thread that ticks the world (the server thread; the window's on the deprecated in-frame path), so state a
+mod shares with its render thread hooks needs synchronising. On the in-frame path the window's player has id 0, or the
+host's id once the world is open to LAN. `/kill` and `native_kill_mob` don't reach it yet: they set the health to 0
+instead of hurting with `minecraft:generic_kill` as vanilla does.
+
+A player's damage type is the source's own. A mob's comes from the kind of damage Horizon keeps for the hit, which
+doesn't tell every vanilla type apart yet:
+
+- A trident's hit on a mob is `minecraft:arrow`, not `minecraft:trident`
+- A wither skull's hit on a mob is `minecraft:magic`, not `minecraft:wither_skull`
+- Evoker fangs on a mob are `minecraft:magic`, not `minecraft:indirect_magic`
+- A fireball nobody shot is `minecraft:fireball`, not `minecraft:unattributed_fireball`
+- A shulker bullet's hit has no `minecraft:mob_projectile`
+- A bed or respawn anchor blast on a mob is `minecraft:explosion`, not `minecraft:bad_respawn_point`
+- A blast from TNT a player lit is `minecraft:explosion` on a mob, not `minecraft:player_explosion`
+
+The causing and direct entities are 0 for now in these cases:
+
+- A player's direct entity, always
+- A player's causing entity, except for a mob that shot the projectile, the mob `/damage` names, an evoker that summoned
+  the fangs, a slime or magma cube that touched the player, and a mob that exploded (a sulfur cube's is guessed until
+  its blast names its source)
+- A mob's causing and direct entities when a player is behind the hit (melee, arrows, tridents, blasts, TNT a player
+  lit)
+- A mob's direct entity when it isn't the causing one (a projectile, a blast, a potion)
+- A falling block on a mob, whose causing and direct entity is the block in vanilla
+- `/damage` on a mob `by` an entity with a damage type that isn't melee: the direct entity is 0, not that entity
+
+And `/damage` on a mob `by` one entity `from` another with a melee damage type gives the `from` entity as the direct
+one, where vanilla gives the `by` one.
+
+Bundles that use it need `"hooks": 41`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads

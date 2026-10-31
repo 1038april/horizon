@@ -356,6 +356,7 @@ impl Game<'_> {
                     blocking,
                     // The exploding mob is the causing entity.
                     exploding.is_some(),
+                    exploding.map_or(0, |id| id as i32),
                 )
             {
                 outcome = o;
