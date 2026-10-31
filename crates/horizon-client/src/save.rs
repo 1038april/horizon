@@ -2378,6 +2378,44 @@ impl SaveDir {
         load_light(&root.tag, &mut chunk, self.shape.sky_light);
         Some(chunk)
     }
+    /// A saved full chunk read for a player's far ring (`lan::far`), as `load` but past the gameplay
+    /// region cache, and only where the region file lists it (no file opened where there is none).
+    pub fn load_far(
+        &self,
+        x: i32,
+        z: i32,
+        registry: &BlockRegistry,
+        biomes: &Biomes,
+    ) -> Option<Chunk> {
+        let pending = self
+            .pending
+            .lock()
+            .ok()?
+            .get(&(Folder::Region, x, z))
+            .map(|(_, record)| record.clone());
+        let root = if let Some(record) = pending {
+            record.tag().map(|tag| (*tag).clone())?
+        } else {
+            if !self.lod_saved(x, z) {
+                return None;
+            }
+            let mut region = RegionFile::open(self.region_path("region", x >> 5, z >> 5)).ok()?;
+            region
+                .read(ChunkPos::new(x, z))
+                .ok()??
+                .nbt(Limits::default())
+                .ok()?
+        };
+        let tables = self.tables.get().map(|t| &**t);
+        let mut chunk = decode_with(&root, registry, biomes, tables, self.shape.column())?;
+        load_light(&root.tag, &mut chunk, self.shape.sky_light);
+        // Without its saved light (`isLightOn`) it would need the light engine: not one for the far ring.
+        chunk.light_loaded.then_some(chunk)
+    }
+    /// Chunks queued for the writer thread and not yet in their region files.
+    pub fn pending_writes(&self) -> usize {
+        self.pending.lock().map_or(0, |p| p.len())
+    }
     /// A proto chunk saved before it became final (`decode_proto`).
     pub fn load_proto(
         &self,
@@ -2726,6 +2764,16 @@ pub fn restore_level_data_from_old(dir: &Path) -> bool {
 /// `FileNameDateFormatter`: the time in the names of backed-up unreadable files.
 fn backup_stamp() -> String {
     chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string()
+}
+/// `LevelStorageAccess.getUnfixedDataTagWithFallback`, which the dedicated server's `Main` calls:
+/// a level.dat that does not read falls back to level.dat_old, which is restored in its place
+/// (`restoreLevelDataFromOld`). Whether it did; `false` leaves the world as it was, for the
+/// caller to refuse (both files broken, or nothing to fall back to).
+pub fn fall_back_to_level_dat_old(world: &Path) -> bool {
+    level_dat_issue(world, false).is_some()
+        && world.join("level.dat_old").exists()
+        && level_dat_issue(world, true).is_none()
+        && restore_level_data_from_old(world)
 }
 /// `LevelStorageSource.readLevelDataTagFixed`: level.dat, else level.dat_old.
 fn read_level_dat(dir: &Path) -> Option<Tag> {
@@ -3735,12 +3783,11 @@ impl Level {
             entries.push(("Pos", doubles(&pos)));
         }
         entries.push(("seenCredits", Tag::Byte(i8::from(self.seen_credits))));
-        if !self.post_effects.is_empty() {
-            entries.push((
-                "post_effects",
-                Tag::List(self.post_effects.iter().map(|e| string(e)).collect()),
-            ));
-        }
+        // `output.store` writes the list even when it is empty.
+        entries.push((
+            "post_effects",
+            Tag::List(self.post_effects.iter().map(|e| string(e)).collect()),
+        ));
         if let Some((dimension, pos)) = &self.last_death {
             entries.push((
                 "LastDeathLocation",
@@ -3823,6 +3870,15 @@ impl Level {
     }
     /// Write every file; a world without a player UUID gets a random one.
     pub fn write(&mut self, dir: &Path) -> Result<()> {
+        self.write_internal(dir, true)
+    }
+
+    /// Dedicated servers save connected players separately.
+    pub fn write_without_player(&mut self, dir: &Path) -> Result<()> {
+        self.write_internal(dir, false)
+    }
+
+    fn write_internal(&mut self, dir: &Path, write_player: bool) -> Result<()> {
         fs::create_dir_all(dir)?;
         restore_level_dat(dir);
         let existing = read_dat(&dir.join("level.dat")).and_then(|r| r.get("Data").cloned());
@@ -4015,12 +4071,14 @@ impl Level {
             }
             write_saved_data(dir, "game_rules", rules)?;
         }
-        let player_file = dir
-            .join("players")
-            .join("data")
-            .join(format!("{}.dat", uuid_text(uuid)));
-        back_up_unreadable_player(&player_file);
-        write_dat(&player_file, self.player_tag())?;
+        if write_player {
+            let player_file = dir
+                .join("players")
+                .join("data")
+                .join(format!("{}.dat", uuid_text(uuid)));
+            back_up_unreadable_player(&player_file);
+            write_dat(&player_file, self.player_tag())?;
+        }
         write_dat(&dir.join("level.dat"), Tag::compound([("Data", data)]))?;
         Ok(())
     }
@@ -4572,6 +4630,41 @@ mod tests {
     use crate::mobs::spawner::SpawnDataExt;
 
     #[test]
+    fn a_server_falls_back_to_level_dat_old_and_restores_it() {
+        let world = std::env::temp_dir().join(format!("horizon-dat-old-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&world);
+        fs::create_dir_all(&world).unwrap();
+        let level = |name: &str| {
+            Tag::compound([(
+                "Data",
+                Tag::compound([("LevelName", Tag::String(name.into()))]),
+            )])
+        };
+        // Both files broken, or only level.dat_old there: nothing to fall back to.
+        fs::write(world.join("level.dat"), b"cut short").unwrap();
+        assert!(!fall_back_to_level_dat_old(&world));
+        fs::write(world.join("level.dat_old"), b"cut short").unwrap();
+        assert!(!fall_back_to_level_dat_old(&world));
+        // A good level.dat_old: it takes level.dat's place and the broken file is kept.
+        write_dat(&world.join("level.dat_old"), level("old")).unwrap();
+        assert!(fall_back_to_level_dat_old(&world));
+        assert!(level_dat_issue(&world, false).is_none());
+        let kept = fs::read_dir(&world)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("level.dat_corrupted_")
+            })
+            .count();
+        assert_eq!(kept, 1);
+        // A readable level.dat is left alone.
+        assert!(!fall_back_to_level_dat_old(&world));
+        let _ = fs::remove_dir_all(&world);
+    }
+
+    #[test]
     fn points_of_interest_save_as_poi_sections() {
         let Some(root) = std::env::var_os("HORIZON_TEST_RESOURCES") else {
             return;
@@ -4890,6 +4983,40 @@ mod tests {
             LevelShape::OVERWORLD,
         );
         assert_eq!(number(overworld.tag.get("yPos")), Some(-4));
+    }
+
+    /// The far ring's reads (`lan::far`): a chunk saved with its light, without the gameplay's region
+    /// cache; none for a chunk not saved, or saved without its light.
+    #[test]
+    fn far_reads_take_saved_lit_chunks_only() {
+        let Some(root) = std::env::var_os("HORIZON_TEST_RESOURCES") else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        let assets = crate::assets::Assets::load(&root).expect("assets");
+        let biomes = Biomes::load(&root).expect("biomes");
+        let stone = assets.registry.default_state("minecraft:stone").unwrap();
+        let mut lit = Chunk::empty(4, -7);
+        lit.set(1, 70, 2, stone.0);
+        let mut dark = lit.clone();
+        dark.x = 5;
+        lit.lit = true;
+        let dir = std::env::temp_dir().join(format!("horizon-far-save-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let save = SaveDir::new(dir.clone(), LevelShape::OVERWORLD);
+        let records =
+            [&lit, &dark].map(|c| ((c.x, c.z), Some(encode(c, assets.registry, &biomes))));
+        save.write_records("region", records.into(), true).unwrap();
+        let reopened = SaveDir::new(dir.clone(), LevelShape::OVERWORLD);
+        let far = reopened
+            .load_far(4, -7, assets.registry, &biomes)
+            .expect("saved with its light");
+        assert_eq!(far.block(1, 70, 2), stone);
+        assert!(far.lit && far.light_loaded);
+        assert!(reopened.load_far(5, -7, assets.registry, &biomes).is_none());
+        assert!(reopened.load_far(6, -7, assets.registry, &biomes).is_none());
+        assert!(reopened.regions.lock().unwrap().is_empty());
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -5964,6 +6091,50 @@ mod tests {
             ..Level::default()
         };
         assert_eq!(other.difficulty_id(), 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Dedicated world saves must not overwrite separately managed player data.
+    #[test]
+    fn dedicated_world_save_preserves_player_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-dedicated-player-save-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+
+        let mut level = Level {
+            name: "Test".into(),
+            position: Some([12.5, 70.0, -8.25]),
+            inventory: vec![(0, "minecraft:diamond".into(), 7, 0)],
+            ..Level::default()
+        };
+
+        // Create a real player file using the existing singleplayer writer.
+        level.write(&dir).unwrap();
+        let uuid = level.player_uuid.unwrap();
+        let player_file = dir
+            .join("players")
+            .join("data")
+            .join(format!("{}.dat", uuid_text(uuid)));
+
+        let before = fs::read(&player_file).unwrap();
+
+        // Simulate an incomplete world-level player state.
+        level.position = None;
+        level.inventory.clear();
+        level.day_time = 12345;
+
+        // Dedicated saves must update metadata without touching player data.
+        level.write_without_player(&dir).unwrap();
+
+        let after = fs::read(&player_file).unwrap();
+        assert_eq!(before, after, "dedicated save overwrote player data");
+
+        // The world metadata must still be persisted.
+        let reopened = Level::read(&dir).unwrap();
+        assert_eq!(reopened.day_time, 12345);
+
         let _ = fs::remove_dir_all(&dir);
     }
 
