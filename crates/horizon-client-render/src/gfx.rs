@@ -69,6 +69,15 @@ pub fn outline_vertices(edges: &[[f64; 6]], camera: glam::DVec3) -> Vec<[f32; 6]
         .collect()
 }
 
+/// Whether the renderer should initialize its GPU occlusion pass.
+///
+/// Software adapters spend more time running the culling pass than drawing
+/// the sections it removes. Keep the pass available for explicit A/B checks,
+/// while leaving hardware adapters on the existing default.
+fn gpu_culling_requested(info: &wgpu::AdapterInfo, env: Option<&str>) -> bool {
+    env != Some("0") && (env.is_some() || info.device_type != wgpu::DeviceType::Cpu)
+}
+
 mod animate;
 mod arena;
 pub mod compositor;
@@ -91,6 +100,7 @@ mod pack_atlas;
 pub mod pack_draw;
 mod pack_entities;
 mod pack_hand;
+mod pack_images;
 mod pack_post;
 mod pack_shadow;
 mod pack_sky;
@@ -226,6 +236,10 @@ struct Globals {
     outline_params: [f32; 4],
     /// Horizon Extras' dynamic lights: camera-relative position and level (`dynamic_light`).
     dynamic_lights: [[f32; 4]; crate::dynamic_light::MAX],
+    colored_lights: [crate::dynamic_light::Colored; crate::dynamic_light::MAX],
+    colored_count: [u32; 4],
+    emissive_layers: [[u32; 4]; crate::native_emissive::MAX],
+    emissive_count: [u32; 4],
     /// The sunrise fan's triangles as the sky shader tests them (`sunrise_fan::normals`).
     sunrise_fan: [[f32; 4]; 2 * sunrise_fan::TRIANGLES],
     /// x: `Options.textureFiltering` (0 none, 1 RGSS, 2 anisotropic); y: the sprite arrays' width.
@@ -359,6 +373,8 @@ pub struct Frame<'a> {
     pub weather_time: crate::weather::Time,
     /// Horizon Extras' dynamic lights, nearest first (`dynamic_light::select`); empty when off.
     pub dynamic_lights: &'a [[f32; 4]],
+    pub colored_lights: &'a [crate::dynamic_light::Colored],
+    pub emissive_layers: &'a [[u32; 4]],
     /// Cloud mesh inputs; geometry and GPU storage are retained by the renderer.
     pub clouds: Option<crate::clouds::Input<'a>>,
     /// Retained lightning bolts, drawn before the other additive entities.
@@ -1210,7 +1226,8 @@ async fn open_backend(
     // video memory go to system memory. Shader packs' 16-bit normalized buffers (render
     // targets with the adapter's own format features) and R11F_G11F_B10F: a float
     // stand-in neither clamps nor drops NaN. Subgroups: shader packs' compute programs
-    // (`MC_GL_KHR_shader_subgroup_*`).
+    // (`MC_GL_KHR_shader_subgroup_*`); storage buffers in vertex shaders, clearing and
+    // atomics on images: their buffers and images.
     let features = timing::GpuTimer::features(&adapter)
         | cull::Cull::features(&adapter)
         | oit::features(&adapter)
@@ -1220,7 +1237,10 @@ async fn open_backend(
                 | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
                 | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
                 | wgpu::Features::RG11B10UFLOAT_RENDERABLE
-                | wgpu::Features::SUBGROUP));
+                | wgpu::Features::SUBGROUP
+                | wgpu::Features::VERTEX_WRITABLE_STORAGE
+                | wgpu::Features::CLEAR_TEXTURE
+                | wgpu::Features::TEXTURE_ATOMIC));
     let driver = format!("{} {}", info.driver, info.driver_info);
     startup_step(format_args!(
         "requesting the device (driver {}) with features [{features}] and the adapter's \
@@ -2871,8 +2891,9 @@ impl Renderer {
         // frame however few its draws and little it hides, `shader` tests in
         // the shader as on Metal (A/B checks).
         let cull_env = std::env::var("HORIZON_GPU_CULL");
+        let adapter_info = adapter.get_info();
         let cull = cull::Cull::supported(&adapter, &device)
-            .filter(|_| cull_env.as_deref() != Ok("0"))
+            .filter(|_| gpu_culling_requested(&adapter_info, cull_env.as_deref().ok()))
             .map(|depth_test| match cull_env.as_deref() {
                 Ok("shader") => cull::DepthTest::InShader,
                 _ => depth_test,
@@ -2881,7 +2902,7 @@ impl Renderer {
                 let mut cull =
                     cull::Cull::new(&device, config.format.remove_srgb_suffix(), depth_test);
                 cull.always = cull_env.as_deref() == Ok("all");
-                if !cull.always && adapter.get_info().backend == wgpu::Backend::Metal {
+                if !cull.always && adapter_info.backend == wgpu::Backend::Metal {
                     cull.min_sections = cull::TILED_MIN_SECTIONS;
                 }
                 cull
@@ -4181,8 +4202,26 @@ impl Renderer {
     }
     pub fn render(&mut self, frame: &Frame) -> Result<bool> {
         let rendered = self.draw_frame(frame);
-        // A frame that was not drawn still submits the section copies.
-        if let Some(copies) = self.take_section_copies() {
+        // A frame that was not drawn still submits the section copies and
+        // atlas patches (glyphs, skins, maps), which the caller already took.
+        if !matches!(rendered, Ok(true)) && !frame.hud.patches.is_empty() {
+            let section_copies = self.section_copies.take();
+            let has_section_copies = section_copies.is_some();
+            let mut encoder = section_copies.unwrap_or_else(|| {
+                self.device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("Horizon atlas patches"),
+                    })
+            });
+            self.hud
+                .upload_patches(&mut self.uploads, &mut encoder, &frame.hud.patches);
+            self.uploads.finish(&encoder);
+            if has_section_copies {
+                self.section_copy_bytes = 0;
+                self.section_uploads.finish(&encoder);
+            }
+            self.queue.submit([encoder.finish()]);
+        } else if let Some(copies) = self.take_section_copies() {
             self.queue.submit([copies]);
         }
         rendered
@@ -4393,6 +4432,32 @@ impl Renderer {
                 }
                 lights
             },
+            colored_lights: {
+                let mut lights = [[[0.0; 4]; 2]; crate::dynamic_light::MAX];
+                for (to, from) in lights.iter_mut().zip(frame.colored_lights) {
+                    *to = *from;
+                }
+                lights
+            },
+            colored_count: [
+                frame.colored_lights.len().min(crate::dynamic_light::MAX) as u32,
+                0,
+                0,
+                0,
+            ],
+            emissive_layers: {
+                let mut layers = [[0; 4]; crate::native_emissive::MAX];
+                for (to, from) in layers.iter_mut().zip(frame.emissive_layers) {
+                    *to = *from;
+                }
+                layers
+            },
+            emissive_count: [
+                frame.emissive_layers.len().min(crate::native_emissive::MAX) as u32,
+                0,
+                0,
+                0,
+            ],
             sunrise_fan: sunrise_fan::normals(frame.sky.sunrise_color[3], sun),
             filtering: [
                 self.texture_filtering as f32,
@@ -6881,6 +6946,33 @@ fn frustum(m: Mat4) -> [Vec4; 6] {
 
 #[cfg(test)]
 mod tests {
+    fn adapter(device_type: wgpu::DeviceType) -> wgpu::AdapterInfo {
+        wgpu::AdapterInfo {
+            name: "test adapter".into(),
+            vendor: 0,
+            device: 0,
+            device_type,
+            device_pci_bus_id: String::new(),
+            driver: String::new(),
+            driver_info: String::new(),
+            backend: wgpu::Backend::Vulkan,
+            subgroup_min_size: 0,
+            subgroup_max_size: 0,
+            transient_saves_memory: None,
+            limit_bucket: None,
+        }
+    }
+
+    #[test]
+    fn software_occlusion_culling_is_opt_in() {
+        let cpu = adapter(wgpu::DeviceType::Cpu);
+        let discrete = adapter(wgpu::DeviceType::DiscreteGpu);
+        assert!(!super::gpu_culling_requested(&cpu, None));
+        assert!(super::gpu_culling_requested(&discrete, None));
+        assert!(super::gpu_culling_requested(&cpu, Some("all")));
+        assert!(!super::gpu_culling_requested(&discrete, Some("0")));
+    }
+
     #[test]
     fn the_mirror_sees_each_point_where_its_reflection_is() {
         use glam::{Mat4, Vec3, Vec4};

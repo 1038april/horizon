@@ -5,6 +5,7 @@
 use super::{Game, storage::is_shulker_box};
 
 mod crafter;
+pub(in crate::game) mod native_fluids;
 pub(in crate::game) mod native_items;
 use horizon_client::{
     Result,
@@ -1290,6 +1291,7 @@ mod item_column_tests {
             pickup_delay: 0,
             bob_offset: 0.0,
             ticks: 0,
+            needs_sync: false,
         }
     }
     /// `hopper_suck`'s test: some item box meets the hopper's SUCK_AABB.

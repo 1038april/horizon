@@ -6,7 +6,8 @@ use super::Game;
 use horizon_client::{
     items::ItemStack,
     mesher::Vertex,
-    mobs::{Mob, Species, sulfur_cube},
+    mobs::{Mob, Species, Who, sulfur_cube},
+    projectiles::Projectile,
 };
 use horizon_core::{position::BlockPos, random::RandomSource};
 
@@ -187,6 +188,21 @@ impl Game<'_> {
             if signal != 0 {
                 sulfur_cube::prime(&mut self.mobs[i], false);
             }
+        }
+    }
+    /// `SulfurCube.hurtServer`: an arrow or a trident on fire that hits an
+    /// explosive cube with a block lights its fuse (with `tnt_explodes`, as
+    /// `primeTime` asks), called after the hit's hurt, which the priming
+    /// leaves as it is, so its knock and the fuse both go ahead.
+    pub(super) fn burning_arrow_primes(&mut self, p: &Projectile, who: Who) {
+        if !p.arrow.as_ref().is_some_and(|a| a.on_fire()) || !self.ui.rules.bool("tnt_explodes") {
+            return;
+        }
+        if let Who::Mob(id) = who
+            && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
+            && m.species() == Species::SulfurCube
+        {
+            sulfur_cube::burning_arrow_hit(m);
         }
     }
     /// `SulfurCubeSearchForItemsGoal` and `pickUpItem`: an adult with nothing
