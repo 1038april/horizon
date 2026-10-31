@@ -301,7 +301,7 @@ use horizon_client::{
     hud::{HudAtlas, HudBatch, rgba},
     hud_layout, hud_overlays,
     items::{ItemStack, Items},
-    keymapping::KeyAction,
+    keymapping::{KeyAction, SNEAK, SPRINT},
     light::LightTables,
     mesher::{MeshTables, Vertex},
     mobs::{Mob, MobType, MobTypes},
@@ -1830,8 +1830,10 @@ fn follow_keymap(event: &mut WindowEvent) {
     }
 }
 
-fn drop_whole_stack(physical_keys: &HashSet<KeyCode>) -> bool {
-    physical_keys.contains(&KeyCode::ControlLeft) || physical_keys.contains(&KeyCode::ControlRight)
+/// Q throws the whole stack with Control down: the same modifier word the
+/// screens read (`has_control_down`), never a latched sprint toggle.
+fn drop_whole_stack(modifiers: winit::keyboard::ModifiersState) -> bool {
+    modifiers.control_key()
 }
 
 fn select_creative_tab(
@@ -8955,7 +8957,7 @@ impl Game<'_> {
             (Some(n), _) => self.menu_click(Some(slot), n as i32, Input::Swap),
             (None, KeyCode::KeyF) => self.menu_click(Some(slot), 40, Input::Swap),
             (None, KeyCode::KeyQ) => {
-                let all = drop_whole_stack(&self.physical_keys);
+                let all = drop_whole_stack(self.modifiers);
                 self.menu_click(Some(slot), i32::from(all), Input::Throw)
             }
             _ => false,
@@ -9056,13 +9058,13 @@ impl Game<'_> {
             }
         }
         if let Some(slot) = slot
-            && !shift
             && slot != 200
         {
             // An item tab's display slots take no drags or PICKUP_ALL.
             let display = slot >= Creative::DISPLAY;
             let now = std::time::Instant::now();
-            let double = !right
+            let double = !shift
+                && !right
                 && !display
                 && self.carried.is_some()
                 && self.last_inv_click.is_some_and(|(at, last, was_right)| {
@@ -9077,12 +9079,16 @@ impl Game<'_> {
             }
             if self.carried.is_some() {
                 let ty = i32::from(right);
-                let first = if !display && self.quick_craft_accepts(slot, ty, 0) {
-                    vec![slot]
+                // `mouseClicked` starts a quick craft drag whenever the hand holds a stack,
+                // Shift or not: `mouseDragged` fills the slots the cursor crosses, so a
+                // Shift held over the drag spreads the same way (#4166). The drag starts
+                // empty on a Shift press: a release with nothing spread is `mouseReleased`'s
+                // click on the hovered slot (Pickup, or QuickMove under Shift).
+                if !shift && !display && self.quick_craft_accepts(slot, ty, 0) {
+                    self.inv_drag = Some((ty, vec![slot]));
                 } else {
-                    Vec::new()
-                };
-                self.inv_drag = Some((ty, first));
+                    self.inv_drag = Some((ty, Vec::new()));
+                }
                 return;
             }
         }
@@ -9150,17 +9156,31 @@ impl Game<'_> {
         use horizon_client::container_screen::Button;
         if right { Button::Right } else { Button::Left }
     }
-    /// `Screen.hasShiftDown` / `InputWithModifiers.hasShiftDown`: the
-    /// physical Shift keys, whatever the sneak key is bound or toggled to.
+    /// `Screen.hasShiftDown` / `InputWithModifiers.hasShiftDown`: 26.3 keeps
+    /// no key cache — every event answers with its own modifiers bit
+    /// (`InputWithModifiers.java:54-56`, `keys = 3`), and the pointer and
+    /// keyboard events carry the OS's live word, refreshed at the focus. The
+    /// window's `ModifiersChanged` is that word here; key releases can die
+    /// on the way from the OS (a stuck Shift then kept every screen's Shift
+    /// and a sneak the key no longer held: #4166's in-game report), so a
+    /// cached key set is not vanilla's answer.
     pub(super) fn has_shift_down(&self) -> bool {
-        self.physical_keys.contains(&KeyCode::ShiftLeft)
-            || self.physical_keys.contains(&KeyCode::ShiftRight)
+        self.modifiers.shift_key()
     }
-    /// `Minecraft.hasControlDown`: the physical Control keys, whatever the
-    /// sprint key is bound or toggled to.
+    /// The same live word for Control (`InputWithModifiers.hasControlDown`).
     pub(super) fn has_control_down(&self) -> bool {
-        self.physical_keys.contains(&KeyCode::ControlLeft)
-            || self.physical_keys.contains(&KeyCode::ControlRight)
+        self.modifiers.control_key()
+    }
+    /// Real events word the modifiers by their own `ModifiersChanged`; a
+    /// control socket's `key` is synthesized, so it words the bit directly
+    /// and every reader can ask the one live state.
+    fn press_modifier_key(&mut self, key: KeyCode, down: bool) {
+        horizon_client_input::modifiers::set_key(
+            &mut self.modifiers,
+            &mut self.physical_keys,
+            key,
+            down,
+        );
     }
     /// `hasClickedOutside` of the open screen at the cursor.
     fn clicked_outside(&self, batch: &HudBatch) -> bool {
@@ -14488,7 +14508,7 @@ impl Game<'_> {
                 self.using = None;
             }
             KeyCode::KeyQ if self.screen == Screen::Playing => {
-                let all = drop_whole_stack(&self.physical_keys);
+                let all = drop_whole_stack(self.modifiers);
                 self.drop_held(all);
             }
             KeyCode::Digit1
@@ -14941,6 +14961,21 @@ impl ApplicationHandler for Game<'_> {
         }
         if let WindowEvent::ModifiersChanged(m) = &event {
             self.modifiers = m.state();
+            horizon_client_input::modifiers::reconcile(
+                self.modifiers,
+                &mut self.physical_keys,
+                &self.settings.keys,
+                &mut self.toggles,
+                [self.settings.toggle_crouch, self.settings.toggle_sprint],
+                [
+                    self.pad
+                        .holds_action(&self.settings.controller, "key.sneak"),
+                    self.pad
+                        .holds_action(&self.settings.controller, "key.sprint"),
+                ],
+            );
+            self.sync_toggle(SNEAK);
+            self.sync_toggle(SPRINT);
         }
         // Fullscreen is a window shortcut, before screens consume keyboard input.
         if let WindowEvent::KeyboardInput { event, .. } = &event
@@ -18992,7 +19027,7 @@ mod tests {
     }
 
     #[test]
-    fn stack_drop_requires_physical_ctrl_even_with_sprint_latched() {
+    fn stack_drop_requires_ctrl_even_with_sprint_latched() {
         for sprint in [false, true] {
             let mut toggles = ToggleKeys::default();
             if sprint {
@@ -19002,17 +19037,29 @@ mod tests {
             assert_eq!(toggles.is_down(SPRINT), sprint);
 
             for held in 0..4 {
+                let mut modifiers = winit::keyboard::ModifiersState::empty();
                 let mut physical_keys = HashSet::from([KeyCode::ShiftLeft, KeyCode::KeyQ]);
-                if held & 1 != 0 {
-                    physical_keys.insert(KeyCode::ControlLeft);
+                let sides = [KeyCode::ControlLeft, KeyCode::ControlRight];
+                for (bit, key) in sides.into_iter().enumerate() {
+                    if held & (1 << bit) != 0 {
+                        horizon_client_input::modifiers::set_key(
+                            &mut modifiers,
+                            &mut physical_keys,
+                            key,
+                            true,
+                        );
+                    }
                 }
-                if held & 2 != 0 {
-                    physical_keys.insert(KeyCode::ControlRight);
+                assert_eq!(drop_whole_stack(modifiers), held != 0);
+                for key in sides {
+                    horizon_client_input::modifiers::set_key(
+                        &mut modifiers,
+                        &mut physical_keys,
+                        key,
+                        false,
+                    );
                 }
-                assert_eq!(drop_whole_stack(&physical_keys), held != 0);
-                physical_keys.remove(&KeyCode::ControlLeft);
-                physical_keys.remove(&KeyCode::ControlRight);
-                assert!(!drop_whole_stack(&physical_keys));
+                assert!(!drop_whole_stack(modifiers));
                 assert_eq!(toggles.is_down(SPRINT), sprint);
             }
         }
