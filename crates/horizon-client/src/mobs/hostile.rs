@@ -360,9 +360,20 @@ pub fn creeper_tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
                     .filter(|(id, ..)| !m.extra.hidden_effects.contains(id))
                     .map(|(id, _, amp)| (*id, *amp)),
             );
+            let hidden = effects
+                .iter()
+                .filter(|(id, ..)| {
+                    m.extra
+                        .hidden_effects
+                        .iter()
+                        .any(|h| h.strip_prefix("minecraft:").unwrap_or(h) == *id)
+                })
+                .map(|(id, ..)| *id)
+                .collect();
             events.push(MobEvent::LingeringCloud {
                 at: [m.position.x, m.position.y, m.position.z],
                 effects,
+                hidden,
                 color,
             });
         }

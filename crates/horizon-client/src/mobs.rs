@@ -1343,6 +1343,8 @@ pub enum MobEvent {
     LingeringCloud {
         at: [f64; 3],
         effects: Vec<(&'static str, i32, i32)>,
+        /// The effects among them added hidden (`hideParticles`).
+        hidden: Vec<&'static str>,
         color: u32,
     },
     /// Melee or ranged damage to another mob.
