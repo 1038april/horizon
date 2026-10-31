@@ -29,7 +29,12 @@ impl NativePack {
         constants: &[(String, f64)],
     ) -> Result<(Self, Vec<String>), String> {
         let (globals, format) = (terrain.globals, terrain.format);
-        let frame = NativeFrame::new(device);
+        let mut frame = NativeFrame::new(device);
+        frame.reflects = report
+            .stages
+            .iter()
+            .find(|s| s.kind == StageKind::Material)
+            .is_some_and(|s| s.reads("reflection"));
         let (post, others): (Vec<_>, Vec<_>) = report
             .stages
             .into_iter()

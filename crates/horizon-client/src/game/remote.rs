@@ -458,9 +458,15 @@ pub(super) struct Remote {
     profile: u128,
     /// The local player's profile name: its score holder and team member.
     pub(super) profile_name: String,
+    /// `MultiPlayerGameMode.destroyBlockPos`, `.destroyProgress` and the face last sent: the block
+    /// the break targets, which outlives the break itself.
     destroying: Option<([i32; 3], u8, f32)>,
     /// `MultiPlayerGameMode.destroyingItem`: the held item key the break began with.
     destroying_item: String,
+    /// `MultiPlayerGameMode.isDestroying`: a break is running. `destroying` keeps the target after
+    /// one ends (`destroyBlockPos` is written only when a break starts), so a dig resumed on the
+    /// same block and item sends no new START and the server keeps its clock (#4124).
+    is_destroying: bool,
     destroy_delay: u32,
     input: horizon_client::interaction_input::InteractionInput,
     /// Keys whose presses send a packet (swap hands, drop, a mount's
@@ -876,6 +882,7 @@ impl Game<'_> {
             profile_name: String::new(),
             destroying: None,
             destroying_item: String::new(),
+            is_destroying: false,
             destroy_delay: 0,
             input: Default::default(),
             pending_keys: Vec::new(),
@@ -3089,6 +3096,18 @@ impl Game<'_> {
                             let code = bed.map_or(0, |b| self.bed_facing(b));
                             if let Some(m) = self.mobs.iter_mut().find(|m| m.id == p.id as u32) {
                                 m.extra.ints[1] = code;
+                                if let Some(head) = *bed {
+                                    // LivingEntity.onSyncedDataUpdated(SLEEPING_POS_ID): setPosToBed.
+                                    let at = Vec3::new(
+                                        f64::from(head[0]) + 0.5,
+                                        f64::from(head[1]) + 0.5625 + 0.125,
+                                        f64::from(head[2]) + 0.5,
+                                    );
+                                    m.position = at;
+                                    m.previous = at;
+                                    m.head_pitch = 0.0;
+                                    m.previous_head_pitch = 0.0;
+                                }
                             }
                         }
                         // Avatar.DATA_PLAYER_MAIN_HAND (HumanoidArm: 0 left, 1
@@ -3117,6 +3136,22 @@ impl Game<'_> {
                                     self.sleep_timer = 0;
                                 }
                                 self.sleeping = *bed;
+                                if let Some(head) = *bed {
+                                    // LivingEntity.onSyncedDataUpdated(SLEEPING_POS_ID): setPosToBed.
+                                    let at = Vec3::new(
+                                        f64::from(head[0]) + 0.5,
+                                        f64::from(head[1]) + 0.5625 + 0.125,
+                                        f64::from(head[2]) + 0.5,
+                                    );
+                                    if let Some(pl) = self.player.as_mut() {
+                                        pl.position = at;
+                                        pl.velocity = Vec3::ZERO;
+                                        pl.pitch = 0.0;
+                                    }
+                                    self.previous_position = at;
+                                    self.pitch = 0.0;
+                                    self.snap_player_model_pitch();
+                                }
                             }
                             // Entity.DATA_SHARED_FLAGS_ID's sprinting bit: the
                             // server stops the sprint after a hit's extra
@@ -5004,6 +5039,7 @@ impl Game<'_> {
             // handleMovePlayer does not change LocalPlayer.sendPosition's
             // baseline: the next tick must still report the corrected state.
             r.destroying = None;
+            r.is_destroying = false;
         }
         self.mining = None;
         self.send(S::AcceptTeleportation(play::AcceptTeleportation {
@@ -5274,7 +5310,8 @@ impl Game<'_> {
         let was_gliding = player.fall_flying;
         let dead = self.screen == Screen::Dead;
         // LivingEntity.isImmobile: a sleeper lies still in the bed.
-        if let Some(head) = self.sleeping {
+        let sleeping = self.sleeping;
+        if let Some(head) = sleeping {
             player.position = Vec3::new(
                 f64::from(head[0]) + 0.5,
                 // setPosToBed: the bed's top (getSleepHeight) and 0.125 above it.
@@ -5282,6 +5319,7 @@ impl Game<'_> {
                 f64::from(head[2]) + 0.5,
             );
             player.velocity = Vec3::ZERO;
+            player.pitch = 0.0;
         } else if !dead && !riding {
             player.client_side = true;
             player.velocity = player.velocity.add_vector(pushed);
@@ -5411,6 +5449,11 @@ impl Game<'_> {
         // The server owns health and hunger.
         self.apply_remote_health();
         self.tick_avatar(before, false);
+        // LivingEntity.tick: a sleeper's xRot is 0.
+        if sleeping.is_some() {
+            self.pitch = 0.0;
+            self.snap_player_model_pitch();
+        }
         // The player's own model (third person, the inventory's preview).
         self.tick_player_model();
         if !dead {
@@ -5871,6 +5914,11 @@ impl Game<'_> {
                 remote_player_head_turn(m);
                 // LivingEntity.tick: the glide count, wings and swim amount.
                 m.tick_avatar_pose(m.fluids.in_water);
+                // LivingEntity.tick: a sleeper's xRot is 0.
+                if m.extra.ints[1] != 0 {
+                    m.head_pitch = 0.0;
+                    m.previous_head_pitch = 0.0;
+                }
             } else if m.alive() {
                 m.body_rotation_tick();
             }
@@ -6206,20 +6254,32 @@ impl Game<'_> {
         }
     }
 
-    /// `MultiPlayerGameMode.stopDestroyBlock`: aborts the break and starts
-    /// the attack strength again.
-    pub(super) fn stop_remote_mining(&mut self) {
-        if let Some((pos, _, _)) = self.remote.as_mut().and_then(|r| r.destroying.take()) {
-            let state = self.world.block(pos[0], pos[1], pos[2]);
-            self.tutorial_destroy(state, -1.0);
-            self.send(S::PlayerAction(play::PlayerAction {
-                action: 2,
-                pos,
-                direction: 0,
-                sequence: 0,
-            }));
-            self.reset_attack_strength();
-        }
+    /// `MultiPlayerGameMode.stopDestroyBlock`: aborts the break and starts the attack strength
+    /// again, if one is running (`if (!isDestroying) return;`), and says whether it did. Only the
+    /// progress goes: `destroyBlockPos` and `destroyingItem` keep the target, so a dig resumed on
+    /// the same block sends no START and the server's clock runs on (#4124).
+    pub(super) fn stop_remote_mining(&mut self) -> bool {
+        let kept = self.remote.as_mut().and_then(|r| {
+            if !std::mem::take(&mut r.is_destroying) {
+                return None;
+            }
+            let (pos, face, _) = r.destroying?;
+            r.destroying = Some((pos, face, 0.0));
+            r.destroying
+        });
+        let Some((pos, _, _)) = kept else {
+            return false;
+        };
+        let state = self.world.block(pos[0], pos[1], pos[2]);
+        self.tutorial_destroy(state, -1.0);
+        self.send(S::PlayerAction(play::PlayerAction {
+            action: 2,
+            pos,
+            direction: 0,
+            sequence: 0,
+        }));
+        self.reset_attack_strength();
+        true
     }
 
     /// MultiPlayerGameMode.startDestroyBlock / continueDestroyBlock.
@@ -6289,11 +6349,24 @@ impl Game<'_> {
         let same = self.remote.as_ref().is_some_and(|r| {
             r.destroying.is_some_and(|(p, _, _)| p == hit.pos) && r.destroying_item == held
         });
-        if start && same {
+        // startDestroyBlock leaves only a break that is still running alone (`isDestroying &&
+        // sameDestroyTarget`); a click on the block a stopped break still names starts it again,
+        // so the server re-anchors its clock. A held button carries the same target on, and that
+        // one keeps the clock (#4124).
+        let running = self.remote.as_ref().is_some_and(|r| r.is_destroying);
+        if start && same && running {
             return;
         }
-        if !same {
-            if let Some((old, _, _)) = self.remote.as_mut().and_then(|r| r.destroying.take()) {
+        if !same || start {
+            // startDestroyBlock aborts only a break that is running; a target left by a stop that
+            // ended one is just replaced by the START below.
+            let aborted = self.remote.as_mut().and_then(|r| {
+                if !std::mem::take(&mut r.is_destroying) {
+                    return None;
+                }
+                r.destroying.take()
+            });
+            if let Some((old, _, _)) = aborted {
                 let old_state = self.world.block(old[0], old[1], old[2]);
                 self.tutorial_destroy(old_state, -1.0);
                 self.send(S::PlayerAction(play::PlayerAction {
@@ -6324,6 +6397,7 @@ impl Game<'_> {
             if let Some(r) = self.remote.as_mut() {
                 r.destroying = Some((hit.pos, face, 0.0));
                 r.destroying_item = held;
+                r.is_destroying = true;
             }
             // startDestroyBlock plays the first hit and crack itself; the
             // server's level events 2019 and 2020 do the rest.
@@ -6355,7 +6429,11 @@ impl Game<'_> {
                 sequence: seq,
             }));
             if let Some(r) = self.remote.as_mut() {
-                r.destroying = None;
+                // `destroyBlockPos` remains the last target after the break;
+                // if that position is filled again before the next pick, a
+                // held attack resumes it without sending a second START.
+                r.destroying = Some((pos, face, 0.0));
+                r.is_destroying = false;
                 r.destroy_delay = 5;
             }
             self.mining = None;
@@ -6431,7 +6509,7 @@ impl Game<'_> {
     fn remote_use(&mut self) {
         // Minecraft.startUseItem returns before resetting rightClickDelay
         // while a survival block break is active.
-        if self.remote.as_ref().is_some_and(|r| r.destroying.is_some()) {
+        if self.remote.as_ref().is_some_and(|r| r.is_destroying) {
             return;
         }
         self.use_delay = 4;
@@ -7702,12 +7780,17 @@ impl Game<'_> {
             } else {
                 if let Some(r) = self.remote.as_mut() {
                     r.destroying = None;
+                    r.is_destroying = false;
                 }
                 self.mining = None;
             }
         } else {
-            self.stop_remote_mining();
-            self.mining = None;
+            // `stopDestroyBlock` returns at once for a break that is not running: a pick that
+            // missed once a break stopped ends nothing, so the dig's accumulated progress stays
+            // and goes on growing on the jumps that follow (#4124).
+            if self.stop_remote_mining() {
+                self.mining = None;
+            }
         }
     }
     /// Keys with a multiplayer meaning; returns true when consumed.
