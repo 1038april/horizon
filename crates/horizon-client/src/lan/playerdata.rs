@@ -57,7 +57,7 @@ pub fn load(guest: &mut Guest, world: &Path) -> bool {
 }
 
 /// `PlayerList.loadPlayerData` for the world's single-player owner: the file
-/// level.dat names (`singleplayer_uuid`), as `Level::read` loaded it into
+/// level.dat names (`singleplayer_uuid`), as the world opening read it into
 /// `saved`, before the owner's own file. Builds that save the owner to the
 /// named file alone (0.2.93) leave the own file behind, stale (#5351). The
 /// own file is for a world whose named file is missing; then the world's
