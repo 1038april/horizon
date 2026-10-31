@@ -929,6 +929,20 @@ impl Game<'_> {
     ) {
         let _ = (pos, entity, id);
     }
+    /// `AbstractContainerMenu.clickMenuButton(Player, int)`'s other half:
+    /// the acting player's cursor stack, `getCarried()`/`setCarried()`,
+    /// which `native_menu_button` cannot reach. Fires right after it, same
+    /// moment, same `pos`/`entity`/`id`; change `carried` when its id is
+    /// yours. On the server. API @API:menu_button_v2@.
+    pub(super) fn native_menu_button_v2(
+        &mut self,
+        pos: [i32; 3],
+        entity: &mut ModBlockEntity,
+        id: i32,
+        carried: &mut Option<ItemStack>,
+    ) {
+        let _ = (pos, entity, id, carried);
+    }
     /// The commands native mods add to the server's command tree: push
     /// yours. Asked once when a world opens to players (a dedicated
     /// server, a LAN host, single player's server thread); every player's
@@ -2288,8 +2302,9 @@ impl Game<'_> {
             self.world.modified.insert((pos.0 >> 4, pos.2 >> 4));
         }
     }
-    /// Menu button `id` on the mod container at `pos` (`clickMenuButton`).
-    pub(super) fn mod_menu_button(&mut self, pos: Pos, id: i32) {
+    /// Menu button `id` on the mod container at `pos` (`clickMenuButton`),
+    /// with the acting player's cursor stack (`carried`, read and written).
+    pub(super) fn mod_menu_button(&mut self, pos: Pos, id: i32, carried: &mut Option<ItemStack>) {
         if self.mod_menu_at(pos).is_none() {
             return;
         }
@@ -2302,6 +2317,7 @@ impl Game<'_> {
         let mut taken = std::mem::take(&mut **m);
         let items = taken.items.clone();
         self.native_menu_button([pos.0, pos.1, pos.2], &mut taken, id);
+        self.native_menu_button_v2([pos.0, pos.1, pos.2], &mut taken, id, carried);
         self.put_back_mod_block_entity(pos, taken, &items);
     }
     /// The cursor from the open mod screen's top left, with its block and
