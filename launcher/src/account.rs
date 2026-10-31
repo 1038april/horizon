@@ -22,8 +22,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// The keychain service name every secret is stored under.
 pub const SERVICE: &str = "dev.playhorizon.launcher";
 const SCOPE: &str = "XboxLive.signin offline_access";
-pub const NOT_CONFIGURED: &str =
-    "This build of the launcher has no Microsoft sign-in (HORIZON_MSA_CLIENT_ID), so it can't start the game.";
+pub const NOT_CONFIGURED: &str = "This build of the launcher has no Microsoft sign-in (HORIZON_MSA_CLIENT_ID), so it can't start the game.";
 /// What every Play says while no account in the launcher owns the game.
 pub const NEEDS_OWNER: &str =
     "Sign in with a Microsoft account that owns Minecraft: Java Edition to play";
@@ -101,7 +100,7 @@ fn send(request: ureq::Request, body: Option<Body>, service: &str) -> Result<(u1
         Err(ureq::Error::Transport(_)) => {
             return Err(format!(
                 "Could not reach {service}. Check your internet connection."
-            ))
+            ));
         }
     };
     let status = response.status();
@@ -1082,17 +1081,22 @@ pub fn valid_offline_name(name: &str) -> bool {
 }
 
 impl Accounts {
-    fn path() -> PathBuf {
+    pub(crate) fn path() -> PathBuf {
         crate::backend::data_dir().join("accounts.json")
     }
     pub fn load() -> Self {
-        std::fs::read_to_string(Self::path())
+        Self::load_from(&Self::path())
+    }
+    pub fn save(&self) -> Result<(), String> {
+        self.save_to(&Self::path())
+    }
+    pub(crate) fn load_from(path: &Path) -> Self {
+        std::fs::read_to_string(path)
             .ok()
             .and_then(|t| serde_json::from_str(&t).ok())
             .unwrap_or_default()
     }
-    pub fn save(&self) -> Result<(), String> {
-        let path = Self::path();
+    pub(crate) fn save_to(&self, path: &Path) -> Result<(), String> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }

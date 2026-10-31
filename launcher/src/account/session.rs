@@ -238,6 +238,7 @@ pub fn refresh_with_progress(who: &str, progress: &dyn Fn(Phase)) -> Result<Stat
         client_id().as_deref(),
         store(),
         &account,
+        &Accounts::path(),
         progress,
     ))
 }
@@ -248,15 +249,18 @@ pub(super) fn refresh_with(
     client_id: Option<&str>,
     store: &dyn SecretStore,
     account: &Account,
+    accounts: &Path,
 ) -> Status {
-    refresh_account(ep, client_id, store, account, &|_| {})
+    refresh_account(ep, client_id, store, account, accounts, &|_| {})
 }
 
+/// `accounts`: the accounts.json a renewed name or skin is saved to (`Accounts::path()`).
 pub(super) fn refresh_account(
     ep: &Endpoints,
     client_id: Option<&str>,
     store: &dyn SecretStore,
     account: &Account,
+    accounts: &Path,
     progress: &dyn Fn(Phase),
 ) -> Status {
     let result = (|| {
@@ -273,14 +277,14 @@ pub(super) fn refresh_account(
                 Check::Owns(renewed, s) => {
                     // A new name or skin goes to accounts.json, as launch() saves it, so the
                     // row and its profile head follow the refresh, not the next Play.
-                    let mut accounts = Accounts::load();
-                    if accounts
+                    let mut saved = Accounts::load_from(accounts);
+                    if saved
                         .accounts
                         .iter()
                         .any(|a| a.uuid == renewed.uuid && *a != renewed)
                     {
-                        accounts.update(renewed);
-                        let _ = accounts.save();
+                        saved.update(renewed);
+                        let _ = saved.save_to(accounts);
                     }
                     (Status::from_secrets(Some(&s)), s)
                 }
@@ -323,6 +327,7 @@ pub fn renew_for_game(dir: &Path, who: &str) -> Result<PathBuf, Status> {
         client_id().as_deref(),
         store(),
         &account,
+        &Accounts::path(),
         dir,
     )
 }
@@ -332,9 +337,10 @@ pub(super) fn renew_for_game_with(
     client_id: Option<&str>,
     store: &dyn SecretStore,
     account: &Account,
+    accounts: &Path,
     dir: &Path,
 ) -> Result<PathBuf, Status> {
-    let status = refresh_account(ep, client_id, store, account, &|_| {});
+    let status = refresh_account(ep, client_id, store, account, accounts, &|_| {});
     if status.state != State::Ready {
         return Err(status);
     }
