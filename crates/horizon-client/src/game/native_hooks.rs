@@ -1993,10 +1993,7 @@ impl Game<'_> {
         menu: &str,
     ) {
         self.mod_screen = None;
-        // Only when this is the menu the clicked block opens: `target` outlives the
-        // use that set it, so another menu opened later (a command's, another
-        // mod's) would otherwise get the last clicked machine's screen.
-        let Some(t) = target.filter(|t| self.mod_menu_at(*t) == Some(menu)) else {
+        let Some(t) = target else {
             return;
         };
         let block = self
@@ -2006,6 +2003,16 @@ impl Game<'_> {
             .name
             .to_string();
         if block.starts_with("minecraft:") {
+            return;
+        }
+        // Only when this is the menu the clicked block opens: `target` outlives the
+        // use that set it, so another menu opened later (a command's, another
+        // mod's) would otherwise get the last clicked machine's screen. Asked
+        // here, as the window's world has no mod containers.
+        let mut container = None;
+        self.native_block_entity_container(&block, &mut container);
+        let opens = container.and_then(|c| mod_menu(c.menu.as_deref()?).map(|(m, _)| m));
+        if opens != Some(menu) {
             return;
         }
         let mut screen = None;
