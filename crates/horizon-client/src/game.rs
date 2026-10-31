@@ -10525,6 +10525,13 @@ impl Game<'_> {
         self.score = Default::default();
         self.fns = Default::default();
         self.world_tables = self.build_world_tables();
+        // The registries a preload or an earlier world read are not this
+        // world's packs': a world with packs sends its own (their dialogs,
+        // recipes and advancements). For a world without packs, `sync_data`
+        // drops what was read with packs.
+        if self.world_tables.is_some() {
+            lan::forget_sync_data();
+        }
         // Warm the loot data with this world's packs before chunks decode
         // (`save::roll_loaded_loot` reads the cached copy).
         let _ = horizon_client::structure_blocks::world_loot_data(
@@ -16437,18 +16444,24 @@ impl Game<'_> {
         }
         self.world_tables = self.build_world_tables();
         horizon_client::structure_blocks::forget_loot_data();
-        lan::forget_sync_data();
         // PlayerList.reloadResources: the tags and recipes go to the players
-        // and their advancements reload.
-        if self.lan.is_some() {
-            match lan::sync_data(&self.options.resources, &self.pack_files()) {
-                Ok(sync) => {
-                    if let Some(host) = self.lan.as_mut() {
-                        host.hub.reload_resources(sync);
+        // and their advancements reload. The synchronized registries (the
+        // dialogs, and the commands' ids of them) stay the hub's.
+        let kept = self.lan.as_ref().map(|host| host.hub.lan.shared.sync());
+        match kept {
+            Some(kept) => {
+                match lan::reload_sync_data(&self.options.resources, &self.pack_files(), &kept) {
+                    Ok(sync) => {
+                        if let Some(host) = self.lan.as_mut() {
+                            host.hub.reload_resources(sync);
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("Horizon: the players are not sent the reloaded data: {e}")
                     }
                 }
-                Err(e) => log::warn!("Horizon: the players are not sent the reloaded data: {e}"),
             }
+            None => lan::forget_sync_data(),
         }
         let overlay = pack_files(&self.world_tables);
         self.adv.tree = Arc::new(horizon_client::advancements::Tree::load_with(
