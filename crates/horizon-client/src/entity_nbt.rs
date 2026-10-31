@@ -511,6 +511,10 @@ pub fn mob_to_nbt(
     // Animal.addAdditionalSaveData: the love ticks left, whatever the save had.
     if is_animal(id) {
         map.insert("InLove".into(), Tag::Int(m.extra.in_love.max(0)));
+        // Animal.addAdditionalSaveData: the player who fed it.
+        if let Some(cause) = m.extra.love_cause {
+            map.insert("LoveCause".into(), Tag::IntArray(cause.to_vec()));
+        }
     }
     let species = m.species();
     // MushroomCow saves its variant under `Type` (below), not `variant`.
@@ -1467,6 +1471,8 @@ pub fn mob_from_nbt(
     }
     if is_animal(&m.kind.id) {
         m.extra.in_love = number(tag.get("InLove")).unwrap_or(0) as i32;
+        // Animal.readAdditionalSaveData: the player who fed it into love.
+        m.extra.love_cause = crate::save::uuid_from_tag(tag.get("LoveCause"));
     }
     m.name_visible = flag(tag, "CustomNameVisible");
     m.no_ai = flag(tag, "NoAI");

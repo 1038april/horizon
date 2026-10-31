@@ -90,6 +90,23 @@ pub fn clear_trusted(m: &mut Mob) {
 pub fn trusts(m: &Mob, uuid: [i32; 4]) -> bool {
     trusted_entities(m).any(|trusted| trusted == uuid)
 }
+/// The trust of a fox's breeding (`Fox.FoxBreedGoal.breed`): the baby trusts
+/// the player who fed this fox into love and, when it is another player, the
+/// one who fed its partner.
+pub fn trust_breeders(
+    baby: &mut Mob,
+    love_cause: Option<[i32; 4]>,
+    partner_love_cause: Option<[i32; 4]>,
+) {
+    if let Some(cause) = love_cause {
+        add_trusted_entity(baby, cause);
+    }
+    if let Some(cause) = partner_love_cause
+        && partner_love_cause != love_cause
+    {
+        add_trusted_entity(baby, cause);
+    }
+}
 /// `Fox.canMove`, which `FoxMoveControl` waits for.
 pub fn can_move(m: &Mob) -> bool {
     !flag(m, SLEEPING | SITTING | FACEPLANTED)
@@ -949,5 +966,39 @@ mod trust_tests {
         clear_trusted(&mut f);
         assert_eq!(trusted_entities(&f).count(), 0);
         assert!(!trusts(&f, A));
+    }
+}
+
+#[cfg(test)]
+mod trust_breed_tests {
+    use super::*;
+    use crate::mobs::sensor_scan_tests::kind;
+
+    fn fox() -> Mob {
+        let mut kind = kind();
+        let k = std::sync::Arc::make_mut(&mut kind);
+        k.id = "minecraft:fox".into();
+        k.species = Species::Fox;
+        Mob::new(1, kind, Vec3::ZERO, 0.0)
+    }
+
+    /// `Fox.FoxBreedGoal.breed`: the baby trusts both players who fed the
+    /// parents into love, and one of them only once when it is the same.
+    #[test]
+    fn a_baby_fox_trusts_both_players_who_fed_its_parents() {
+        const A: [i32; 4] = [1, 2, 3, 4];
+        const B: [i32; 4] = [5, 6, 7, 8];
+        let mut baby = fox();
+        trust_breeders(&mut baby, Some(A), Some(B));
+        assert_eq!(trusted_entities(&baby).collect::<Vec<_>>(), vec![A, B]);
+        let mut same = fox();
+        trust_breeders(&mut same, Some(A), Some(A));
+        assert_eq!(trusted_entities(&same).collect::<Vec<_>>(), vec![A]);
+        let mut one = fox();
+        trust_breeders(&mut one, Some(A), None);
+        assert_eq!(trusted_entities(&one).collect::<Vec<_>>(), vec![A]);
+        let mut none = fox();
+        trust_breeders(&mut none, None, None);
+        assert_eq!(trusted_entities(&none).count(), 0);
     }
 }

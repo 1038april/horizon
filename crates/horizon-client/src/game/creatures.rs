@@ -2735,6 +2735,15 @@ impl Game<'_> {
             if p.species() == Species::Fox {
                 child.extra.main_hand = None;
             }
+            // Fox.FoxBreedGoal.breed: the baby trusts the players who fed its
+            // parents into love.
+            if p.species() == Species::Fox {
+                horizon_client::mobs::fox::trust_breeders(
+                    child,
+                    p.extra.love_cause,
+                    q.as_ref().and_then(|q| q.extra.love_cause),
+                );
+            }
             // Goat.getBreedOffspring: GoatAi.initMemories, then the baby
             // screams if the parent a coin toss picks does, or on a 2% roll.
             if p.species() == Species::Goat {
@@ -5180,7 +5189,7 @@ impl Game<'_> {
             {
                 // Animal.mobInteract: breed adults, speed up babies, then
                 // playEatingSound (silent unless the species overrides it).
-                match feed_animal(m, &mut self.world.random) {
+                match feed_animal(m, &mut self.world.random, Some(acting)) {
                     Some(sound) => {
                         consume = true;
                         eat = sound;

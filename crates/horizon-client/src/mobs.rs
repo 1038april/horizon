@@ -836,6 +836,9 @@ pub struct Extra {
     /// `Fox.DATA_TRUSTED_ID_0` and `_1`: the players a fox trusts, first free
     /// slot first, and a third replaces the second (`Fox.addTrustedEntity`).
     pub trusted: [Option<[i32; 4]>; 2],
+    /// `Animal.LoveCause`: the player who fed this animal into love, which a
+    /// fox's breeding hands to its baby as trust (`Fox.FoxBreedGoal.breed`).
+    pub love_cause: Option<[i32; 4]>,
     pub sheared: bool,
     /// `Mob.canPickUpLoot` (also lets dispensers equip it).
     pub pick_up_loot: bool,
