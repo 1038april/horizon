@@ -847,6 +847,17 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    #[test]
+    fn steering_accepts_the_correct_item_in_either_hand() {
+        let carrot = "minecraft:carrot_on_a_stick";
+        let fungus = "minecraft:warped_fungus_on_a_stick";
+        assert!(steering_item(Species::Pig, Some(carrot), None));
+        assert!(steering_item(Species::Pig, None, Some(carrot)));
+        assert!(steering_item(Species::Strider, None, Some(fungus)));
+        assert!(!steering_item(Species::Pig, Some(fungus), None));
+        assert!(!steering_item(Species::Horse, Some(carrot), Some(fungus)));
+    }
+
     /// A lava sea up to y 30 with full blocks placed in it; air above.
     struct Sea {
         blocks: HashMap<[i32; 3], ()>,
