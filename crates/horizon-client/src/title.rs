@@ -3024,7 +3024,7 @@ impl Title {
                     creative, options, ..
                 },
                 Some(id),
-            ) if !matches!(id, 21 | 22 | 31) => {
+            ) if !matches!(id, 21 | 22 | 30 | 31) => {
                 options.press(id, creative);
                 Action::None
             }

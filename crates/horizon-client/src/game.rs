@@ -10468,16 +10468,25 @@ impl Game<'_> {
         }
         // The world's pack selection (`DataPackConfig`), for the pack stack
         // to read: the picked packs on, the feature packs left out off.
-        if let Some(o) = create {
+        // Only when `install` did not run (no Data Packs screen opened): it
+        // writes the file itself, and its `disabled` must not be lost.
+        if let Some(o) = create.filter(|o| o.pack_dir.is_none()) {
             let world = std::env::current_dir()?.join("saves").join(folder);
-            let disabled: Vec<String> =
-                horizon_client::datapack::feature_packs(&self.vanilla_root())
-                    .into_iter()
-                    .map(|p| p.id)
-                    .filter(|id| !o.data_packs.contains(id))
-                    .collect();
-            let json = serde_json::json!({"enabled": o.data_packs, "disabled": disabled});
-            let _ = std::fs::write(world.join("datapacks.json"), json.to_string());
+            if let Err(e) = std::fs::create_dir_all(&world) {
+                log::warn!("Horizon: data packs for {folder}: {}: {e}", world.display());
+            } else {
+                let disabled: Vec<String> =
+                    horizon_client::datapack::feature_packs(&self.vanilla_root())
+                        .into_iter()
+                        .map(|p| p.id)
+                        .filter(|id| !o.data_packs.contains(id))
+                        .collect();
+                let json = serde_json::json!({"enabled": o.data_packs, "disabled": disabled});
+                let file = world.join("datapacks.json");
+                if let Err(e) = std::fs::write(&file, json.to_string()) {
+                    log::warn!("Horizon: data packs for {folder}: {}: {e}", file.display());
+                }
+            }
         }
         if self
             .options

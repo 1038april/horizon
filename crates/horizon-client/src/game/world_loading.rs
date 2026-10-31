@@ -130,19 +130,32 @@ impl WorldRequest {
             )?;
             // WorldCreationUiState.getGameRules, written with the level.
             level.game_rules = o.rules.by_name();
-            // The DataPackConfig the screen chose: the picked packs on, the
-            // feature packs left out disabled.
+            // The DataPackConfig the screen chose: the picked packs on,
+            // everything else disabled — the feature packs left out, and the
+            // world packs the Data Packs screen held back (`install` copies
+            // every pack of the folder, selected or not).
             level.data_packs = Some({
                 let features: Vec<String> =
                     horizon_client::datapack::feature_packs(&options.resources)
                         .into_iter()
                         .map(|p| p.id)
                         .collect();
-                let disabled = features
+                let mut disabled: Vec<String> = features
                     .iter()
                     .filter(|f| !o.data_packs.contains(f))
                     .cloned()
                     .collect();
+                if let Some(dir) = o.pack_dir.as_deref() {
+                    disabled.extend(
+                        horizon_client::packs::folder(
+                            std::path::Path::new(dir),
+                            horizon_core::version::DATA_PACK_FORMAT,
+                        )
+                        .into_iter()
+                        .map(|p| p.id)
+                        .filter(|id| !o.data_packs.contains(id)),
+                    );
+                }
                 (o.data_packs.clone(), disabled)
             });
         }

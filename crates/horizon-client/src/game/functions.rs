@@ -190,7 +190,10 @@ impl Game<'_> {
         // (`command-registries.json` lists only the game's own), and so do
         // its worldgen tag ids for the `#tag` completions. The packs are the
         // ones the world's worldgen is built from.
-        let packs = horizon_client::datapack::discover(&self.world_root);
+        let packs = horizon_client::datapack::discover_with_features(
+            &self.world_root,
+            &self.options.resources,
+        );
         let enabled = horizon_client::datapack::enabled_ids(&self.world_root, &packs);
         let enabled: Vec<_> = enabled
             .iter()

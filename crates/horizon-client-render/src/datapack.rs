@@ -230,7 +230,7 @@ pub fn screen_packs(dir: &Path, resources: &Path) -> Vec<crate::pack_screen::Pac
             description,
             description_style,
             source: Source::Feature,
-            compat: crate::packs::compatibility(&meta),
+            compat: crate::packs::compatibility_for(&meta, format),
             required: false,
             position: Position::Bottom,
             fixed: false,
