@@ -317,11 +317,15 @@ impl Loading {
             gui.atlas.font.japanese = self.settings.japanese_glyphs;
         }
         if let Some(window) = self.window.clone() {
-            let modes = window
+            let monitor = window
                 .current_monitor()
-                .or_else(|| window.primary_monitor())
-                .map(|m| horizon_client::window::monitor_video_modes(&m))
-                .unwrap_or_default();
+                .or_else(|| window.primary_monitor());
+            if let Some(modes) = self
+                .video_modes
+                .refresh(monitor, horizon_client::window::monitor_video_modes)
+            {
+                self.settings.video_modes = modes;
+            }
             let preferred = self
                 .settings
                 .file
@@ -335,7 +339,6 @@ impl Loading {
                 preferred,
                 false,
             );
-            self.settings.video_modes = modes;
         }
         self.update_menu_cursor();
     }
@@ -803,6 +806,7 @@ mod tests {
             gui: None,
             settings: Settings::default(),
             fullscreen: horizon_client::window::FullscreenState::new(false),
+            video_modes: Default::default(),
             options: None,
             vanilla_root: PathBuf::new(),
             pack_error: None,
