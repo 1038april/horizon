@@ -68,6 +68,10 @@ min = 0.0
 max = 2.0
 step = 0.05
 
+[[tags]]                   # 32 at most: bit i of MaterialInput.tags is the i-th tag
+id = "glass"
+sprites = ["block/glass", "block/*_stained_glass"]   # sprite names, at most one * each
+
 [budget]
 gpu_ms = 1.5               # optional: the GPU time the pack aims to add (0 to 16 ms)
 ```
@@ -108,6 +112,8 @@ stages.
 - 2026-10-30: API 0.1 (additions): `Frame.previous_view_projection`, `camera_motion` and
   `delta_time` for temporal passes (reprojection, motion blur); `eye_light_smooth`, `in_water`
   and `in_lava`, eased so exposure and underwater fog fade instead of stepping.
+- 2026-10-30: sprite tags (`[[tags]]`, `MaterialInput.tags`) and the frame's `precipitation`, `temperature`,
+  `downfall` and `wetness`.
 - 2026-10-30: API 0.1 (additions): the material stage's `MaterialInput.screen` and its
   `opaque_depth` and `opaque_color`, the world as it was before translucent terrain drew, so
   water and glass can see what lies behind them (depth under water, refraction).

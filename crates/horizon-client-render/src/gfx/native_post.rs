@@ -66,6 +66,8 @@ pub struct NativeFrame {
     history_reset: bool,
     start: std::time::Instant,
     frames: u32,
+    /// `frame.wetness`, and when it was last written.
+    wetness: (f32, Option<std::time::Instant>),
 }
 
 /// A depth texture of `size` the world's depth is copied into.
@@ -193,6 +195,7 @@ impl NativeFrame {
             history_reset: true,
             start: std::time::Instant::now(),
             frames: 0,
+            wetness: (0.0, None),
         }
     }
 
@@ -289,14 +292,17 @@ impl NativeFrame {
     /// Writes this frame's inputs, for a world of `size`.
     pub fn write(&mut self, queue: &wgpu::Queue, frame: &Frame, size: [u32; 2]) {
         let seconds = self.start.elapsed().as_secs_f32() % 3600.0;
+        let now = std::time::Instant::now();
+        let since = self.wetness.1.map_or(0.0, |t| (now - t).as_secs_f32());
+        self.wetness = (wetness(self.wetness.0, frame.pack.rain, since), Some(now));
         let mut inputs = frame_inputs(frame, size, seconds, self.frames);
+        inputs.wetness = self.wetness.0;
         if !self.reflects {
             inputs.has_reflection = 0;
         }
         let view_proj = (Mat4::from_cols_array_2d(&inputs.projection)
             * Mat4::from_cols_array_2d(&inputs.view))
         .to_cols_array_2d();
-        let now = std::time::Instant::now();
         inputs.previous_view_projection = view_proj;
         // `write` skips title frames, so a gap means a pause or another world: the frame
         // before says nothing about this one, and the eased values start over.
@@ -662,6 +668,13 @@ fn history_target(device: &wgpu::Device, label: &str, size: [u32; 2]) -> wgpu::T
     })
 }
 
+/// `wetness` after `dt` seconds of `rain`: halfway there in 30 seconds while it rains
+/// harder, in 10 while it dries (the half-lives of the `shaders/` format's `wetness`).
+fn wetness(wetness: f32, rain: f32, dt: f32) -> f32 {
+    let half_life = if rain > wetness { 30.0 } else { 10.0 };
+    rain + (wetness - rain) * 0.5f32.powf(dt / half_life)
+}
+
 /// The frame as packs read it (docs/api/shaders-reference.md), from the renderer's `Frame`.
 pub fn frame_inputs(frame: &Frame, size: [u32; 2], seconds: f32, index: u32) -> FrameInputs {
     let aspect = size[0] as f32 / size[1].max(1) as f32;
@@ -721,6 +734,10 @@ pub fn frame_inputs(frame: &Frame, size: [u32; 2], seconds: f32, index: u32) -> 
         },
         frame_index: index,
         hide_gui: u32::from(pack.hide_gui),
+        precipitation: pack.biome_precipitation.clamp(0, 2) as u32,
+        temperature: pack.temperature,
+        downfall: pack.rainfall,
+        wetness: pack.rain,
         // Filled by `NativeFrame::write`, which remembers the frames before.
         previous_view_projection: m(Mat4::IDENTITY),
         camera_motion: [0.0; 3],
@@ -745,6 +762,13 @@ mod tests {
     }
     use super::*;
     use horizon_shader_api::{MANIFEST, Pack, check};
+
+    #[test]
+    fn wetness_rises_slower_than_it_dries() {
+        assert_eq!(wetness(0.0, 1.0, 30.0), 0.5);
+        assert_eq!(wetness(1.0, 0.0, 10.0), 0.5);
+        assert_eq!(wetness(0.25, 0.25, 5.0), 0.25);
+    }
 
     fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
