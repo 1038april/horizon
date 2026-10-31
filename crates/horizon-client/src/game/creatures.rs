@@ -5763,9 +5763,9 @@ impl Game<'_> {
                 }
             }
             if is_player {
-                // PlayerRenderer's CapeLayer, WingsLayer and SpinAttackEffectLayer.
-                // Only the cape hides with the body; WingsLayer and
-                // SpinAttackEffectLayer have no `isInvisible` check.
+                // PlayerRenderer's CapeLayer, WingsLayer, ParrotOnShoulderLayer
+                // and SpinAttackEffectLayer. Only the cape hides with the body;
+                // the others have no `isInvisible` check.
                 let chest = mob.extra.chest.as_deref();
                 if !layers_only {
                     self.player_cape_geometry(mob, chest, camera, alpha as f32, packed, out);
@@ -5778,6 +5778,7 @@ impl Game<'_> {
                     self.player_ears_geometry(mob, &name, camera, alpha as f32, packed, out);
                 }
                 self.player_elytra_geometry(mob, chest, camera, alpha as f32, packed, out);
+                self.shoulder_parrots_geometry(mob, camera, alpha as f32, packed, out);
                 self.spin_attack_geometry(mob, camera, alpha as f32, packed, out);
                 self.stuck_in_body_geometry(mob, mob.id as i32, camera, alpha as f32, packed, out);
             }
