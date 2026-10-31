@@ -44,6 +44,8 @@ pub struct Preprocessed {
     /// The text of every block comment in live code (`DRAWBUFFERS:`, buffer formats).
     pub comments: Vec<(Origin, String)>,
     pub diagnostics: Vec<Diagnostic>,
+    /// Conditions that could not be evaluated and read as false: noted, the program still runs.
+    pub warnings: Vec<Diagnostic>,
 }
 
 impl Preprocessed {
@@ -149,6 +151,10 @@ impl Run<'_> {
             return self.diagnose(origin, &format!("unknown directive `#{}`", after.trim()));
         };
         match self.conditionals.apply(word, rest, &self.macros) {
+            // As Iris loads such a pack: the branch is skipped, the program kept.
+            Err(e) if e.ends_with("read as false") => {
+                return self.out.warnings.push(Diagnostic { origin, message: e });
+            }
             Err(e) => return self.diagnose(origin, &e),
             Ok(true) => return,
             Ok(false) if !self.conditionals.active() => return,
@@ -370,5 +376,18 @@ mod tests {
         assert_eq!(code_lines(&p), [("float x;", "program/final.fsh:9".into())]);
         let messages: Vec<&str> = p.diagnostics.iter().map(|d| d.message.as_str()).collect();
         assert_eq!(messages, ["#error live", "unknown directive `#bogus`"]);
+    }
+
+    /// A condition that can't be evaluated is a warning and reads as false; the code goes on.
+    #[test]
+    fn bad_conditions_warn_and_read_false() {
+        let p = run(&[(
+            "program/final.fsh",
+            "#if (in(biome, BIOME_SOUL_SAND_VALLEY)\nfloat a;\n#else\nfloat b;\n#endif\nfloat c;\n",
+        )]);
+        assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+        assert_eq!(p.warnings.len(), 1);
+        let code: Vec<&str> = code_lines(&p).iter().map(|(c, _)| *c).collect();
+        assert_eq!(code, ["float b;", "float c;"]);
     }
 }
