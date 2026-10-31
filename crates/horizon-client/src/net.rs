@@ -536,6 +536,7 @@ fn run(
                     .map_err(|err| format!("Protocol error: {err}"))?;
                 let secret = generate_secret().map_err(e)?;
                 if hello.should_authenticate {
+                    let signed_in = auth.is_some();
                     let authenticated =
                         auth.ok_or_else(|| NOT_SIGNED_IN.to_owned())
                             .and_then(|account| {
@@ -553,7 +554,7 @@ fn run(
                                 })
                             });
                     if let Err(reason) = authenticated {
-                        if !lan {
+                        if !continues_after_failed_join(lan, signed_in) {
                             return Err(reason);
                         }
                         log::warn!("Authentication failed: {reason}");
@@ -738,6 +739,7 @@ fn configure(
     resources: &Path,
 ) -> Result<Dynamic, String> {
     let mut registries = Dynamic::default();
+    let mut content_verified = false;
     let reply = |p: cfg::Serverbound| -> Result<(), String> {
         match writer.lock().unwrap().as_mut() {
             Some(w) => w.send(&p.encode()).map_err(|e| connection_lost(e, lang)),
@@ -751,6 +753,7 @@ fn configure(
             cfg::Clientbound::CustomPayload(p) if p.channel == crate::content_identity::CHANNEL => {
                 let hash = crate::content_identity::identity(resources)
                     .map_err(|_| crate::content_identity::MISMATCH.to_string())?;
+                content_verified = p.data == hash;
                 reply(cfg::Serverbound::CustomPayload(cfg::CustomPayload {
                     channel: crate::content_identity::CHANNEL.into(),
                     data: hash.to_vec(),
@@ -805,6 +808,7 @@ fn configure(
             }
             cfg::Clientbound::Disconnect(d) => return Err(plain(&d.reason, lang)),
             cfg::Clientbound::FinishConfiguration(_) => {
+                registries.custom_components = content_verified;
                 let mut w = writer.lock().unwrap();
                 let w = w.as_mut().ok_or("Disconnected")?;
                 w.send(&cfg::Serverbound::FinishConfiguration(Empty).encode())
@@ -1003,6 +1007,15 @@ pub fn ping_legacy(address: &str, timeout: Duration) -> Result<LegacyStatus, Str
         .collect();
     parse_legacy_status(&String::from_utf16_lossy(&units))
         .ok_or_else(|| "unexpected legacy reply".to_owned())
+}
+
+/// `ClientHandshakePacketListenerImpl.handleHello`: a failed session join goes
+/// on to encryption only for an entry picked from LAN discovery
+/// (`ServerData.isLan`), and the host decides. A vanilla client always has an
+/// account; Horizon without one never joins anything (Mojang's rules: no play
+/// without an account that owns the game), LAN included.
+fn continues_after_failed_join(lan: bool, signed_in: bool) -> bool {
+    lan && signed_in
 }
 
 #[cfg(test)]
@@ -1446,7 +1459,8 @@ mod tests {
         receive_brand(&payload, &send);
         assert!(events.try_recv().is_err());
     }
-    /// Compared with the real client login listener by test_lan_auth_parity.py.
+    /// No account never joins; the signed-in rule is compared with the real
+    /// client login listener by test_lan_auth_parity.py.
     #[test]
     fn lan_login_continues_after_authentication_failure() {
         for lan in [true, false] {
@@ -1516,21 +1530,19 @@ mod tests {
                     break reason;
                 }
             };
+            // Without an account nothing joins, LAN or not.
             let sent_key = worker.join().unwrap();
-            assert_eq!(sent_key, lan);
-            assert_eq!(
-                reason,
-                if lan {
-                    "LAN fixture accepted"
-                } else {
-                    NOT_SIGNED_IN
-                }
-            );
+            assert!(!sent_key, "lan {lan}: joined without an account");
+            assert_eq!(reason, NOT_SIGNED_IN);
+            // A signed-in account whose join the session service rejects:
+            // the case vanilla's listener is run with.
+            let goes_on = continues_after_failed_join(lan, true);
+            assert_eq!(goes_on, lan);
             println!(
                 "lan_auth={}:{}:{}",
                 if lan { "LAN" } else { "OTHER" },
-                sent_key,
-                !sent_key
+                goes_on,
+                !goes_on
             );
         }
     }

@@ -15,7 +15,9 @@ use std::{
     sync::mpsc,
 };
 
+mod confirm_experiments;
 mod create_world;
+mod experiments;
 mod flat;
 mod onboarding;
 #[cfg(test)]
@@ -433,6 +435,17 @@ pub struct Title {
     rules: RefCell<Option<RulesScreen>>,
     /// The onboarding screen has run out: the owner saves `onboardAccessibility` as false.
     pub onboarding_finished: bool,
+    /// Focused button id, for keyboard navigation.
+    pub focused_button: Option<u8>,
+    /// CreateWorldScreen's Experiments screen, over Create New World.
+    experiments: RefCell<Option<experiments::ExperimentsScreen>>,
+    /// ConfirmExperimentalFeaturesScreen, over Create New World.
+    confirm_experiments: RefCell<Option<confirm_experiments::ConfirmExperimentsScreen>>,
+    /// The world creation data is being read: the screen says
+    /// `createWorld.preparing` until it is done.
+    preparing: bool,
+    /// The confirm screen's Back: the Data Packs screen reopens.
+    reopen_data_packs: bool,
 }
 pub(crate) struct Button {
     x: f32,
@@ -666,6 +679,11 @@ impl Title {
             recent: std::cell::RefCell::new(None),
             rules: RefCell::new(None),
             onboarding_finished: false,
+            focused_button: None,
+            experiments: RefCell::new(None),
+            confirm_experiments: RefCell::new(None),
+            preparing: false,
+            reopen_data_packs: false,
         }
     }
     /// Vanilla bypasses the selector when there are no saves.
@@ -802,8 +820,73 @@ impl Title {
             };
         }
     }
+    /// `createWorld.preparing` is up: the world creation data is being read.
+    pub fn preparing(&self) -> bool {
+        self.preparing
+    }
+    /// The read finished: the flag goes, and the create screen opens — a
+    /// fresh one entering from the world list, the one the player already
+    /// filled in after the data packs changed (`openCreateWorldScreen`).
+    pub fn finish_preparing(&mut self) {
+        self.preparing = false;
+        if !matches!(self.mode, Mode::Create { .. }) {
+            self.mode = Self::new_world();
+        }
+    }
     /// The Data Packs screen's Done (`applyNewPackConfig`): its selection for
     /// the new world.
+    /// `PackSelectionScreen.onFilesDrop`: a pack dropped on the window joins
+    /// the Create New World screen's data packs (the screen's watcher lists
+    /// it within a second).
+    pub fn drop_file(&mut self, path: std::path::PathBuf) {
+        let Mode::Create { options, .. } = &mut self.mode else {
+            return;
+        };
+        if options.pack_dir.is_none() {
+            options.pack_dir = crate::datapack::temp_folder().ok();
+        }
+        let Some(dir) = options.pack_dir.clone() else {
+            return;
+        };
+        if !crate::datapack::copy_pack(&path, &dir) {
+            log::warn!("Horizon: {} is not a data pack", path.display());
+        }
+    }
+    /// The world's data pack selection, for the game to reoffer.
+    pub fn data_packs(&self) -> Vec<String> {
+        match &self.mode {
+            Mode::Create { options, .. } => options.data_packs.clone(),
+            _ => Vec::new(),
+        }
+    }
+    /// The new world's pack folder, for the Data Packs screen to reopen.
+    pub fn pack_dir(&self) -> Option<PathBuf> {
+        match &self.mode {
+            Mode::Create { options, .. } => options.pack_dir.clone(),
+            _ => None,
+        }
+    }
+    /// The Data Packs screen's Done (`tryApplyNewDataPacks`): a selection
+    /// with feature packs asks for experimental features, so the confirm
+    /// screen comes up first; anything else applies at once and the data
+    /// is read again.
+    pub fn offer_data_packs(&mut self, resources: &std::path::Path, ids: Vec<String>) {
+        let experimental = crate::datapack::feature_packs(resources)
+            .into_iter()
+            .any(|p| ids.contains(&p.id));
+        if experimental {
+            *self.confirm_experiments.get_mut() = Some(
+                confirm_experiments::ConfirmExperimentsScreen::new(resources, &ids),
+            );
+        } else {
+            self.set_data_packs(ids);
+            self.preparing = true;
+        }
+    }
+    /// Whether the confirm screen declined: the Data Packs screen reopens.
+    pub fn take_reopen_data_packs(&mut self) -> bool {
+        std::mem::take(&mut self.reopen_data_packs)
+    }
     pub fn set_data_packs(&mut self, ids: Vec<String>) {
         if let Mode::Create { options, .. } = &mut self.mode {
             options.data_packs = ids;
@@ -883,29 +966,49 @@ impl Title {
         }
         self.scroll.get_mut().release();
     }
-    /// Mouse wheel over the classic world and server lists.
-    pub fn scroll_worlds(&mut self, delta: f32, cursor: (f32, f32), size: (f32, f32)) {
+    /// Mouse wheel over the classic world and server lists, or cycle buttons. Returns true if a button was cycled.
+    pub fn scroll_worlds(&mut self, delta: f32, cursor: (f32, f32), size: (f32, f32)) -> bool {
         if let Some(rules) = self.rules.get_mut() {
-            return rules.wheel(delta, size.1.ceil());
+            rules.wheel(delta, size.1.ceil());
+            return false;
         }
         if let Mode::Multiplayer(screen) = &mut self.mode {
             screen.wheel(delta, cursor, size);
-            return;
+            return false;
         }
         if let Mode::CreateFlat { flat, .. } = &mut self.mode {
             flat::wheel(flat, delta, cursor, size);
-            return;
+            return false;
+        }
+        if let Mode::Create {
+            creative, options, ..
+        } = &mut self.mode
+        {
+            let (w, h) = size;
+            let buttons = create_world::buttons(w, h, *creative, options);
+            if let Some(b) = buttons.iter().find(|b| {
+                b.enabled
+                    && cursor.0 >= b.x
+                    && cursor.0 < b.x + b.w
+                    && cursor.1 >= b.y
+                    && cursor.1 < b.y + 20.0
+            }) {
+                let step = if delta > 0.0 { -1 } else { 1 };
+                options.cycle(b.id, creative, step);
+                return true;
+            }
         }
         let Mode::Select { worlds, .. } = &self.mode else {
-            return;
+            return false;
         };
         let (top, bottom, _, content) = self.world_list(worlds, size);
         if cursor.1 < top || cursor.1 >= bottom {
-            return;
+            return false;
         }
         let mut scroll = self.scroll.get();
         scroll.wheel(delta, ROW_HEIGHT / 2.0, top, bottom, content);
         self.scroll.set(scroll);
+        false
     }
     pub fn failed(&mut self, error: impl std::fmt::Display) {
         let return_to = Box::new(self.mode.clone());
@@ -1855,9 +1958,45 @@ impl Title {
         cursor: (f32, f32),
         hide_splash: bool,
     ) {
+        self.draw_with_items(atlas, None, batch, cursor, hide_splash);
+    }
+    /// [`Title::draw`] with the item models, which draw the item icons of the
+    /// Superflat screens the way `GuiGraphics.renderItem` does.
+    pub fn draw_with_items(
+        &self,
+        atlas: &HudAtlas,
+        items: Option<&crate::item_render::ItemRenderer>,
+        batch: &mut HudBatch,
+        cursor: (f32, f32),
+        hide_splash: bool,
+    ) {
         let (w, h) = (batch.width.ceil(), batch.height.ceil());
         if let Some(rules) = self.rules.borrow_mut().as_mut() {
             return rules.draw(batch, atlas, cursor);
+        }
+        if self.preparing {
+            // `CreateWorldScreen.openCreateWorldScreen`'s queued
+            // `GenericMessageScreen`: the menu background and the message
+            // alone, centred, no progress.
+            crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
+            let text =
+                crate::lang::get_or("createWorld.preparing", "Preparing for world creation...");
+            let tw = atlas.font.width_text(&Text::literal(text.clone()));
+            let (tx, ty) = (w / 2.0 - tw / 2.0, h / 2.0 - 4.5);
+            // `FocusableTextWidget.builder(title, font, 12)`: 12 pixels of
+            // padding around the text, on a black box with a 1-pixel border.
+            let (bx, by) = (tx - 12.0, ty - 12.0);
+            let (bw, bh) = (tw + 24.0, 9.0 + 24.0);
+            batch.fill(atlas, bx - 1.0, by - 1.0, bw + 2.0, bh + 2.0, 0xFFD0D0D0);
+            batch.fill(atlas, bx, by, bw, bh, 0xFF000000);
+            batch.text(atlas, &text, tx, ty, u32::MAX, false);
+            return;
+        }
+        if let Some(screen) = self.confirm_experiments.borrow().as_ref() {
+            return screen.draw(batch, atlas, cursor);
+        }
+        if let Some(screen) = self.experiments.borrow().as_ref() {
+            return screen.draw(batch, atlas, cursor);
         }
         let mut fade_from = None;
         match &self.mode {
@@ -2070,7 +2209,7 @@ impl Title {
                 options,
                 ..
             } => self.draw_create(atlas, batch, cursor, name, seed, *focus, options),
-            Mode::CreateFlat { flat, .. } => flat::draw(self, atlas, batch, cursor, flat),
+            Mode::CreateFlat { flat, .. } => flat::draw(self, atlas, items, batch, cursor, flat),
             Mode::Edit { name, focused, .. } => {
                 crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
                 centered(
@@ -2487,7 +2626,8 @@ impl Title {
             let inside =
                 cursor.0 >= b.x && cursor.0 < b.x + b.w && cursor.1 >= b.y && cursor.1 < b.y + 20.0;
             crate::widgets::widget_cursor(inside, b.enabled);
-            let hover = b.enabled && inside;
+            let is_focused = self.focused_button == Some(b.id);
+            let hover = b.enabled && (inside || is_focused);
             let sprite = if !b.enabled {
                 "gui/sprites/widget/button_disabled"
             } else if hover {
@@ -2640,7 +2780,11 @@ impl Title {
     pub fn click(&mut self, x: f32, y: f32, size: (f32, f32)) -> (Action, bool) {
         self.remember_direct_address();
         // The game rules take the press in `press_rules`, which has the atlas.
-        if self.rules.get_mut().is_some() {
+        if self.rules.get_mut().is_some()
+            || self.experiments.get_mut().is_some()
+            || self.confirm_experiments.get_mut().is_some()
+            || self.preparing
+        {
             return (Action::None, false);
         }
         let (w, h) = (size.0.ceil(), size.1.ceil());
@@ -2681,6 +2825,9 @@ impl Title {
             .into_iter()
             .find(|b| b.enabled && x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + 20.0)
             .map(|b| b.id);
+        if hit.is_some() {
+            self.focused_button = hit;
+        }
         if matches!(self.mode, Mode::CreateFlat { .. }) {
             self.flat_click(x, y, (w, h), hit);
             return (Action::None, hit.is_some());
@@ -2693,6 +2840,10 @@ impl Title {
     fn click_action(&mut self, x: f32, y: f32, (w, h): (f32, f32), hit: Option<u8>) -> Action {
         match (&mut self.mode, hit) {
             (Mode::Main, Some(1)) => {
+                // The title button is no longer part of the world-select screen.
+                // Clear it so Enter can activate the selected world after a
+                // mouse click opened Select World.
+                self.focused_button = None;
                 self.enter_singleplayer();
                 Action::None
             }
@@ -2816,7 +2967,10 @@ impl Title {
             }
             (Mode::Select { .. }, Some(11)) => {
                 self.create_return_to_main = false;
-                self.mode = Self::new_world();
+                // `CreateWorldScreen.openCreateWorldScreen`: the world
+                // generation data is read first, behind a loading screen;
+                // the game opens the create screen after (`preparing`).
+                self.preparing = true;
                 Action::None
             }
             (Mode::Select { worlds, selected }, Some(id @ 13..=15)) => {
@@ -3003,8 +3157,15 @@ impl Title {
                     creative, options, ..
                 },
                 Some(id),
-            ) if !matches!(id, 21 | 22 | 31) => {
+            ) if !matches!(id, 21 | 22 | 30 | 31) => {
                 options.press(id, creative);
+                Action::None
+            }
+            // CreateWorldScreen.openExperimentsScreen: the feature packs the
+            // jar ships, switched on or off.
+            (Mode::Create { options, .. }, Some(30)) => {
+                let flags = experiments::repository_flags(&self.resources, &options.data_packs);
+                *self.experiments.get_mut() = Some(experiments::ExperimentsScreen::new(flags));
                 Action::None
             }
             (Mode::Create { .. }, Some(21)) => self.create_action(),
@@ -3174,26 +3335,46 @@ impl Title {
     /// World creates, a rename saves, Direct Connection joins, the selected
     /// world joins.
     pub fn confirm_key(&mut self) -> Action {
+        self.confirm_key_size((854.0, 480.0)).0
+    }
+    /// `confirm_key` with actual viewport size for button geometry lookup.
+    /// Returns the triggered action and whether a UI button click sound should play.
+    pub fn confirm_key_size(&mut self, size: (f32, f32)) -> (Action, bool) {
         self.remember_direct_address();
         if self.rules.get_mut().is_some() {
-            return Action::None;
+            return (Action::None, false);
         }
-        if matches!(self.mode, Mode::Edit { .. }) {
+        if matches!(self.mode, Mode::Edit { .. }) && self.focused_button.is_none() {
             self.confirm_edit();
-            return Action::None;
+            return (Action::None, true);
         }
-        if self.list_focused() {
-            return self.join_selected();
+        if self.list_focused() && self.focused_button.is_none() {
+            let action = self.join_selected();
+            let sound = matches!(action, Action::Play { .. });
+            return (action, sound);
+        }
+        if let Some(id) = self.focused_button {
+            let (w, h) = size;
+            let buttons = self.buttons(w, h);
+            if let Some(b) = buttons.into_iter().find(|b| b.id == id && b.enabled) {
+                let action = self.click_action(b.x, b.y, (w, h), Some(id));
+                return (action, true);
+            }
+            return (Action::None, false);
         }
         match &self.mode {
-            Mode::Create { .. } => self.create_action(),
+            Mode::Create { .. } => {
+                let action = self.create_action();
+                let sound = matches!(action, Action::Create { .. });
+                (action, sound)
+            }
             Mode::Multiplayer(screen) => match screen.confirm() {
                 crate::multiplayer::Outcome::Connect { address, lan } => {
-                    Action::Connect { address, lan }
+                    (Action::Connect { address, lan }, true)
                 }
-                _ => Action::None,
+                _ => (Action::None, false),
             },
-            _ => Action::None,
+            _ => (Action::None, false),
         }
     }
     /// The world list has the keyboard: no search box focus.
@@ -3214,26 +3395,208 @@ impl Title {
         self.play(world)
     }
     pub fn tab(&mut self) {
+        self.tab_dir(false, (854.0, 480.0));
+    }
+    /// Tab navigation through widgets and fields in either forward or reverse order.
+    pub fn tab_dir(&mut self, reverse: bool, size: (f32, f32)) {
         if self.rules.get_mut().is_some() {
             return;
         }
-        if let Mode::Edit { focused, .. } = &mut self.mode {
-            *focused = !*focused;
-        }
-        if matches!(self.mode, Mode::Select { .. }) {
-            self.search_focused = !self.search_focused;
-        }
         if let Mode::Multiplayer(screen) = &mut self.mode {
             screen.tab();
+            return;
         }
-        // The open tab's one text box, then nothing.
-        if let Mode::Create { focus, options, .. } = &mut self.mode {
-            let field = if options.tab == 1 { 1 } else { 0 };
-            *focus = if *focus == field || options.tab == 2 {
-                2
-            } else {
-                field
+        let (w, h) = size;
+        let buttons = self.buttons(w, h);
+        let enabled: Vec<u8> = buttons.iter().filter(|b| b.enabled).map(|b| b.id).collect();
+
+        match &mut self.mode {
+            Mode::Select { .. } => {
+                if self.search_focused {
+                    self.search_focused = false;
+                    self.focused_button = enabled.first().copied();
+                } else if let Some(cur) = self.focused_button {
+                    if let Some(pos) = enabled.iter().position(|&id| id == cur) {
+                        if !reverse && pos + 1 < enabled.len() {
+                            self.focused_button = Some(enabled[pos + 1]);
+                        } else if reverse && pos > 0 {
+                            self.focused_button = Some(enabled[pos - 1]);
+                        } else {
+                            self.focused_button = None;
+                            self.search_focused = true;
+                        }
+                    } else {
+                        self.focused_button = None;
+                        self.search_focused = true;
+                    }
+                } else {
+                    self.search_focused = true;
+                }
+            }
+            Mode::Create { focus, options, .. } => {
+                let field_id = if options.tab == 1 { 1 } else { 0 };
+                if *focus != 2 {
+                    *focus = 2;
+                    self.focused_button = if reverse {
+                        enabled.last().copied()
+                    } else {
+                        enabled.first().copied()
+                    };
+                } else if let Some(cur) = self.focused_button {
+                    if let Some(pos) = enabled.iter().position(|&id| id == cur) {
+                        if !reverse && pos + 1 < enabled.len() {
+                            self.focused_button = Some(enabled[pos + 1]);
+                        } else if reverse && pos > 0 {
+                            self.focused_button = Some(enabled[pos - 1]);
+                        } else {
+                            self.focused_button = None;
+                            *focus = field_id;
+                        }
+                    } else {
+                        self.focused_button = None;
+                        *focus = field_id;
+                    }
+                } else {
+                    *focus = field_id;
+                }
+            }
+            Mode::Edit { focused, .. } => {
+                if *focused {
+                    *focused = false;
+                    self.focused_button = if reverse {
+                        enabled.last().copied()
+                    } else {
+                        enabled.first().copied()
+                    };
+                } else if let Some(cur) = self.focused_button {
+                    if let Some(pos) = enabled.iter().position(|&id| id == cur) {
+                        if !reverse && pos + 1 < enabled.len() {
+                            self.focused_button = Some(enabled[pos + 1]);
+                        } else if reverse && pos > 0 {
+                            self.focused_button = Some(enabled[pos - 1]);
+                        } else {
+                            self.focused_button = None;
+                            *focused = true;
+                        }
+                    } else {
+                        self.focused_button = None;
+                        *focused = true;
+                    }
+                } else {
+                    *focused = true;
+                }
+            }
+            _ => {
+                if enabled.is_empty() {
+                    return;
+                }
+                let next = match self.focused_button {
+                    Some(cur) => {
+                        if let Some(pos) = enabled.iter().position(|&id| id == cur) {
+                            if reverse {
+                                if pos == 0 {
+                                    enabled.last().copied()
+                                } else {
+                                    Some(enabled[pos - 1])
+                                }
+                            } else {
+                                if pos + 1 >= enabled.len() {
+                                    enabled.first().copied()
+                                } else {
+                                    Some(enabled[pos + 1])
+                                }
+                            }
+                        } else {
+                            if reverse {
+                                enabled.last().copied()
+                            } else {
+                                enabled.first().copied()
+                            }
+                        }
+                    }
+                    None => {
+                        if reverse {
+                            enabled.last().copied()
+                        } else {
+                            enabled.first().copied()
+                        }
+                    }
+                };
+                self.focused_button = next;
+            }
+        }
+    }
+    /// 2D spatial arrow key navigation across enabled buttons.
+    pub fn arrow_key(&mut self, key: winit::keyboard::KeyCode, size: (f32, f32)) {
+        use winit::keyboard::KeyCode;
+        if self.rules.get_mut().is_some() {
+            return;
+        }
+        if self.has_caret_field() {
+            return;
+        }
+        if self.list_focused()
+            && self.focused_button.is_none()
+            && let Mode::Select { worlds, selected } = &mut self.mode
+        {
+            let len = worlds.len();
+            if len > 0 {
+                match key {
+                    KeyCode::ArrowUp => {
+                        *selected = Some(selected.map_or(0, |i| i.saturating_sub(1)));
+                        return;
+                    }
+                    KeyCode::ArrowDown => {
+                        *selected = Some(selected.map_or(0, |i| (i + 1).min(len - 1)));
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let (w, h) = size;
+        let buttons = self.buttons(w, h);
+        let enabled: Vec<&Button> = buttons.iter().filter(|b| b.enabled).collect();
+        if enabled.is_empty() {
+            return;
+        }
+        let Some(cur_id) = self.focused_button else {
+            self.focused_button = Some(enabled[0].id);
+            return;
+        };
+        let Some(cur_b) = enabled.iter().find(|b| b.id == cur_id) else {
+            self.focused_button = Some(enabled[0].id);
+            return;
+        };
+        let (cx, cy) = (cur_b.x + cur_b.w / 2.0, cur_b.y + 10.0);
+        let mut best: Option<(u8, f32)> = None;
+        for b in &enabled {
+            if b.id == cur_id {
+                continue;
+            }
+            let (bx, by) = (b.x + b.w / 2.0, b.y + 10.0);
+            let (dx, dy) = (bx - cx, by - cy);
+            let valid = match key {
+                KeyCode::ArrowUp => dy < -4.0,
+                KeyCode::ArrowDown => dy > 4.0,
+                KeyCode::ArrowLeft => dx < -4.0,
+                KeyCode::ArrowRight => dx > 4.0,
+                _ => false,
             };
+            if !valid {
+                continue;
+            }
+            let dist = match key {
+                KeyCode::ArrowUp | KeyCode::ArrowDown => dy.abs() + dx.abs() * 2.0,
+                KeyCode::ArrowLeft | KeyCode::ArrowRight => dx.abs() + dy.abs() * 2.0,
+                _ => f32::MAX,
+            };
+            if best.as_ref().is_none_or(|(_, d)| dist < *d) {
+                best = Some((b.id, dist));
+            }
+        }
+        if let Some((next_id, _)) = best {
+            self.focused_button = Some(next_id);
         }
     }
     /// The server auto-reconnect retries now, once its countdown is over.
@@ -3270,6 +3633,96 @@ impl Title {
     /// it lands on a button, for its sound.
     pub fn press_rules(&mut self, atlas: &HudAtlas, cursor: (f32, f32), size: (f32, f32)) -> bool {
         let size = (size.0.ceil(), size.1.ceil());
+        if self.confirm_experiments.borrow().is_some() {
+            let click = self
+                .confirm_experiments
+                .borrow()
+                .as_ref()
+                .and_then(|s| s.click(atlas, cursor, size));
+            match click {
+                Some(confirm_experiments::Click::Details) => {
+                    self.confirm_experiments
+                        .borrow_mut()
+                        .as_mut()
+                        .unwrap()
+                        .details = true;
+                    return true;
+                }
+                Some(confirm_experiments::Click::Proceed) => {
+                    let pending = self
+                        .confirm_experiments
+                        .borrow_mut()
+                        .take()
+                        .map(|s| s.pending);
+                    // `tryApplyNewDataPacks` accepted: the packs apply, and
+                    // their data is read again (`applyNewPackConfig`'s load
+                    // screen).
+                    if let Some(pending) = pending {
+                        self.set_data_packs(pending);
+                        self.preparing = true;
+                    }
+                    return true;
+                }
+                Some(confirm_experiments::Click::Back) => {
+                    let screen = self.confirm_experiments.borrow();
+                    let in_details = screen.as_ref().is_some_and(|s| s.details);
+                    drop(screen);
+                    if in_details {
+                        self.confirm_experiments
+                            .borrow_mut()
+                            .as_mut()
+                            .unwrap()
+                            .details = false;
+                    } else {
+                        // `onAbort`: the confirm declines, the Data Packs
+                        // screen reopens (the game side holds the folder).
+                        self.confirm_experiments.borrow_mut().take();
+                        self.reopen_data_packs = true;
+                    }
+                    return true;
+                }
+                None => return false,
+            }
+        }
+        if self.experiments.borrow().is_some() {
+            let click = self
+                .experiments
+                .borrow()
+                .as_ref()
+                .and_then(|s| s.click(atlas, cursor, size));
+            match click {
+                Some(experiments::Click::Switch(i)) => {
+                    let flipped = self
+                        .experiments
+                        .borrow_mut()
+                        .as_mut()
+                        .and_then(|s| s.flags.get_mut(i))
+                        .map(|f| {
+                            f.enabled = !f.enabled;
+                            (f.id.clone(), f.enabled)
+                        });
+                    if let (Some((id, on)), Mode::Create { options, .. }) =
+                        (flipped, &mut self.mode)
+                    {
+                        options.data_packs.retain(|p| p != &id);
+                        if on {
+                            options.data_packs.push(id);
+                        }
+                    }
+                    return true;
+                }
+                Some(experiments::Click::Outcome(outcome)) => {
+                    *self.experiments.get_mut() = None;
+                    // `applyNewPackConfig`'s load screen: the data is read
+                    // again for the packs the screen picked (Done only).
+                    if outcome == experiments::Outcome::Done {
+                        self.preparing = true;
+                    }
+                    return true;
+                }
+                None => return false,
+            }
+        }
         let Some(rules) = self.rules.get_mut() else {
             return false;
         };
@@ -3338,6 +3791,13 @@ impl Title {
         }
     }
     pub fn escape(&mut self) {
+        if self.confirm_experiments.get_mut().take().is_some() {
+            self.reopen_data_packs = true;
+            return;
+        }
+        if self.experiments.get_mut().take().is_some() {
+            return;
+        }
         if let Some(rules) = self.rules.get_mut() {
             if let Some(exit) = rules.escape() {
                 self.close_rules(exit);
