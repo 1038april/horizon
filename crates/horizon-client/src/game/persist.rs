@@ -572,10 +572,12 @@ impl Game<'_> {
             horizon_client::mobs::camel::finish_load(&mut m, self.world.game_time);
         }
         // `NeutralMob.readPersistentAngerSaveData`: the anger runs until its
-        // end time, and the mob is angry at the target again.
+        // end time, and the mob is angry at the target again, through
+        // `Mob.setTarget` -> `asValidTarget`: a player the golem cannot attack
+        // (`IronGolem.canAttack`) comes back as no target.
         m.extra.anger = horizon_client::mobs::anger_left(m.extra.anger_end, self.world.game_time);
         if m.extra.anger > 0 && m.extra.angry_at.is_some() {
-            m.ai.target = Some(horizon_client::mobs::Who::Player);
+            m.ai.target = (!m.built_by_player()).then_some(horizon_client::mobs::Who::Player);
         }
         m.extra.mount = mount;
         m.extra.passenger = mount.is_some();
