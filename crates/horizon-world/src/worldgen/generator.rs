@@ -2235,6 +2235,7 @@ trait SeededPipeline: Send + Sync {
         names: &[String],
         from: [i32; 3],
         radius: i32,
+        skip: &dyn Fn(&str, ChunkPos) -> bool,
     ) -> Option<(String, [i32; 3])>;
     /// The chunks an older version generated, for `Blender.of`.
     fn set_old_world(&self, world: Arc<dyn super::blending::OldWorld>);
@@ -2402,6 +2403,7 @@ where
         names: &[String],
         from: [i32; 3],
         radius: i32,
+        skip: &dyn Fn(&str, ChunkPos) -> bool,
     ) -> Option<(String, [i32; 3])> {
         self.structures.as_ref()?.locate(
             &mut StructureQueries {
@@ -2412,6 +2414,7 @@ where
             names,
             from,
             radius,
+            skip,
         )
     }
     fn set_old_world(&self, world: Arc<dyn super::blending::OldWorld>) {
@@ -3228,7 +3231,20 @@ impl GeneratorWorker {
         from: [i32; 3],
         radius: i32,
     ) -> Option<(String, [i32; 3])> {
-        self.pipeline.locate(&mut self.state, names, from, radius)
+        self.locate_skipping(names, from, radius, &|_, _| false)
+    }
+    /// `ChunkGenerator.findNearestMapStructure`: like `locate`, past the
+    /// starts `skip` says can't be referenced again (an explorer map that
+    /// skips known structures).
+    pub fn locate_skipping(
+        &mut self,
+        names: &[String],
+        from: [i32; 3],
+        radius: i32,
+        skip: &dyn Fn(&str, ChunkPos) -> bool,
+    ) -> Option<(String, [i32; 3])> {
+        self.pipeline
+            .locate(&mut self.state, names, from, radius, skip)
     }
     /// Direct far sampling: work scales with rendered vertical resolution,
     /// without allocating chunks, carving masks or propagated aquifers.
