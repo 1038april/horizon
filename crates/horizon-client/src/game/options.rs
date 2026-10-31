@@ -63,9 +63,15 @@ impl Game<'_> {
                     .map(str::trim)
                     .filter(|v| !v.is_empty())
                     .ok_or("options-set KEY VALUE: missing the value")?;
+                let narrator = self.settings.narrator();
                 self.settings = self.settings.with_option(key, value)?;
-                // As the options screen applies a change.
-                self.handle_option_events(vec![Event::Changed])?;
+                // As the options screen applies a change (OptionInstance.set
+                // runs the narrator's onValueUpdate for a new value only).
+                let mut events = vec![Event::Changed];
+                if self.settings.narrator() != narrator {
+                    events.push(Event::Narrator);
+                }
+                self.handle_option_events(events)?;
                 match *key {
                     "lang" => self.load_language(&self.settings.language.clone()),
                     "resourcePacks" | "incompatibleResourcePacks" => self.reload_packs(),
@@ -375,6 +381,7 @@ impl Game<'_> {
                 Event::NativeSettings(i) => self.native_settings_refresh(i),
                 Event::NativeButton(i, b) => self.native_settings_event(i, b),
                 Event::Credits => self.open_win_screen(false, super::win::Finish::Options),
+                Event::Narrator => self.narrator_status_changed(),
             }
         }
         Ok(())
@@ -446,6 +453,7 @@ impl Game<'_> {
         let mut volumes = s.volumes;
         volumes[0] = 1.0;
         horizon_client::settings::set_source_volumes(volumes);
+        super::narrator::sync(s);
         let chat = s.chat_options();
         let rescale = {
             let o = &self.ui.chat.options;

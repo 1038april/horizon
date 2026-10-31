@@ -23,6 +23,8 @@ pub(super) struct StartupMenu {
     dragging: bool,
     clipboard: SystemClipboard,
     selection: AppendSelection,
+    /// The narrator's `NARRATOR_TOGGLE` toast, handed to the game with the title.
+    narrator_toast: Option<horizon_client::toasts::SystemToast>,
     pub pending: Option<PendingWorldEntry>,
     pub reload_packs: bool,
     pub perf: horizon_client::telemetry::Session,
@@ -99,6 +101,7 @@ impl StartupMenu {
         game.clipboard = std::mem::take(&mut self.clipboard);
         game.text_selection = std::mem::take(&mut self.selection);
         game.perf = std::mem::take(&mut self.perf);
+        game.narrator_toast = self.narrator_toast.take();
         // Preserve an existing resource-error screen opened by start_game.
         if self.options_open {
             let resource_error = game.ui.options.resource_error.take();
@@ -329,6 +332,7 @@ impl Loading {
             renderer.set_present_mode(self.settings.vsync, self.settings.horizon.present_mode);
         }
         horizon_client::hud::GUI_SCALE.store(self.settings.gui_scale, Ordering::Relaxed);
+        super::narrator::sync(&self.settings);
         if let Some(gui) = &mut self.gui {
             gui.atlas.font.uniform = self.settings.force_unicode;
             gui.atlas.font.japanese = self.settings.japanese_glyphs;
@@ -479,6 +483,10 @@ impl Loading {
                         self.menu.win = Some((screen, Instant::now()));
                     }
                 }
+                Event::Narrator => super::narrator::update_status(
+                    self.settings.narrator(),
+                    &mut self.menu.narrator_toast,
+                ),
                 // Mods' settings pages open only in a running game.
                 Event::NativeSettings(_) | Event::NativeButton(..) => {}
                 // The startup menu runs before the game opens a control socket,
@@ -486,6 +494,45 @@ impl Loading {
                 Event::ButtonClick | Event::CopyAgentDetails | Event::Volume(..) => {}
             }
         }
+    }
+
+    /// `Game::narrator_hotkey` on the startup menu's screens.
+    fn menu_narrator_hotkey(&mut self, event: &KeyEvent) {
+        let letter = clipboard::shortcut_letter(&event.logical_key, event.physical_key);
+        if letter != Some('b') {
+            return;
+        }
+        let menu = &mut self.menu;
+        let control_with_quirk = if cfg!(target_os = "macos") {
+            menu.modifiers.super_key()
+        } else {
+            menu.modifiers.control_key()
+        };
+        let edit_box_focused = if menu.options_open {
+            menu.options.typing()
+        } else if menu.win.is_some() || menu.pending.is_some() {
+            false
+        } else {
+            menu.title
+                .as_mut()
+                .is_some_and(|t| t.has_caret_field() || t.focused_field().is_some())
+        };
+        let hotkey = super::narrator::is_hotkey(
+            event.state == ElementState::Pressed,
+            control_with_quirk,
+            letter,
+            edit_box_focused,
+            horizon_narrator::is_active(),
+            self.settings.file.bool("narratorHotkey"),
+        );
+        if !hotkey {
+            return;
+        }
+        super::narrator::cycle_status(&mut self.settings);
+        super::narrator::update_status(self.settings.narrator(), &mut self.menu.narrator_toast);
+        self.save_menu_settings();
+        // The screens' own narration (Game::on_narrator_status_changed)
+        // starts once the game has them.
     }
 
     fn menu_options_click(&mut self, drag: bool, right: bool) {
@@ -547,6 +594,9 @@ impl Loading {
             } else {
                 self.menu.physical_keys.remove(&key);
             }
+        }
+        if let WindowEvent::KeyboardInput { event, .. } = &event {
+            self.menu_narrator_hotkey(event);
         }
         match event {
             WindowEvent::CloseRequested => {
@@ -781,6 +831,16 @@ impl Loading {
                 self.settings.file.bool("hideSplashTexts"),
             );
         }
+        // Over every screen, as the game's; no sound before the sound engine.
+        let title_toast = self.menu.title.as_ref().is_some_and(|t| t.has_toast());
+        super::narrator::draw_toast(
+            &mut self.menu.narrator_toast,
+            u32::from(title_toast),
+            f64::from(self.settings.notification_display_time),
+            &gui.atlas,
+            batch,
+            false,
+        );
     }
 
     pub(super) fn restart_menu_resources(&mut self) -> Result<()> {

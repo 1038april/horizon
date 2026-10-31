@@ -182,6 +182,7 @@ mod mounts;
 mod moving_pistons;
 mod music;
 mod names;
+mod narrator;
 mod native_hooks;
 mod native_lifecycle;
 mod native_menus;
@@ -2229,6 +2230,8 @@ struct Game<'a> {
     settings: Settings,
     tutorial: tutorial::Tutorial,
     tutorial_toasts: Vec<tutorial::HintToast>,
+    /// The `SystemToastId.NARRATOR_TOGGLE` toast, wherever the player is.
+    narrator_toast: Option<horizon_client::toasts::SystemToast>,
     /// Where the options screen returns: true = title, false = pause menu.
     options_from_title: bool,
     dragging: bool,
@@ -7491,6 +7494,9 @@ impl Game<'_> {
         self.draw_pack_prompt(&mut batch);
         self.draw_code_of_conduct(&mut batch);
         self.draw_link_prompt(&mut batch);
+        // The ToastManager draws over every screen, the title and the
+        // options included: the narrator's toast follows the player there.
+        self.draw_narrator_toast(&mut batch);
         // Gui.extractRenderState: the debug overlay comes after the screen
         // and the toasts, so it is over everything, menus included.
         self.draw_debug_overlay(&mut batch, size);
@@ -15220,6 +15226,11 @@ impl Game<'_> {
                 return;
             }
         }
+        // KeyboardHandler.keyPress: the narrator hotkey, on every screen and
+        // in game, before the screen takes the key.
+        if let WindowEvent::KeyboardInput { event, .. } = &event {
+            self.narrator_hotkey(event);
+        }
         if matches!(
             event,
             WindowEvent::KeyboardInput { .. }
@@ -16629,6 +16640,7 @@ impl<'a> Game<'a> {
             settings,
             tutorial,
             tutorial_toasts: Vec::new(),
+            narrator_toast: None,
             options_from_title: false,
             dragging: false,
             avatar: Default::default(),
@@ -18217,6 +18229,7 @@ fn leave_fullscreen_after(
 
 fn run_event_loop(mut game: Game<'_>) -> Result<()> {
     let result = EventLoop::new()?.run_app(&mut game);
+    narrator::stop();
     leave_fullscreen_after(&result, &mut game.settings);
     result?;
     horizon_client::discord_presence::stop();
@@ -18647,6 +18660,7 @@ fn run_loading(
     };
     let mut app = App::Loading(Box::new(loading));
     let result = EventLoop::new()?.run_app(&mut app);
+    narrator::stop();
     match &mut app {
         App::Ready(game) => leave_fullscreen_after(&result, &mut game.settings),
         App::Loading(loading) => leave_fullscreen_after(&result, &mut loading.settings),
@@ -18721,6 +18735,10 @@ pub fn run() -> Result<()> {
         }
     }
     let early_settings = Settings::load(&std::env::current_dir()?.join("options.txt"));
+    // Minecraft's constructor opens the narrator; a server has none.
+    if options.execution_role.is_client() {
+        narrator::start(&early_settings);
+    }
     // "Playing Horizon" on Discord: never for a server; an automated run only talks to a test's fake Discord.
     if options.dedicated.is_none() {
         let automated = options.benchmark.is_some()
