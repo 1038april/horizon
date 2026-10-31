@@ -74,6 +74,57 @@ pub fn watch_playing(tx: std::sync::mpsc::Sender<backend::Msg>) {
     });
 }
 
+/// The official server's address from links.json once read (`set_official_server`; empty: none),
+/// the built-in one until then.
+static OFFICIAL_SERVER: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+
+/// The official server [`watch_official`] asks from now on: `Links::official_server`.
+pub fn set_official_server(address: &str) {
+    *OFFICIAL_SERVER.write().unwrap_or_else(|e| e.into_inner()) = Some(address.trim().to_owned());
+}
+
+fn official_server() -> String {
+    OFFICIAL_SERVER
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .unwrap_or_else(|| crate::server_list::OFFICIAL_ADDRESS.to_owned())
+}
+
+/// How many play on the official server now: its server-list status ping, as the game's
+/// Multiplayer list sends it (through the address's SRV record), with a 3-second timeout. None
+/// when it doesn't answer or there is no official server.
+pub fn official_players(address: &str) -> Option<u64> {
+    let (host, port) = horizon_telemetry::server_status::split_address(address)?;
+    let (host, port) = horizon_protocol::server_redirect(&host, port);
+    horizon_telemetry::server_status::players_at(
+        address,
+        (&host, port),
+        std::time::Duration::from_secs(3),
+    )
+    .ok()
+    .map(|players| players.online)
+}
+
+/// Sends [`official_players`] to the window as `Msg::OfficialPlayers` now and every minute, on
+/// its own thread. Nothing when `HORIZON_TELEMETRY_URL=off` (tests and automated runs) turns the
+/// live count off too.
+pub fn watch_official(tx: std::sync::mpsc::Sender<backend::Msg>) {
+    if horizon_telemetry::endpoint().is_none() {
+        return;
+    }
+    std::thread::spawn(move || {
+        while tx
+            .send(backend::Msg::OfficialPlayers(official_players(
+                &official_server(),
+            )))
+            .is_ok()
+        {
+            std::thread::sleep(horizon_telemetry::live::INTERVAL);
+        }
+    });
+}
+
 pub fn home() -> PathBuf {
     backend::game_home()
 }
