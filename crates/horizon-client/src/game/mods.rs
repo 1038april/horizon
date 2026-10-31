@@ -52,6 +52,7 @@ pub(super) fn content_root(
     let mut paths = horizon_mods::find(&here.join(mod_list::DIR));
     paths.retain(|p| !dev.contains(p));
     paths.extend(dev.iter().cloned());
+    let mut known = None;
     let mut mods: Vec<ContentMod> = Vec::new();
     for path in &paths {
         let Ok(package) = Package::read(path) else {
@@ -65,23 +66,29 @@ pub(super) fn content_root(
         {
             continue;
         }
-        let content = Content::read(path, m).and_then(|content| {
-            // The first of two mods owning one namespace stays on.
-            let own = (m.id.as_str(), content.namespaces.as_slice());
-            match mods
-                .iter()
-                .find_map(|c| horizon_mods::content::clash((&c.id, &c.content.namespaces), own))
-            {
-                Some(e) => Err(e),
-                None => Ok(content),
+        let content = match Content::read(path, m) {
+            Ok(content) => content,
+            Err(e) => {
+                log::warn!("Horizon: mod {} content not loaded: {e}", m.id);
+                continue;
             }
-        });
-        match content {
-            Ok(content) => mods.push(ContentMod {
-                id: m.id.clone(),
-                content,
-            }),
-            Err(e) => log::warn!("Horizon: mod {} content not loaded: {e}", m.id),
+        };
+        if known.is_none() {
+            match mod_content::known_components(root) {
+                Ok(types) => known = Some(types),
+                Err(e) => {
+                    log::warn!("Horizon: content mods not loaded: {e}");
+                    register_mob_effects(&[]);
+                    return root.to_owned();
+                }
+            }
+        }
+        let candidate = ContentMod {
+            id: m.id.clone(),
+            content,
+        };
+        if let Err(e) = mod_content::accept_mod(&mut mods, candidate, known.as_ref().unwrap()) {
+            log::warn!("Horizon: mod {} content not loaded: {e}", m.id);
         }
     }
     match mod_content::resource_root(root, &mods, &here.join(".horizon-cache")) {

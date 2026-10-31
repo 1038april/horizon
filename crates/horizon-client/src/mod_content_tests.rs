@@ -68,6 +68,89 @@ fn item_components_patch_the_template_entry() {
 }
 
 #[test]
+fn component_validation_isolates_mods() {
+    horizon_protocol::item::custom::install(1000, vec!["native:test".into()]).unwrap();
+    let scratch = std::env::temp_dir().join(format!(
+        "horizon-component-isolation-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&scratch);
+    let make = |id: &str, patch: &str, block: bool| {
+        let kind = if block { "block" } else { "item" };
+        folder_mod(
+            &scratch.join(id),
+            &[
+                ("horizon-mod.toml", &manifest(id, "")),
+                (
+                    &format!("data/{id}/horizon/{kind}/thing.json"),
+                    &format!(r#"{{"template":"minecraft:stone","components":{patch}}}"#),
+                ),
+            ],
+        )
+    };
+    let known = component_types(
+        &serde_json::from_str(r#"{"minecraft:stone":{"minecraft:max_stack_size":64}}"#).unwrap(),
+    );
+    let good = make(
+        "good",
+        r#"{"native:test":{"value":5},"!minecraft:max_stack_size":{}}"#,
+        false,
+    );
+    let removal = make("remove", r#"{"!native:test":{}}"#, true);
+    let bad = make("bad", r#"{"missing:type":{}}"#, false);
+    let bad_block = make("badblock", r#"{"!missing:type":{}}"#, true);
+    let mut oversized = make("large", r#"{"native:test":1}"#, false);
+    oversized.content.items[0].components.insert(
+        "native:test".into(),
+        serde_json::json!("x".repeat(2_097_153)),
+    );
+    let mut accepted = Vec::new();
+    for (candidate, valid) in [
+        (good, true),
+        (bad, false),
+        (removal, true),
+        (bad_block, false),
+        (oversized, false),
+    ] {
+        assert_eq!(accept_mod(&mut accepted, candidate, &known).is_ok(), valid);
+    }
+    assert_eq!(
+        accepted.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+        ["good", "remove"]
+    );
+    let base = scratch.join("base");
+    fs::create_dir_all(&base).unwrap();
+    fs::write(
+        base.join("facts.json"),
+        r#"{"states":[["minecraft:stone"]],"defaults":{"minecraft:stone":0}}"#,
+    )
+    .unwrap();
+    fs::write(
+        base.join("gameplay-facts.json"),
+        r#"{"states":[{"item":"minecraft:stone"}]}"#,
+    )
+    .unwrap();
+    let mut items: J =
+        serde_json::from_str(r#"{"minecraft:stone":{"minecraft:max_stack_size":64}}"#).unwrap();
+    Plan::new(&base, &accepted)
+        .unwrap()
+        .json("items.json", &mut items)
+        .unwrap();
+    let items: serde_json::Value = serde_json::to_value(items).unwrap();
+    assert_eq!(
+        items["good:thing"]["native:test"],
+        serde_json::json!({"value":5})
+    );
+    assert!(
+        items["good:thing"]
+            .get("minecraft:max_stack_size")
+            .is_none()
+    );
+    assert!(items.get("bad:thing").is_none());
+    fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
 fn creative_tabs_keep_vanilla_items_missing_from_search() {
     let tab = horizon_mods::content::CreativeTab {
         id: "test:restricted".into(),

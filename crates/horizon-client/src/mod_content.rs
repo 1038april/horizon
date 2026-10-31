@@ -463,6 +463,65 @@ struct Plan<'a> {
     names: BTreeMap<String, String>,
 }
 
+/// Component types present in the vanilla item table.
+pub fn known_components(base: &Path) -> Result<BTreeSet<String>> {
+    let path = base.join("items.json");
+    if !path.exists() {
+        return Ok(BTreeSet::new());
+    }
+    Ok(component_types(&read_json(&path)?))
+}
+
+fn component_types(map: &J) -> BTreeSet<String> {
+    match map {
+        J::Obj(entries) => entries
+            .iter()
+            .filter_map(|(_, v)| match v {
+                J::Obj(c) => Some(c.iter().map(|(k, _)| k.clone())),
+                _ => None,
+            })
+            .flatten()
+            .collect(),
+        _ => BTreeSet::new(),
+    }
+}
+
+/// Check and accept one mod without disturbing previously accepted mods.
+pub fn accept_mod(
+    mods: &mut Vec<ContentMod>,
+    candidate: ContentMod,
+    known: &BTreeSet<String>,
+) -> Result<()> {
+    validate_components(&candidate.content, known)?;
+    let own = (
+        candidate.id.as_str(),
+        candidate.content.namespaces.as_slice(),
+    );
+    if let Some(error) = mods
+        .iter()
+        .find_map(|c| horizon_mods::content::clash((&c.id, &c.content.namespaces), own))
+    {
+        return Err(error.into());
+    }
+    mods.push(candidate);
+    Ok(())
+}
+
+fn validate_components(content: &horizon_mods::Content, known: &BTreeSet<String>) -> Result<()> {
+    for (id, components) in content.items.iter().map(|i| (&i.id, &i.components)).chain(
+        content
+            .blocks
+            .iter()
+            .filter(|b| b.item)
+            .map(|b| (&b.id, &b.components)),
+    ) {
+        let patch = component_patch(id, components)?;
+        patch_components(&mut J::Obj(Vec::new()), &patch, known)
+            .map_err(|e| format!("{id}: {e}"))?;
+    }
+    Ok(())
+}
+
 /// An item's component patch on its entry; `known` holds every type a vanilla item has, so typos fail.
 fn patch_components(
     entry: &mut J,
@@ -914,16 +973,10 @@ impl<'a> Plan<'a> {
     /// Adds each new item's copy of its template's entry to a map by name;
     /// `components` applies the overrides (items.json).
     fn items(&self, map: &mut J, components: bool) -> Result<()> {
-        let known: BTreeSet<String> = match map {
-            J::Obj(entries) if components => entries
-                .iter()
-                .filter_map(|(_, v)| match v {
-                    J::Obj(c) => Some(c.iter().map(|(k, _)| k.clone())),
-                    _ => None,
-                })
-                .flatten()
-                .collect(),
-            _ => BTreeSet::new(),
+        let known = if components {
+            component_types(map)
+        } else {
+            BTreeSet::new()
         };
         for i in &self.items {
             let Some(v) = map.get(&i.rename.from) else {
