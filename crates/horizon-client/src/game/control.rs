@@ -169,7 +169,7 @@ impl Game<'_> {
         &mut self,
         line: &str,
         reply: &Sender<String>,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn EventLoopCtl,
     ) -> Result<Option<Value>> {
         let words: Vec<&str> = line.split_whitespace().collect();
         if self.pending_save.is_some() && words.first() != Some(&"quit") {
