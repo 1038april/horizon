@@ -34,6 +34,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub(super) mod events;
 mod report;
 mod status;
 
@@ -1638,6 +1639,14 @@ impl Game<'_> {
                 .collect();
             for conn in conns {
                 h.hub.kick(conn, reason.clone());
+                if let Some(g) = h.hub.guest(conn) {
+                    events::record(
+                        "kick",
+                        &g.name,
+                        uuid,
+                        serde_json::json!({ "reason": g.left_reason }),
+                    );
+                }
             }
         }
     }
