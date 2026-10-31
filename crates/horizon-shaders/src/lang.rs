@@ -27,6 +27,13 @@ impl Lang {
         lang
     }
 
+    /// The names one `.lang` file's text gives.
+    pub fn parse(text: &str) -> Self {
+        let mut lang = Self::default();
+        lang.read(text);
+        lang
+    }
+
     fn read(&mut self, text: &str) {
         for line in text.lines().map(str::trim) {
             if line.starts_with('#') {

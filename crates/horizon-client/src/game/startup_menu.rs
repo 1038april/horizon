@@ -567,6 +567,7 @@ impl Loading {
         let size = self.menu_size();
         let batch = HudBatch::new(size);
         let Some(gui) = &self.gui else { return };
+        self.menu.options.shift = self.menu.modifiers.shift_key();
         let events = self.menu.options.click(
             &mut self.settings,
             &gui.atlas,
