@@ -70,7 +70,7 @@ AbstractArrow.setPickupItemStack	port	crates/horizon-client/src/arrows.rs::Arrow
 AbstractArrow.isNoPhysics	inline	crates/horizon-client/src/arrows.rs::Ticker::tick	no_physics is a field read by the tick
 AbstractArrow.getSlot	missing		minor: the arrow's pickup stack is not reachable as an entity slot, so item commands on it do nothing
 AbstractArrow.Pickup.byOrdinal	port	crates/horizon-client/src/arrows.rs::Pickup::from_byte	out of range is DISALLOWED
-Arrow.updateColor	missing		player: a tipped arrow keeps no potion colour, so its flight and hit particles are not tinted
+Arrow.updateColor	port	crates/horizon-client/src/projectiles.rs::Projectile::arrow_effect_color	the tipped arrow's opaque potion colour for its flight and hit particles (-1 for none)
 Arrow.makeParticle	port	crates/horizon-client/src/game/remote_projectiles.rs::Game::arrow_makeparticle	ticked in #3514; `Arrow.makeParticle` is cited at crates/horizon-client/src/game/remote_projectiles.rs:218
 Arrow.handleEntityEvent	port	crates/horizon-client/src/game/remote_projectiles.rs::Game::remote_arrow_puff	ticked in #3514; `Arrow.handleEntityEvent` is cited at crates/horizon-client/src/game/remote_projectiles.rs:242
 ThrownTrident.defineSynchedData	skip:java		loyalty and foil synced fields; Horizon keeps loyalty on the trident struct

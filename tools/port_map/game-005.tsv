@@ -92,8 +92,8 @@ Entity.getClientPosition	port	crates/horizon-world/src/stepped_interpolation.rs:
 Entity.shouldBeSaved	inline	crates/horizon-client/src/game/persist.rs::Game::put_mob_passengers	riders are saved inside their vehicle's tag, not on their own
 Entity.lerpPositionAndRotationStep	inline	crates/horizon-client/src/game/remote.rs::Game::tick_remote_entities	boats, minecarts, projectiles and orbs of a server step toward the packet's target by 1/steps each tick
 Entity.applyImplicitComponents	port	crates/horizon-client/src/game/armor_stands.rs::Game::armor_stand_spawn	ticked in #3514; `Entity.applyImplicitComponents` is cited at crates/horizon-client/src/game/armor_stands.rs:390 (in a comment, so `where` names the enclosing fn)
-Entity.applyImplicitComponent	missing		player: custom_name and custom_data of a placed item are not applied to the new entity; only name tags (name_mob) and buckets copy data
-Entity.applyImplicitComponentIfPresent	missing		player: same gap, no item component reaches a freshly spawned entity
+Entity.applyImplicitComponent	inline	crates/horizon-client/src/entity_nbt.rs::apply_item_components	the stack's components (name, bucket data, variant, trim...) applied to the entity it spawns
+Entity.applyImplicitComponentIfPresent	inline	crates/horizon-client/src/entity_nbt.rs::apply_item_components	each component is applied only when the stack carries it
 EntityAttachments.scale	missing		minor: attachment points are not scaled with the mob, so riders on a resized or baby vehicle sit at the unscaled height
 EntityAttachments.getNullable	inline	crates/horizon-client/src/game/names.rs::Game::name_tags	gap: minor: only the NAME_TAG default (0.5 above the height) is used, so a sniffer's tag (offset 2.05) sits 0.2 too high
 EntityAttachments.get	inline	crates/horizon-client/src/mobs/riders.rs::passenger_attachment	the point is always found: the species table or the top of the box

@@ -65,7 +65,7 @@ LivingEntity.setIgnoreFallDamageFromCurrentImpulse	port	crates/horizon-world/src
 LivingEntity.getDamageAfterArmorAbsorb	inline	crates/horizon-client/src/mobs.rs::Mob::damage_with	the player's armor wear is health.rs hurt_armor; the mob path also scales armor effectiveness (breach)
 LivingEntity.getKillCredit	port	crates/horizon-client/src/game/creatures.rs::Game::mob_died	the last player to hit it, else the last mob
 LivingEntity.getTicksSinceLastKineticHitFeedback	port	crates/horizon-client/src/game/spear.rs::Game::kinetic_hit_ticks	
-LivingEntity.swapHandItems	missing		player: on a server another player's hand swap (entity event 55) is not handled, so their held items do not swap on screen
+LivingEntity.swapHandItems	inline	crates/horizon-client/src/game/remote.rs::Game::handle_packet	entity event 55 swaps another player's hands; the arm is in `handle_packet`
 LivingEntity.getAttackRangeWith	inline	crates/horizon-client/src/game.rs::Game::reach	gap: minor: only the spear's range is item specific (spear.rs REACH); other items use the default reach
 LivingEntity.getActiveItem	inline	crates/horizon-client/src/game.rs::Game::held	the selected slot; the item in use is the `using` slot
 LivingEntity.getItemInHand	inline	crates/horizon-client/src/game.rs::Game::held	main hand; the off hand is the `offhand` field
