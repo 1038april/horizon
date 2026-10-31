@@ -56,6 +56,27 @@ pub fn load(guest: &mut Guest, world: &Path) -> bool {
     true
 }
 
+/// `PlayerList.loadPlayerData` for the world's single-player owner: the file
+/// level.dat names (`singleplayer_uuid`), as `Level::read` loaded it into
+/// `saved`, before the owner's own file. Builds that save the owner to the
+/// named file alone (0.2.93) leave the own file behind, stale (#5351). The
+/// own file is for a world whose named file is missing; then the world's
+/// player (the legacy `Data.Player`, or nothing in a new world). Returns
+/// whether the player has been in this world before.
+pub fn load_owner(guest: &mut Guest, world: &Path, saved: Option<&Level>) -> bool {
+    if let Some(level) = saved.filter(|l| l.singleplayer_file) {
+        apply(guest, level);
+        return level.position.is_some();
+    }
+    if load(guest, world) {
+        return true;
+    }
+    saved.is_some_and(|level| {
+        apply(guest, level);
+        level.position.is_some()
+    })
+}
+
 /// Give a guest the player state read into `level`.
 pub fn apply(guest: &mut Guest, level: &Level) {
     if let Some(p) = level.position {
@@ -264,6 +285,68 @@ mod tests {
             [0.0, 64.0, 0.0],
             8,
         )
+    }
+
+    fn holding(uuid: u128, item: &str, count: u32) -> Guest {
+        let mut g = guest();
+        g.uuid = uuid;
+        g.position = [10.5, 70.0, -3.5];
+        g.inventory[0] = Some(ItemStack {
+            item: Arc::from(item),
+            count,
+            damage: 0,
+            extra: None,
+        });
+        g
+    }
+
+    fn world(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("horizon-owner-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    fn first_item(g: &Guest) -> Option<(&str, u32)> {
+        g.inventory[0].as_ref().map(|s| (&*s.item, s.count))
+    }
+
+    #[test]
+    fn the_owner_loads_the_file_level_dat_names_over_an_older_own_file() {
+        // #5351: a newer build saved the owner to both files, then 0.2.93 saved
+        // it again to the file level.dat names alone. The owner's own file is
+        // older; vanilla's loadPlayerData reads the named one for the owner.
+        let owner = horizon_protocol::crypto::offline_uuid("Player46606");
+        let dir = world("named");
+        save(&holding(owner, "minecraft:diamond", 5), &dir);
+        let mut level = Level::default();
+        store(&holding(owner, "minecraft:gold_ingot", 7), &mut level, None);
+        level.write(&dir).unwrap();
+        let named = ints_uuid(level.player_uuid.unwrap());
+        assert_ne!(
+            named, owner,
+            "level.dat names offline `Player`, not the owner"
+        );
+        let saved = Level::read(&dir).unwrap();
+        let mut g = guest();
+        g.uuid = owner;
+        assert!(load_owner(&mut g, &dir, Some(&saved)));
+        assert_eq!(first_item(&g), Some(("minecraft:gold_ingot", 7)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_owner_loads_its_own_file_when_the_named_one_is_missing() {
+        let owner = horizon_protocol::crypto::offline_uuid("Player46606");
+        let dir = world("own");
+        let mut level = Level::default();
+        level.write_without_player(&dir).unwrap();
+        save(&holding(owner, "minecraft:diamond", 5), &dir);
+        let saved = Level::read(&dir).unwrap();
+        let mut g = guest();
+        g.uuid = owner;
+        assert!(load_owner(&mut g, &dir, Some(&saved)));
+        assert_eq!(first_item(&g), Some(("minecraft:diamond", 5)));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

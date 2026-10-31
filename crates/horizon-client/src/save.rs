@@ -3442,6 +3442,10 @@ pub struct Level {
     /// The player compound as loaded, for fields Horizon does not model
     /// (ender chest, effects, abilities, recipe book, attributes, ...).
     pub player_extra: Option<Tag>,
+    /// The player was read from the file level.dat names (`singleplayer_uuid`,
+    /// or its `.dat_old`): `PlayerList.loadPlayerData` gives the world's owner
+    /// that file, not their own.
+    pub singleplayer_file: bool,
 }
 impl Level {
     /// `PrimaryLevelData.setDifficulty`: the level data holds the world's
@@ -3599,6 +3603,7 @@ impl Level {
             read_dat(&player_dir.join(format!("{name}.dat")))
                 .or_else(|| read_dat(&player_dir.join(format!("{name}.dat_old"))))
         });
+        level.singleplayer_file = owner.is_some();
         let player = owner
             .or_else(|| {
                 fs::read_dir(&player_dir)

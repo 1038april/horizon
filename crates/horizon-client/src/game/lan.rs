@@ -2352,28 +2352,15 @@ impl Game<'_> {
         let force = host.hub.config.force_game_mode;
         let root = self.world_root.clone();
         let in_place = host.hub.config.dimension.clone();
-        let mut owner = host.owner.as_mut();
+        let owner = host.owner.as_mut();
         let Some(g) = host.hub.guest_mut(conn) else {
             return;
         };
-        let is_owner = owner.as_ref().is_some_and(|o| o.uuid == g.uuid);
-        // PlayerDataStorage.load: the player's own file first; the world's
-        // own player state is the fallback for a first join.
-        let known = if is_owner && playerdata::load(g, &root) {
-            true
-        } else {
-            let saved = if is_owner {
-                owner.as_mut().and_then(|o| o.saved.take())
-            } else {
-                None
-            };
-            match saved {
-                Some(level) => {
-                    playerdata::apply(g, &level);
-                    level.position.is_some()
-                }
-                None => playerdata::load(g, &root),
-            }
+        // PlayerList.loadPlayerData: the owner gets the world's player file,
+        // everyone else their own.
+        let known = match owner.filter(|o| o.uuid == g.uuid) {
+            Some(o) => playerdata::load_owner(g, &root, o.saved.take().as_deref()),
+            None => playerdata::load(g, &root),
         };
         if !known || force {
             g.game_mode = default_mode;
