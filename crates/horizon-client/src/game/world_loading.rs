@@ -492,8 +492,11 @@ pub(super) fn make_streaming(
         shape,
     ));
     if dim == Dim::End {
-        // Migrate before any chunk reader can cache the old block entities.
-        save.migrate_end_gateway_exits()?;
+        // Migrate before any chunk reader can cache the old block entities. A side file it
+        // can't read stays where it is and costs only its old exits: the End still opens.
+        if let Err(e) = save.migrate_end_gateway_exits() {
+            log::warn!("Horizon: End gateway exits not migrated: {e}");
+        }
     }
     let mut locator = None;
     let flat = (dim == Dim::Overworld)
