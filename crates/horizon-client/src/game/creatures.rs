@@ -4714,6 +4714,10 @@ impl Game<'_> {
             .get("minecraft:parrot_poisonous_food")
             .is_some_and(|t| t.contains(&*item));
         let player_at = self.eye_position();
+        let player_feet = self
+            .player
+            .as_ref()
+            .map(|p| [p.position.x, p.position.y, p.position.z]);
         let acting = self.acting_player_uuid();
         let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft)
             || self.keys.contains(&winit::keyboard::KeyCode::ShiftRight);
@@ -4747,6 +4751,8 @@ impl Game<'_> {
         // `Some(true)` for the four spell particles, `Some(false)` for the two
         // smoke puffs of a cow that already holds effects.
         let mut stew_particles: Option<bool> = None;
+        // `Ocelot.mobInteract`: whether the fish won its trust.
+        let mut ocelot_trust: Option<bool> = None;
         match species {
             Species::Cow | Species::Mooshroom if item == "minecraft:bucket" && !m.is_baby() => {
                 give = Some("minecraft:milk_bucket");
@@ -5172,6 +5178,30 @@ impl Game<'_> {
                 }
                 consume = true;
             }
+            // Ocelot.mobInteract: raw fish from a hand within 3 blocks, while it comes for the
+            // food (`temptGoal.isRunning`), is used up; one time in three it trusts the player
+            // (entity event 41, hearts), otherwise smoke (event 40). Anything else is
+            // `Animal.mobInteract`.
+            Species::Ocelot
+                if is_food
+                    && !m.extra.trusting
+                    && m.ai.goals.is_running("OcelotTemptGoal")
+                    && player_feet.is_some_and(|p| {
+                        let d = [
+                            p[0] - m.position.x,
+                            p[1] - m.position.y,
+                            p[2] - m.position.z,
+                        ];
+                        d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < 9.0
+                    }) =>
+            {
+                consume = true;
+                let trusts = m.random.next_int_bound(3).unwrap_or(1) == 0;
+                if trusts {
+                    m.extra.trusting = true;
+                }
+                ocelot_trust = Some(trusts);
+            }
             // HappyGhast.canFallInLove: never, so only a ghastling takes food.
             _ if is_food
                 && m.kind.flags.animal
@@ -5206,6 +5236,10 @@ impl Game<'_> {
         }
         if !handled {
             return Ok(false);
+        }
+        if let Some(trusts) = ocelot_trust {
+            // `spawnTrustingParticles` on the clients: entity event 41 (hearts) or 40 (smoke).
+            self.mob_event_particles(self.mobs[index].id, if trusts { 41 } else { 40 });
         }
         if let Some(fresh) = stew_particles {
             // `SpellParticleOption.create(EFFECT, -1, 1)` is the plain white

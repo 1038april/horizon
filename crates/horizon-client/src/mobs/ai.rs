@@ -1727,7 +1727,9 @@ fn check_despawn(m: &mut Mob, w: &MobWorld) -> bool {
     // zombie villagers being cured and ridden mobs stay.
     let creature = m.kind.category == "creature";
     let removable = !(never_removed_when_far(m.species())
-        || creature && m.kind.flags.animal && !m.extra.jockey
+        || creature && m.kind.flags.animal && !m.extra.jockey && m.species() != Species::Ocelot
+        // Ocelot.removeWhenFarAway: `!isTrusting() && tickCount > 2400`.
+        || m.species() == Species::Ocelot && (m.extra.trusting || m.age <= 2400)
         || super::raider::keeps_alive(m, d)
         || super::zombie_villager::keeps_alive(m)
         || super::riders::keeps_alive(m));
