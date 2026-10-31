@@ -365,7 +365,7 @@ class Game:
         self.name = name
         self.work = Path(tempfile.mkdtemp(prefix=f'hzlan-{name}-'))
         (self.work / '.local/horizon-client').mkdir(parents=True)
-        os.symlink(resources, self.work / '.local/horizon-client' / lab.VERSION)
+        lab.link_dir(resources, self.work / '.local/horizon-client' / lab.VERSION)
         self.socket = self.work / 'c.sock'
         env = game_env(os.environ.get('VSCREEN', 'lan-e2e'), home=self.work / 'home')
         env = game_environment(env, self.work)
