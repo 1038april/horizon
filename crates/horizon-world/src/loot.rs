@@ -38,6 +38,19 @@ impl PackOverlay<'_> {
             .iter()
             .filter_map(move |(key, files)| Some((key.strip_prefix(&prefix)?, files)))
     }
+    /// The overlay's tag files of one registry, over every namespace: the
+    /// keys are `tags/<ns>:<registry>/<path>`, and the yielded id is the
+    /// tag id `<ns>:<path>` the game's own tags are keyed by
+    /// (`TagLoader`'s ids).
+    pub fn tag_kind(&self, registry: &str) -> impl Iterator<Item = (String, &Vec<Vec<u8>>)> {
+        let tail = format!(":{registry}/");
+        self.files.iter().filter_map(move |(key, files)| {
+            let rest = key.strip_prefix("tags/")?;
+            let (ns, path) = rest.split_once(':')?;
+            let path = path.strip_prefix(&tail)?;
+            Some((format!("{ns}:{path}"), files))
+        })
+    }
     /// The last pack's file for an id, which is the one
     /// `ResourceManager.listMatchingResources` hands out.
     pub fn top(files: &[Vec<u8>]) -> &[u8] {
@@ -448,7 +461,7 @@ impl LootData {
             // The packs' entries join the game's own, in pack order; a
             // `replace` file drops what the lower sources put in
             // (`TagLoader.load` walks the resource stack the same way).
-            for (id, files) in overlay.kind(&format!("tags/{registry}")) {
+            for (id, files) in overlay.tag_kind(registry) {
                 let slot = tags
                     .entry((registry.to_owned(), id.to_owned()))
                     .or_default();
