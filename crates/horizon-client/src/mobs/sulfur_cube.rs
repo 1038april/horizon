@@ -274,6 +274,54 @@ pub fn client_tick(m: &mut Mob) {
 fn can_explode(m: &Mob) -> bool {
     archetype(m).is_some_and(|a| a.explosion.is_some()) && m.alive() && !primed(m)
 }
+
+#[cfg(test)]
+mod immune_tests {
+    use super::*;
+    use crate::mobs::{Mob, Species};
+    use std::sync::Arc;
+
+    fn cube(head: Option<&str>) -> Mob {
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.species = Species::SulfurCube;
+        let mut m = Mob::new(1, Arc::new(kind), Vec3::ZERO, 0.0);
+        m.extra.head = head.map(Into::into);
+        m
+    }
+
+    /// `#sulfur_cube_with_block_immune_to` has these too: a cube with a block
+    /// takes none of them, a cube without one does.
+    #[test]
+    fn a_cube_with_a_block_shrugs_off_the_whole_tag() {
+        for kind in [
+            DamageKind::FallingAnvil,
+            DamageKind::FallingBlock,
+            DamageKind::FallingStalactite,
+            DamageKind::DryOut,
+            DamageKind::Spit,
+            DamageKind::Stalagmite,
+            DamageKind::SulfurCubeHot,
+            DamageKind::WindCharge,
+        ] {
+            let mut m = cube(Some("minecraft:dirt"));
+            let health = m.health;
+            assert!(!m.damage(1.0, Damage::of(kind)), "{kind:?}");
+            assert_eq!(m.health, health, "{kind:?}");
+            let mut m = cube(None);
+            assert!(m.damage(1.0, Damage::of(kind)), "{kind:?}");
+            assert_eq!(m.health, health - 1.0, "{kind:?}");
+        }
+    }
+
+    /// outside the tag (`magic`) a cube with a block is hurt.
+    #[test]
+    fn a_cube_with_a_block_takes_magic() {
+        let mut m = cube(Some("minecraft:dirt"));
+        let health = m.health;
+        assert!(m.damage(1.0, Damage::of(DamageKind::Magic)));
+        assert_eq!(m.health, health - 1.0);
+    }
+}
 pub fn register(m: &mut Mob) {
     use super::cube;
     m.ai.goals.add(1, cube::CubeFloat);
@@ -388,6 +436,14 @@ pub fn accepts_damage(m: &mut Mob, source: &Damage, amount: f32) -> bool {
             | DamageKind::Freeze
             | DamageKind::SweetBerryBush
             | DamageKind::HotFloor
+            | DamageKind::FallingAnvil
+            | DamageKind::FallingBlock
+            | DamageKind::FallingStalactite
+            | DamageKind::DryOut
+            | DamageKind::Spit
+            | DamageKind::Stalagmite
+            | DamageKind::SulfurCubeHot
+            | DamageKind::WindCharge
     );
     if immune {
         if let Some(from) = source.from {
