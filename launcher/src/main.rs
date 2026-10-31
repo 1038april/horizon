@@ -296,6 +296,8 @@ struct Launcher {
     agents: agents_page::AgentsUi,
     /// How many play Horizon now, while the server answers ("N playing now" on the Play page).
     playing: Option<u64>,
+    /// How many play on the official server now, while it answers ("M on the official SMP").
+    official_players: Option<u64>,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
     _appearance: Subscription,
@@ -519,6 +521,7 @@ impl Launcher {
             collection: collection::Collection::load(),
             agents: agents_page::AgentsUi::default(),
             playing: None,
+            official_players: None,
             tx,
             rx,
             _appearance: appearance,
@@ -597,6 +600,7 @@ impl Launcher {
         // What the game and the launcher kept, if the player allows it and there is a server.
         telemetry::send_in_background();
         telemetry::watch_playing(this.tx.clone());
+        telemetry::watch_official(this.tx.clone());
         this
     }
 
@@ -793,6 +797,7 @@ impl Launcher {
                 Msg::Keychain(said) => self.keychain = said,
                 Msg::Owner(owns) => self.owner = Some(owns),
                 Msg::Playing(playing) => self.playing = playing,
+                Msg::OfficialPlayers(players) => self.official_players = players,
                 Msg::JavaGame(id, home, cmd) => {
                     self.starting_client = None;
                     let spawned = cmd.and_then(|(cmd, vars)| {
