@@ -743,6 +743,71 @@ fn a_secret_the_keychain_cant_finish_keeps_the_old_one() {
 }
 
 #[test]
+fn a_split_secret_folds_into_one_item() {
+    // The layout launchers before #4912 wrote, in memory.
+    let items = FullItems {
+        items: Mutex::default(),
+        room: 99,
+    };
+    let secret = "s".repeat(2 * PIECE + 1);
+    set_pieces(&items, UUID, &secret).unwrap();
+    assert_eq!(items.items.lock().unwrap().len(), 3);
+    // The first read answers the whole secret and leaves a single item behind.
+    assert_eq!(get_item(&items, UUID).unwrap(), Some(secret.clone()));
+    assert_eq!(items.items.lock().unwrap().len(), 1);
+    assert_eq!(items.read(UUID).unwrap(), Some(secret));
+    // A rewrite stays one item; a shorter secret leaves no pieces behind.
+    set_item(&items, UUID, "short").unwrap();
+    assert_eq!(items.items.lock().unwrap().len(), 1);
+    assert_eq!(get_item(&items, UUID).unwrap(), Some("short".into()));
+    delete_pieces(&items, UUID).unwrap();
+    assert_eq!(get_item(&items, UUID).unwrap(), None);
+}
+
+/// The keys `has_owner` asked for, in order (each read can ask for the keychain on macOS).
+struct Reading<'a>(&'a MemoryStore, Mutex<Vec<String>>);
+impl SecretStore for Reading<'_> {
+    fn get(&self, key: &str) -> Result<Option<String>, String> {
+        self.1.lock().unwrap().push(key.into());
+        self.0.get(key)
+    }
+    fn set(&self, key: &str, secret: &str) -> Result<(), String> {
+        self.0.set(key, secret)
+    }
+    fn delete(&self, key: &str) -> Result<(), String> {
+        self.0.delete(key)
+    }
+    fn persistent(&self) -> bool {
+        false
+    }
+}
+
+#[test]
+fn has_owner_asks_the_selected_account_first() {
+    let store = MemoryStore::default();
+    // The owner is second in the list but selected: its item alone is read.
+    let mut accounts = Accounts::default();
+    accounts
+        .add(
+            &store,
+            Account {
+                uuid: "other".into(),
+                name: "Other".into(),
+                skin: None,
+                cape: None,
+            },
+            &secrets("x-token", false),
+        )
+        .unwrap();
+    accounts
+        .add(&store, notch(), &secrets("mc-token", true))
+        .unwrap();
+    let reading = Reading(&store, Mutex::default());
+    assert!(accounts.has_owner(&reading));
+    assert_eq!(*reading.1.lock().unwrap(), vec![UUID]);
+}
+
+#[test]
 fn credential_manager_error_8_says_the_store_is_full() {
     let said = credential_manager_says(8).unwrap();
     assert!(said.contains("Credential Manager is full"));
