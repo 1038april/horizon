@@ -338,6 +338,10 @@ pub struct Streaming {
     light_views: FxHashMap<(i32, i32), Arc<Chunk>>,
     decorated: FxHashSet<(i32, i32)>,
     decorating: usize,
+    /// The final chunks a running decoration writes into: another one that
+    /// reaches them waits, as vanilla's features run one after the other and
+    /// each sees what the one before placed.
+    decorating_finals: HashSet<(i32, i32)>,
     /// Save jobs in flight.
     saving: usize,
     /// Vanilla's decoration order around the player, and the centre and
@@ -741,6 +745,7 @@ impl Streaming {
             light_views: Default::default(),
             decorated: Default::default(),
             decorating: 0,
+            decorating_finals: HashSet::new(),
             saving: 0,
             decoration_order: DecorationOrder::default(),
             order_area: None,
@@ -908,6 +913,10 @@ impl Streaming {
     ) {
         self.generation_scan.exhausted = false;
         self.decorating -= 1;
+        for i in &finals {
+            self.decorating_finals
+                .remove(&(x + (i % 3) as i32 - 1, z + (i / 3) as i32 - 1));
+        }
         self.decorated.insert((x, z));
         for (i, proto) in region.into_iter().enumerate() {
             // A final chunk keeps its own chunk: only what decoration wrote
@@ -1415,6 +1424,9 @@ impl Streaming {
                 // into it as vanilla's features do; the others skip decoration
                 // (worlds saved before proto chunks were saved get here: their
                 // final chunks' neighbours are generated again).
+                if keys.iter().any(|k| self.decorating_finals.contains(k)) {
+                    continue;
+                }
                 let finals: Vec<(usize, Chunk)> = keys
                     .iter()
                     .enumerate()
@@ -1449,6 +1461,8 @@ impl Streaming {
                     Err(_) => continue,
                 };
                 self.decorating += 1;
+                self.decorating_finals
+                    .extend(finals.iter().map(|(i, _)| keys[*i]));
                 self.submit(Some((x, z)), 1, Job::Decorate(x, z, region, finals));
             }
         }
