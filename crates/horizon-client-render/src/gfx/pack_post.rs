@@ -3365,7 +3365,10 @@ impl PackPost {
             .entities
             .as_ref()
             .is_some_and(|entities| entities.geometry.draws.iter().any(|draw| draw.shadow));
+        // Custom images are cleared each frame (`pack_images::clear`) before the
+        // shadow pass writes them, so a pack with any redraws it too.
         let cache_hit = !has_shadow_entities
+            && self.images.is_empty()
             && self.shadow_cache.key == Some(cache_key)
             && self.shadow_targets.is_some();
         if cache_hit {
