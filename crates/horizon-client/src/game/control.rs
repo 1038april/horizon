@@ -118,6 +118,7 @@ impl Game<'_> {
             }
         }
         horizon_client::widgets::end_frame(self.frames);
+        self.narrate_screen();
         self.advance_agent();
         for request in self.ui_wait.ready() {
             self.answer(request, event_loop);

@@ -7,6 +7,7 @@ use horizon_client::{
     hud::{HudBatch, rgba},
     text::{self, Text},
     ui,
+    widgets::{self, ScreenInfo},
 };
 use winit::keyboard::KeyCode;
 
@@ -174,6 +175,7 @@ impl Game<'_> {
         let (w, h) = (batch.width, batch.height);
         ui::menu_background(batch, atlas, 0.0, 0.0, w, h, true);
         let title = Text::translate("menu.game", &[]);
+        widgets::begin_screen(|| ScreenInfo::new("pause", title.plain()));
         let tw = atlas.font.width_text(&title);
         batch.text_styled(
             atlas,
@@ -448,6 +450,14 @@ impl Game<'_> {
         // screen over, on the same background.
         if let Some(opened) = self.ui.death_confirm {
             let (title, labels) = death_confirm_texts();
+            // ConfirmScreen.getNarrationMessage: its title and its (empty)
+            // message.
+            widgets::begin_screen(|| {
+                ScreenInfo::new(
+                    "death/confirm",
+                    widgets::join_for_narration(&[&title.plain(), ""]),
+                )
+            });
             let size = self.gui_size();
             let mut confirm = Confirm::new(&atlas.font, size, &title, &Text::literal(""));
             confirm.focus = self.death_focus.map(|f| f as usize);
@@ -466,6 +476,7 @@ impl Game<'_> {
             "deathScreen.title"
         };
         let title = Text::translate(title, &[]);
+        widgets::begin_screen(|| ScreenInfo::new("death", title.plain()));
         let tw = atlas.font.width_text(&title);
         ui::text_scaled(
             batch,

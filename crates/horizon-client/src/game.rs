@@ -240,6 +240,7 @@ mod respawn_anchor;
 mod saves_control;
 mod saving;
 mod scoreboard;
+mod screen_info;
 mod screens;
 mod sculk;
 mod sculk_fixture;
@@ -2232,6 +2233,8 @@ struct Game<'a> {
     tutorial_toasts: Vec<tutorial::HintToast>,
     /// The `SystemToastId.NARRATOR_TOGGLE` toast, wherever the player is.
     narrator_toast: Option<horizon_client::toasts::SystemToast>,
+    /// The open screen's narration (`Screen`'s narration state and timing).
+    narration: horizon_client::screen_narrator::ScreenNarrator,
     /// Where the options screen returns: true = title, false = pause menu.
     options_from_title: bool,
     dragging: bool,
@@ -7806,6 +7809,9 @@ impl Game<'_> {
             // PauseScreen(false): only its title, at the top.
             Screen::Paused => {
                 let title = self.translate("menu.paused", "Game Paused");
+                horizon_client::widgets::begin_screen(|| {
+                    horizon_client::widgets::ScreenInfo::new("paused", title.clone())
+                });
                 let tw = HudBatch::text_width(&self.gui.atlas, &title);
                 batch.text(
                     &self.gui.atlas,
@@ -13814,7 +13820,14 @@ impl Game<'_> {
         }
         // Minecraft.doWorldLoad: the LevelLoadingScreen while single player's
         // server starts, with the server's chunk map and progress.
-        if self.integrated_starting.is_some() {
+        if let Some(starting) = &self.integrated_starting {
+            // The server's progress once it has some (`hasProgress`).
+            let progress = Some(starting.handle.load_view())
+                .filter(|v| v.has_progress())
+                .map(|v| v.server_progress());
+            horizon_client::widgets::begin_screen(|| {
+                screen_info::level_loading(progress, &screen_info::tr)
+            });
             if let Some(renderer) = &mut self.renderer {
                 let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
                 let (w, h) = (hud.width, hud.height);
@@ -13848,6 +13861,20 @@ impl Game<'_> {
             return Ok(false);
         }
         if let Some(loader) = &self.world_loader {
+            // The world opens before its LevelLoadingScreen has progress;
+            // FileFixerProgressScreen narrates its title.
+            if loader.upgrade.is_file_fixing() && !loader.cancelled {
+                horizon_client::widgets::begin_screen(|| {
+                    horizon_client::widgets::ScreenInfo::new(
+                        "file_fixer",
+                        screen_info::tr("upgradeWorld.title", &[]),
+                    )
+                });
+            } else {
+                horizon_client::widgets::begin_screen(|| {
+                    screen_info::level_loading(None, &screen_info::tr)
+                });
+            }
             if let Some(renderer) = &mut self.renderer {
                 let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
                 // WorldOpenFlows.upgradeAndOpenWorld: the file fixers run on
@@ -13883,6 +13910,9 @@ impl Game<'_> {
         }
         if self.pending_entry.is_some() {
             if let (Some(renderer), Some(loader)) = (&mut self.renderer, &self.rest_loader) {
+                horizon_client::widgets::begin_screen(|| {
+                    screen_info::level_loading(Some(loader.progress.fraction()), &screen_info::tr)
+                });
                 let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
                 horizon_client::level_loading::draw_progress(
                     &mut hud,
@@ -14442,6 +14472,10 @@ impl Game<'_> {
         reason: horizon_client::level_loading::Reason,
     ) {
         use horizon_client::level_loading::{self, STATUS_RADIUS};
+        // The level's progress, as the bar shows it (`hasProgress`).
+        horizon_client::widgets::begin_screen(|| {
+            screen_info::level_loading(Some(self.level_load_progress()), &screen_info::tr)
+        });
         self.draw_level_loading_background(batch, reason);
         let atlas = &self.gui.atlas;
         let (cx, cz) = self.streaming.center;
@@ -15245,6 +15279,8 @@ impl Game<'_> {
         ) {
             self.last_input = Instant::now();
         }
+        // The screen's narration hears of the input before the screen takes it.
+        narrator::narrate_input(&mut self.narration, &event, self.cursor);
         // FileFixerProgressScreen: Cancel is the only way out (`shouldCloseOnEsc`
         // is false), so it takes the pointer and Escape does nothing.
         if let Some(loader) = &self.world_loader
@@ -16646,6 +16682,7 @@ impl<'a> Game<'a> {
             tutorial,
             tutorial_toasts: Vec::new(),
             narrator_toast: None,
+            narration: Default::default(),
             options_from_title: false,
             dragging: false,
             avatar: Default::default(),
@@ -18438,6 +18475,7 @@ impl Loading {
         };
         let mut batch = HudBatch::new(size);
         self.draw_menu(&mut batch);
+        self.menu.frame_drawn((batch.width, batch.height));
         let mut frame = loading_frame(&batch);
         frame.yaw = self.panorama_rotation.update(
             self.started.elapsed().as_secs_f32(),

@@ -2773,6 +2773,13 @@ impl OptionsUi {
         if let Some(error) = &self.resource_error {
             ui::menu_background(batch, atlas, 0.0, 0.0, w, h, self.in_world);
             let title = tr("resourcePack.load_fail");
+            // An alert: its title and its message.
+            crate::widgets::begin_screen(|| {
+                crate::widgets::ScreenInfo::new(
+                    "options/resource_error",
+                    crate::widgets::join_for_narration(&[&title.plain(), error]),
+                )
+            });
             batch.text_styled(
                 atlas,
                 &title,
@@ -2806,6 +2813,14 @@ impl OptionsUi {
             );
             return;
         }
+        // The page is its own screen (OptionsScreen, VideoSettingsScreen...).
+        let page = self.page();
+        crate::widgets::begin_screen(|| {
+            crate::widgets::ScreenInfo::new(
+                format!("options/{page:?}"),
+                tr(Self::title(page)).plain(),
+            )
+        });
         if self.page() == Page::HdrCalibration
             && let Some(c) = &self.calibration
         {

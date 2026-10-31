@@ -1963,6 +1963,182 @@ impl Title {
                 .collect(),
         }
     }
+    /// The screen this mode is, as the narrator reads it: its id and
+    /// `getNarrationMessage` (the title, or `joinForNarration(title, message)`
+    /// for the confirm and alert screens). `None` for the screens that
+    /// narrate themselves.
+    fn narration(&self) -> Option<crate::widgets::ScreenInfo> {
+        use crate::widgets::{ScreenInfo, join_for_narration as join};
+        let get = |key: &str, fallback: &str| lang::get_or(key, fallback);
+        let info = match &self.mode {
+            // TitleScreen: `narrator.screen.title`, not its (empty) title.
+            Mode::Main => ScreenInfo::new("title", get("narrator.screen.title", "Title Screen")),
+            Mode::Select { .. } => {
+                ScreenInfo::new("select_world", get("selectWorld.title", "Select World"))
+            }
+            Mode::Create { .. } => ScreenInfo::new(
+                "create_world",
+                get("selectWorld.create", "Create New World"),
+            ),
+            Mode::CreateFlat { .. } => ScreenInfo::new(
+                "create_world/flat",
+                get(
+                    "createWorld.customize.flat.title",
+                    "Superflat Customization",
+                ),
+            ),
+            Mode::Edit { .. } => {
+                ScreenInfo::new("edit_world", get("selectWorld.edit.title", "Edit World"))
+            }
+            // EditWorldScreen.makeBackupAndShowToast: a GenericWaitingScreen.
+            Mode::Backup { .. } => ScreenInfo::new(
+                "backup",
+                join(&[
+                    &get("selectWorld.waitingForBackup.title", "Creating Backup"),
+                    &get(
+                        "selectWorld.waitingForBackup.message",
+                        "Depending on the size of your world, this may take a while. Please do not close the game or shut off your device.",
+                    ),
+                ]),
+            ),
+            // BackupConfirmScreen narrates its title, the question.
+            Mode::BackupBeforeUpgrade { downgrade, .. } => {
+                let question = match downgrade {
+                    Some(_) => get(
+                        "selectWorld.backupQuestion.downgrade",
+                        "Downgrading a world is not supported",
+                    ),
+                    None => get(
+                        "selectWorld.backupQuestion.file_fixing_required",
+                        "Create a backup before upgrading this world?",
+                    ),
+                };
+                ScreenInfo::new("backup_confirm", question)
+            }
+            // EditWorldScreen's Optimize World: a BackupConfirmScreen, which
+            // narrates its title.
+            Mode::OptimizeConfirm { .. } => ScreenInfo::new(
+                "optimize_confirm",
+                get("optimizeWorld.confirm.title", "Optimize World"),
+            ),
+            Mode::Optimize { world } => ScreenInfo::new(
+                "optimize_world",
+                translate(
+                    "optimizeWorld.title",
+                    "Optimizing World '%s'",
+                    &[&world.name],
+                ),
+            ),
+            // openWorldCheckDiskSpace's ConfirmScreen.
+            Mode::LowDiskSpace { .. } => ScreenInfo::new(
+                "low_disk_space",
+                join(&[
+                    &get(
+                        "selectWorld.warning.lowDiskSpace.title",
+                        "Warning! Low disk space!",
+                    ),
+                    &get(
+                        "selectWorld.warning.lowDiskSpace.description",
+                        "There is not much space left on your device.
+Running out of disk space while in game can lead to your world being damaged.",
+                    ),
+                ]),
+            ),
+            // AccessibilityOnboardingScreen narrates its title.
+            Mode::Onboarding(_) => ScreenInfo::new(
+                "accessibility_onboarding",
+                get(
+                    "accessibility.onboarding.screen.title",
+                    "Welcome to Minecraft!
+
+Would you like to enable the Narrator or visit the Accessibility Settings?",
+                ),
+            ),
+            // BanNoticeScreens: a ConfirmLinkScreen, its title and message.
+            Mode::BanNotice(notice) => {
+                let now = chrono::Utc::now().timestamp_millis();
+                ScreenInfo::new(
+                    "ban_notice",
+                    join(&[&notice.title().plain(), &notice.message(now).plain()]),
+                )
+            }
+            Mode::Delete { world } => ScreenInfo::new(
+                "delete_world",
+                join(&[
+                    &get(
+                        "selectWorld.deleteQuestion",
+                        "Are you sure you want to delete this world?",
+                    ),
+                    &translate(
+                        "selectWorld.deleteWarning",
+                        "'%s' will be lost forever! (A long time!)",
+                        &[&world.name],
+                    ),
+                ]),
+            ),
+            Mode::Recover { world, .. } => {
+                let message = format_translation(
+                    &get(
+                        "recover_world.message",
+                        "The following issues occurred while trying to read world folder \"%s\".\nIt might be possible to restore the world from an older state or you can report this issue on the bug tracker.",
+                    ),
+                    &[Text::literal(world.folder.clone())],
+                );
+                ScreenInfo::new(
+                    "recover_world",
+                    join(&[
+                        &get("recover_world.title", "Failed to load world"),
+                        &message.plain(),
+                    ]),
+                )
+            }
+            Mode::Recovered { success, .. } => {
+                let message = if *success {
+                    get("recover_world.done.success", "Recovery was successful!")
+                } else {
+                    get(
+                        "recover_world.done.failed",
+                        "Failed to recover from previous state.",
+                    )
+                };
+                ScreenInfo::new(
+                    "recover_world/done",
+                    join(&[&get("recover_world.done.title", "Recovery done"), &message]),
+                )
+            }
+            Mode::Error { message, alert, .. } => {
+                let title = match alert {
+                    Some(Alert::Incompatible) => {
+                        get("selectWorld.incompatible.title", "Incompatible version")
+                    }
+                    Some(Alert::Recreate) => {
+                        get("selectWorld.recreate.error.title", "An error occurred!")
+                    }
+                    None => get("selectWorld.access_failure", "Failed to access world"),
+                };
+                ScreenInfo::new("world_error", join(&[&title, message]))
+            }
+            // SafetyScreen: WarningScreen's narration, the header and the
+            // message on the next line.
+            Mode::MultiplayerWarning { .. } => ScreenInfo::new(
+                "multiplayer_warning",
+                format!(
+                    "{}\n{}",
+                    get(
+                        "multiplayerWarning.header",
+                        "Caution: Third-Party Online Play"
+                    ),
+                    get(
+                        "multiplayerWarning.message",
+                        "Caution: Online play is offered by third-party servers that are not owned, operated, or supervised by Mojang Studios or Microsoft. During online play, you may be exposed to unmoderated chat messages or other types of user-generated content that may not be suitable for everyone.",
+                    ),
+                ),
+            ),
+            Mode::Multiplayer(_) => return None,
+        };
+        Some(info)
+    }
+
     pub fn draw(
         &self,
         atlas: &HudAtlas,
@@ -2011,6 +2187,11 @@ impl Title {
             return screen.draw(batch, atlas, cursor);
         }
         let mut fade_from = None;
+        if crate::widgets::narrating()
+            && let Some(info) = self.narration()
+        {
+            crate::widgets::begin_screen(|| info);
+        }
         match &self.mode {
             Mode::Main => {
                 draw_logo(atlas, batch, w);
@@ -2637,6 +2818,14 @@ impl Title {
             crate::widgets::record(&b.label, [b.x, b.y, b.w, 20.0], b.enabled);
             let inside =
                 cursor.0 >= b.x && cursor.0 < b.x + b.w && cursor.1 >= b.y && cursor.1 < b.y + 20.0;
+            crate::widgets::narratable(|| {
+                crate::widgets::Narratable::button(
+                    b.label.clone(),
+                    [b.x, b.y, b.w, 20.0],
+                    b.enabled,
+                )
+                .hovered(inside)
+            });
             crate::widgets::widget_cursor(inside, b.enabled);
             let is_focused = self.focused_button == Some(b.id);
             let hover = b.enabled && (inside || is_focused);

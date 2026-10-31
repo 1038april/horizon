@@ -25,6 +25,11 @@ pub(super) struct StartupMenu {
     selection: AppendSelection,
     /// The narrator's `NARRATOR_TOGGLE` toast, handed to the game with the title.
     narrator_toast: Option<horizon_client::toasts::SystemToast>,
+    /// The screens' narration, handed to the game with the title (which
+    /// stays the screen already opened).
+    narration: horizon_client::screen_narrator::ScreenNarrator,
+    /// Frames drawn, for `widgets::end_frame`.
+    frames: u64,
     pub pending: Option<PendingWorldEntry>,
     pub reload_packs: bool,
     pub perf: horizon_client::telemetry::Session,
@@ -102,6 +107,7 @@ impl StartupMenu {
         game.text_selection = std::mem::take(&mut self.selection);
         game.perf = std::mem::take(&mut self.perf);
         game.narrator_toast = self.narrator_toast.take();
+        game.narration = std::mem::take(&mut self.narration);
         // Preserve an existing resource-error screen opened by start_game.
         if self.options_open {
             let resource_error = game.ui.options.resource_error.take();
@@ -112,6 +118,15 @@ impl StartupMenu {
             game.options_from_title = true;
             game.dragging = self.dragging;
         }
+    }
+
+    /// After a frame is drawn: its widgets become the last frame's, and the
+    /// open screen's narration reads them (`Gui.update`'s
+    /// `handleDelayedNarration`). `gui` is the GUI size.
+    pub(super) fn frame_drawn(&mut self, gui: (f32, f32)) {
+        self.frames += 1;
+        horizon_client::widgets::end_frame(self.frames);
+        self.narration.frame(gui, self.cursor, None);
     }
 
     fn queue_entry(&mut self, action: Action, player_name: String) {
@@ -528,11 +543,12 @@ impl Loading {
         if !hotkey {
             return;
         }
-        super::narrator::cycle_status(&mut self.settings);
+        let was_disabled = super::narrator::cycle_status(&mut self.settings);
         super::narrator::update_status(self.settings.narrator(), &mut self.menu.narrator_toast);
         self.save_menu_settings();
-        // The screens' own narration (Game::on_narrator_status_changed)
-        // starts once the game has them.
+        self.menu
+            .narration
+            .status_changed(was_disabled, horizon_narrator::screen::Trigger::Keyboard);
     }
 
     fn menu_options_click(&mut self, drag: bool, right: bool) {
@@ -597,6 +613,12 @@ impl Loading {
         }
         if let WindowEvent::KeyboardInput { event, .. } = &event {
             self.menu_narrator_hotkey(event);
+        }
+        // Fullscreen (F11) is the window's: not the screen's input.
+        let f11 = matches!(&event, WindowEvent::KeyboardInput { event, .. }
+            if event.physical_key == PhysicalKey::Code(KeyCode::F11));
+        if !f11 {
+            super::narrator::narrate_input(&mut self.menu.narration, &event, self.menu.cursor);
         }
         match event {
             WindowEvent::CloseRequested => {
@@ -800,6 +822,7 @@ impl Loading {
             // 20 ticks a second: the startup menu runs no tick rate.
             let delta_ticks = now.duration_since(*frame).as_secs_f32() * 20.0;
             *frame = now;
+            horizon_client::widgets::begin_screen(|| win.screen_info());
             win.draw(batch, &gui.atlas, delta_ticks, Default::default());
             if win.finished(batch.height) {
                 self.menu.win = None;
