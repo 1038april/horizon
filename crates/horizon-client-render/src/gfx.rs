@@ -69,6 +69,15 @@ pub fn outline_vertices(edges: &[[f64; 6]], camera: glam::DVec3) -> Vec<[f32; 6]
         .collect()
 }
 
+/// Whether the renderer should initialize its GPU occlusion pass.
+///
+/// Software adapters spend more time running the culling pass than drawing
+/// the sections it removes. Keep the pass available for explicit A/B checks,
+/// while leaving hardware adapters on the existing default.
+fn gpu_culling_requested(info: &wgpu::AdapterInfo, env: Option<&str>) -> bool {
+    env != Some("0") && (env.is_some() || info.device_type != wgpu::DeviceType::Cpu)
+}
+
 mod animate;
 mod arena;
 pub mod compositor;
@@ -2762,8 +2771,9 @@ impl Renderer {
         // frame however few its draws and little it hides, `shader` tests in
         // the shader as on Metal (A/B checks).
         let cull_env = std::env::var("HORIZON_GPU_CULL");
+        let adapter_info = adapter.get_info();
         let cull = cull::Cull::supported(&adapter, &device)
-            .filter(|_| cull_env.as_deref() != Ok("0"))
+            .filter(|_| gpu_culling_requested(&adapter_info, cull_env.as_deref().ok()))
             .map(|depth_test| match cull_env.as_deref() {
                 Ok("shader") => cull::DepthTest::InShader,
                 _ => depth_test,
@@ -2772,7 +2782,7 @@ impl Renderer {
                 let mut cull =
                     cull::Cull::new(&device, config.format.remove_srgb_suffix(), depth_test);
                 cull.always = cull_env.as_deref() == Ok("all");
-                if !cull.always && adapter.get_info().backend == wgpu::Backend::Metal {
+                if !cull.always && adapter_info.backend == wgpu::Backend::Metal {
                     cull.min_sections = cull::TILED_MIN_SECTIONS;
                 }
                 cull
@@ -6470,6 +6480,33 @@ fn frustum(m: Mat4) -> [Vec4; 6] {
 
 #[cfg(test)]
 mod tests {
+    fn adapter(device_type: wgpu::DeviceType) -> wgpu::AdapterInfo {
+        wgpu::AdapterInfo {
+            name: "test adapter".into(),
+            vendor: 0,
+            device: 0,
+            device_type,
+            device_pci_bus_id: String::new(),
+            driver: String::new(),
+            driver_info: String::new(),
+            backend: wgpu::Backend::Vulkan,
+            subgroup_min_size: 0,
+            subgroup_max_size: 0,
+            transient_saves_memory: None,
+            limit_bucket: None,
+        }
+    }
+
+    #[test]
+    fn software_occlusion_culling_is_opt_in() {
+        let cpu = adapter(wgpu::DeviceType::Cpu);
+        let discrete = adapter(wgpu::DeviceType::DiscreteGpu);
+        assert!(!super::gpu_culling_requested(&cpu, None));
+        assert!(super::gpu_culling_requested(&discrete, None));
+        assert!(super::gpu_culling_requested(&cpu, Some("all")));
+        assert!(!super::gpu_culling_requested(&discrete, Some("0")));
+    }
+
     #[test]
     fn drawable_size_skips_minimized_and_oversized_windows() {
         use super::drawable_size;
