@@ -397,41 +397,151 @@ pub fn accepts_damage(m: &mut Mob, source: &Damage, amount: f32) -> bool {
     }
     true
 }
-/// `SulfurCube.knockback` with a block: the archetype's powers, turned by
-/// where the blow came from (the attacker taken to aim at its centre).
-pub fn knockback(m: &mut Mob, from: [f64; 3], damage: f32) -> bool {
-    let Some(a) = archetype(m) else {
-        return false;
-    };
-    let (h0, v0) = (a.horizontal_power, a.vertical_power);
-    let (xd, zd) = (from[0] - m.position.x, from[2] - m.position.z);
+/// `Vec2.rotate`: `Mth.sin`/`Mth.cos` of the angle, in floats.
+fn rotate(x: f32, y: f32, angle: f64) -> (f32, f32) {
+    let (cosine, sine) = (
+        horizon_core::geometry::trig::cos(angle),
+        horizon_core::geometry::trig::sin(angle),
+    );
+    (x * cosine - y * sine, y * cosine + x * sine)
+}
+fn normalize(v: [f64; 3]) -> [f64; 3] {
+    let length = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if length < f64::from(1.0e-5_f32) {
+        [0.0; 3]
+    } else {
+        [v[0] / length, v[1] / length, v[2] / length]
+    }
+}
+/// `SulfurCube.applyHorizontalHitAngleScale`: the knock's direction turned by how far the
+/// attacker's aim is from the cube, in the horizontal plane, times the scale.
+fn horizontal_hit_angle_scale(
+    scale: f32,
+    angle: (f32, f32),
+    eye: [f64; 3],
+    aim: [f64; 3],
+    center: [f64; 3],
+) -> (f32, f32) {
+    let to_target = normalize([center[0] - eye[0], center[1] - eye[1], center[2] - eye[2]]);
+    let diff = horizon_core::jmath::atan2(
+        aim[0] * to_target[2] - aim[2] * to_target[0],
+        aim[0] * to_target[0] + aim[2] * to_target[2],
+    ) as f32;
+    rotate(angle.0, angle.1, f64::from(diff * scale))
+}
+/// `SulfurCube.applyVerticalHitAnglePowerTransfer`: power moved between the horizontal and the
+/// vertical launch by where the attacker aims between the cube's top and bottom.
+fn vertical_hit_angle_power_transfer(
+    scale: f32,
+    powers: (f32, f32),
+    eye: [f64; 3],
+    aim: [f64; 3],
+    center: [f64; 3],
+    height: f32,
+) -> (f32, f32) {
+    let half = f64::from(0.5 * height);
+    let top = normalize([
+        center[0] - eye[0],
+        center[1] + half - eye[1],
+        center[2] - eye[2],
+    ]);
+    let bottom = normalize([
+        center[0] - eye[0],
+        center[1] - half - eye[1],
+        center[2] - eye[2],
+    ]);
+    // Mth.clampedMap(aim.y, top.y, bottom.y, -1, 1): clampedLerp(inverseLerp(..), -1, 1).
+    let t = (aim[1] - top[1]) / (bottom[1] - top[1]);
+    let factor = if t < 0.0 {
+        -1.0
+    } else if t > 1.0 {
+        1.0
+    } else {
+        -1.0 + t * 2.0
+    } as f32;
+    let mut ratio = (factor * scale).abs();
+    if factor < 0.0 {
+        ratio = -ratio;
+    }
+    (powers.0 * (1.0 - ratio), powers.1 * (1.0 + ratio))
+}
+/// What `SulfurCube.knockback` adds to the cube's movement for a blow of `damage`: the
+/// archetype's `powers` (horizontal, vertical) turned by where the blow came from (`from`, the
+/// attacker's feet) and, with the attacker's `aim` (eye, view direction), by where it points.
+#[allow(clippy::too_many_arguments)]
+fn launch(
+    powers: (f32, f32),
+    resistance: f32,
+    damage: f32,
+    from: [f64; 3],
+    position: [f64; 3],
+    center: [f64; 3],
+    height: f32,
+    aim: Option<([f64; 3], [f64; 3])>,
+) -> [f64; 3] {
+    let (h0, v0) = powers;
+    let (mut xd, mut zd) = (
+        (from[0] - position[0]) as f32,
+        (from[2] - position[2]) as f32,
+    );
+    let (mut h, mut v) = (h0, v0);
+    if let Some((eye, look)) = aim {
+        let look = normalize(look);
+        (xd, zd) = horizontal_hit_angle_scale(1.6, (xd, zd), eye, look, center);
+        (h, v) = vertical_hit_angle_power_transfer(0.5, (h, v), eye, look, center, height);
+    }
     // applyVerticalPositionAnglePowerRotation from feet to feet.
     let d = [
-        m.position.x - from[0],
-        m.position.y - from[1],
-        m.position.z - from[2],
+        position[0] - from[0],
+        position[1] - from[1],
+        position[2] - from[2],
     ];
-    let angle = (-d[1]).atan2((d[0] * d[0] + d[2] * d[2]).sqrt()) as f32;
-    let rot = -angle * 0.8;
-    let (s, c) = (rot.sin(), rot.cos());
-    let (mut h, mut v) = (h0 * c - v0 * s, h0 * s + v0 * c);
+    let angle = horizon_core::jmath::atan2(-d[1], (d[0] * d[0] + d[2] * d[2]).sqrt()) as f32;
+    let (mut h, mut v) = rotate(h, v, f64::from(-angle * 0.8));
     let hr = if h0 > 0.0 { h.abs() / h0 } else { 0.0 };
     let vr = if v0 > 0.0 { v.abs() / v0 } else { 0.0 };
     let max = hr.max(vr);
     if max > 1.0 {
-        h /= max;
-        v /= max;
+        h *= 1.0 / max;
+        v *= 1.0 / max;
     }
     let k = damage.sqrt();
-    let resist = a.knockback_resistance.clamp(0.0, 1.0) as f32;
-    h *= k * (1.0 - resist) * 0.4;
-    v *= k * (1.0 - resist);
+    h *= k;
+    v *= k;
+    h *= 1.0 - resistance;
+    v *= 1.0 - resistance;
+    h *= 0.4;
     let (h, v) = (h.clamp(-128.0, 128.0), v.clamp(-128.0, 128.0));
-    let len = (xd * xd + zd * zd).sqrt().max(1.0e-4);
+    let (xd, zd) = (f64::from(xd), f64::from(zd));
+    let len = (xd * xd + zd * zd).sqrt();
+    let (kx, kz) = if len < f64::from(1.0e-5_f32) {
+        (0.0, 0.0)
+    } else {
+        (xd / len * f64::from(h), zd / len * f64::from(h))
+    };
+    [-kx, f64::from(v) * 1.2, -kz]
+}
+/// `SulfurCube.knockback` with a block: the archetype's powers, turned by where the blow came
+/// from and, when the attacker's aim is known (`Mob::attacker_aim`), by where it points.
+pub fn knockback(m: &mut Mob, from: [f64; 3], damage: f32) -> bool {
+    let Some(a) = archetype(m) else {
+        return false;
+    };
+    let aim = m.attacker_aim.take();
+    let delta = launch(
+        (a.horizontal_power, a.vertical_power),
+        a.knockback_resistance.clamp(0.0, 1.0) as f32,
+        damage,
+        from,
+        [m.position.x, m.position.y, m.position.z],
+        m.center(),
+        m.height(),
+        aim,
+    );
     m.velocity = Vec3::new(
-        m.velocity.x - xd / len * f64::from(h),
-        m.velocity.y + f64::from(v) * 1.2,
-        m.velocity.z - zd / len * f64::from(h),
+        m.velocity.x + delta[0],
+        m.velocity.y + delta[1],
+        m.velocity.z + delta[2],
     );
     // The hit sound plays on the next tick (no event queue here).
     m.extra.scratch[1] = 2;
@@ -739,5 +849,101 @@ mod fuse_anim_tests {
         // Stops at counter2 == 1 → fuse 0 (primed until the server removes it).
         assert_eq!(m.extra.counter2, 1);
         assert_eq!(fuse(&m), 0);
+    }
+}
+
+#[cfg(test)]
+mod launch_tests {
+    use super::launch;
+
+    /// What vanilla 26.3's `SulfurCube.knockback` adds to the movement, computed by running its
+    /// three private helpers' bodies on the real `Vec2`, `Vec3` and `Mth` classes: the last case
+    /// has no attacker aim (a blow from an attacker that gives none).
+    #[test]
+    fn the_launch_follows_the_vanilla_helpers() {
+        // (powers, resistance, damage, from, position, centre y, height, aim eye/look)
+        type Case = (
+            (f32, f32),
+            f32,
+            f32,
+            [f64; 3],
+            [f64; 3],
+            f64,
+            f32,
+            Option<([f64; 3], [f64; 3])>,
+        );
+        let cases: [(Case, [f64; 3]); 4] = [
+            (
+                (
+                    (1.0, 0.6),
+                    0.0,
+                    5.0,
+                    [0.5, 64.0, 0.5],
+                    [3.5, 64.0, 0.5],
+                    64.25,
+                    0.5,
+                    Some(([0.5, 65.62, 0.5], [1.0, -0.1, 0.0])),
+                ),
+                [0.8944272398948669, 0.536656379699707, -0.0],
+            ),
+            (
+                (
+                    (1.0, 0.6),
+                    0.25,
+                    8.0,
+                    [0.5, 64.0, 0.5],
+                    [3.5, 64.0, 1.5],
+                    64.25,
+                    0.5,
+                    Some(([0.5, 65.62, 0.5], [0.95, -0.3, 0.2])),
+                ),
+                [0.7428210177564502, 0.5091168880462646, 0.41014247554144134],
+            ),
+            (
+                (
+                    (2.0, 1.0),
+                    0.0,
+                    6.0,
+                    [10.5, 70.0, -3.5],
+                    [7.5, 64.0, -2.0],
+                    64.25,
+                    0.5,
+                    Some(([10.5, 71.62, -3.5], [-0.5, -0.7, 0.4])),
+                ),
+                [-1.1930282398964365, -2.939387798309326, 0.15109800367878837],
+            ),
+            (
+                (
+                    (1.5, 0.8),
+                    0.5,
+                    4.0,
+                    [0.5, 64.0, 0.5],
+                    [2.5, 64.0, 0.5],
+                    64.25,
+                    0.5,
+                    None,
+                ),
+                [0.6000000238418579, 0.9600000143051147, -0.0],
+            ),
+        ];
+        for (i, ((powers, resistance, damage, from, position, _centre_y, height, aim), expected)) in
+            cases.into_iter().enumerate()
+        {
+            // The box centre: the feet position plus half the height.
+            let center = [
+                position[0],
+                position[1] + f64::from(height) / 2.0,
+                position[2],
+            ];
+            let got = launch(
+                powers, resistance, damage, from, position, center, height, aim,
+            );
+            for axis in 0..3 {
+                assert!(
+                    (got[axis] - expected[axis]).abs() < 1.0e-9,
+                    "case {i} axis {axis}: {got:?} against {expected:?}"
+                );
+            }
+        }
     }
 }

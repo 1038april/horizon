@@ -1101,6 +1101,10 @@ pub struct Mob {
     pub silent: bool,
     /// `Invulnerable`: immune to damage (but not to `/kill`).
     pub invulnerable_flag: bool,
+    /// The attacker's eye and view direction while its blow is being dealt (`source.getEntity()`'s
+    /// `getEyePosition` and `getLookAngle`): what `SulfurCube.knockback` turns the launch by.
+    /// Set by whoever deals the blow and cleared once it is, none for an attacker that gives none.
+    pub attacker_aim: Option<([f64; 3], [f64; 3])>,
     pub climbing: bool,
     pub fire_ticks: i32,
     pub ticks_frozen: i32,
@@ -2278,6 +2282,7 @@ impl Mob {
             no_ai: false,
             silent: false,
             invulnerable_flag: false,
+            attacker_aim: None,
             climbing: false,
             fire_ticks: 0,
             ticks_frozen: 0,

@@ -157,6 +157,7 @@ impl Game<'_> {
     /// the weapon's `armor_effectiveness` enchantments (Breach) thin its armor.
     pub(super) fn hurt_by_player(&mut self, index: usize, amount: f32, source: Damage) -> bool {
         let held = self.held().cloned();
+        let aim = self.aim();
         let kind = self.mobs[index].kind.id.clone();
         let ctx = EffectContext {
             this: Some(&kind),
@@ -184,7 +185,11 @@ impl Game<'_> {
             )
         };
         let old_health = self.mobs[index].health;
+        // The attacker's eye and view, for what turns a blow by where it aims
+        // (`SulfurCube.knockback`).
+        self.mobs[index].attacker_aim = aim;
         let hurt = self.mobs[index].damage_with(amount, source, Some(&mut breach));
+        self.mobs[index].attacker_aim = None;
         if hurt && self.mobs[index].health != old_health {
             self.mob_damage_event(self.mobs[index].id);
         }
