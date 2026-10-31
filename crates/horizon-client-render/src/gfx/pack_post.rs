@@ -813,6 +813,8 @@ pub(super) struct Geometry<'a> {
 struct Resources<'a> {
     textures: &'a [pack_textures::PackTexture],
     images: &'a [pack_images::PackImage],
+    /// The images this device can't make.
+    left_out: &'a [horizon_shaders::CustomImage],
     buffers: &'a pack_images::Buffers,
 }
 
@@ -872,6 +874,17 @@ fn bindings(
         } else {
             wgpu::TextureViewDimension::D2
         };
+        if let Some(def) = pack
+            .left_out
+            .iter()
+            .find(|d| d.sampler.as_deref() == Some(s.name.as_str()))
+        {
+            notes.push(format!(
+                "{name}: samples image `{}`, which is left out",
+                def.name
+            ));
+            return None;
+        }
         let custom = pack_textures::find(textures, group, &s.ty, &s.name);
         let image = pack
             .images
@@ -1449,11 +1462,23 @@ impl PackPost {
                 .map_or(formats[i], |f| f[i])
         });
         let (mut storage, mut copied) = (0u16, 0u16);
-        let images = pack_images::images(std::mem::take(&mut post.images));
+        // An image this device can't make: the programs using it are skipped.
+        let mut image_defs = std::mem::take(&mut post.images);
+        let mut left_out = Vec::new();
+        image_defs.retain(|def| match pack_images::makeable(device, def) {
+            Ok(()) => true,
+            Err(e) => {
+                notes.push(format!("image `{}`: {e}", def.name));
+                left_out.push(def.clone());
+                false
+            }
+        });
+        let images = pack_images::images(image_defs);
         let buffers = pack_images::Buffers::new(device, std::mem::take(&mut post.buffer_objects));
         let pack = Resources {
             textures: &textures,
             images: &images,
+            left_out: &left_out,
             buffers: &buffers,
         };
         let mut build = |mut p: horizon_shaders::PostProgram, geometry: Option<&Geometry<'_>>| {
@@ -2830,8 +2855,42 @@ impl PackPost {
         self.passes.iter().map(|p| p.name.as_str()).collect()
     }
 
+    /// Drops every pass's cached bind groups, compute stages included: they name views that
+    /// were made again.
+    fn forget_groups(&mut self) {
+        let sky = self
+            .sky
+            .iter_mut()
+            .flat_map(|s| s.basic.iter_mut().chain(&mut s.textured));
+        let entities = self
+            .entities
+            .iter_mut()
+            .flat_map(|e| e.passes.iter_mut().chain(&mut e.shadow).flatten());
+        let passes = self
+            .passes
+            .iter_mut()
+            .chain(&mut self.terrain)
+            .chain(&mut self.water)
+            .chain(sky)
+            .chain(entities)
+            .chain(&mut self.clouds)
+            .chain(self.weather.iter_mut().flatten())
+            .chain(self.hand.iter_mut().map(|h| &mut h.0))
+            .chain(&mut self.shadow_terrain)
+            .chain(&mut self.shadow_water)
+            .chain(&mut self.shadow_comp);
+        for pass in passes {
+            pass.groups.clear();
+            for c in &mut pass.compute {
+                c.groups.clear();
+            }
+        }
+    }
+
     fn resize(&mut self, device: &wgpu::Device, size: [u32; 2]) {
-        pack_images::resize_images(device, &mut self.images, size);
+        if pack_images::resize_images(device, &mut self.images, size) {
+            self.forget_groups();
+        }
         self.buffers.resize(device, size);
         if self.targets.as_ref().is_some_and(|t| t.size == size) {
             return;
@@ -2945,10 +3004,7 @@ impl PackPost {
             depth1,
             mips,
         });
-        let gbuffers = self.terrain.iter_mut().chain(&mut self.water);
-        for pass in self.passes.iter_mut().chain(gbuffers) {
-            pass.groups.clear();
-        }
+        self.forget_groups();
     }
 
     /// The shadow pass (2.1, passes 2 and 3): the shadow buffers cleared, then the `shadowcomp`

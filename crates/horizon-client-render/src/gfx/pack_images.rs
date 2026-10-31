@@ -63,14 +63,49 @@ fn format(f: Format) -> wgpu::TextureFormat {
     }
 }
 
-/// Makes the images that are missing or sized for another render size.
-pub(super) fn resize_images(device: &wgpu::Device, images: &mut [PackImage], size: [u32; 2]) {
+/// Whether this device can make `def`: its format's features, and a size in pixels within the
+/// device's limits.
+pub(super) fn makeable(device: &wgpu::Device, def: &CustomImage) -> Result<(), String> {
+    let format = format(def.format);
+    let missing = format.required_features() - device.features();
+    if !missing.is_empty() {
+        return Err(format!(
+            "{format:?} needs {missing:?}, which this GPU lacks"
+        ));
+    }
+    let limits = device.limits();
+    let largest = if def.is_3d() {
+        limits.max_texture_dimension_3d
+    } else {
+        limits.max_texture_dimension_2d
+    };
+    let [width, height, depth] = def.extent([1, 1]);
+    let relative = matches!(def.size, horizon_shaders::ImageSize::Relative(_));
+    if !relative && width.max(height).max(depth) > largest {
+        return Err(format!(
+            "{width}x{height}x{depth} is larger than this GPU's {largest}"
+        ));
+    }
+    Ok(())
+}
+
+/// Makes the images that are missing or sized for another render size; whether it made any.
+pub(super) fn resize_images(
+    device: &wgpu::Device,
+    images: &mut [PackImage],
+    size: [u32; 2],
+) -> bool {
+    let largest = device.limits().max_texture_dimension_2d;
+    let mut made = false;
     for image in images {
         let relative = matches!(image.def.size, horizon_shaders::ImageSize::Relative(_));
         if image.view.is_some() && (!relative || image.made_for == size) {
             continue;
         }
+        made = true;
+        // A relative image larger than the render size stops at the device's limit.
         let [width, height, depth] = image.def.extent(size);
+        let [width, height] = [width.min(largest), height.min(largest)];
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(&image.def.name),
             size: wgpu::Extent3d {
@@ -94,6 +129,7 @@ pub(super) fn resize_images(device: &wgpu::Device, images: &mut [PackImage], siz
         image.view = Some(texture.create_view(&Default::default()));
         image.made_for = size;
     }
+    made
 }
 
 /// Clears the images the pack clears before each frame.
