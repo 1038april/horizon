@@ -348,6 +348,13 @@ pub enum What {
         next: String,
         active: bool,
     },
+    /// A `CycleButton` with its own narration (`withCustomNarration`):
+    /// `title` as is, and the value a click moves to.
+    NamedCycle {
+        title: String,
+        next: String,
+        active: bool,
+    },
     /// `Checkbox`: "<message> button" and whether a click checks it.
     Checkbox {
         message: String,
@@ -356,6 +363,9 @@ pub enum What {
     },
     /// `EditBox`: "<message> edit box: <value>".
     EditBox { message: String, value: String },
+    /// A text widget that narrates its message and nothing else
+    /// (`FittingMultiLineTextWidget`, a list's `FocusableTextWidget` header).
+    Text { message: String },
     /// An `ObjectSelectionList` or a `TabNavigationBar`: `total` rows, the one
     /// under the mouse and the selected one.
     List {
@@ -439,6 +449,77 @@ impl Narratable {
             rect,
         )
     }
+    /// A button narrated by its own `createNarrationMessage`.
+    pub fn named(title: impl Into<String>, rect: [f32; 4], active: bool) -> Self {
+        Self::new(
+            What::Named {
+                title: title.into(),
+                active,
+            },
+            rect,
+        )
+    }
+    /// A `CycleButton` showing `message`; a click moves it to `next`.
+    pub fn cycle(
+        message: impl Into<String>,
+        next: impl Into<String>,
+        rect: [f32; 4],
+        active: bool,
+    ) -> Self {
+        Self::new(
+            What::Cycle {
+                message: message.into(),
+                next: next.into(),
+                active,
+            },
+            rect,
+        )
+    }
+    pub fn checkbox(
+        message: impl Into<String>,
+        selected: bool,
+        rect: [f32; 4],
+        active: bool,
+    ) -> Self {
+        Self::new(
+            What::Checkbox {
+                message: message.into(),
+                selected,
+                active,
+            },
+            rect,
+        )
+    }
+    pub fn text(message: impl Into<String>, rect: [f32; 4]) -> Self {
+        Self::new(
+            What::Text {
+                message: message.into(),
+            },
+            rect,
+        )
+    }
+    /// An `ObjectSelectionList` (or tabs) of `total` rows over `rect`.
+    pub fn list(
+        kind: ListKind,
+        total: usize,
+        hovered: Option<Row>,
+        selected: Option<Row>,
+        rect: [f32; 4],
+    ) -> Self {
+        Self::new(
+            What::List {
+                kind,
+                total,
+                hovered,
+                selected,
+            },
+            rect,
+        )
+    }
+    /// A `ContainerObjectSelectionList` of `rows` rows over `rect`.
+    pub fn container_list(rows: usize, hovered_row: Option<usize>, rect: [f32; 4]) -> Self {
+        Self::new(What::ContainerList { rows, hovered_row }, rect)
+    }
     pub fn key(mut self, key: u64) -> Self {
         self.key = key;
         self
@@ -472,8 +553,10 @@ impl Narratable {
             | What::Named { active, .. }
             | What::Slider { active, .. }
             | What::Cycle { active, .. }
+            | What::NamedCycle { active, .. }
             | What::Checkbox { active, .. } => *active,
             What::EditBox { .. }
+            | What::Text { .. }
             | What::List { .. }
             | What::ContainerList { .. }
             | What::Recipe { .. } => true,
@@ -528,6 +611,22 @@ thread_local! {
         const { RefCell::new((Narration::EMPTY, Narration::EMPTY)) };
     /// A screen asked for `triggerImmediateNarration(true)`.
     static NARRATE_NOW: Cell<bool> = const { Cell::new(false) };
+    /// Where the narrator's focused widget was last drawn.
+    static FOCUS: Cell<Option<[f32; 4]>> = const { Cell::new(None) };
+}
+
+/// The narrator tells the drawers where its focused widget is (a click's
+/// or the controller's), so what only a hovered or focused widget narrates
+/// (a cycle button's next value) is worked out for it alone.
+pub fn set_narration_focus(rect: Option<[f32; 4]>) {
+    FOCUS.set(rect);
+}
+
+/// Whether the widget at `rect` has the narrator's focus.
+pub fn narration_focused(rect: [f32; 4]) -> bool {
+    FOCUS
+        .get()
+        .is_some_and(|f| f.iter().zip(rect).all(|(a, b)| (a - b).abs() < 0.5))
 }
 
 /// Whether the frames record their narration; the narrator switches it.
@@ -575,6 +674,42 @@ pub fn narratable(narratable: impl FnOnce() -> Narratable) {
             }
         });
     }
+}
+
+/// Changes the narratable recorded last this frame (one a shared drawer
+/// recorded: an edit box's message, a button's key or row).
+pub fn last_narratable(f: impl FnOnce(&mut Narratable)) {
+    if NARRATING.get() {
+        NARRATION.with_borrow_mut(|(current, _)| {
+            if let Some(last) = current.items.last_mut() {
+                f(last);
+            }
+        });
+    }
+}
+
+/// Changes the narratable recorded last this frame and moves it to `index`
+/// among the screen's: a widget the screen adds before others it draws first.
+pub fn last_narratable_at(index: usize, f: impl FnOnce(&mut Narratable)) {
+    if NARRATING.get() {
+        NARRATION.with_borrow_mut(|(current, _)| {
+            if let Some(mut last) = current.items.pop() {
+                f(&mut last);
+                let index = index.min(current.items.len());
+                current.items.insert(index, last);
+            }
+        });
+    }
+}
+
+/// Names the edit box recorded last, which a shared drawer recorded without
+/// its `getMessage`.
+pub fn name_last_edit_box(name: impl FnOnce() -> String) {
+    last_narratable(|n| {
+        if let What::EditBox { message, .. } = &mut n.what {
+            *message = name();
+        }
+    });
 }
 
 /// The tooltip drawn this frame: the hovered widget's narration hint.
@@ -663,6 +798,32 @@ mod narration_tests {
         begin_screen(|| ScreenInfo::new("title", ""));
         set_narrating(false);
         assert!(frame(2003).screen.is_none());
+    }
+
+    #[test]
+    fn the_last_widget_recorded_can_be_named_after_the_fact() {
+        set_narrating(true);
+        let _ = frame(3000);
+        begin_screen(|| ScreenInfo::new("select_world", "Select World"));
+        // A shared drawer records the box without its message.
+        narratable(|| Narratable::edit_box("", "abc", [0.0; 4]));
+        last_narratable(|n| {
+            if let What::EditBox { message, .. } = &mut n.what {
+                *message = "Search for worlds".into();
+            }
+            n.order = -1;
+        });
+        let last = frame(3001);
+        assert_eq!(
+            last.items[0].what,
+            What::EditBox {
+                message: "Search for worlds".into(),
+                value: "abc".into()
+            }
+        );
+        assert_eq!(last.items[0].order, -1);
+        set_narrating(false);
+        last_narratable(|_| unreachable!("nothing recorded while off"));
     }
 
     #[test]
