@@ -1112,31 +1112,47 @@ pub fn recipe_result(v: &Value) -> Option<ItemStack> {
     let template = Template::parse(v)?;
     template.item.is_some().then(|| template.create())
 }
-/// The `.json` files under a `recipe` folder, its subfolders' too, in path
+/// The `.json` files under a `recipe` folder, its subfolders' too, in id
 /// order: each one's path inside the folder without the extension (`a/b`, as a
-/// recipe id has it) and its file. An error when `dir` can't be read.
+/// recipe id has it) and its file. An error when `dir` itself can't be read; a
+/// subfolder or an entry that can't be listed is warned and skipped, as
+/// vanilla's `PathPackResources` keeps what it found.
 pub(crate) fn recipe_files(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
     let mut files = Vec::new();
     let mut stack = vec![fs::read_dir(dir)?];
     while let Some(entries) = stack.pop() {
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(e) => {
+                    log::warn!("Horizon: failed to list an entry of {}: {e}", dir.display());
+                    continue;
+                }
+            };
             let path = entry.path();
             if path.is_dir() {
-                stack.extend(fs::read_dir(&path));
+                match fs::read_dir(&path) {
+                    Ok(list) => stack.push(list),
+                    Err(e) => log::warn!("Horizon: failed to list {}: {e}", path.display()),
+                }
             } else if path.extension().is_some_and(|e| e == "json") {
                 files.push(path);
             }
         }
     }
-    files.sort();
-    Ok(files
+    let mut named: Vec<(String, PathBuf)> = files
         .into_iter()
         .map(|path| {
             let inside = path.strip_prefix(dir).unwrap_or(&path).with_extension("");
             let name: Vec<_> = inside.iter().map(|c| c.to_string_lossy()).collect();
             (name.join("/"), path)
         })
-        .collect())
+        .collect();
+    // Vanilla lists resources by id, in a map keyed by it
+    // (`FallbackResourceManager`): `crushing` before `crushing/iron`, where
+    // a path's components put the subfolder's file first.
+    named.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(named)
 }
 /// The type of a recipe the game doesn't craft itself: one outside `minecraft`.
 fn custom_type(v: &Value) -> Option<&str> {
