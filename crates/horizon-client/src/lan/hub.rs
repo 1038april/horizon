@@ -1322,6 +1322,7 @@ impl Hub {
     /// players' latencies.
     pub fn tick(&mut self, ctx: &mut TickCtx) -> Vec<HostEvent> {
         let mut events = self.poll(ctx);
+        events.extend(self.drain_packets(ctx));
         events.extend(self.tick_level(ctx));
         self.end_tick();
         events
@@ -2703,11 +2704,6 @@ impl Hub {
                     g.max_unacknowledged = 10;
                 }
                 S::Pong(p) => self.anticheat_pong(i, p.id),
-                S::Attack(p) => {
-                    if !self.anticheat_attack(i, p.id, events) {
-                        events.push(HostEvent::Packet(conn, Box::new(S::Attack(p))));
-                    }
-                }
                 S::Punch(p) => {
                     self.anticheat_swing(i);
                     events.push(HostEvent::Packet(conn, Box::new(S::Punch(p))));
@@ -2807,8 +2803,11 @@ impl Hub {
                 // behind them would move the player (or land them on the ground,
                 // losing a falling attack's critical hit) before the game checks
                 // their reach and state.
+                // The anticheat drops an attack it kicks or bans for.
                 S::Attack(p) => {
-                    events.push(HostEvent::Packet(conn, Box::new(S::Attack(p))));
+                    if !self.anticheat_attack(i, p.id, events) {
+                        events.push(HostEvent::Packet(conn, Box::new(S::Attack(p))));
+                    }
                     if self.move_queued(i) {
                         break;
                     }

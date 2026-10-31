@@ -883,6 +883,7 @@ fn guests_see_each_other_and_the_world_entities() {
                 && reminder.elapsed() >= Duration::from_secs(1)
             {
                 bot.send(S::MovePlayerPos(play::MovePlayerPos { x, y, z, flags: 1 }));
+                bot.send(S::ClientTickEnd(Empty));
                 reminder = Instant::now();
             }
             let Ok((id, payload)) = bot.c.recv() else {
@@ -945,6 +946,8 @@ fn guests_see_each_other_and_the_world_entities() {
                 z: 8.5,
                 flags: 1,
             }));
+            // A client ends each tick: a second move before it is kicked.
+            bot.send(S::ClientTickEnd(Empty));
         }
         Ok::<(), String>(())
     });
