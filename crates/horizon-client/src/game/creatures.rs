@@ -5489,6 +5489,15 @@ impl Game<'_> {
         if let Some(child) = self.mobs.iter_mut().find(|m| m.id == id) {
             horizon_client::mobs::finalize::spawn_egg_offspring(child, species, variant, color);
         }
+        // `Mob.checkAndHandleImportantInteractions` then calls
+        // `onOffspringSpawnedFromEgg`: `Fox`'s makes the baby trust the player
+        // who used the egg (a fox egg used on a block trusts nobody).
+        if species == Species::Fox {
+            let spawner = self.acting_player_uuid();
+            if let Some(child) = self.mobs.iter_mut().find(|m| m.id == id) {
+                horizon_client::mobs::fox::add_trusted_entity(child, spawner);
+            }
+        }
         self.trigger_item_entity("minecraft:player_interacted_with_entity", &stack, &target);
         self.consume_held();
         true
@@ -5538,18 +5547,6 @@ impl Game<'_> {
             horizon_client::entity_nbt::apply_item_components(m, stack);
         }
         self.apply_spawn_egg_entity_data(id, stack);
-        // `Fox.onOffspringSpawnedFromEgg`: a fox from an egg trusts the player
-        // who used it (`MobSpawnEggItem` / the type's own hook).
-        if self
-            .mobs
-            .iter()
-            .any(|m| m.id == id && m.species() == horizon_client::mobs::Species::Fox)
-        {
-            let spawner = self.acting_player_uuid();
-            if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
-                horizon_client::mobs::fox::add_trusted_entity(m, spawner);
-            }
-        }
         self.swing_arm();
         if !self.creative
             && let Some(s) = self.held_mut().as_mut()
