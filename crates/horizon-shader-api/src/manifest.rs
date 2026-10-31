@@ -44,8 +44,8 @@ pub struct Manifest {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Reflection {
-    /// The option the mirror is drawn while it is not 0 (a bool on, a number above 0), if
-    /// any.
+    /// The option the mirror is drawn while it is not 0 (a bool on, a number other than 0),
+    /// if any.
     #[serde(default)]
     pub option: Option<String>,
 }
