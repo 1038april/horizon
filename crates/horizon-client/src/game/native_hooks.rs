@@ -1502,7 +1502,7 @@ impl Game<'_> {
     ) {
         let _ = (dimension, entity, kind, state, position);
     }
-    /// `Block.fallOn` for a mod block. Change calculated damage before fall sounds
+    /// `Block.fallOn` for a mod block. Change calculated damage before generic fall sounds
     /// and hurt handling; zero prevents both. Creative and fall-immune entities
     /// notify with zero damage and retain their immunity. Server-side only.
     pub(super) fn native_block_fall_on(
