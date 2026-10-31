@@ -12171,12 +12171,8 @@ impl Game<'_> {
             }
         });
         let heights = self.heights.interpolated(a);
-        let view = horizon_client::camera::view_matrix(self.yaw, self.pitch);
         // The hand sway: both hands turn by a tenth of the bobs' lag.
-        let [sway_x, sway_y] = self.sway.rotation(a, self.pitch, self.yaw);
-        let to_world = view.inverse()
-            * glam::Mat4::from_rotation_x(sway_x.to_radians())
-            * glam::Mat4::from_rotation_y(sway_y.to_radians());
+        let to_world = self.sway.to_world(a, &self.view);
         let eye = self.eye_position().unwrap_or_default();
         let light = self.world.light(
             eye[0].floor() as i32,
