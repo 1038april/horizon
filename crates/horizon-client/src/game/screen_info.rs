@@ -101,6 +101,11 @@ pub(super) fn confirm(id: &str, title: &str, message: &str) -> ScreenInfo {
     ScreenInfo::new(id, join_for_narration(&[title, message]))
 }
 
+/// `PopupScreen.getNarrationMessage`: the title and the messages, a line each.
+pub(super) fn popup(id: &str, title: &str, messages: &[&str]) -> ScreenInfo {
+    ScreenInfo::new(id, join_for_narration(&[title, &join_lines(messages)]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,10 +180,14 @@ mod tests {
     }
 
     #[test]
-    fn confirm_screens_join_their_title_and_message() {
+    fn confirm_and_popup_screens_join_their_title_and_message() {
         assert_eq!(
             confirm("link", "Open this?", "https://example.com").title,
             "Open this?. https://example.com"
+        );
+        assert_eq!(
+            popup("lock", "Lock difficulty", &["Are you sure?", "Really?"]).title,
+            "Lock difficulty. Are you sure?\nReally?"
         );
     }
 }
