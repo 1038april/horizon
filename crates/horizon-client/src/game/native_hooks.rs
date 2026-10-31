@@ -534,9 +534,10 @@ pub struct NativeScreen {
     pub own_labels: bool,
 }
 
-/// The open screen, for `native_screen_render_post` (`ScreenEvent.Render.Post`):
-/// what it is, its menu and title, where its container panel is, how many
-/// slots its menu has, and where the mouse and the frame's partial tick are.
+/// The open screen, for the screen hooks (`native_screen_render_post`,
+/// `native_screen_mouse_button_pressed_pre`, `..._released_pre`): what it is,
+/// its menu and title, where its container panel is, how many slots its menu
+/// has, and where the mouse and the frame's partial tick are.
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub struct NativeScreenView<'a> {
@@ -1114,6 +1115,55 @@ impl Game<'_> {
     ) {
         let _ = (batch, screen);
     }
+    /// A mouse button went down over the open screen
+    /// (`ScreenEvent.MouseButtonPressed.Pre`, vanilla's
+    /// `Screen.mouseClicked`): `screen` is the screen it is, `screen.mouse`
+    /// where the pointer is (so there is no position of its own), `button` the
+    /// button's GLFW index (0 left, 1 right, 2 middle, 3 back, 4 forward, else
+    /// the button's number) and `modifiers` GLFW's bits (shift 1, control 2,
+    /// alt 4, super 8). Set `canceled` and the press goes no further: no slot,
+    /// no screen button, no drag, no hotbar key, no sort or header button.
+    ///
+    /// It fires before anything the screen does with the press, on the window
+    /// only, and only while a screen of the game's is open. It does not fire
+    /// on the title screen, the connect and loading screens, nor for a server
+    /// dialog, the server pack, link and code-of-conduct prompts, a book or a
+    /// sign editor drawn over gameplay, nor while a world loads or saves: the
+    /// click there stays the game's own. A gamepad click or a click the
+    /// keyboard's focus sends is not the mouse and fires nothing.
+    /// API @API:screen_mouse_button@.
+    pub(super) fn native_screen_mouse_button_pressed_pre(
+        &self,
+        screen: &NativeScreenView<'_>,
+        button: i32,
+        modifiers: u32,
+        canceled: &mut bool,
+    ) {
+        let _ = (screen, button, modifiers, canceled);
+    }
+    /// A mouse button went up over the open screen
+    /// (`ScreenEvent.MouseButtonReleased.Pre`, vanilla's
+    /// `Screen.mouseReleased`), with the same `screen`, `button` and
+    /// `modifiers` as `native_screen_mouse_button_pressed_pre` and fired at
+    /// the same point. Set `canceled` and the release goes no further: a
+    /// pressed slot keeps what it took and no drag, slider or scrollbar lets
+    /// go.
+    ///
+    /// Cancel a release only when the press it ends was cancelled too: a
+    /// release the screen took ends the drag or the scroll it began, as it
+    /// does in vanilla, and no guard here un-cancels it. The screens that never
+    /// fire are the press's, and a release fires whenever a screen is open, so
+    /// a press that opened another screen ends on that one.
+    /// API @API:screen_mouse_button@.
+    pub(super) fn native_screen_mouse_button_released_pre(
+        &self,
+        screen: &NativeScreenView<'_>,
+        button: i32,
+        modifiers: u32,
+        canceled: &mut bool,
+    ) {
+        let _ = (screen, button, modifiers, canceled);
+    }
     /// The open screen as a native mod sees it (`NativeScreenView`): its id,
     /// the open menu's type and title, its slot count, and its panel's
     /// rectangle, with the mouse and the partial tick. `screen` is the screen
@@ -1146,6 +1196,31 @@ impl Game<'_> {
             image.width as f32,
             image.height as f32,
         ]
+    }
+    /// A screen the native mods' input hooks are for is open: the window has a
+    /// renderer, `Screen::Playing` is behind it (so not the title screen, nor a
+    /// book, a sign editor, a server dialog or a prompt drawn over gameplay)
+    /// and no connect or world load is in progress. The one gate they all ask
+    /// before they fire.
+    pub(super) fn native_screen_open(&self) -> bool {
+        self.renderer.is_some()
+            && self.screen != Screen::Playing
+            && !self.screen_over_playing()
+            && !self.remote_loading()
+    }
+    /// The open screen as an input hook sees it (`NativeScreenView`), or None
+    /// when `native_screen_open` says no screen is. `screen.mouse` is the
+    /// pointer the hook's event is at, so a hook takes no position, and
+    /// `partial_tick` is the clock's fraction at this event, not a frame's.
+    /// The `HudBatch` built here is only what `screen.rect` needs: the
+    /// window's GUI scale, no allocation.
+    pub(super) fn screen_view_now(&self) -> Option<NativeScreenView<'_>> {
+        if !self.native_screen_open() {
+            return None;
+        }
+        let renderer = self.renderer.as_ref()?;
+        let batch = HudBatch::new([renderer.config.width, renderer.config.height]);
+        Some(self.screen_view(&batch, self.screen))
     }
     /// A left or right (`right`) press at `at` (GUI pixels from the screen's
     /// top left, so outside it too) on block `block`'s screen, a mod's, over

@@ -1928,6 +1928,42 @@ fn drop_whole_stack(modifiers: winit::keyboard::ModifiersState) -> bool {
     modifiers.control_key()
 }
 
+/// The modifier `modifiers` stands for, as GLFW words it in the native mods'
+/// input hooks: `GLFW_MOD_SHIFT` 1, `GLFW_MOD_CONTROL` 2, `GLFW_MOD_ALT` 4,
+/// `GLFW_MOD_SUPER` 8 — the word a NeoForge listener reads off its event
+/// (`getModifiers`). The lock keys are not modifiers there.
+fn glfw_modifiers(modifiers: winit::keyboard::ModifiersState) -> u32 {
+    let mut bits = 0;
+    if modifiers.shift_key() {
+        bits |= 1;
+    }
+    if modifiers.control_key() {
+        bits |= 2;
+    }
+    if modifiers.alt_key() {
+        bits |= 4;
+    }
+    if modifiers.super_key() {
+        bits |= 8;
+    }
+    bits
+}
+
+/// The GLFW mouse button index `button` is, as the native mods' mouse hooks
+/// hand it over: 0 left, 1 right, 2 middle, 3 back, 4 forward, and `Other(n)`
+/// is n — the numbering `keybinds::mouse_name` names (`key.mouse.<index + 1>`)
+/// and vanilla's `InputConstants` reads.
+fn glfw_button(button: MouseButton) -> i32 {
+    match button {
+        MouseButton::Left => 0,
+        MouseButton::Right => 1,
+        MouseButton::Middle => 2,
+        MouseButton::Back => 3,
+        MouseButton::Forward => 4,
+        MouseButton::Other(n) => i32::from(n),
+    }
+}
+
 fn select_creative_tab(
     creative: &mut Creative,
     clicks: &mut horizon_client::container_screen::Clicks,
@@ -15634,6 +15670,38 @@ impl Game<'_> {
             return;
         }
         let result: Result<()> = (|| {
+            // ScreenEvent.MouseButtonPressed.Pre / MouseButtonReleased.Pre:
+            // the open screen hears of the press before anything reads it, and
+            // a cancelled one goes no further — no hotbar key, no slot, no
+            // button, no sort, no drag. First in the event, so none of the
+            // arms below (which hold the container hotkey and the sort and
+            // header buttons too) see it. A click the pad or the keyboard's
+            // focus made up is not the mouse: it fires nothing.
+            if let WindowEvent::MouseInput { state, button, .. } = &event
+                && !self.pad_synthetic_input()
+                && let Some(screen) = self.screen_view_now()
+            {
+                let (button, modifiers) = (glfw_button(*button), glfw_modifiers(self.modifiers));
+                let mut canceled = false;
+                if *state == ElementState::Pressed {
+                    self.native_screen_mouse_button_pressed_pre(
+                        &screen,
+                        button,
+                        modifiers,
+                        &mut canceled,
+                    );
+                } else {
+                    self.native_screen_mouse_button_released_pre(
+                        &screen,
+                        button,
+                        modifiers,
+                        &mut canceled,
+                    );
+                }
+                if canceled {
+                    return Ok(());
+                }
+            }
             match event {
                 WindowEvent::CloseRequested => {
                     if !self.settings.quit_shortcuts
@@ -19440,6 +19508,60 @@ mod tests {
         assert_eq!(Screen::Playing.id(), "playing");
         assert_eq!(Screen::Inventory.id(), "inventory");
         assert_eq!(Screen::Win.id(), "win");
+    }
+
+    /// The `modifiers` a native mod's input hooks hand over are GLFW's bits
+    /// (`GLFW_MOD_SHIFT` 1, `GLFW_MOD_CONTROL` 2, `GLFW_MOD_ALT` 4,
+    /// `GLFW_MOD_SUPER` 8), each on its own and all together.
+    #[test]
+    fn glfw_modifier_bits_are_glfw_modifier_bits() {
+        use winit::keyboard::ModifiersState;
+        for (state, bits) in [
+            (ModifiersState::empty(), 0),
+            (ModifiersState::SHIFT, 1),
+            (ModifiersState::CONTROL, 2),
+            (ModifiersState::ALT, 4),
+            (ModifiersState::SUPER, 8),
+            (ModifiersState::SHIFT | ModifiersState::ALT, 5),
+            (ModifiersState::CONTROL | ModifiersState::SUPER, 10),
+            (ModifiersState::SHIFT | ModifiersState::CONTROL, 3),
+            (
+                ModifiersState::SHIFT
+                    | ModifiersState::CONTROL
+                    | ModifiersState::ALT
+                    | ModifiersState::SUPER,
+                15,
+            ),
+        ] {
+            assert_eq!(glfw_modifiers(state), bits, "{state:?}");
+        }
+        // Every modifier GLFW has a bit for, and no other.
+        assert_eq!(glfw_modifiers(ModifiersState::all()), 15);
+    }
+
+    /// The `button` a native mod's mouse hooks hand over is GLFW's index (0
+    /// left, 1 right, 2 middle, 3 back, 4 forward, else the button's number),
+    /// the one `keybinds::mouse_name` names (`key.mouse.<index + 1>` from the
+    /// back button on).
+    #[test]
+    fn glfw_button_indices_are_glfw_indices() {
+        for (button, index, name) in [
+            (MouseButton::Left, 0, "key.mouse.left"),
+            (MouseButton::Right, 1, "key.mouse.right"),
+            (MouseButton::Middle, 2, "key.mouse.middle"),
+            (MouseButton::Back, 3, "key.mouse.4"),
+            (MouseButton::Forward, 4, "key.mouse.5"),
+        ] {
+            assert_eq!(glfw_button(button), index);
+            assert_eq!(horizon_client::keybinds::mouse_name(button), name);
+        }
+        for n in 5..12u16 {
+            assert_eq!(glfw_button(MouseButton::Other(n)), i32::from(n));
+            assert_eq!(
+                horizon_client::keybinds::mouse_name(MouseButton::Other(n)),
+                format!("key.mouse.{}", n + 1)
+            );
+        }
     }
 
     /// Snuffing a candle or a candle cake draws one smoke per
