@@ -620,17 +620,21 @@ impl Game<'_> {
     /// Generation's animals for the chunks generated since, once lit: chunk
     /// generation places them whether the level ticks or not.
     pub(super) fn spawn_fresh_chunks(&mut self) {
+        if !self.world.chunks.has_fresh() {
+            return;
+        }
         let fresh: Vec<(i32, i32)> = self
             .world
             .chunks
-            .iter()
-            .filter(|(_, c)| c.fresh && c.lit)
-            .map(|(k, _)| *k)
+            .fresh_keys_ordered()
+            .into_iter()
+            .filter(|k| self.world.chunks.get(k).is_some_and(|c| c.fresh && c.lit))
             .collect();
         for key in fresh {
             if let Some(c) = self.world.chunks.get_mut(&key) {
                 Arc::make_mut(c).fresh = false;
             }
+            self.world.chunks.remove_fresh(&key);
             self.spawn_generation_creatures(key.0, key.1);
         }
     }
@@ -4239,7 +4243,7 @@ impl Game<'_> {
         let Some((index, distance)) = self.mob_hit() else {
             return Ok(false);
         };
-        if let Some(hit) = self.pick()
+        if let Some(hit) = self.pick_unfiltered()
             && let Some(eye) = self.eye_position()
         {
             let d = ((hit.point[0] - eye[0]).powi(2)
@@ -4912,7 +4916,15 @@ impl Game<'_> {
             // ALTERNATIVE_WITH_SPEED with a per-axis maximum speed.
             self.particles
                 .send_particles(&options, at, spread, 0.2, count);
-            self.lan_send_particles(&options, at, spread, 0.2, count);
+            self.lan_send_particles(super::lan_particles::QueuedParticle {
+                dimension: self.dim.id(),
+                options,
+                state: None,
+                at,
+                spread,
+                speed: 0.2,
+                count: count as i32,
+            });
         }
         // PlayerInteractTrigger: the item used on the mob, once the interaction took.
         if let Some(stack) = &held {
