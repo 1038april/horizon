@@ -459,6 +459,107 @@ impl Game<'_> {
             self.lan_entity_event(id as i32, if body { 65 } else { 49 }, at);
         }
     }
+    /// `LivingEntity.hurtArmor` -> `LivingEntity.doHurtEquipment`, from the hit
+    /// `MobEvent::ArmorHurt` reported: every worn piece that wears when its
+    /// wearer is hurt loses `max(1, damage / 4)` durability, Unbreaking
+    /// applied, and at its maximum the slot empties and the equipment-break
+    /// event goes out (`LivingEntity.entityEventForEquipmentBreak`: 49 to 52
+    /// for the armour, 65 for the body). A fire hit leaves a fire-resistant
+    /// piece alone (`ItemStack.canBeHurtBy`).
+    fn hurt_mob_armor(&mut self, id: u32, damage: f32, kind: horizon_client::mobs::DamageKind) {
+        use horizon_client::mobs::drops;
+        use horizon_world::player_inventory::EquipmentSlot;
+        if damage <= 0.0 {
+            return;
+        }
+        let Some(m) = self.mobs.iter().find(|m| m.id == id) else {
+            return;
+        };
+        let at = [m.position.x, m.position.y, m.position.z];
+        let body_armour = drops::head_is_body(m.species());
+        let amount = ((damage / 4.0) as u32).max(1);
+        let name = damage_type(kind, false);
+        let fire = self
+            .motion
+            .health
+            .damage
+            .id(name)
+            .is_some_and(|d| self.motion.health.damage.in_tag(d, "minecraft:is_fire"));
+        // A piece's maximum, or none when it may not lose durability at all.
+        fn wearable(me: &Game<'_>, stack: &ItemStack, fire: bool, name: &str) -> Option<u32> {
+            let info = me.res.items().get(&stack.item)?;
+            if !info.equip_damage_on_hurt
+                || info.max_damage == 0
+                || !horizon_client::stations::is_damageable(me.res.items(), stack)
+                || (fire && me.res.items().resists_fire(stack, name))
+            {
+                return None;
+            }
+            Some(info.max_damage)
+        }
+        let mut broke: Vec<i8> = Vec::new();
+        // The four armour slots, then the body slot (`extra.head`).
+        let event_of = horizon_client::mobs::item_break::equipment_break_event;
+        for (index, slot) in [
+            (0usize, EquipmentSlot::Head),
+            (1, EquipmentSlot::Chest),
+            (2, EquipmentSlot::Legs),
+            (3, EquipmentSlot::Feet),
+        ] {
+            let Some(m) = self.mobs.iter().find(|m| m.id == id) else {
+                return;
+            };
+            let Some(stack) = m.extra.armor[index].clone() else {
+                continue;
+            };
+            let Some(max) = wearable(self, &stack, fire, name) else {
+                continue;
+            };
+            let loss = self.durability_loss(&stack, amount);
+            if loss == 0 {
+                continue;
+            }
+            let lost = stack.damage + loss;
+            let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
+                return;
+            };
+            if lost >= max {
+                m.extra.armor[index] = None;
+                broke.push(event_of(slot));
+            } else if let Some(worn) = m.extra.armor[index].as_mut() {
+                worn.damage = lost;
+            }
+        }
+        if body_armour {
+            let body = self
+                .mobs
+                .iter()
+                .find(|m| m.id == id)
+                .and_then(|m| m.item_by_slot(EquipmentSlot::Body));
+            if let Some(body) = body
+                && let Some(max) = wearable(self, &body, fire, name)
+            {
+                let loss = self.durability_loss(&body, amount);
+                if loss > 0 {
+                    let lost = body.damage + loss;
+                    let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
+                        return;
+                    };
+                    if lost >= max {
+                        m.extra.head = None;
+                        m.extra.body_damage = 0;
+                        broke.push(event_of(EquipmentSlot::Body));
+                    } else {
+                        m.extra.body_damage = lost as i32;
+                    }
+                }
+            }
+        }
+        for event in broke {
+            // LivingEntity.onEquippedItemBroken through the level's broadcast.
+            self.lan_entity_event(id as i32, event, at);
+        }
+    }
     /// What a converted frog gets once its tadpole has grown up: the spawn
     /// finalization of a conversion, then persistence.
     fn finalize_converted(&mut self, id: u32) {
@@ -1501,6 +1602,7 @@ impl Game<'_> {
                     self.drown_particles(at, v);
                 }
                 MobEvent::SunProtectionWear { mob } => self.wear_sun_protection(mob),
+                MobEvent::ArmorHurt { mob, amount, kind } => self.hurt_mob_armor(mob, amount, kind),
                 MobEvent::EntityEvent { mob, event, at } => {
                     self.lan_entity_event(mob as i32, event, at)
                 }
