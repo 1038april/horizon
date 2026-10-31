@@ -1434,7 +1434,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
             }
         }
         Cmd::AgentConfig { test: true, .. } => {
-            let tools = horizon_launcher::agents::self_test(backend::exe_path())?;
+            let tools = horizon_launcher::agents::self_test(&backend::update_target())?;
             if as_json {
                 json(serde_json::json!({ "answered": true, "tools": tools }));
             } else {
@@ -1443,7 +1443,7 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
         }
         Cmd::AgentConfig { client, .. } => {
             use horizon_launcher::agents;
-            let exe = backend::exe_path();
+            let exe = &backend::update_target();
             if as_json {
                 let mut all = agents::json(exe);
                 if let Some(id) = &client {
@@ -2962,7 +2962,7 @@ fn instance(action: InstanceCmd, as_json: bool) -> Result<(), String> {
                 None => instances::selected(),
             };
             let paths = match remove {
-                false => shortcut::make(backend::exe_path(), &i.id, &i.name)?,
+                false => shortcut::make(&backend::update_target(), &i.id, &i.name)?,
                 true => shortcut::remove(&i.id)?,
             };
             if as_json {

@@ -14,6 +14,19 @@ use horizon_client::gfx::pack_draw::EntitySpan;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+// A native mod can bundle a pack as `native-<mod-id>`; its Mods toggle controls it too.
+fn active_pack<'a>(picked: &'a str, mods: &horizon_client::mod_list::ModList) -> &'a str {
+    if picked.strip_prefix("native-").is_some_and(|id| {
+        mods.installed
+            .iter()
+            .any(|m| m.id == id && m.native.is_some() && mods.disabled.contains(id))
+    }) {
+        ""
+    } else {
+        picked
+    }
+}
+
 /// The ids a pack gives entities and block entities (4.1, 5.3), for the spans of the entity
 /// geometry.
 pub(super) struct PackIds {
@@ -47,7 +60,10 @@ impl Game<'_> {
         }
         static DEV_PACK: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
         let dev = DEV_PACK.get_or_init(|| std::env::var("HORIZON_SHADER_PACK").ok());
-        let picked = dev.as_deref().unwrap_or(&self.settings.horizon.shader_pack);
+        let picked = active_pack(
+            dev.as_deref().unwrap_or(&self.settings.horizon.shader_pack),
+            &self.settings.mods,
+        );
         if self.native_shaders.picked != picked {
             // Another pack, or none: drop what ran.
             self.native_shaders = super::native_shaders::NativeShaders::picking(picked);
@@ -79,9 +95,17 @@ impl Game<'_> {
             let loaded = horizon_client::crash::contain(|| {
                 match Pack::open(&path) {
                     Ok(pack) => {
-                        let macros = Macros::standard();
+                        let mut macros = Macros::standard();
+                        renderer.define_pack_macros(&mut macros);
                         let text = pack.read_text("shaders.properties").unwrap_or_default();
-                        let properties = Properties::parse(&text, &macros);
+                        // Its conditionals test the pack's options too.
+                        let properties = Properties::parse(
+                            &text,
+                            &horizon_shaders::with_options(&pack, &macros),
+                        );
+                        for note in macros.define_features(&properties) {
+                            log::warn!("shader pack {name}: {note}");
+                        }
                         for note in &properties.notes {
                             log::warn!(
                                 "shader pack {name}: shaders.properties:{}: {}",
@@ -92,7 +116,7 @@ impl Game<'_> {
                         let folder = dimension_folder(&pack, dimension);
                         let inputs = renderer.pack_inputs();
                         let mut post = load_post(&pack, &folder, &properties, &macros, &inputs);
-                        let biomes = self.res.biomes();
+                        let biomes = world_biomes!(self);
                         let names: Vec<&str> =
                             biomes.list.iter().map(|b| b.name.as_str()).collect();
                         post.custom.set_biomes(&names);
@@ -170,7 +194,7 @@ impl Game<'_> {
             .get(&(at.x >> 4, at.z >> 4))
             .map(|c| c.biome(at.x, at.y, at.z));
         let (held_items, held_light) = self.held_for_pack();
-        let info = biome.map(|b| self.res.biomes().get(b));
+        let info = biome.map(|b| world_biomes!(self).get(b));
         PackInputs {
             day_time: self.world.day_time,
             rain: lerp(self.world.weather.rain_level),
@@ -186,6 +210,7 @@ impl Game<'_> {
             hide_gui: self.ui.hide_gui,
             brightness: self.settings.gamma,
             biome: biome.map_or(-1, i32::from),
+            biome_known: biome.is_some(),
             biome_category: info.map_or(0, |b| horizon_shaders::biome_category(&b.name)),
             biome_precipitation: info.map_or(0, |b| {
                 horizon_shaders::biome_precipitation(b.precipitation, b.temperature)
@@ -417,4 +442,30 @@ fn block_id_table(pack: &super::PackResources, ids: &BlockIds) -> Vec<i32> {
         }
     }
     table
+}
+
+#[cfg(test)]
+mod native_pack_tests {
+    use super::active_pack;
+    use horizon_client::mod_list::{Installed, ModList, NativePage};
+
+    #[test]
+    fn native_shader_follows_its_mod_without_affecting_other_packs() {
+        let mut mods = ModList::default();
+        mods.installed.push(Installed {
+            id: "horizon_better_visuals".into(),
+            title: "Better Visuals".into(),
+            description: String::new(),
+            problem: None,
+            dev: false,
+            native: Some(NativePage::default()),
+        });
+        let owned = "native-horizon_better_visuals";
+        assert_eq!(active_pack(owned, &mods), owned);
+        mods.disabled.insert("horizon_better_visuals".into());
+        assert_eq!(active_pack(owned, &mods), "");
+        assert_eq!(active_pack("golden_hour", &mods), "golden_hour");
+        mods.installed[0].native = None;
+        assert_eq!(active_pack(owned, &mods), owned);
+    }
 }

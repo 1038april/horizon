@@ -69,6 +69,15 @@ pub fn outline_vertices(edges: &[[f64; 6]], camera: glam::DVec3) -> Vec<[f32; 6]
         .collect()
 }
 
+/// Whether the renderer should initialize its GPU occlusion pass.
+///
+/// Software adapters spend more time running the culling pass than drawing
+/// the sections it removes. Keep the pass available for explicit A/B checks,
+/// while leaving hardware adapters on the existing default.
+fn gpu_culling_requested(info: &wgpu::AdapterInfo, env: Option<&str>) -> bool {
+    env != Some("0") && (env.is_some() || info.device_type != wgpu::DeviceType::Cpu)
+}
+
 mod animate;
 mod arena;
 pub mod compositor;
@@ -91,9 +100,11 @@ mod pack_atlas;
 pub mod pack_draw;
 mod pack_entities;
 mod pack_hand;
+mod pack_images;
 mod pack_post;
 mod pack_shadow;
 mod pack_sky;
+mod pack_textures;
 mod pack_timing;
 pub mod pack_uniforms;
 mod pack_weather;
@@ -225,6 +236,10 @@ struct Globals {
     outline_params: [f32; 4],
     /// Horizon Extras' dynamic lights: camera-relative position and level (`dynamic_light`).
     dynamic_lights: [[f32; 4]; crate::dynamic_light::MAX],
+    colored_lights: [crate::dynamic_light::Colored; crate::dynamic_light::MAX],
+    colored_count: [u32; 4],
+    emissive_layers: [[u32; 4]; crate::native_emissive::MAX],
+    emissive_count: [u32; 4],
     /// The sunrise fan's triangles as the sky shader tests them (`sunrise_fan::normals`).
     sunrise_fan: [[f32; 4]; 2 * sunrise_fan::TRIANGLES],
     /// x: `Options.textureFiltering` (0 none, 1 RGSS, 2 anisotropic); y: the sprite arrays' width.
@@ -257,7 +272,22 @@ struct SectionGpu {
     /// When it began to fade out, its column gone over far terrain that
     /// stays behind it (`Renderer::leave_section`); released once it has.
     leaving: Option<std::time::Instant>,
+    /// Animated sprite layers present in this section.
+    animated_layers: Box<[u16]>,
 }
+/// Extracts the animated sprite layers present in a section mesh. Meshing
+/// records the distinct layers, so uploading does not rescan every vertex.
+pub(crate) fn collect_animated_layers(
+    mesh: &SectionMesh,
+    is_animated: impl Fn(u16) -> bool,
+) -> Box<[u16]> {
+    mesh.sprite_layers
+        .iter()
+        .copied()
+        .filter(|&layer| is_animated(layer))
+        .collect()
+}
+
 impl SectionGpu {
     /// Its fade code this frame (`lod::fade_code`), 0 once whole. `retiring`:
     /// its column has left the render distance, far terrain is coming in
@@ -358,6 +388,8 @@ pub struct Frame<'a> {
     pub weather_time: crate::weather::Time,
     /// Horizon Extras' dynamic lights, nearest first (`dynamic_light::select`); empty when off.
     pub dynamic_lights: &'a [[f32; 4]],
+    pub colored_lights: &'a [crate::dynamic_light::Colored],
+    pub emissive_layers: &'a [[u32; 4]],
     /// Cloud mesh inputs; geometry and GPU storage are retained by the renderer.
     pub clouds: Option<crate::clouds::Input<'a>>,
     /// Retained lightning bolts, drawn before the other additive entities.
@@ -572,6 +604,7 @@ pub struct Renderer {
     lightmap_view: wgpu::TextureView,
     lightmap_sampler: wgpu::Sampler,
     animations: animate::SpriteAnimator,
+    active_animated_layers: Vec<u64>,
     uploads: upload::Uploads,
     /// Section meshes are staged through their own belt into
     /// `section_copies`, which the next frame records its commands after:
@@ -1208,7 +1241,9 @@ async fn open_backend(
     // Mappable primary buffers: section pages that no longer fit in
     // video memory go to system memory. Shader packs' 16-bit normalized buffers (render
     // targets with the adapter's own format features) and R11F_G11F_B10F: a float
-    // stand-in neither clamps nor drops NaN.
+    // stand-in neither clamps nor drops NaN. Subgroups: shader packs' compute programs
+    // (`MC_GL_KHR_shader_subgroup_*`); storage buffers in vertex shaders, clearing and
+    // atomics on images: their buffers and images.
     let features = timing::GpuTimer::features(&adapter)
         | cull::Cull::features(&adapter)
         | oit::features(&adapter)
@@ -1217,7 +1252,11 @@ async fn open_backend(
                 | wgpu::Features::MAPPABLE_PRIMARY_BUFFERS
                 | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
                 | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
-                | wgpu::Features::RG11B10UFLOAT_RENDERABLE));
+                | wgpu::Features::RG11B10UFLOAT_RENDERABLE
+                | wgpu::Features::SUBGROUP
+                | wgpu::Features::VERTEX_WRITABLE_STORAGE
+                | wgpu::Features::CLEAR_TEXTURE
+                | wgpu::Features::TEXTURE_ATOMIC));
     let driver = format!("{} {}", info.driver, info.driver_info);
     startup_step(format_args!(
         "requesting the device (driver {}) with features [{features}] and the adapter's \
@@ -1806,6 +1845,7 @@ impl Renderer {
             split,
             animate::SpriteAnimator::compute(&adapter, &device),
         );
+        let active_layer_words = animations.active_layer_words();
         let sprite_unused = device
             .create_texture(&wgpu::TextureDescriptor {
                 label: Some("Block sprites (unused)"),
@@ -2868,8 +2908,9 @@ impl Renderer {
         // frame however few its draws and little it hides, `shader` tests in
         // the shader as on Metal (A/B checks).
         let cull_env = std::env::var("HORIZON_GPU_CULL");
+        let adapter_info = adapter.get_info();
         let cull = cull::Cull::supported(&adapter, &device)
-            .filter(|_| cull_env.as_deref() != Ok("0"))
+            .filter(|_| gpu_culling_requested(&adapter_info, cull_env.as_deref().ok()))
             .map(|depth_test| match cull_env.as_deref() {
                 Ok("shader") => cull::DepthTest::InShader,
                 _ => depth_test,
@@ -2878,7 +2919,7 @@ impl Renderer {
                 let mut cull =
                     cull::Cull::new(&device, config.format.remove_srgb_suffix(), depth_test);
                 cull.always = cull_env.as_deref() == Ok("all");
-                if !cull.always && adapter.get_info().backend == wgpu::Backend::Metal {
+                if !cull.always && adapter_info.backend == wgpu::Backend::Metal {
                     cull.min_sections = cull::TILED_MIN_SECTIONS;
                 }
                 cull
@@ -3005,6 +3046,7 @@ impl Renderer {
             lightmap_view,
             lightmap_sampler,
             animations,
+            active_animated_layers: vec![0; active_layer_words],
             uploads,
             section_uploads,
             section_copies: None,
@@ -3413,6 +3455,8 @@ impl Renderer {
         {
             self.queue.submit([copies]);
         }
+        let animated_layers =
+            collect_animated_layers(mesh, |layer| self.animations.is_animated(layer));
         Some(SectionGpu {
             page,
             start,
@@ -3435,6 +3479,7 @@ impl Renderer {
             flat_id,
             fading: None,
             leaving: None,
+            animated_layers,
         })
     }
     /// The section copies recorded since the last submission, closed.
@@ -3999,6 +4044,23 @@ impl Renderer {
             .map(pack_timing::PassTiming::medians)
             .unwrap_or_default()
     }
+    /// The macros of the GL extensions this device gives shader packs: subgroups, when it
+    /// has them.
+    pub fn define_pack_macros(&self, macros: &mut horizon_shaders::Macros) {
+        if self.device.features().contains(wgpu::Features::SUBGROUP) {
+            for ext in [
+                "basic",
+                "vote",
+                "arithmetic",
+                "ballot",
+                "shuffle",
+                "shuffle_relative",
+            ] {
+                macros.define(format!("MC_GL_KHR_shader_subgroup_{ext}"), "");
+            }
+        }
+    }
+
     /// The dimension the shader pack was last set for.
     pub fn shader_pack_dimension(&self) -> Option<i32> {
         self.pack_post.as_ref().map(|p| p.0)
@@ -4149,8 +4211,10 @@ impl Renderer {
         self.lightmap_pixels = pixels;
         self.lightmap_uploaded = true;
     }
-    fn animate(&mut self, encoder: &mut wgpu::CommandEncoder, tick: u64) {
-        self.animations.animate(encoder, &mut self.uploads, tick);
+    fn animate(&mut self, encoder: &mut wgpu::CommandEncoder, tick: u64, cull_inactive: bool) {
+        let active = cull_inactive.then_some(&self.active_animated_layers[..]);
+        self.animations
+            .animate(encoder, &mut self.uploads, tick, active);
         if let Some(atlas) = &self.pack_atlas {
             atlas.copy(
                 encoder,
@@ -4161,8 +4225,26 @@ impl Renderer {
     }
     pub fn render(&mut self, frame: &Frame) -> Result<bool> {
         let rendered = self.draw_frame(frame);
-        // A frame that was not drawn still submits the section copies.
-        if let Some(copies) = self.take_section_copies() {
+        // A frame that was not drawn still submits the section copies and
+        // atlas patches (glyphs, skins, maps), which the caller already took.
+        if !matches!(rendered, Ok(true)) && !frame.hud.patches.is_empty() {
+            let section_copies = self.section_copies.take();
+            let has_section_copies = section_copies.is_some();
+            let mut encoder = section_copies.unwrap_or_else(|| {
+                self.device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("Horizon atlas patches"),
+                    })
+            });
+            self.hud
+                .upload_patches(&mut self.uploads, &mut encoder, &frame.hud.patches);
+            self.uploads.finish(&encoder);
+            if has_section_copies {
+                self.section_copy_bytes = 0;
+                self.section_uploads.finish(&encoder);
+            }
+            self.queue.submit([encoder.finish()]);
+        } else if let Some(copies) = self.take_section_copies() {
             self.queue.submit([copies]);
         }
         rendered
@@ -4257,7 +4339,6 @@ impl Renderer {
                 })
         });
         if self.animated_textures {
-            self.animate(&mut encoder, frame.ticks);
             self.hud
                 .animate_sprites(&mut self.uploads, &mut encoder, frame.ticks);
         }
@@ -4373,6 +4454,32 @@ impl Renderer {
                 }
                 lights
             },
+            colored_lights: {
+                let mut lights = [[[0.0; 4]; 2]; crate::dynamic_light::MAX];
+                for (to, from) in lights.iter_mut().zip(frame.colored_lights) {
+                    *to = *from;
+                }
+                lights
+            },
+            colored_count: [
+                frame.colored_lights.len().min(crate::dynamic_light::MAX) as u32,
+                0,
+                0,
+                0,
+            ],
+            emissive_layers: {
+                let mut layers = [[0; 4]; crate::native_emissive::MAX];
+                for (to, from) in layers.iter_mut().zip(frame.emissive_layers) {
+                    *to = *from;
+                }
+                layers
+            },
+            emissive_count: [
+                frame.emissive_layers.len().min(crate::native_emissive::MAX) as u32,
+                0,
+                0,
+                0,
+            ],
             sunrise_fan: sunrise_fan::normals(frame.sky.sunrise_color[3], sun),
             filtering: [
                 self.texture_filtering as f32,
@@ -4433,9 +4540,12 @@ impl Renderer {
             )),
         });
         // Solid quads facing away from the eye are left out: the bob moves
-        // the eye off `camera`, so it is found from the projection. The mirror's eye
-        // sees the faces the camera does not (the undersides), so none are with it.
-        let eye = projection_center(cull_proj).filter(|_| self.sides_on && mirror.is_none());
+        // the eye off `camera`, so it is found from the projection. With the mirror, those
+        // facing its eye are kept too: it sits straight below, at this camera-relative y.
+        let eye = projection_center(cull_proj).filter(|_| self.sides_on);
+        let mirror_low = mirror_plane
+            .zip(eye)
+            .map(|(plane, eye)| 2.0 * (plane - frame.camera.y as f32) - eye.y);
         let culling = !frame.title && frame.cave_culling;
         if culling {
             crate::spans::time("occlusion", || {
@@ -4513,6 +4623,43 @@ impl Renderer {
                 let height = |s: &resident::Visible| glam::Vec3::from(s.origin).dot(light);
                 height(b).total_cmp(&height(a))
             });
+        }
+        if self.animated_textures {
+            self.active_animated_layers.fill(0);
+            for v in &visible {
+                let s = self.sections.get(v.slot);
+                for &layer in &*s.animated_layers {
+                    let layer = layer as usize;
+                    self.active_animated_layers[layer / u64::BITS as usize] |=
+                        1_u64 << (layer % u64::BITS as usize);
+                }
+            }
+            for v in &visible_lods {
+                if let Some(tile) = self.lods.get(&v.key) {
+                    for &layer in &*tile.drawn().animated_layers {
+                        let layer = layer as usize;
+                        self.active_animated_layers[layer / u64::BITS as usize] |=
+                            1_u64 << (layer % u64::BITS as usize);
+                    }
+                    for &layer in &*tile.mesh.animated_layers {
+                        let layer = layer as usize;
+                        self.active_animated_layers[layer / u64::BITS as usize] |=
+                            1_u64 << (layer % u64::BITS as usize);
+                    }
+                }
+            }
+            for v in &shadow_visible {
+                let s = self.sections.get(v.slot);
+                for &layer in &*s.animated_layers {
+                    let layer = layer as usize;
+                    self.active_animated_layers[layer / u64::BITS as usize] |=
+                        1_u64 << (layer % u64::BITS as usize);
+                }
+            }
+            // Visibility is collected before terrain draw commands are recorded,
+            // so upload the current mask here and keep animation updates ahead
+            // of every draw in this command buffer.
+            self.animate(&mut encoder, frame.ticks, !frame.title);
         }
         self.drawn_sections = visible.len() + visible_lods.len();
         let instances = self.drawn_sections + shadow_visible.len();
@@ -4608,7 +4755,7 @@ impl Renderer {
             let start = draws.len();
             let instances = u32::from(first_phase);
             let mut indices = 0;
-            facing_runs(&s.sides, eye, v.origin, |first, quads| {
+            facing_runs_from(&s.sides, eye, mirror_low, v.origin, |first, quads| {
                 indices += quads * 6;
                 let base = s.start as u32 + first * 4;
                 draws.push([quads * 6, instances, 0, base, i as u32]);
@@ -4651,7 +4798,7 @@ impl Renderer {
             let s = self.lods[&v.key].drawn();
             let start = self.draws.len();
             let instance = (visible.len() + i) as u32;
-            facing_runs(&s.sides, eye, v.origin, |first, quads| {
+            facing_runs_from(&s.sides, eye, mirror_low, v.origin, |first, quads| {
                 let base = s.start as u32 + first * 4;
                 self.draws.push([quads * 6, 1, 0, base, instance]);
                 self.draw_pages.push((s.page, None));
@@ -5328,7 +5475,18 @@ impl Renderer {
         }
         let oit = self.oit.as_ref().filter(|_| oit_on);
         let cull = self.cull.as_ref().filter(|_| culling && solid_draws > 0);
-        let clear = if frame.title || (frame.end_sky && !frame.underwater && sky_open(frame)) {
+        let pack_sky_clear = pack_draws_sky
+            .then(|| self.pack_post.as_ref().and_then(|p| p.1.as_ref()))
+            .flatten()
+            .and_then(|p| p.sky_clear());
+        let clear = if let Some([r, g, b, a]) = pack_sky_clear {
+            wgpu::Color {
+                r: f64::from(r),
+                g: f64::from(g),
+                b: f64::from(b),
+                a: f64::from(a),
+            }
+        } else if frame.title || (frame.end_sky && !frame.underwater && sky_open(frame)) {
             wgpu::Color::BLACK
         } else {
             wgpu::Color {
@@ -6810,9 +6968,24 @@ fn projection_center(view_proj: Mat4) -> Option<Vec3> {
 /// Calls `draw(first, quads)` for each run of a mesh's solid quads that can
 /// face `eye` (`projection_center`), the mesh at the camera-relative
 /// `origin`; all of them when there is no eye.
-fn facing_runs(sides: &Sides, eye: Option<Vec3>, origin: [f32; 3], mut draw: impl FnMut(u32, u32)) {
+fn facing_runs(sides: &Sides, eye: Option<Vec3>, origin: [f32; 3], draw: impl FnMut(u32, u32)) {
+    facing_runs_from(sides, eye, None, origin, draw)
+}
+/// `facing_runs` for the eye and, with `low`, every eye straight below it down to that
+/// camera-relative height (the water mirror's eye).
+fn facing_runs_from(
+    sides: &Sides,
+    eye: Option<Vec3>,
+    low: Option<f32>,
+    origin: [f32; 3],
+    mut draw: impl FnMut(u32, u32),
+) {
     match eye {
-        Some(eye) => sides.visible((eye - Vec3::from(origin)).to_array(), draw),
+        Some(eye) => {
+            let eye = eye - Vec3::from(origin);
+            let low = low.map_or(eye.y, |y| (y - origin[1]).min(eye.y));
+            sides.visible_from(eye.to_array(), low, draw)
+        }
         None if sides.quads() > 0 => draw(0, sides.quads()),
         None => {}
     }
@@ -6832,6 +7005,33 @@ fn frustum(m: Mat4) -> [Vec4; 6] {
 
 #[cfg(test)]
 mod tests {
+    fn adapter(device_type: wgpu::DeviceType) -> wgpu::AdapterInfo {
+        wgpu::AdapterInfo {
+            name: "test adapter".into(),
+            vendor: 0,
+            device: 0,
+            device_type,
+            device_pci_bus_id: String::new(),
+            driver: String::new(),
+            driver_info: String::new(),
+            backend: wgpu::Backend::Vulkan,
+            subgroup_min_size: 0,
+            subgroup_max_size: 0,
+            transient_saves_memory: None,
+            limit_bucket: None,
+        }
+    }
+
+    #[test]
+    fn software_occlusion_culling_is_opt_in() {
+        let cpu = adapter(wgpu::DeviceType::Cpu);
+        let discrete = adapter(wgpu::DeviceType::DiscreteGpu);
+        assert!(!super::gpu_culling_requested(&cpu, None));
+        assert!(super::gpu_culling_requested(&discrete, None));
+        assert!(super::gpu_culling_requested(&cpu, Some("all")));
+        assert!(!super::gpu_culling_requested(&discrete, Some("0")));
+    }
+
     #[test]
     fn the_mirror_sees_each_point_where_its_reflection_is() {
         use glam::{Mat4, Vec3, Vec4};
@@ -7482,6 +7682,25 @@ mod sprite_upload_tests {
             let (chain, _) = mip_chain(animation.pixels(0), size, &[], 0, 1);
             assert_eq!(chain.capacity(), chain.len());
         }
+    }
+
+    #[test]
+    fn collect_animated_layers_masks_opaque_layer() {
+        use crate::mesher::{self, SectionMesh, TerrainVertex};
+        let opaque_vertex =
+            TerrainVertex::new([0.0, 0.0, 0.0], [0.0, 0.0], 7 | mesher::OPAQUE_LAYER, 0, 0);
+        let translucent_vertex = TerrainVertex::new([0.0, 0.0, 0.0], [0.0, 0.0], 12, 0, 0);
+        let mut mesh = SectionMesh {
+            solid: vec![opaque_vertex; 4],
+            translucent: vec![translucent_vertex; 4],
+            ..Default::default()
+        };
+        mesh.note_sprite_layer(7 | mesher::OPAQUE_LAYER);
+        mesh.note_sprite_layer(12);
+        mesh.finish_sprite_layers();
+
+        let animated = super::collect_animated_layers(&mesh, |layer| layer == 7 || layer == 12);
+        assert_eq!(&*animated, &[7, 12]);
     }
 }
 
