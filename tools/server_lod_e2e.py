@@ -6,7 +6,8 @@
 A real Horizon client (horizon-ctl, offscreen) with LOD Distance 32 joins a dedicated server:
 - `horizon-lod-distance=16`: the server samples the client's far terrain (`status`'s lod.source is "server"), no
   farther than 16 chunks (effective_distance 16), and far tiles are drawn (active_tiles > 0);
-- `horizon-lod-distance=0`: the server offers none and the client has no far terrain (source "none").
+- no `horizon-lod-distance` (off by default): the server offers none and the client has no far terrain (source
+  "none").
 
 Each server and game runs in fresh folders with fresh HORIZON_HOME and XDG folders (lab.game_env), on a free
 port. Build first:
@@ -87,7 +88,7 @@ def check(bins, scratch, out):
     if lod['active_tiles'] <= 20:
         raise Failed(f'on: no far tiles were drawn: {lod}')
     print('on: the server samples far terrain, capped at its 16 chunks')
-    s, port = server(bins, scratch / 'off', out, 'off', {'horizon-lod-distance': '0'})
+    s, port = server(bins, scratch / 'off', out, 'off', {})
     try:
         lod = far_terrain(bins, out, port, 'Near', lambda l: l['source'] != 'none', 15)
     finally:

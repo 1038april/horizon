@@ -1,7 +1,9 @@
 //! The client side of `horizon:lod`: far terrain a server samples, as the
 //! `LodSource` of a client of another machine's world. Each sampling thread
-//! sends one tile request and waits for its reply, which the network thread
-//! hands over ([`Inbox::deliver`]), within the server's [`Offer`].
+//! queues one tile request, which the game thread sends with its own packets
+//! ([`Inbox::requests`]), and waits for its reply, which the network thread
+//! hands over ([`Inbox::deliver`]), within the server's [`Offer`]. A tile
+//! refused, lost or unreadable comes back as no columns: `Lod` asks again.
 use super::{Bucket, Offer, Request, SIDE, decode_reply, reply_id};
 use crate::lod::{Column, Surface};
 use crate::streaming::{LodSampler, LodSource};
@@ -15,7 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// How long a client waits for a tile before drawing it empty.
+/// How long a client waits for a tile before asking again.
 const TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A connection's far terrain requests: their replies come in on the network
@@ -32,6 +34,8 @@ struct InboxState {
     /// Requests sent and not answered: when each went, and the sampler
     /// waiting for it (None once given up).
     waiting: HashMap<u32, (Instant, Option<mpsc::Sender<Vec<u8>>>)>,
+    /// Requests for the game thread to send, by id.
+    outbox: Vec<(u32, Vec<u8>)>,
     next: u32,
     bucket: Option<Bucket>,
     /// Bumped by [`Inbox::cancel`]: samplers of an older one stop.
@@ -50,12 +54,20 @@ impl Inbox {
         drop(state);
         self.changed.notify_all();
     }
+    /// The requests to send now, from the game thread.
+    pub fn requests(&self) -> Vec<Vec<u8>> {
+        let mut state = self.state.lock().unwrap();
+        state.outbox.drain(..).map(|(_, data)| data).collect()
+    }
     /// The far terrain ends (another dimension, a disconnect): its samplers
     /// stop waiting at once. Requests still at the server keep their slot
-    /// until it answers.
+    /// until it answers; those not sent yet never go.
     pub fn cancel(&self) {
         let mut state = self.state.lock().unwrap();
         state.epoch += 1;
+        for (id, _) in std::mem::take(&mut state.outbox) {
+            state.waiting.remove(&id);
+        }
         for (_, tx) in state.waiting.values_mut() {
             *tx = None;
         }
@@ -65,9 +77,15 @@ impl Inbox {
     fn epoch(&self) -> u64 {
         self.state.lock().unwrap().epoch
     }
-    /// A slot for one request, within the offer's limits, once there is one;
-    /// None once the far terrain of `epoch` was cancelled.
-    fn acquire(&self, epoch: u64, offer: Offer) -> Option<(u32, mpsc::Receiver<Vec<u8>>)> {
+    /// A slot for `request` (its id set), within the offer's limits, once
+    /// there is one, and the request queued; None once the far terrain of
+    /// `epoch` was cancelled.
+    fn send(
+        &self,
+        epoch: u64,
+        offer: Offer,
+        mut request: Request,
+    ) -> Option<mpsc::Receiver<Vec<u8>>> {
         let mut state = self.state.lock().unwrap();
         loop {
             if state.epoch != epoch {
@@ -85,11 +103,12 @@ impl Inbox {
                 .bucket
                 .get_or_insert_with(|| Bucket::new(rate, rate, now));
             if free && bucket.take(now) {
-                let id = state.next;
+                request.id = state.next;
                 state.next = state.next.wrapping_add(1);
                 let (tx, rx) = mpsc::channel();
-                state.waiting.insert(id, (now, Some(tx)));
-                return Some((id, rx));
+                state.waiting.insert(request.id, (now, Some(tx)));
+                state.outbox.push((request.id, request.encode()));
+                return Some(rx);
             }
             state = self
                 .changed
@@ -106,8 +125,6 @@ pub struct RemoteSource {
     inbox: Arc<Inbox>,
     epoch: u64,
     offer: Offer,
-    /// Sends a request's payload to the server.
-    send: Box<dyn Fn(Vec<u8>) + Send + Sync>,
     /// This client's biome indices by name.
     biomes: HashMap<String, u16>,
     /// Block states this client knows.
@@ -119,7 +136,6 @@ impl RemoteSource {
     pub fn new(
         inbox: Arc<Inbox>,
         offer: Offer,
-        send: Box<dyn Fn(Vec<u8>) + Send + Sync>,
         biomes: HashMap<String, u16>,
         states: u32,
     ) -> Arc<Self> {
@@ -127,38 +143,32 @@ impl RemoteSource {
             epoch: inbox.epoch(),
             inbox,
             offer,
-            send,
             biomes,
             states,
             samplers: AtomicUsize::new(0),
         })
     }
-    /// One tile's columns, empty when the server refused it or the far
-    /// terrain ended first (as a failed local sample is).
+    /// One tile's columns; none when the server refused it, it was lost,
+    /// or the far terrain ended first: `Lod` asks again later.
     fn tile(&self, x: i32, z: i32, stride: i32, approximate: bool) -> Vec<Column> {
-        let empty = || vec![Column::default(); SIDE * SIDE];
-        let Some((id, reply)) = self.inbox.acquire(self.epoch, self.offer) else {
-            return empty();
+        let request = Request {
+            id: 0,
+            x,
+            z,
+            stride,
+            approximate,
         };
-        (self.send)(
-            Request {
-                id,
-                x,
-                z,
-                stride,
-                approximate,
-            }
-            .encode(),
-        );
+        let Some(reply) = self.inbox.send(self.epoch, self.offer, request) else {
+            return Vec::new();
+        };
         let Ok(data) = reply.recv_timeout(TIMEOUT) else {
-            return empty();
+            return Vec::new();
         };
         match decode_reply(&data, &self.biomes, self.states) {
-            Ok(Some(columns)) => columns,
-            Ok(None) => empty(),
+            Ok(columns) => columns.unwrap_or_default(),
             Err(e) => {
                 log::warn!("Horizon: far terrain from the server: {e}");
-                empty()
+                Vec::new()
             }
         }
     }
@@ -205,17 +215,52 @@ mod tests {
     use super::*;
     use crate::lod_net::refusal;
 
+    fn request(x: i32) -> Request {
+        Request {
+            id: 0,
+            x,
+            z: 0,
+            stride: 1,
+            approximate: false,
+        }
+    }
+
     #[test]
     fn a_cancelled_inbox_frees_its_samplers() {
         let inbox = Arc::new(Inbox::default());
         let offer = Offer::new(64);
         let epoch = inbox.epoch();
-        let (id, reply) = inbox.acquire(epoch, offer).unwrap();
+        let sent = inbox.send(epoch, offer, request(0)).unwrap();
+        let id = Request::decode(&inbox.requests()[0]).unwrap().id;
+        // Queued, not sent: cancelling forgets it.
+        let _queued = inbox.send(epoch, offer, request(16)).unwrap();
         inbox.cancel();
-        assert!(reply.recv_timeout(Duration::from_secs(1)).is_err());
-        assert!(inbox.acquire(epoch, offer).is_none());
-        // The late reply still frees the slot it held.
+        assert!(sent.recv_timeout(Duration::from_secs(1)).is_err());
+        assert!(inbox.send(epoch, offer, request(32)).is_none());
+        assert!(inbox.requests().is_empty());
+        // The late reply still frees the slot the sent one held.
+        assert_eq!(inbox.state.lock().unwrap().waiting.len(), 1);
         inbox.deliver(refusal(id));
         assert!(inbox.state.lock().unwrap().waiting.is_empty());
+    }
+
+    #[test]
+    fn a_refused_tile_is_asked_again() {
+        let inbox = Arc::new(Inbox::default());
+        let source = RemoteSource::new(inbox.clone(), Offer::new(64), HashMap::new(), 10);
+        let mut sampler = source.clone().sampler();
+        let server = std::thread::spawn(move || {
+            loop {
+                if let Some(data) = inbox.requests().pop() {
+                    let id = Request::decode(&data).unwrap().id;
+                    inbox.deliver(refusal(id));
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        });
+        // No columns, not 256 empty ones: Lod doesn't keep it.
+        assert!(sampler.grid(0, 0, 1, SIDE).is_empty());
+        server.join().unwrap();
     }
 }

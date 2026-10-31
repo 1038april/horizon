@@ -4796,6 +4796,10 @@ impl Game<'_> {
         self.native_net.to_server = 0;
         self.native_tick();
         self.tell_native_now();
+        // Far tiles the samplers asked for (`lod_net`).
+        if let Some(r) = &self.remote {
+            r.session.send_far_terrain();
+        }
         // Minecraft.tick sends this even when the player cannot tick yet,
         // including while waiting for chunks. Keep it outside early returns.
         if self.remote.as_ref().is_some_and(|r| r.joined) {

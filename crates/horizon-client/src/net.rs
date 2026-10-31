@@ -261,23 +261,17 @@ impl Session {
         biomes: HashMap<String, u16>,
         states: u32,
     ) -> Arc<crate::lod_net::RemoteSource> {
-        let (writer, configuring) = (self.writer.clone(), self.configuring.clone());
-        let send = move |data: Vec<u8>| {
-            let packet = play::Serverbound::CustomPayload(cfg::CustomPayload {
+        crate::lod_net::RemoteSource::new(self.far.clone(), offer, biomes, states)
+    }
+    /// The far terrain requests its samplers queued go to the server, from
+    /// the game thread, among its other packets.
+    pub fn send_far_terrain(&self) {
+        for data in self.far.requests() {
+            self.send(play::Serverbound::CustomPayload(cfg::CustomPayload {
                 channel: crate::lod_net::CHANNEL.into(),
                 data,
-            });
-            let mut writer = writer.lock().unwrap();
-            if configuring.load(Ordering::Relaxed) {
-                return;
-            }
-            if let Some(w) = writer.as_mut()
-                && w.send(&packet.encode()).is_err()
-            {
-                w.shutdown();
-            }
-        };
-        crate::lod_net::RemoteSource::new(self.far.clone(), offer, Box::new(send), biomes, states)
+            }));
+        }
     }
     /// The far terrain made with [`Self::far_terrain`] ends: its samplers
     /// stop waiting for the server.
