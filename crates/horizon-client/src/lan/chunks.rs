@@ -929,6 +929,7 @@ impl ChunkEncoder {
                     tag: entity
                         .and_then(|e| self.update_tag(pos, e))
                         .or_else(|| pot_tag(chunk, pos))
+                        .filter(|t| !matches!(t, Tag::Compound(c) if c.is_empty()))
                         .unwrap_or(Tag::End),
                 });
             }
@@ -1418,6 +1419,10 @@ mod tests {
         expected.insert("active".into(), Tag::Byte(1));
         expected.insert("x".into(), Tag::Int(1));
         assert_eq!(infos[0].tag, Tag::Compound(expected));
+        // An empty tag is not sent either (BlockEntityInfo.create).
+        encoder.mod_update_tag = Some(|_, _| Some(Compound::new()));
+        let infos = encoder.encode(&chunk, &block_entities).chunk.block_entities;
+        assert_eq!(infos[0].tag, Tag::End);
         // Without the hook, nothing of it is sent.
         encoder.mod_update_tag = None;
         let infos = encoder.encode(&chunk, &block_entities).chunk.block_entities;
