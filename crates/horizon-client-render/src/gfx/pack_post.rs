@@ -1344,6 +1344,11 @@ impl PackPost {
         });
         let mut notes = post.notes;
         notes.extend(post.config.notes);
+        let mut sizes = post.sizes;
+        // The blit writes colortex0 beside the depth buffer, at the render size.
+        if sizes[0].take().is_some() {
+            notes.push("size.buffer.colortex0: colortex0 keeps the render size".into());
+        }
         let textures = pack_textures::upload(device, queue, post.textures, &mut notes);
         let shadow_config = post.config.shadow.clone();
         let mut custom = post.custom;
@@ -1385,6 +1390,24 @@ impl PackPost {
                 &draws.layout,
                 &textures,
             )?;
+            // A pass's attachments share a size: the depth buffer's, for the passes that draw
+            // the world.
+            let size =
+                |b: usize| sizes[b].unwrap_or(horizon_shaders::BufferSize::Relative([1.0; 2]));
+            let depth = matches!(group, Group::Gbuffers | Group::Translucent);
+            let mut written = pass.writes.iter().map(|w| size(w.1));
+            let first = if depth {
+                Some(horizon_shaders::BufferSize::Relative([1.0; 2]))
+            } else {
+                written.next()
+            };
+            if !in_shadow && group != Group::Final && written.any(|s| Some(s) != first) {
+                notes.push(format!(
+                    "{}: writes buffers of different sizes (size.buffer); skipped",
+                    pass.name
+                ));
+                return None;
+            }
             for (name, c) in compute {
                 pass.compute.extend(build_compute(
                     device,
@@ -1707,7 +1730,7 @@ impl PackPost {
             });
         // Buffers of a size of their own clear apart from the blit, which writes colortex0.
         let (mut cleared, mut other_clears): (Vec<usize>, Vec<usize>) =
-            cleared.into_iter().partition(|&b| post.sizes[b].is_none());
+            cleared.into_iter().partition(|&b| sizes[b].is_none());
         let room = 8 - 1;
         other_clears.extend(cleared.split_off(room.min(cleared.len())));
         let float = wgpu::TextureSampleType::Float { filterable: true };
@@ -1831,7 +1854,7 @@ impl PackPost {
             used,
             storage,
             copied,
-            sizes: post.sizes,
+            sizes,
             blit_depth,
             blit_clears: cleared,
             other_clears,
