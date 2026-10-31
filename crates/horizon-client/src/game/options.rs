@@ -149,7 +149,7 @@ impl Game<'_> {
             .is_some_and(|(_, seen)| *seen != signature);
         self.pack_folder = Some((now, signature));
         if changed {
-            let infos = super::packs::pack_infos(&self.vanilla_root());
+            let infos = super::packs::pack_infos(&self.vanilla_root(), &self.server_packs.active);
             self.ui.options.update_pack_infos(infos);
         }
     }
