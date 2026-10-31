@@ -5680,13 +5680,29 @@ impl Renderer {
                     pass = world_pass_after_culling(&mut encoder, world_view, world_depth, true);
                     pass.set_bind_group(0, &self.group, &[]);
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-                    // HDR output's mark on the eyes drawn in the stages, as the
-                    // classic pass marks them after the entities.
-                    if oit_entity_quads > 0 && self.hdr.is_some() {
+                    // HDR output's mark on what shines in the stages, as the classic
+                    // pass marks it after drawing it: eyes, the dragon's eyes and rays,
+                    // firework sparks and lightning.
+                    if self.hdr.is_some() {
                         pass.set_pipeline(&self.hdr_mark_pipeline);
                         pass.set_bind_group(0, &self.entity_group, &[]);
                         pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
-                        pass.draw_indexed(0..oit_entity_quads * 6, (base_quads * 4) as i32, 0..1);
+                        for (quads, first) in [
+                            (oit_entity_quads, base_quads),
+                            (additive_quads, world_quads),
+                            (
+                                translucent_particle_quads,
+                                base_quads - translucent_item_quads - translucent_particle_quads,
+                            ),
+                        ] {
+                            if quads > 0 {
+                                pass.draw_indexed(0..quads * 6, (first * 4) as i32, 0..1);
+                            }
+                        }
+                        if !frame.lightning.bolts.is_empty() {
+                            pass.set_pipeline(&self.hdr_mark_lightning_pipeline);
+                            self.lightning.draw(&mut pass, &frame.lightning);
+                        }
                         pass.set_bind_group(0, &self.group, &[]);
                     }
                 }
@@ -5730,7 +5746,7 @@ impl Renderer {
                     pass.set_pipeline(&self.hdr_mark_pipeline);
                     pass.draw_indexed(
                         0..translucent_particle_quads * 6,
-                        ((world_quads - translucent_item_quads - translucent_particle_quads) * 4)
+                        ((base_quads - translucent_item_quads - translucent_particle_quads) * 4)
                             as i32,
                         0..1,
                     );
