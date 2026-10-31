@@ -150,6 +150,8 @@ pub struct LanSettings {
 
 pub(super) struct LanHost {
     pub hub: Hub,
+    /// The mods heard that everyone still here leaves with the server.
+    pub players_told_left: bool,
     pub settings: LanSettings,
     pub host_entity: i32,
     /// The host's swings the guests were told of (`Game::swings_started`).
@@ -187,6 +189,9 @@ pub(super) struct LanHost {
     /// Native mods' commands and the level each needs, once asked
     /// (game/native_server.rs).
     pub native_commands: Option<HashMap<String, u8>>,
+    /// The players a native mod leaves out of the sleep count when they
+    /// aren't in bed (`native_sleep_ignored`).
+    pub sleep_ignored: std::collections::HashSet<u128>,
     /// The entities the guests track, described again every tick
     /// (`lan_entities`) over last tick's states.
     pub(super) states: lan::entity::States,
@@ -1347,9 +1352,10 @@ impl Game<'_> {
     ) -> Result<()> {
         let sync = sync_data(&self.options.resources, &self.pack_files())?;
         self.sync_dialog_ids(&sync);
-        let biome_names: Vec<String> = self
-            .res
-            .biomes()
+        // The table the world plays with (`world_biomes!`): a world with
+        // biome data packs sends their ids past the built-in list, as the
+        // encoder's `SectionCoder` expects.
+        let biome_names: Vec<String> = world_biomes!(self)
             .list
             .iter()
             .map(|b| b.name.clone())
@@ -1394,6 +1400,7 @@ impl Game<'_> {
         self.world.block_log = Some(Vec::new());
         self.world.light_log = Some(Default::default());
         self.lan = Some(LanHost {
+            players_told_left: false,
             hub,
             settings: LanSettings { port, ..settings },
             host_entity,
@@ -1414,6 +1421,7 @@ impl Game<'_> {
             commands: Vec::new(),
             quiet: std::collections::VecDeque::new(),
             native_commands: None,
+            sleep_ignored: Default::default(),
             states: Default::default(),
         });
         self.audio.capture = Some(Vec::new());
@@ -1439,6 +1447,7 @@ impl Game<'_> {
             return;
         }
         self.friends_lan_closed();
+        self.native_players_leaving();
         let Some(mut host) = self.lan.take() else {
             return;
         };
@@ -1470,11 +1479,12 @@ impl Game<'_> {
     pub(super) fn save_guest(&mut self, host: &LanHost, guest: &horizon_client::lan::guest::Guest) {
         // The vehicle the guest rides, for the file that names it.
         let vehicle = self.root_vehicle_uuid(guest.vehicle);
-        if host.owner.as_ref().is_some_and(|o| o.uuid == guest.uuid) {
-            if guest.placed {
-                playerdata::store(guest, &mut self.level, vehicle);
-            }
-        } else {
+        if host.owner.as_ref().is_some_and(|o| o.uuid == guest.uuid) && guest.placed {
+            // The world's own player state rides in the level (`/data`).
+            playerdata::store(guest, &mut self.level, vehicle);
+        }
+        if guest.placed {
+            // PlayerList.save/remove: every player saves to their own file.
             playerdata::save(guest, &self.world_root, vehicle);
         }
         self.save_guest_records(host, guest);
@@ -1751,6 +1761,8 @@ impl Game<'_> {
             e.position = [d.position.x, d.position.y, d.position.z];
             e.on_ground = d.on_ground;
             e.velocity = [d.velocity.x, d.velocity.y, d.velocity.z];
+            e.precise = d.needs_sync;
+            e.needs_sync = d.needs_sync;
             // Entity.DATA_SHARED_FLAGS_ID: glowing 0x40 (the Glowing tag).
             if self.entity_glowing(d.id) {
                 e.meta.push((0, serializer::BYTE, Value::Byte(0x40)));
@@ -1773,7 +1785,8 @@ impl Game<'_> {
     ///
     /// Both the pre-block packet phase and the normal LAN tick receive the
     /// same event stream. Keep their side effects in one place so joins,
-    /// departures, chat, and queued guest commands cannot drift apart.
+    /// departures, chat, and queued guest commands cannot drift apart. None when a native hook's
+    /// command closed the hub.
     fn lan_process_events(
         &mut self,
         mut host: LanHost,
@@ -1781,7 +1794,7 @@ impl Game<'_> {
         state: Option<&HostState>,
         entities: &[EntityState],
         spawn: [f64; 3],
-    ) -> LanHost {
+    ) -> Option<LanHost> {
         for event in events {
             match event {
                 event @ (HostEvent::Chat { .. } | HostEvent::Warn(_) | HostEvent::Error(_)) => {
@@ -1842,6 +1855,17 @@ impl Game<'_> {
                                 .with_color(horizon_client::text::YELLOW),
                         );
                     }
+                    if let Some((uuid, name)) = host
+                        .hub
+                        .guest(conn)
+                        .filter(|g| g.placed)
+                        .map(|g| (g.uuid, g.name.clone()))
+                    {
+                        self.lan = Some(host);
+                        self.native_player_logged_in(uuid, &name);
+                        // A hook's command can close the hub.
+                        host = self.lan.take()?;
+                    }
                 }
                 HostEvent::Left(mut guest) => {
                     // The container they had open loses an opener.
@@ -1889,6 +1913,11 @@ impl Game<'_> {
                                 .with_color(horizon_client::text::YELLOW),
                         );
                     }
+                    if guest.placed && !host.players_told_left {
+                        self.lan = Some(host);
+                        self.native_player_logged_out(guest.uuid, &guest.name);
+                        host = self.lan.take()?;
+                    }
                 }
                 HostEvent::Packet(conn, packet) => {
                     self.lan_guest_packet(&mut host, conn, *packet);
@@ -1900,7 +1929,7 @@ impl Game<'_> {
                 }
             }
         }
-        host
+        Some(host)
     }
 
     /// Handle this level's player packets before scheduled block ticks
@@ -1957,7 +1986,12 @@ impl Game<'_> {
             events.extend(host.hub.drain_packets(&mut ctx));
             events
         };
-        host = self.lan_process_events(host, events, state.as_ref(), entities.as_slice(), spawn);
+        let Some(back) =
+            self.lan_process_events(host, events, state.as_ref(), entities.as_slice(), spawn)
+        else {
+            return;
+        };
+        host = back;
         if !host.quiet.is_empty() {
             self.lan = Some(host);
             self.run_quiet_commands();
@@ -2042,6 +2076,9 @@ impl Game<'_> {
             for p in &mut self.creatures.projectiles {
                 p.needs_sync = false;
             }
+            for d in &mut self.dropped {
+                d.needs_sync = false;
+            }
             // `runBlockEvents`' broadcast precedes the tick's block changes
             // (`ChunkHolder.broadcastChanges` in `tick_level` below): the
             // guest re-runs a piston's `triggerEvent` while its level still
@@ -2118,7 +2155,12 @@ impl Game<'_> {
                 host.host_mode = state.game_mode;
                 host.hub.set_host_game_mode(state.uuid, state.game_mode);
             }
-            host = self.lan_process_events(host, events, state.as_ref(), entities, spawn);
+            self.wake_woken_guests(&mut host);
+            let Some(back) = self.lan_process_events(host, events, state.as_ref(), entities, spawn)
+            else {
+                return;
+            };
+            host = back;
             host.states = states;
         }
         if !host.quiet.is_empty() {
@@ -2197,19 +2239,28 @@ impl Game<'_> {
         let force = host.hub.config.force_game_mode;
         let root = self.world_root.clone();
         let in_place = host.hub.config.dimension.clone();
-        let owner = host.owner.as_mut();
+        let mut owner = host.owner.as_mut();
         let Some(g) = host.hub.guest_mut(conn) else {
             return;
         };
-        let saved = owner
-            .filter(|o| o.uuid == g.uuid)
-            .and_then(|o| o.saved.take());
-        let known = match saved {
-            Some(level) => {
-                playerdata::apply(g, &level);
-                level.position.is_some()
+        let is_owner = owner.as_ref().is_some_and(|o| o.uuid == g.uuid);
+        // PlayerDataStorage.load: the player's own file first; the world's
+        // own player state is the fallback for a first join.
+        let known = if is_owner && playerdata::load(g, &root) {
+            true
+        } else {
+            let saved = if is_owner {
+                owner.as_mut().and_then(|o| o.saved.take())
+            } else {
+                None
+            };
+            match saved {
+                Some(level) => {
+                    playerdata::apply(g, &level);
+                    level.position.is_some()
+                }
+                None => playerdata::load(g, &root),
             }
-            None => playerdata::load(g, &root),
         };
         if !known || force {
             g.game_mode = default_mode;
@@ -2354,6 +2405,50 @@ impl Game<'_> {
         if event == 45 && self.options.execution_role.is_client() {
             self.fox_eat_particles(id as u32);
         }
+    }
+    /// `LivingEntity.onEquippedItemBroken` for the acting player (the guest whose turn it
+    /// is, else the host): `level.broadcastEntityEvent` with `entityEventForEquipmentBreak`
+    /// of the slot, which each client answers with `breakItem` (the sound and the crumbs,
+    /// `remote_equipment_break`). Without a hub to tell, or in a window that runs the world
+    /// itself, the sound and the crumbs are played here.
+    pub(super) fn player_equipment_broke(
+        &mut self,
+        slot: horizon_world::player_inventory::EquipmentSlot,
+        stack: &horizon_client::items::ItemStack,
+    ) {
+        use horizon_world::player_inventory::EquipmentSlot;
+        let event = match slot {
+            EquipmentSlot::MainHand => 47,
+            EquipmentSlot::OffHand => 48,
+            EquipmentSlot::Head => 49,
+            EquipmentSlot::Chest => 50,
+            EquipmentSlot::Legs => 51,
+            EquipmentSlot::Feet => 52,
+            EquipmentSlot::Body => 65,
+            EquipmentSlot::Saddle => 68,
+        };
+        let Some(at) = self
+            .player
+            .as_ref()
+            .map(|p| [p.position.x, p.position.y, p.position.z])
+        else {
+            return;
+        };
+        let told = if self.lan_acting.is_some() {
+            self.guest_equipment_breaks.push((event, at));
+            true
+        } else if let Some(host) = &self.lan {
+            host.hub.entity_event(host.host_entity, event, at);
+            true
+        } else {
+            false
+        };
+        if told && !self.options.execution_role.is_client() {
+            return;
+        }
+        // LivingEntity.breakItem: the stack's break sound where it stands, then the crumbs.
+        self.break_sound_at(stack, at);
+        self.eat_particles(stack, 5);
     }
     /// `ServerPlayer.crit` (or `magicCrit` when `magic`): this window's
     /// emitter, and an animation for the attacker's client and observers once
@@ -2746,11 +2841,12 @@ impl Game<'_> {
         let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
         for (conn, m) in &host.models {
             let entity_start = out.len();
-            let light = self.world.light(
-                m.position.x.floor() as i32,
-                (m.position.y + 1.62).floor() as i32,
-                m.position.z.floor() as i32,
+            let probe = super::perspective::entity_light_block(
+                m.position,
+                m.extra.crouching,
+                m.eye_height(),
             );
+            let light = self.world.light(probe[0], probe[1], probe[2]);
             let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
             horizon_client::mobs::render::render_with(
                 m,
