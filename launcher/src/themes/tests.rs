@@ -14,7 +14,7 @@ fn every_accent_reads_as_well_as_the_violet() {
     for base in [NIGHT.blocks(), DAWN.blocks()] {
         for accent in Accent::ALL
             .into_iter()
-            .chain([Accent::custom(96.), Accent::custom(300.)])
+            .chain((0..720).map(|i| Accent::custom(i as f32 * 0.5)))
         {
             let p = accent.apply(base);
             let what = format!(

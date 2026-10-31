@@ -218,6 +218,8 @@ struct Launcher {
     /// Where the accent picker's hue strip is on screen (`themes_page.rs`), to map a click to a
     /// hue.
     hue_area: std::rc::Rc<std::cell::Cell<Option<Bounds<gpui::Pixels>>>>,
+    /// A drag on that strip is in flight, so a release anywhere writes the accent down.
+    hue_dragging: bool,
     /// Settings > Language's dropdown (`language_page.rs`).
     language_menu: bool,
     /// The top bar's quick switch of who plays (`switch_page.rs`).
@@ -468,6 +470,7 @@ impl Launcher {
             confirm_remove: None,
             picker_open: false,
             hue_area: std::rc::Rc::new(std::cell::Cell::new(None)),
+            hue_dragging: false,
             language_menu: false,
             account_menu: false,
             menu_closed_at: None,

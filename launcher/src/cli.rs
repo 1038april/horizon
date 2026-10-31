@@ -994,7 +994,10 @@ fn set_setting(s: &mut backend::Settings, key: &str, value: &str) -> Result<(), 
             use horizon_launcher::themes::Accent;
             s.accent = Accent::parse(value).ok_or_else(|| {
                 let names: Vec<_> = Accent::ALL.iter().map(|a| a.name()).collect();
-                format!("{value}: say {}", names.join(", "))
+                format!(
+                    "{value}: say {} or a hue in degrees (0 to 360)",
+                    names.join(", ")
+                )
             })?
         }
         "background" => {

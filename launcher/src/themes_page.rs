@@ -154,10 +154,22 @@ impl Launcher {
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _: &MouseUpEvent, _, _| {
-                    this.settings.save();
-                }),
+                cx.listener(|this, _: &MouseUpEvent, _, _| this.finish_hue()),
             )
+            // `on_mouse_up` fires only while the strip is hovered, so a drag released off it would
+            // keep its accent in memory and never write it.
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, _| this.finish_hue()),
+            )
+    }
+
+    /// A release ends the drag and writes `settings.json` once.
+    fn finish_hue(&mut self) {
+        if self.hue_dragging {
+            self.hue_dragging = false;
+            self.settings.save();
+        }
     }
 
     /// The hue under the pointer, as the accent. Saving waits until the mouse comes up, so a drag
@@ -172,6 +184,7 @@ impl Launcher {
         }
         let across: f32 = (at.x - area.origin.x).into();
         self.settings.accent = Accent::custom((across / width).clamp(0., 1.) * 360.);
+        self.hue_dragging = true;
         self.theme = self.settings_theme(window);
         cx.notify();
     }
