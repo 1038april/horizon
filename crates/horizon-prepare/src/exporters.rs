@@ -123,49 +123,45 @@ pub(crate) fn classes(run: &Run) -> Result<PathBuf, String> {
         ("server", SERVER, &run.server_classpath),
         ("client", CLIENT, &run.client_classpath),
     ];
-    crate::pool::map(
-        &sides,
-        || Ok(()),
-        |_, (side, mains, cp)| {
-            (run.log)(&format!("Compiling {side} exporters (shared helpers once)"));
-            let started = std::time::Instant::now();
-            let classes = cached.join(side);
-            mkdir(&classes)?;
-            let log = run.log_file(&cached.join(format!("{side}.log")))?;
-            let mut args = vec![
-                "-encoding".into(),
-                "UTF-8".into(),
-                "-cp".into(),
-                cp.to_string(),
-                "-sourcepath".into(),
-                arg(&run.root.join("mods/horizon/src/test/java")),
-                "-d".into(),
-                arg(&classes),
-            ];
-            args.extend(mains.iter().map(|n| arg(&run.oracle(&format!("{n}.java")))));
-            jdk.javac(run.java_major, &args, &log)?;
-            let validate = vec![
-                "-Xverify:all".into(),
-                "-cp".into(),
-                format!(
-                    "{}{}{}",
-                    classes.display(),
-                    if cfg!(windows) { ";" } else { ":" },
-                    cp
-                ),
-                "dev.horizonlab.parity.PrepareWorker".into(),
-                "validate".into(),
-                arg(&classes),
-            ];
-            // No exporter executes here: resolve every class and its signatures against pinned jars.
-            run.jdk.java(&validate, Some(&run.local), &log)?;
-            (run.log)(&format!(
-                "Compiled {side} exporters{}",
-                crate::took(started)
-            ));
-            Ok(())
-        },
-    )?;
+    crate::pool::map(&sides, |(side, mains, cp)| {
+        (run.log)(&format!("Compiling {side} exporters (shared helpers once)"));
+        let started = std::time::Instant::now();
+        let classes = cached.join(side);
+        mkdir(&classes)?;
+        let log = run.log_file(&cached.join(format!("{side}.log")))?;
+        let mut args = vec![
+            "-encoding".into(),
+            "UTF-8".into(),
+            "-cp".into(),
+            cp.to_string(),
+            "-sourcepath".into(),
+            arg(&run.root.join("mods/horizon/src/test/java")),
+            "-d".into(),
+            arg(&classes),
+        ];
+        args.extend(mains.iter().map(|n| arg(&run.oracle(&format!("{n}.java")))));
+        jdk.javac(run.java_major, &args, &log)?;
+        let validate = vec![
+            "-Xverify:all".into(),
+            "-cp".into(),
+            format!(
+                "{}{}{}",
+                classes.display(),
+                if cfg!(windows) { ";" } else { ":" },
+                cp
+            ),
+            "dev.horizonlab.parity.PrepareWorker".into(),
+            "validate".into(),
+            arg(&classes),
+        ];
+        // No exporter executes here: resolve every class and its signatures against pinned jars.
+        run.jdk.java(&validate, Some(&run.local), &log)?;
+        (run.log)(&format!(
+            "Compiled {side} exporters{}",
+            crate::took(started)
+        ));
+        Ok(())
+    })?;
     let manifest = Value::Object(vec![
         ("key".into(), Value::Str(key.clone())),
         ("classes".into(), outputs(&cached)?),

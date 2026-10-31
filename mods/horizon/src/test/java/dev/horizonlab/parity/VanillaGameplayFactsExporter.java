@@ -98,10 +98,15 @@ public final class VanillaGameplayFactsExporter {
         Bootstrap.bootStrap();
         // The same bytes Gson.toJson(JsonElement) gives for {"states": [...]}.
         var gson = new Gson();
-        try (var out = gson.newJsonWriter(Files.newBufferedWriter(Path.of(args[0]), StandardCharsets.UTF_8))) {
+        // Streamed beside the target and moved over it when whole: a run stopped halfway leaves
+        // no short file for the next preparation to keep.
+        var target = Path.of(args[0]);
+        var partial = target.resolveSibling(target.getFileName() + ".partial");
+        try (var out = gson.newJsonWriter(Files.newBufferedWriter(partial, StandardCharsets.UTF_8))) {
             out.beginObject().name("states").beginArray();
             states(gson, out);
             out.endArray().endObject();
         }
+        Files.move(partial, target, StandardCopyOption.REPLACE_EXISTING);
     }
 }

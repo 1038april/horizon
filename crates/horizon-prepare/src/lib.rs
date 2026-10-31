@@ -417,7 +417,8 @@ struct Run<'a> {
     server_classpath: String,
     /// The client jar and its libraries: the classpath of the client-side exporters.
     client_classpath: String,
-    bundles: Mutex<Option<PathBuf>>,
+    /// The compiled exporter classes, or why they didn't compile: one attempt for all lanes.
+    bundles: Mutex<Option<Result<PathBuf, String>>>,
     /// The exporter JVMs, which run at the same time: the server's, the client's, and on a
     /// machine with cores to spare a second server one for the generator's block behaviour.
     workers: [Mutex<Option<worker::Worker>>; 3],
@@ -438,13 +439,14 @@ impl Run<'_> {
         (self.stage)();
     }
 
-    /// The exporter classes, compiled once: a lane that needs them while another compiles waits.
+    /// The exporter classes, compiled once: a lane that needs them while another compiles waits,
+    /// and a failed compile fails every lane without compiling again.
     fn bundle(&self) -> Result<PathBuf, String> {
-        let mut bundle = self.bundles.lock().unwrap();
-        if bundle.is_none() {
-            *bundle = Some(exporters::classes(self)?);
-        }
-        Ok(bundle.clone().unwrap())
+        self.bundles
+            .lock()
+            .unwrap()
+            .get_or_insert_with(|| exporters::classes(self))
+            .clone()
     }
 
     /// Stops an exporter JVM once its lane needs it no more, to free its memory.
@@ -539,16 +541,13 @@ impl Run<'_> {
         what: &str,
         classpath: &str,
         classes: &Path,
-        sources: &[&Path],
         mains: &[&str],
         heap: &str,
         args: &[String],
         log: &Path,
     ) -> Result<(), String> {
         let worker = self.side(classpath);
-        self.export_on(
-            worker, what, classpath, classes, sources, mains, heap, args, log,
-        )
+        self.export_on(worker, what, classpath, classes, mains, heap, args, log)
     }
 
     /// `export`, on exporter JVM `worker`.
@@ -559,7 +558,6 @@ impl Run<'_> {
         what: &str,
         classpath: &str,
         classes: &Path,
-        _sources: &[&Path],
         mains: &[&str],
         heap: &str,
         args: &[String],
@@ -657,11 +655,9 @@ fn prepare_impl(
     };
     let manifest_path = resources.join("horizon-resources.json");
     let oracle = root.join(PARITY).join("VanillaHeightmapOracle.java");
-    let jar_hashes = pool::map(
-        &[&found.jars["client"], &found.jars["server"]],
-        || Ok(()),
-        |_, jar| digest(jar, "sha256"),
-    )?;
+    let jar_hashes = pool::map(&[&found.jars["client"], &found.jars["server"]], |jar| {
+        digest(jar, "sha256")
+    })?;
     let origin = Value::Object(vec![
         ("minecraft".into(), Value::Str(lock.version.clone())),
         ("client_sha256".into(), Value::Str(jar_hashes[0].clone())),
@@ -718,17 +714,7 @@ fn prepare_impl(
             check::write_stamp(&resources)?;
             Ok(resources)
         });
-        // The fraction done is the stages opened before the one opening.
-        let mut stages = 0;
-        for line in lines {
-            match line {
-                Some(line) => log(&line),
-                None => {
-                    progress(stages.min(STAGES) as f32 / STAGES as f32);
-                    stages += 1;
-                }
-            }
-        }
+        relay(lines, log, progress);
         work.join()
             .unwrap_or_else(|_| Err("The preparation stopped unexpectedly".into()))
     })?;
@@ -743,6 +729,21 @@ fn prepare_impl(
     Ok(result)
 }
 
+/// Hands the lanes' messages to the caller's `log` and `progress`: a line, or None for a stage
+/// opened. The fraction done is the stages opened before the one opening.
+fn relay(messages: std::sync::mpsc::Receiver<Option<String>>, log: Log, progress: Progress) {
+    let mut stages = 0;
+    for message in messages {
+        match message {
+            Some(line) => log(&line),
+            None => {
+                progress(stages.min(STAGES) as f32 / STAGES as f32);
+                stages += 1;
+            }
+        }
+    }
+}
+
 fn arg(path: &Path) -> String {
     path.display().to_string()
 }
@@ -751,11 +752,11 @@ fn arg(path: &Path) -> String {
 type Entries = Vec<(&'static str, Value)>;
 
 /// The exporters, the data generator and the asset copy, on four lanes that run at once:
-/// the server exporter JVM's steps in their old order (they share its state), the client
+/// the server exporter JVM's steps in a fixed order (they share its state), the client
 /// exporter JVM's then the command registries' JVM, the data generator's then the creative
 /// inventory's, and the copying, which needs no Java. At most three JVMs run at a time.
 /// From this many cores (`pool::jobs`) the generator's block behaviour gets its own server JVM.
-/// It pays a second Bootstrap and ~300 MB, which only pays off when the other lanes leave cores
+/// It pays a second Bootstrap and ~400 MB, which only pays off when the other lanes leave cores
 /// idle: a 6-core laptop finished its other JVMs 20 s before the server lane.
 const SPLIT_BLOCKS_JOBS: usize = 6;
 
@@ -840,7 +841,6 @@ fn steps(
                     server_cp
                 },
                 &run.local.join(classes),
-                &sources,
                 &[main],
                 heap,
                 &args,
@@ -870,7 +870,6 @@ fn steps(
                 "block states",
                 server_cp,
                 &root.join("classes"),
-                &[oracle],
                 &["VanillaHeightmapOracle"],
                 "512M",
                 &["export".into(), arg(&facts)],
@@ -891,7 +890,6 @@ fn steps(
                 "movement and attributes",
                 server_cp,
                 &export.join("classes"),
-                &[&movement, &attributes, oracle, &landing, &collision],
                 &["VanillaBlockLandingOracle", "VanillaEntityAttributeOracle"],
                 "768M",
                 &["export".into(), arg(&export)],
@@ -931,7 +929,6 @@ fn steps(
                 "damage and health",
                 server_cp,
                 &export.join("classes"),
-                &[&damage, &health, &attributes],
                 &["VanillaPlayerHealthOracle", "VanillaDamageSourceOracle"],
                 "768M",
                 &["export".into(), arg(&export)],
@@ -960,7 +957,6 @@ fn steps(
                 "collision shapes",
                 server_cp,
                 &export.join("classes"),
-                &[&collision],
                 &["VanillaCollisionOracle"],
                 "768M",
                 &["generate".into(), arg(&export)],
@@ -982,7 +978,6 @@ fn steps(
                 "face visibility",
                 server_cp,
                 &export.join("classes"),
-                &[&visibility, &collision, oracle],
                 &["VanillaFaceVisibilityOracle"],
                 "768M",
                 &["export".into(), arg(&export)],
@@ -1059,7 +1054,6 @@ fn steps(
                 "model bindings",
                 client_cp,
                 &root.join("client-classes"),
-                &[&binding, &helper],
                 &["VanillaBlockStateBindingOracle"],
                 "512M",
                 &["export".into(), arg(&model_states)],
@@ -1107,7 +1101,6 @@ fn steps(
                 "command registries",
                 server_cp,
                 &export.join("classes"),
-                &[&command_oracle],
                 &["VanillaCommandParseOracle"],
                 "1G",
                 &["registries".into(), arg(&export)],
@@ -1187,10 +1180,9 @@ fn steps(
         run.stage();
         (run.log)("Copying the client's assets and data");
         let started = Instant::now();
-        let log = |line: &str| (run.log)(line);
-        let mut indexed = sounds::Assets::load(repo, Some(root), minecraft, &run.inputs, &log);
+        let mut indexed = sounds::Assets::load(repo, Some(root), minecraft, &run.inputs, run.log);
         let (version, count) = extract_client_resources(&run.client, root, indexed.as_mut().ok())?;
-        sounds::optional_imports(indexed.as_mut().map_err(|e| e.as_str()), &log);
+        sounds::optional_imports(indexed.as_mut().map_err(|e| e.as_str()), run.log);
         (run.log)(&format!(
             "Copied the client's assets and data{}",
             took(started)
@@ -1208,20 +1200,17 @@ fn steps(
         ])
     });
 
-    // With cores to spare, the generator's block behaviour (a quarter of the server lane's
-    // time) runs on a second server JVM beside the first; it pays its own Bootstrap.
-    let blocks: pool::Lane<Entries> = Box::new(|| {
-        if split_blocks {
+    let mut lanes = vec![server, client, reports, files];
+    if split_blocks {
+        // With cores to spare, the generator's block behaviour (a quarter of the server lane's
+        // time) runs on a second server JVM beside the first; it pays its own Bootstrap.
+        lanes.push(Box::new(|| {
             worldgen_blocks(run, 2)?;
             run.close_worker(2);
-        }
-        Ok(Vec::new())
-    });
-
-    let entries: Entries = pool::lanes(vec![server, client, reports, files, blocks])?
-        .into_iter()
-        .flatten()
-        .collect();
+            Ok(Vec::new())
+        }));
+    }
+    let entries: Entries = pool::lanes(lanes)?.into_iter().flatten().collect();
     // Biome parameter tables come from the data generator reports above.
     run.stage();
     worldgen_tables(run)?;
@@ -1332,16 +1321,14 @@ fn extract_client_resources(
         });
         groups[group].push((name, target));
     }
-    pool::map(
-        &groups,
-        || Ok(client.clone()),
-        |client, group| {
-            for (name, target) in group {
-                extract_member(client, name, target)?;
-            }
-            Ok(())
-        },
-    )?;
+    pool::map(&groups, |group| {
+        // A clone shares the jar's parsed member list and reads at its own offset.
+        let mut client = client.clone();
+        for (name, target) in group {
+            extract_member(&mut client, name, target)?;
+        }
+        Ok(())
+    })?;
     Ok((version, count))
 }
 
@@ -1456,42 +1443,29 @@ fn worldgen_bundles(run: &Run) -> Result<(), String> {
     // Structure templates: gzip NBT files under structure/<namespace>/<path>.nbt.
     let prefix = "data/minecraft/structure/";
     let (server, client) = (open_zip(&run.server)?, open_zip(&run.client)?);
+    // zip_names gives each name once.
     let templates: Vec<String> = zip_names(&server)?
         .into_iter()
         .filter(|name| name.starts_with(prefix) && name.ends_with(".nbt"))
         .collect();
-    // Each name's file once (a repeated name gives the same member).
-    let mut seen = std::collections::HashSet::new();
-    let templates: Vec<String> = templates
-        .into_iter()
-        .filter(|name| seen.insert(name.clone()))
-        .collect();
-    pool::map(
-        &templates,
-        || Ok(server.clone()),
-        |server, name| {
-            let relative = member_path(&name[prefix.len()..], "Invalid structure path")?;
-            let data = zip_bytes(server, name)?;
-            write_if_changed(&out.join("structure/minecraft").join(relative), &data)
-        },
-    )?;
-    pool::map(
-        &WORLDGEN_BUNDLES,
-        || Ok((server.clone(), client.clone())),
-        |(server, client), (name, path)| {
-            let prefix = format!("data/minecraft/{path}/");
-            let resources = json_resources(server, &prefix)?;
-            if resources.as_object().is_none_or(<[_]>::is_empty)
-                || resources != json_resources(client, &prefix)?
-            {
-                return Err(format!("Reference worldgen resources disagree: {path}"));
-            }
-            write_text(
-                &out.join(format!("{name}.json")),
-                &pyjson::dumps(&resources, &pyjson::COMPACT),
-            )
-        },
-    )?;
+    pool::map(&templates, |name| {
+        let relative = member_path(&name[prefix.len()..], "Invalid structure path")?;
+        let data = zip_bytes(&mut server.clone(), name)?;
+        write_if_changed(&out.join("structure/minecraft").join(relative), &data)
+    })?;
+    pool::map(&WORLDGEN_BUNDLES, |(name, path)| {
+        let prefix = format!("data/minecraft/{path}/");
+        let resources = json_resources(&mut server.clone(), &prefix)?;
+        if resources.as_object().is_none_or(<[_]>::is_empty)
+            || resources != json_resources(&mut client.clone(), &prefix)?
+        {
+            return Err(format!("Reference worldgen resources disagree: {path}"));
+        }
+        write_text(
+            &out.join(format!("{name}.json")),
+            &pyjson::dumps(&resources, &pyjson::COMPACT),
+        )
+    })?;
     (run.log)(&format!(
         "Wrote the world generator's bundle{}",
         took(started)
@@ -1506,6 +1480,7 @@ fn worldgen_blocks(run: &Run, worker: usize) -> Result<(), String> {
     // Block behavior used by feature placement checks (survival, support, collision).
     // These come from the Java exporters of the simple-block parity run, or a direct export.
     let all_present = |dir: &Path| BLOCK_BEHAVIOR_FILES.iter().all(|n| dir.join(n).exists());
+    let inputs = stamp_inputs(run)?;
     let mut behavior = local.join("rust-simple-block-parity");
     if !all_present(&behavior) {
         behavior = local.join("horizon-client-block-behavior");
@@ -1514,30 +1489,24 @@ fn worldgen_blocks(run: &Run, worker: usize) -> Result<(), String> {
             .map(|n| behavior.join(n))
             .collect();
         let stamp = behavior.join("stamp.json");
-        let inputs = stamp_inputs(run)?;
         if !stamp_matches(&stamp, &inputs, &outputs) {
             export_block_behavior(run, worker, &behavior)?;
             write_stamp(&stamp, &inputs, &outputs)?;
         }
     }
-    if all_present(&behavior) {
-        mkdir(&blocks)?;
-        for name in BLOCK_BEHAVIOR_FILES {
-            copy(&behavior.join(name), &blocks.join(name))?;
-        }
-    }
     mkdir(&blocks)?;
+    for name in BLOCK_BEHAVIOR_FILES {
+        copy(&behavior.join(name), &blocks.join(name))?;
+    }
     let structures = local.join("horizon-client-structures");
     let output = blocks.join("structure-blocks.json");
     let stamp = structures.join("stamp.json");
-    let inputs = stamp_inputs(run)?;
     if !stamp_matches(&stamp, &inputs, std::slice::from_ref(&output)) {
         run.export_on(
             worker,
             "structure blocks",
             &run.server_classpath,
             &structures.join("classes"),
-            &[&run.oracle("VanillaStructureBlockExporter.java")],
             &["VanillaStructureBlockExporter"],
             "1G",
             &[arg(&output)],
@@ -1575,7 +1544,7 @@ fn stamp_matches(stamp: &Path, inputs: &Value, outputs: &[PathBuf]) -> bool {
 }
 
 fn stamp_outputs(outputs: &[PathBuf]) -> Result<Value, String> {
-    let hashes = pool::map(outputs, || Ok(()), |_, path| digest(path, "sha256"))?;
+    let hashes = pool::map(outputs, |path| digest(path, "sha256"))?;
     Ok(Value::Object(
         outputs
             .iter()
@@ -1650,31 +1619,16 @@ fn worldgen_tables(run: &Run) -> Result<(), String> {
 /// Feature placement needs them: without these files the generator skips every placed feature
 /// whose blocks are checked for survival or support (trees, flowers, grass, kelp, ...).
 fn export_block_behavior(run: &Run, worker: usize, export: &Path) -> Result<(), String> {
-    (run.log)("Exporting block behavior (VanillaSimpleBlockOracle)");
-    let fail = |e: String| format!("{e} while exporting block behavior");
-    // Compiled first, so the time is this step's (the JVM's start included).
-    run.bundle().map_err(fail)?;
-    let started = Instant::now();
-    let classes = export.join("classes");
-    mkdir(&classes)?;
-    let log_path = export.join("export.log");
-    let log = run.log_file(&log_path)?;
-    let fail = |e: String| {
-        format!(
-            "{e} while exporting block behavior; see {}",
-            log_path.display()
-        )
-    };
-    run.run(
+    run.export_on(
         worker,
-        "1G",
+        "block behavior",
         &run.server_classpath,
-        "VanillaSimpleBlockOracle",
+        &export.join("classes"),
+        &["VanillaSimpleBlockOracle"],
+        "1G",
         &["export".into(), arg(export)],
-        &log,
-        &log_path,
-    )
-    .map_err(fail)?;
+        &export.join("export.log"),
+    )?;
     let rules = survival::bind_definitions(
         &read_json(&export.join("survival-classes.json"))?,
         &read_json(&export.join("survival-placement-classes.json"))?,
@@ -1683,9 +1637,7 @@ fn export_block_behavior(run: &Run, worker: usize, export: &Path) -> Result<(), 
     write_text(
         &export.join("survival-rules.json"),
         &pyjson::dumps(&rules, &pyjson::COMPACT),
-    )?;
-    (run.log)(&format!("Exported block behavior{}", took(started)));
-    Ok(())
+    )
 }
 
 #[cfg(test)]
@@ -1749,6 +1701,31 @@ mod tests {
             install_datagen_reports(&root, &reports).unwrap();
         }
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn lanes_messages_reach_the_log_and_the_fraction_only_grows() {
+        let (send, messages) = std::sync::mpsc::channel();
+        for stage in 0..STAGES {
+            send.send(Some(format!("line {stage}"))).unwrap();
+            send.send(None).unwrap();
+        }
+        drop(send);
+        let lines = std::cell::RefCell::new(Vec::new());
+        let fractions = std::cell::RefCell::new(Vec::new());
+        relay(
+            messages,
+            &|line| lines.borrow_mut().push(line.to_string()),
+            &|done| fractions.borrow_mut().push(done),
+        );
+        let lines = lines.into_inner();
+        assert_eq!(lines.len() as u32, STAGES);
+        assert_eq!(lines[3], "line 3");
+        // Each stage reports the ones before it: the last stops short of 1, which only the end
+        // of `prepare` reports.
+        let fractions = fractions.into_inner();
+        let expected: Vec<f32> = (0..STAGES).map(|n| n as f32 / STAGES as f32).collect();
+        assert_eq!(fractions, expected);
     }
 
     /// `--progress json` reaches 1 only at the end: `STAGES` counts the stages `steps` opens.
