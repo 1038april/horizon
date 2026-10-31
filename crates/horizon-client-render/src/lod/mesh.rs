@@ -1228,9 +1228,7 @@ mod tests {
         assert_eq!(mesh.solid.len(), 4);
         let corners: Vec<[f32; 3]> = mesh.solid.iter().map(|v| v.pos).collect();
         assert!(
-            corners
-                .iter()
-                .any(|p| p[0] == size && p[2] == size / 2.0),
+            corners.iter().any(|p| p[0] == size && p[2] == size / 2.0),
             "{corners:?}"
         );
         let top = mesh
