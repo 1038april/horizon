@@ -251,7 +251,14 @@ API 44 adds the server starting and stopping, on the single player server thread
 and each stop by `WorldCloseFinal`; a server whose loop fails reports `WorldCloseFailed` instead of stopping. Bundles
 that use them need `"hooks": 44`.
 
-API 45 adds `native_visuals`: a world-frame hook that appends block-rim and
+API 45 sends mod block entities to clients. Each mod block has a block entity type of its own, named after it, after
+vanilla's; a client makes its copy of the block entity with `native_block_entity`, as the server does.
+`native_block_entity_update_tag` gives what clients get of one (`BlockEntity.getUpdateTag`, read from the block entity
+alone): it is asked when a chunk holding it is sent and when its block changes, and the client merges it into the
+copy's `nbt`. A saved chunk sent past the view distance asks it on its own thread, so read only `entity`. Keep it to what clients show (a machine running, its facing, a tank's level), not a menu's progress:
+menus have their own data slots. Bundles that use it need `"hooks": 45`.
+
+API 46 adds `native_visuals`: a world-frame hook that appends block-rim and
 colored-light requests. Rims trace the client's existing block outline edges,
 depth-tested against terrain. Lights add camera-local RGB illumination to the
 normal terrain/entity shaders, not gameplay light. Only the first eight rims
@@ -266,7 +273,7 @@ already-loaded terrain sprites. Transparent pixels in an overlay leave its
 base unchanged; opaque pixels are drawn full-bright without changing gameplay
 light or the surrounding rock. The source pack must supply the overlay texture
 under `assets/<namespace>/textures/emissive/`. When no mod requests overlays,
-the terrain shader skips the lookup. Bundles using these hooks need `"hooks": 45`.
+the terrain shader skips the lookup. Bundles using these hooks need `"hooks": 46`.
 When a native mod bundles a Horizon shader pack, naming its folder
 `native-<mod-id>` makes the Mods On/Off control pause that pack too (without
 changing the player's saved shader selection); other packs are unaffected.
@@ -473,6 +480,14 @@ the folder it starts in and every one above it, whatever `CARGO_HOME` says, so f
 would read the player's `~/.cargo/config.toml`, whose `[profile]`, `[build]` and `[target]` settings beat the
 workspace and the environment; no switch turns that search off. The source's own `.cargo/config.toml`, if it
 has one, is passed with `--config`.
+
+Every path the build's tools see — the toolchain, the Cargo home, `native/` and the tools' temp dir (TMPDIR,
+TMP and TEMP, where gcc, the assembler, `ld` and `cargo install` put their scratch files) — comes from
+`backend::build_dir`: the launcher's data folder, resolved (never through a link, which horizon-mixins
+refuses). On Windows, when that path is not spelled in ASCII — a Cyrillic user name in `%APPDATA%`, which
+MinGW-w64's tools can't open — it is the folder's own short (8.3) name where the volume keeps one, else a
+folder under `ProgramData` named for it (`horizon-launcher-<id>`); a data folder that is itself a junction to
+a drive with an ASCII path resolves to that and needs neither.
 
 ## Install from GitHub
 
