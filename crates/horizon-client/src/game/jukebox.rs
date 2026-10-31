@@ -77,6 +77,23 @@ impl Game<'_> {
         self.start_song(pos, &song);
         self.jukebox_changed(pos);
     }
+    /// `JukeboxBlockEntity.setTheItem(EMPTY)` from a container (a hopper
+    /// below taking the disc): the song stops, the block loses its record,
+    /// and the neighbours and comparators hear it.
+    pub(super) fn jukebox_taken(&mut self, pos: [i32; 3]) {
+        if let Some(BlockEntity::Jukebox(j)) =
+            self.world.block_entities.get_mut(&(pos[0], pos[1], pos[2]))
+        {
+            if j.record().is_some() {
+                return;
+            }
+            j.playing = false;
+            j.ticks = 0;
+        }
+        self.stop_song(pos);
+        self.set_has_record(pos, false);
+        self.jukebox_changed(pos);
+    }
     /// `JukeboxBlock.useItemOn` / `useWithoutItem` on the jukebox at `pos`.
     pub(super) fn use_jukebox(&mut self, pos: [i32; 3], held: Option<&ItemStack>) -> bool {
         if &*self

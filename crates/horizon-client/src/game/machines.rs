@@ -886,6 +886,12 @@ impl Game<'_> {
             match self.add_item(source_hopper, hopper, one, None) {
                 None => {
                     self.view_changed(source);
+                    // JukeboxBlockEntity.removeItem -> setTheItem(EMPTY): a
+                    // disc a hopper takes out stops the song.
+                    if source.kind == Kind::Jukebox {
+                        let (x, y, z) = source.parts[0].0;
+                        self.jukebox_taken([x, y, z]);
+                    }
                     return true;
                 }
                 Some(rest) => self.put_back(source, slot, rest),
