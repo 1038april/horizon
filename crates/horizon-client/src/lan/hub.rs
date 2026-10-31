@@ -2559,10 +2559,15 @@ impl Hub {
     /// A move still queued for guest `i`, which a packet the game handles
     /// after this pass must not overtake.
     fn move_queued(&self, i: usize) -> bool {
-        self.guests[i]
-            .inbox
-            .iter()
-            .any(|(p, _)| matches!(p, S::MovePlayerPos(_) | S::MovePlayerPosRot(_)))
+        self.guests[i].inbox.iter().any(|(p, _)| {
+            matches!(
+                p,
+                S::MovePlayerPos(_)
+                    | S::MovePlayerPosRot(_)
+                    | S::MovePlayerRot(_)
+                    | S::MovePlayerStatus(_)
+            )
+        })
     }
 
     fn process_inbox(&mut self, i: usize, ctx: &mut TickCtx, events: &mut Vec<HostEvent>) {
@@ -2772,6 +2777,22 @@ impl Hub {
                 // placer's client plays (BlockItem.place's playSound(player, ...)).
                 S::UseItemOn(p) => {
                     events.push(HostEvent::Packet(conn, Box::new(S::UseItemOn(p))));
+                    if self.move_queued(i) {
+                        break;
+                    }
+                }
+                // handleAttack and handleInteract are the game's too: a move queued
+                // behind them would move the player (or land them on the ground,
+                // losing a falling attack's critical hit) before the game checks
+                // their reach and state.
+                S::Attack(p) => {
+                    events.push(HostEvent::Packet(conn, Box::new(S::Attack(p))));
+                    if self.move_queued(i) {
+                        break;
+                    }
+                }
+                S::Interact(p) => {
+                    events.push(HostEvent::Packet(conn, Box::new(S::Interact(p))));
                     if self.move_queued(i) {
                         break;
                     }
