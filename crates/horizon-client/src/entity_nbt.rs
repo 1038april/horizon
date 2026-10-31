@@ -927,6 +927,10 @@ pub fn mob_to_nbt(
                 Tag::Int(crate::mobs::aquatic::dark_ticks(m)),
             );
         }
+        // Phantom.addAdditionalSaveData.
+        "minecraft:phantom" => {
+            map.insert("size".into(), Tag::Int(m.extra.size));
+        }
         "minecraft:slime" | "minecraft:magma_cube" => {
             map.insert("Size".into(), Tag::Int(m.extra.size.max(1) - 1));
             map.insert("wasOnGround".into(), Tag::Byte(i8::from(m.extra.flag2)));
@@ -1812,6 +1816,10 @@ pub fn mob_from_nbt(
             m.health = h as f32;
         }
         m.extra.flag2 = flag(tag, "wasOnGround");
+    }
+    if m.species() == crate::mobs::Species::Phantom {
+        // Phantom.readAdditionalSaveData: setPhantomSize(size).
+        crate::mobs::phantom::set_size(&mut m, number(tag.get("size")).unwrap_or(0) as i32);
     }
     // Zombie, Piglin and Zoglin.readAdditionalSaveData: IsBaby (the baby
     // zombies of trial spawners).
@@ -3778,8 +3786,8 @@ mod item_component_tests {
             else {
                 return m;
             };
-            let tag = crate::data_cmd::merged(&mob_to_nbt(&m, [1, 2, 3, 4], None), data);
-            mob_from_nbt(&tag, &types, 2).unwrap()
+            let tag = crate::data_cmd::merged(&mob_to_nbt(&m, [1, 2, 3, 4], None, None), data);
+            mob_from_nbt(&tag, &types, 2, None).unwrap()
         };
         // `entity_data={NoAI:1b}`: no id, so the egg's own type holds the data.
         assert!(spawn(&egg(Some(Tag::compound([("NoAI", Tag::Byte(1))])))).no_ai);
