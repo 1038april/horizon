@@ -12701,10 +12701,16 @@ impl Game<'_> {
     fn creative_origin(batch: &HudBatch) -> (f32, f32) {
         batch.centered_origin(Creative::WIDTH, Creative::HEIGHT)
     }
-    /// A creative tab's title: `itemGroup.*`, else the export's English title.
+    /// A creative tab's title: `itemGroup.*` (a mod tab's `itemGroup.<mod>.<path>`
+    /// from its lang files), else the export's or the tab file's English title.
     fn creative_tab_title(&self, tab: &horizon_client::creative::Tab) -> String {
-        horizon_client::creative::item_group_key(&tab.id)
-            .map_or_else(|| tab.title.clone(), |key| self.translate(key, &tab.title))
+        match horizon_client::creative::item_group_key(&tab.id) {
+            Some(key) => self.translate(key, &tab.title),
+            None => self.translate(
+                &format!("itemGroup.{}", tab.id.replace(':', ".")),
+                &tab.title,
+            ),
+        }
     }
     /// Vanilla tooltip: dark box with a purple gradient border, laid out and
     /// drawn like an item tooltip (4 px of padding on every side).
@@ -13003,7 +13009,7 @@ impl Game<'_> {
                 (true, true) => "gui/sprites/widget/button_highlighted",
                 (true, false) => "gui/sprites/widget/button",
             };
-            batch.sprite_scaled(atlas, sprite, x, y, 20.0, 20.0, u32::MAX);
+            horizon_client::ui::blit_sprite(batch, atlas, sprite, x, y, 20.0, 20.0, u32::MAX);
             let color = if active {
                 u32::MAX
             } else {

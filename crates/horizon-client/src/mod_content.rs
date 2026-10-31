@@ -968,17 +968,8 @@ impl<'a> Plan<'a> {
             return Err("no tabs".into());
         };
         let stack = |id: &str| J::Str(format!("{{count:1,id:\"{id}\"}}"));
-        let new: Vec<&str> = self
-            .items
-            .iter()
-            .map(|i| i.rename.to.as_str())
-            .chain(
-                self.blocks
-                    .iter()
-                    .filter(|b| b.decl.item)
-                    .map(|b| b.decl.id.as_str()),
-            )
-            .collect();
+        // Blocks' items are among `items` already.
+        let new: Vec<&str> = self.items.iter().map(|i| i.rename.to.as_str()).collect();
         let search = tabs
             .iter()
             .position(|t| matches!(t.get("type"), Some(J::Str(k)) if k == "SEARCH"));

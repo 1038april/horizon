@@ -1486,6 +1486,10 @@ fn creative_tabs_come_on_their_own_page() {
             r#"{"template": "minecraft:diamond"}"#,
         ),
         (
+            "data/gems/horizon/block/ruby_block.json",
+            r#"{"template": "minecraft:diamond_block"}"#,
+        ),
+        (
             "data/gems/horizon/creative_tab/gems.json",
             r#"{"title": "Gems", "icon": "gems:ruby", "items": ["gems:ruby", "minecraft:diamond", "gems:missing"]}"#,
         ),
@@ -1525,6 +1529,18 @@ fn creative_tabs_come_on_their_own_page() {
             .iter()
             .any(|s| &*s.item == "gems:ruby")
     );
+    // A block's item is in search once.
+    let blocks = creative
+        .search_items()
+        .iter()
+        .filter(|s| &*s.item == "gems:ruby_block");
+    assert_eq!(blocks.count(), 1);
+    // Search, on every page, stays selected over a page turn.
+    let search = creative.tabs.iter().position(|t| t.search).unwrap();
+    creative.select(search);
+    creative.set_page(1);
+    assert_eq!((creative.selected, creative.page), (search, 1));
+    creative.select(0);
     // Page 1 shows the mod's tab and the right-hand ones, not vanilla's.
     creative.set_page(1);
     assert_eq!(creative.selected, i);

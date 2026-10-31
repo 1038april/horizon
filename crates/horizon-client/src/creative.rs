@@ -491,13 +491,19 @@ impl Creative {
     pub fn on_page(&self, t: &Tab) -> bool {
         t.page == self.page || Self::on_every_page(t)
     }
-    /// Shows page `page` (NeoForge's page buttons) and selects its first tab.
+    /// Shows page `page` (NeoForge's page buttons) and selects its first tab,
+    /// unless the selected tab is one every page shows.
     pub fn set_page(&mut self, page: u32) {
         let page = page.min(self.pages() - 1);
-        if let Some(first) = self
+        let kept = self
             .tabs
-            .iter()
-            .position(|t| t.page == page && !Self::on_every_page(t))
+            .get(self.selected)
+            .is_some_and(Self::on_every_page);
+        if !kept
+            && let Some(first) = self
+                .tabs
+                .iter()
+                .position(|t| t.page == page && !Self::on_every_page(t))
         {
             self.select(first);
         }
