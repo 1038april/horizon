@@ -302,7 +302,6 @@ impl Game<'_> {
         let world = std::env::current_dir()?.join("saves").join(folder);
         self.world_biomes = Some(super::world_loading::packed_biomes(
             &world,
-            &self.options.resources,
             self.res.biomes(),
         ));
         let (res, pack, settings) = (self.res.clone(), self.pack.clone(), self.settings.clone());
