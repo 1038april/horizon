@@ -38,13 +38,13 @@ pub fn paint(hwnd: isize, semibold: &[u8], mono: &[u8], logs: &[String]) {
     let hwnd = hwnd as HWND;
     FACES.call_once(|| {
         for font in [semibold, mono] {
-            let count = 0;
+            let mut count = 0u32;
             unsafe {
                 AddFontMemResourceEx(
                     font.as_ptr().cast(),
                     font.len() as u32,
                     std::ptr::null(),
-                    &count,
+                    &mut count,
                 );
             }
         }
@@ -99,7 +99,7 @@ pub fn paint(hwnd: isize, semibold: &[u8], mono: &[u8], logs: &[String]) {
         let small = (size * 0.25).clamp(11.0 * density, 18.0 * density);
         let block = size * 1.45 + small * 0.6 + small * 1.5;
         let top = (h - block) / 2.0;
-        let mark = face(-(size as i32), 600, "Geist SemiBold");
+        let mark = face(size as i32, 600, "Geist SemiBold");
         let old_mark = SelectObject(hdc, mark);
         SetBkMode(hdc, TRANSPARENT as i32);
         SetTextColor(hdc, WORDMARK);
@@ -117,7 +117,7 @@ pub fn paint(hwnd: isize, semibold: &[u8], mono: &[u8], logs: &[String]) {
             &mut mark_rect,
             DT_CENTER | DT_SINGLELINE | DT_NOCLIP | DT_VCENTER,
         );
-        let tagline = face(-(small as i32), 400, "Geist Mono");
+        let tagline = face(small as i32, 400, "Geist Mono");
         let old_tagline = SelectObject(hdc, tagline);
         SetTextColor(hdc, CONSOLE);
         let tagline_text: Vec<u16> = "Rust based minecraft client".encode_utf16().collect();
@@ -138,7 +138,7 @@ pub fn paint(hwnd: isize, semibold: &[u8], mono: &[u8], logs: &[String]) {
         // The console's last lines at the bottom left, the newest at the
         // bottom: long lines wrap word-wise and the block grows upwards, as
         // the game's `draw_boot_log` draws it (capped at 24 sub-lines).
-        let console = face(-(line as i32), 400, "Geist Mono");
+        let console = face(line as i32, 400, "Geist Mono");
         let old_console = SelectObject(hdc, console);
         SetTextColor(hdc, CONSOLE);
         let max_rows = (((h - pad) / line) as usize).clamp(1, 24);
@@ -154,7 +154,7 @@ pub fn paint(hwnd: isize, semibold: &[u8], mono: &[u8], logs: &[String]) {
             let mut rect = RECT {
                 left: pad as i32,
                 top: 0,
-                right: (w - pad) as i32,
+                right: (pad + w / 2.0) as i32,
                 bottom: 0,
             };
             DrawTextW(

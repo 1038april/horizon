@@ -17492,6 +17492,10 @@ impl Loading {
         ) {
             Ok(r) => self.renderer = Some(r),
             Err(e) => {
+                #[cfg(target_os = "windows")]
+                if let Some(stop) = &boot_paint_stop {
+                    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
                 self.error = Some(e);
                 event_loop.exit();
                 return;

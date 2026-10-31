@@ -455,6 +455,7 @@ impl HudAtlas {
             sprites,
             translucent: HashSet::new(),
             flags: HashMap::new(),
+            object_skins: HashMap::new(),
             sprite_animations: Vec::new(),
             glint: (vec![0; 4], 1, 1),
             glint_armor: (vec![0; 4], 1, 1),
