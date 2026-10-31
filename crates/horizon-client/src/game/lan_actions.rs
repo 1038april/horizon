@@ -2827,11 +2827,56 @@ impl Game<'_> {
         let skip = usize::from(text.starts_with('/'));
         let command = &text[skip..];
         let d = vanilla::game_dispatcher();
-        let level = std::mem::replace(&mut self.ui.registries.permission, permission);
+        // The completions come from the server's players and lists, not from the host's own registries: a
+        // dedicated server has no local player (they would list "Player"), and a LAN world's guests are not in
+        // the host's list.
+        let mut players = if self.options.dedicated.is_some() {
+            Vec::new()
+        } else {
+            self.ui.registries.players.clone()
+        };
+        players.extend(host.hub.guests.iter().map(|g| g.name.clone()));
+        let (ops, banned_players, banned_ips, whitelisted) = match &self.server_lists {
+            Some(lists) => {
+                let l = lists.lock().unwrap();
+                (
+                    l.ops
+                        .entries()
+                        .iter()
+                        .map(|e| e.user.name.clone())
+                        .collect(),
+                    l.bans
+                        .entries()
+                        .iter()
+                        .map(|e| e.user.name.clone())
+                        .collect(),
+                    l.ip_bans.entries().iter().map(|e| e.user.clone()).collect(),
+                    l.white
+                        .entries()
+                        .iter()
+                        .map(|e| e.user.name.clone())
+                        .collect(),
+                )
+            }
+            None => Default::default(),
+        };
+        let reg = &mut self.ui.registries;
+        let level = std::mem::replace(&mut reg.permission, permission);
+        let own_players = std::mem::replace(&mut reg.players, players);
+        let own_ops = std::mem::replace(&mut reg.ops, ops);
+        let own_banned = std::mem::replace(&mut reg.banned_players, banned_players);
+        let own_banned_ips = std::mem::replace(&mut reg.banned_ips, banned_ips);
+        let own_whitelisted = std::mem::replace(&mut reg.whitelisted, whitelisted);
         let parse = d.parse(command, &self.ui.registries);
         let ((start, end), mut suggestions) =
             d.suggestions(&parse, command.len(), &self.ui.registries);
-        self.ui.registries.permission = level;
+        let reg = &mut self.ui.registries;
+        reg.permission = level;
+        reg.players = own_players;
+        reg.ops = own_ops;
+        reg.banned_players = own_banned;
+        reg.banned_ips = own_banned_ips;
+        reg.whitelisted = own_whitelisted;
         // ServerCommandSuggestionsProvider.limitSuggestionCount.
         suggestions.truncate(1000);
         let utf16 = |byte: usize| command[..byte.min(command.len())].encode_utf16().count() as i32;
