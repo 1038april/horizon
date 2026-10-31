@@ -116,9 +116,11 @@ doesn't have are left out):
 ```
 
 They come after vanilla's tabs, ten to a page as NeoForge pages them; the
-buttons above the inventory turn the pages. The title is English; a lang file's
-`itemGroup.<mod id>.<file name>` (`creative_tab/gems.json` → `itemGroup.ruby.gems`) translates it. A
-mod's items join the search tab under their names.
+buttons above the inventory turn the pages. The title is a lang key or English
+text: `"title": "itemGroup.ruby"` uses that key from the mod's lang files, and a
+lang file's `itemGroup.<mod id>.<file name>` (`creative_tab/gems.json` →
+`itemGroup.ruby.gems`) translates any title. A mod's items join the search tab
+under their names.
 
 A component type no vanilla item has is refused, so a misspelt one fails
 the load instead of doing nothing. Behaviour the game ties to a vanilla
