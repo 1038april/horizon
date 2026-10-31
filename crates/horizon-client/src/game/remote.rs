@@ -1752,10 +1752,21 @@ impl Game<'_> {
             }
             return;
         }
-        let Some(entity) = self.world.block_entities.get(&key) else {
+        let Tag::Compound(fields) = tag else {
             return;
         };
-        let Tag::Compound(fields) = tag else {
+        // A mod block entity's type is named after its block (`mod_content`):
+        // its update tag merges into what the client keeps of it (`handleUpdateTag`).
+        // Nothing is drawn from it yet, so its section stays as it is.
+        let block = self.world.block(pos[0], pos[1], pos[2]);
+        if let Some(BlockEntity::Mod(m)) = self.world.block_entities.get_mut(&key) {
+            if *self.res.facts().get(block).name == *name {
+                m.nbt
+                    .extend(fields.iter().map(|(k, v)| (k.clone(), v.clone())));
+            }
+            return;
+        }
+        let Some(entity) = self.world.block_entities.get(&key) else {
             return;
         };
         if entity.id() != name || fields.is_empty() {
@@ -1856,7 +1867,8 @@ impl Game<'_> {
     /// Keep the renderable block entities (chests, furnaces) in step with blocks.
     pub(super) fn sync_block_entity(&mut self, pos: (i32, i32, i32), state: BlockStateId) {
         let name = self.res.facts().get(state).name.clone();
-        match BlockEntity::for_block(&name) {
+        // A mod block's is the mod's own (`native_block_entity`), as on the server.
+        match self.new_block_entity(&name) {
             Some(entity) => {
                 let same = self
                     .world

@@ -807,15 +807,24 @@ impl<'a> Plan<'a> {
             "registries.json" => {
                 // Network ids: the game and its server map items and blocks through
                 // this report, so new ones get the ids after vanilla's, in plan order.
+                // A block entity type for each block too, named after it: a mod
+                // names its types only when one is made (`native_block_entity`),
+                // and the chunk packet carries the type of each block's entity.
                 let new_items = self.items.iter().map(|i| i.rename.to.clone());
                 let new_blocks = self.blocks.iter().map(|b| b.decl.id.clone());
+                let new_blocks: Vec<_> = new_blocks.collect();
                 for (registry, names) in [
                     ("minecraft:item", new_items.collect::<Vec<_>>()),
-                    ("minecraft:block", new_blocks.collect()),
+                    ("minecraft:block", new_blocks.clone()),
+                    ("minecraft:block_entity_type", new_blocks),
                 ] {
                     let Some(J::Obj(entries)) =
                         doc.get_mut(registry).and_then(|r| r.get_mut("entries"))
                     else {
+                        // A report without block entity types gets none.
+                        if registry == "minecraft:block_entity_type" {
+                            continue;
+                        }
                         return Err(format!("no {registry} entries").into());
                     };
                     let next = entries
