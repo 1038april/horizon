@@ -120,6 +120,11 @@ alone): it is asked when a chunk holding it is sent and when its block changes, 
 copy's `nbt`. Keep it to what clients show (a machine running, its facing, a tank's level), not a menu's progress:
 menus have their own data slots. Bundles that use it need `"hooks": 23`.
 
+API 24 adds `native_block_entity_sync`, which sends the block and its update tag to clients again
+(`Level.sendBlockUpdated`): with the level's block changes, to the players who see its chunk, once per position
+however often it is called in a tick. A change made in a block entity's tick reaches clients at the start of the
+next tick, as in vanilla. Bundles that use it need `"hooks": 24`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads
