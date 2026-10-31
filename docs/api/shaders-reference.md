@@ -51,6 +51,7 @@ One point of a block's surface, for `fn material(input: MaterialInput) -> Surfac
 | `position` | `vec3<f32>` | The point, camera-relative, in blocks. |
 | `uv` | `vec2<f32>` | The texture coordinate inside the block atlas. |
 | `translucent` | `bool` | Drawn in the translucent pass (water, stained glass, ice). |
+| `tags` | `u32` | The pack's sprite tags this surface's sprite has: bit i for the manifest's i-th `[[tags]]`. |
 | `screen` | `vec2<f32>` | Where the point is on the screen, 0..1 from the top left (`opaque_depth` and `opaque_color` at `screen * frame.resolution`). |
 
 ### `Surface`
@@ -138,12 +139,16 @@ The frame, as `frame` in every stage. Positions and directions are in world axes
 | `dimension` | `i32` | 388 | 0 the Overworld, -1 the Nether, 1 the End, 2 any other dimension. |
 | `frame_index` | `u32` | 392 | Frames drawn since the pack was loaded (wraps). |
 | `hide_gui` | `u32` | 396 | 1 while F1 hides the HUD, else 0. |
-| `previous_view_projection` | `mat4x4<f32>` | 400 | Last frame's camera-relative world to clip space (its `projection * view`); a point at camera-relative `p` now was at `p + camera_motion` relative to last frame's camera. This frame's on the first frame and after a gap of over half a second (a pause, a world load), when last frame's camera says nothing about this one. |
-| `camera_motion` | `vec3<f32>` | 464 | How far the camera moved since last frame, in blocks (0 after such a gap). |
-| `delta_time` | `f32` | 476 | Seconds since last frame (0 on the first and after such a gap). |
-| `eye_light_smooth` | `vec2<f32>` | 480 | `eye_light` eased with a half-life of 2 seconds: it follows the light levels' steps without stepping itself (for exposure and indoor fog). |
-| `in_water` | `f32` | 488 | 1 while the camera is in water (`eye_in` 1), eased with a half-life of a quarter second in and out. |
-| `in_lava` | `f32` | 492 | The same for lava (`eye_in` 2). |
+| `precipitation` | `u32` | 400 | What falls in the biome at the camera while it rains: 0 nothing, 1 rain, 2 snow. |
+| `temperature` | `f32` | 404 | The biome at the camera's temperature (vanilla's, -0.7..2.0; it snows below 0.15). |
+| `downfall` | `f32` | 408 | The biome at the camera's downfall, 0..1. |
+| `wetness` | `f32` | 412 | `rain`, smoothed: rises over about 30 seconds and dries over about 10, 0..1. |
+| `previous_view_projection` | `mat4x4<f32>` | 416 | Last frame's camera-relative world to clip space (its `projection * view`); a point at camera-relative `p` now was at `p + camera_motion` relative to last frame's camera. This frame's on the first frame and after a gap of over half a second (a pause, a world load), when last frame's camera says nothing about this one. |
+| `camera_motion` | `vec3<f32>` | 480 | How far the camera moved since last frame, in blocks (0 after such a gap). |
+| `delta_time` | `f32` | 492 | Seconds since last frame (0 on the first and after such a gap). |
+| `eye_light_smooth` | `vec2<f32>` | 496 | `eye_light` eased with a half-life of 2 seconds: it follows the light levels' steps without stepping itself (for exposure and indoor fog). |
+| `in_water` | `f32` | 504 | 1 while the camera is in water (`eye_in` 1), eased with a half-life of a quarter second in and out. |
+| `in_lava` | `f32` | 508 | The same for lava (`eye_in` 2). |
 
 ## Options
 
