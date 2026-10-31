@@ -2747,10 +2747,10 @@ fn content_root_generates_a_biome_modifier_ore() {
             ),
             (
                 "data/zinc/worldgen/configured_feature/ore_zinc.json",
-                r##"{"type": "minecraft:ore", "config": {"size": 9, "discard_chance_on_air_exposure": 0.0,
+                r##"{"type": "minecraft:ore", "size": 9, "discard_chance_on_air_exposure": 0.0,
                     "targets": [{"target": {"predicate_type": "minecraft:tag_match",
                         "tag": "minecraft:stone_ore_replaceables"},
-                        "state": {"Name": "zinc:zinc_ore"}}]}}"##
+                        "state": "zinc:zinc_ore"}]}"##
                     .to_owned(),
             ),
             (
