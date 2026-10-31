@@ -30,10 +30,10 @@ EnderDragonPhase.createInstance	port	crates/horizon-client/src/game/dragon.rs::P
 EnderDragonPhase.getById	port	crates/horizon-client/src/game/dragon.rs::Phase::from_id	id to phase, unknown ids fall back to Holding
 Mannequin.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::Base::mob_to_nbt	ticked in #3514; `Mannequin.addAdditionalSaveData` is cited at crates/horizon-client/src/entity_nbt.rs:376 (in a comment, so `where` names the enclosing fn)
 Mannequin.applyImplicitComponent	missing		minor: the profile from a spawning item is not applied; Horizon has no mannequin item, only summon with a profile tag
-Mannequin.defineSynchedData	inline	crates/horizon-client/src/game/remote_mob_data.rs::apply	gap: player: reads the profile (slot 17) only; DATA_IMMOVABLE and DATA_DESCRIPTION are not read
+Mannequin.defineSynchedData	inline	crates/horizon-client/src/game/remote_mob_data.rs::apply	slots 17 to 19: the profile, DATA_IMMOVABLE and DATA_DESCRIPTION are all read now
 Mannequin.get	skip:other		data-component getter for the PROFILE component; the profile is Mob.profile, read directly
 Mannequin.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::mob_from_nbt	ticked in #3514; `Mannequin.readAdditionalSaveData` is cited at crates/horizon-client/src/entity_nbt.rs:1380 (in a comment, so `where` names the enclosing fn)
-Mannequin.updateDescription	missing		player: the mannequin's description (default 'Mannequin') is never drawn under its name
+Mannequin.updateDescription	port	crates/horizon-client/src/mobs.rs::MannequinDescription::component	the description component: the default `entity.minecraft.mannequin.label`, none when hidden, or the server's own (the text drawn under the name tag)
 Giant.createAttributes	skip:data		attributes come from entity-types.json
 ShootWhenStuck.checkExtraStartConditions	inline	crates/horizon-client/src/mobs/breeze.rs::register	
 Evoker.createAttributes	skip:data		attributes come from entity-types.json
