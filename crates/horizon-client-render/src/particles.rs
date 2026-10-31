@@ -1492,6 +1492,7 @@ impl ParticleEngine {
             // shortcut: counts live plus queued particles by scanning instead of
             // vanilla's counted map; use a counter if spore spawning shows in profiles.
             if particle.ty == ParticleType::SporeBlossomAir
+                && self.particles.len() + self.pending.len() >= SPORE_BLOSSOM_LIMIT
                 && self
                     .particles
                     .iter()
