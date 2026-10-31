@@ -9418,23 +9418,23 @@ impl Game<'_> {
                     p.z + (q.z - p.z) * a,
                 )
             };
-            let mut casters: Vec<(glam::DVec3, &str, f32)> =
+            let mut casters: Vec<(glam::DVec3, f32, f32)> =
                 horizon_client::shadows::mob_casters(&self.mobs, a).collect();
-            let fixed = |id: &'static str| (id, horizon_client::shadows::shadow_params(id).0);
-            let (item, item_radius) = fixed("minecraft:item");
+            let item = horizon_client::shadows::shadow_params("minecraft:item");
             casters.extend(
                 self.dropped
                     .iter()
-                    .map(|i| (lerp(i.previous, i.position), item, item_radius)),
+                    .map(|i| (lerp(i.previous, i.position), item.0, item.1)),
             );
-            let (orb, orb_radius) = fixed("minecraft:experience_orb");
+            let orb = horizon_client::shadows::shadow_params("minecraft:experience_orb");
             casters.extend(
                 self.orbs
                     .iter()
-                    .map(|o| (lerp(o.previous, o.position), orb, orb_radius)),
+                    .map(|o| (lerp(o.previous, o.position), orb.0, orb.1)),
             );
-            for (pos, id, radius) in casters {
-                let strength = horizon_client::shadows::shadow_params(id).1;
+            // Text, block and item displays (DisplayRenderer's shadow radius).
+            casters.extend(self.text_displays.values().filter_map(|d| d.shadow(a)));
+            for (pos, radius, strength) in casters {
                 horizon_client::shadows::shadow(
                     &self.world,
                     self.res.facts(),
