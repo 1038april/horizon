@@ -63,11 +63,6 @@ impl Game<'_> {
             .and_then(|item| item.custom_components.get(id));
         let value = (default != Some(&value)).then_some(value);
         let removed = format!("!{id}");
-        if stack.data().and_then(|data| data.other(id)) == value.as_ref()
-            && stack.data().and_then(|data| data.other(&removed)).is_none()
-        {
-            return Ok(());
-        }
         let data = stack.data_mut();
         data.set_other(&removed, None);
         data.set_other(id, value);
@@ -89,11 +84,6 @@ impl Game<'_> {
             .get(&stack.item)
             .is_some_and(|item| item.custom_components.contains_key(id));
         let removed = format!("!{id}");
-        if stack.data().and_then(|data| data.other(id)).is_none()
-            && stack.data().and_then(|data| data.other(&removed)).is_some() == default
-        {
-            return Ok(());
-        }
         let data = stack.data_mut();
         data.set_other(id, None);
         data.set_other(&removed, default.then(|| Tag::Compound(Default::default())));

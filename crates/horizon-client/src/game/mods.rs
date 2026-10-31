@@ -28,7 +28,7 @@ pub(super) fn register_components(root: &std::path::Path) -> horizon_client::Res
     let mut names = Vec::new();
     Game::native_component_types(&mut names);
     horizon_protocol::item::custom::install(first, names)
-        .map_err(|error| format!("invalid native component registration: {error:?}"))?;
+        .map_err(|error| format!("invalid native component registration: {error}"))?;
     Ok(())
 }
 

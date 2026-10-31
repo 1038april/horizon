@@ -18,6 +18,18 @@ pub enum InstallError {
     AlreadyInstalled,
 }
 
+impl std::fmt::Display for InstallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::InvalidRange => "invalid component ID range",
+            Self::DuplicateName => "duplicate component name",
+            Self::InvalidName => "invalid component name",
+            Self::AlreadyInstalled => "component types already installed",
+        })
+    }
+}
+impl std::error::Error for InstallError {}
+
 /// Install sorted component names after the built-in component IDs.
 /// This is an internal transport seam, not a native-mod API.
 #[doc(hidden)]
@@ -37,12 +49,7 @@ pub fn install(first: i32, mut names: Vec<String>) -> Result<(), InstallError> {
         namespace.is_empty()
             || namespace == "minecraft"
             || path.is_empty()
-            || !namespace
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b))
-            || !path
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_./-".contains(&b))
+            || horizon_world::identifier::Identifier::from_parts(namespace, path).is_err()
     }) {
         return Err(InstallError::InvalidName);
     }
