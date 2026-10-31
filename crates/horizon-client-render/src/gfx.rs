@@ -511,6 +511,9 @@ pub struct Renderer {
     window: Arc<Window>,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
+    /// Set by the device's lost callback. wgpu reports nothing else when an
+    /// operation fails on a lost device (no error scope sees it).
+    device_lost: Arc<std::sync::atomic::AtomicBool>,
     pub config: wgpu::SurfaceConfiguration,
     solid: wgpu::RenderPipeline,
     translucent: wgpu::RenderPipeline,
@@ -728,6 +731,10 @@ pub struct Renderer {
     /// first gets the swapchain a fresh configuration; later ones reattach
     /// the window, as a lost surface does.
     acquire_validation_failures: u32,
+    /// A surface from `recreate_surface` whose configuration failed. wgpu
+    /// panics when such a surface is acquired from (it never had one that
+    /// worked), so frames configure it again first and skip until it takes.
+    surface_unconfigured: bool,
     pub drawn_sections: usize,
     /// Last frame's section draws (face ranges and translucent sections),
     /// and the draw calls the backend issued for them.
@@ -1039,6 +1046,7 @@ struct Opened {
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
+    device_lost: Arc<std::sync::atomic::AtomicBool>,
 }
 /// Logs the adapter and records it for telemetry and crash reports.
 fn describe_adapter(adapter: &wgpu::Adapter) {
@@ -1300,13 +1308,28 @@ async fn open_backend(
         None => adapter.request_device(&desc).await,
     };
     match opened {
-        Ok((device, queue)) => Ok(Opened {
-            instance,
-            surface,
-            adapter,
-            device,
-            queue,
-        }),
+        Ok((device, queue)) => {
+            let device_lost = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let lost = device_lost.clone();
+            device.set_device_lost_callback(move |reason, message| {
+                // A device destroyed on purpose was not lost.
+                if reason == wgpu::DeviceLostReason::Destroyed {
+                    return;
+                }
+                log::warn!(
+                    "Horizon renderer: the graphics device was lost ({reason:?}: {message})"
+                );
+                lost.store(true, std::sync::atomic::Ordering::Relaxed);
+            });
+            Ok(Opened {
+                instance,
+                surface,
+                adapter,
+                device,
+                queue,
+                device_lost,
+            })
+        }
         Err(e) => Err(NoDevice::Failed(format!("{name} device: {e}"))),
     }
 }
@@ -1411,6 +1434,7 @@ impl Renderer {
             adapter,
             device,
             queue,
+            device_lost,
         } = match previous {
             // Reload resources on the same device; replacing live Vulkan
             // devices can invalidate the driver's swapchain state on the same
@@ -1436,6 +1460,7 @@ impl Renderer {
                     adapter: renderer.adapter.clone(),
                     device: renderer.device.clone(),
                     queue: renderer.queue.clone(),
+                    device_lost: renderer.device_lost.clone(),
                 }
             }
             None => open_device(&window, offscreen, api, layers).await?,
@@ -2997,6 +3022,7 @@ impl Renderer {
             window,
             device,
             queue,
+            device_lost,
             config,
             solid,
             translucent,
@@ -3138,6 +3164,7 @@ impl Renderer {
             info,
             suspended: !drawable_size(size.width, size.height, max_side),
             acquire_validation_failures: 0,
+            surface_unconfigured: false,
             drawn_sections: 0,
             section_draws: 0,
             section_draw_calls: 0,
@@ -3223,12 +3250,19 @@ impl Renderer {
             Some(surface) => surface,
             None => self.instance.create_surface(self.window.clone())?,
         };
-        Self::configure(
+        let configured = Self::configure(
             &self.device,
             &surface,
             &self.surface_config(),
             self.hdr.as_ref(),
+            &self.device_lost,
         );
+        if let Err(e) = &configured {
+            log::warn!(
+                "Horizon renderer: the new window surface did not configure ({e}); retrying"
+            );
+        }
+        self.surface_unconfigured = configured.is_err();
         self.surface = Some(surface);
         Ok(())
     }
@@ -3283,16 +3317,9 @@ impl Renderer {
             Some(PresentMode::Immediate) => wgpu::PresentMode::Immediate,
             _ => wgpu::PresentMode::Fifo,
         };
-        if self.config.present_mode != mode
-            && let Some(surface) = &self.surface
-        {
+        if self.config.present_mode != mode && self.surface.is_some() {
             self.config.present_mode = mode;
-            Self::configure(
-                &self.device,
-                surface,
-                &self.surface_config(),
-                self.hdr.as_ref(),
-            );
+            self.configure_surface();
         }
     }
     /// Follows the window to `width` x `height`. A size the swapchain can't take
@@ -3305,13 +3332,8 @@ impl Renderer {
         }
         self.config.width = width;
         self.config.height = height;
-        if let Some(surface) = &self.surface {
-            Self::configure(
-                &self.device,
-                surface,
-                &self.surface_config(),
-                self.hdr.as_ref(),
-            );
+        if self.surface.is_some() {
+            self.configure_surface();
         } else {
             self.offscreen = Some(Self::offscreen_target(&self.device, &self.config));
         }
@@ -3745,14 +3767,26 @@ impl Renderer {
     }
     /// Horizon's resolution scale (world pixels per window pixel) and FXAA.
     /// Configures `surface` and, while HDR output is on, sends its HDR metadata
-    /// again: a new swapchain starts without it.
+    /// again: a new swapchain starts without it. Errs when `surface` was left
+    /// unconfigured (a validation error, or a lost device, which wgpu reports
+    /// to no error scope).
     fn configure(
         device: &wgpu::Device,
         surface: &wgpu::Surface<'_>,
         config: &wgpu::SurfaceConfiguration,
         hdr: Option<&hdr::Hdr>,
-    ) {
+        device_lost: &std::sync::atomic::AtomicBool,
+    ) -> std::result::Result<(), String> {
+        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         surface.configure(device, config);
+        let memory = pollster::block_on(memory.pop());
+        if let Some(e) = memory.or(pollster::block_on(validation.pop())) {
+            return Err(e.to_string());
+        }
+        if device_lost.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err("the graphics device was lost".into());
+        }
         if let Some(hdr) = hdr {
             horizon_hdr::set_metadata(
                 device,
@@ -3762,15 +3796,21 @@ impl Renderer {
                 hdr.black,
             );
         }
+        Ok(())
     }
+    /// Configures the window surface again. One that fails is still the one
+    /// wgpu configured before, which acquisition reports as a validation error.
     fn configure_surface(&self) {
-        if let Some(surface) = &self.surface {
-            Self::configure(
+        if let Some(surface) = &self.surface
+            && let Err(e) = Self::configure(
                 &self.device,
                 surface,
                 &self.surface_config(),
                 self.hdr.as_ref(),
-            );
+                &self.device_lost,
+            )
+        {
+            log::warn!("Horizon renderer: the window surface did not configure ({e})");
         }
     }
     /// HDR calibration's test picture (`crate::hdr_calibration`) while it runs, else None.
@@ -4320,6 +4360,27 @@ impl Renderer {
             startup_step(format_args!("acquiring the first frame"));
             self.first_frame = FirstFrame::Submit;
         }
+        if self.surface_unconfigured
+            && let Some(surface) = &self.surface
+        {
+            // Acquiring from it would panic: configure it again, or skip the
+            // frame. A lost device never configures it.
+            if self.device_lost.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err("the graphics device was lost".into());
+            }
+            if Self::configure(
+                &self.device,
+                surface,
+                &self.surface_config(),
+                self.hdr.as_ref(),
+                &self.device_lost,
+            )
+            .is_err()
+            {
+                return Ok(false);
+            }
+            self.surface_unconfigured = false;
+        }
         let acquire = Instant::now();
         let acquired = self.surface.as_ref().map(|s| s.get_current_texture());
         self.last_wait = acquire.elapsed();
@@ -4331,14 +4392,7 @@ impl Renderer {
                 return Ok(false);
             }
             Some(wgpu::CurrentSurfaceTexture::Outdated) => {
-                if let Some(surface) = &self.surface {
-                    Self::configure(
-                        &self.device,
-                        surface,
-                        &self.surface_config(),
-                        self.hdr.as_ref(),
-                    );
-                }
+                self.configure_surface();
                 return Ok(false);
             }
             Some(wgpu::CurrentSurfaceTexture::Lost) => {
@@ -4353,14 +4407,7 @@ impl Renderer {
                 // window like a Lost one — a fullscreen loading screen then
                 // skips frames instead of failing every one of them.
                 if self.acquire_validation_failures == 0 {
-                    if let Some(surface) = &self.surface {
-                        Self::configure(
-                            &self.device,
-                            surface,
-                            &self.surface_config(),
-                            self.hdr.as_ref(),
-                        );
-                    }
+                    self.configure_surface();
                 } else {
                     self.recreate_surface()?;
                 }
@@ -6749,13 +6796,8 @@ impl Renderer {
                 let _ = std::fs::remove_file(marker);
                 log::info!("Horizon renderer: HDR output presented its first frame");
             }
-            if reconfigure && let Some(surface) = &self.surface {
-                Self::configure(
-                    &self.device,
-                    surface,
-                    &self.surface_config(),
-                    self.hdr.as_ref(),
-                );
+            if reconfigure {
+                self.configure_surface();
             }
         } else {
             // No swapchain paces offscreen frames: keep two on the GPU at most.
