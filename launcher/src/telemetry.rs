@@ -408,6 +408,21 @@ pub fn set(kinds: &[Kind], on: bool) -> Result<Consent, String> {
 mod tests {
     use super::*;
 
+    /// The official server's count through its SRV record, from the live server (network):
+    /// `cargo test --lib official_count -- --ignored`. Its port 25565 is another server.
+    #[test]
+    #[ignore = "asks the live official server"]
+    fn official_count_follows_the_srv_record() {
+        let (host, port) =
+            horizon_protocol::server_redirect(crate::server_list::OFFICIAL_ADDRESS, 25565);
+        assert_eq!(
+            (host.trim_end_matches('.'), port),
+            ("play.playhorizon.dev", 24454)
+        );
+        assert!(official_players(crate::server_list::OFFICIAL_ADDRESS).is_some());
+        assert_eq!(official_players(""), None);
+    }
+
     #[test]
     fn the_stats_page_is_on_the_website() {
         assert_eq!(
