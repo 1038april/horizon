@@ -1453,9 +1453,6 @@ impl Game<'_> {
         }
         best
     }
-    /// `ContainerEntity.unpackChestVehicleLootTable` for a player who opens a
-    /// chest minecart: a roll it still holds fires `player_generates_container_loot`
-    /// for its table, and the cart keeps its items from then on.
     /// The slots of the cart `id`, for a command: `getChestVehicleItem` and
     /// `setChestVehicleItem` first unpack its loot table with no player, so
     /// no `player_generates_container_loot` fires later.
@@ -1464,6 +1461,9 @@ impl Game<'_> {
         c.loot = None;
         Some(&mut c.items)
     }
+    /// `ContainerEntity.unpackChestVehicleLootTable` for a player who opens a
+    /// chest minecart: a roll it still holds fires `player_generates_container_loot`
+    /// for its table, and the cart keeps its items from then on.
     fn unpack_cart_loot(&mut self, i: usize) {
         let Some(loot) = self.carts[i].loot.take() else {
             return;
