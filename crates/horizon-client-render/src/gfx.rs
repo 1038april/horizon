@@ -92,6 +92,7 @@ mod lod;
 mod native_material;
 mod native_pack;
 mod native_post;
+pub mod native_render;
 mod native_sky;
 mod occlusion;
 mod oit;
@@ -5381,7 +5382,10 @@ impl Renderer {
         }
         let pack_reads_world = pack_post || native_post;
         // Phase 2 of occlusion culling draws over the depth, and a shader pack or TAA reads it.
-        let keep_depth = pack_reads_world || (taa && self.world_post.taa) || oit_on;
+        let keep_depth = pack_reads_world
+            || (taa && self.world_post.taa)
+            || oit_on
+            || native_render::render_needs().world_depth;
         // The pack's program reads the vertices this frame's draws bind.
         let pack_draws_terrain = pack_terrain && flat_frame == self.pack_terrain_flat;
         // The shadow camera's lists, drawn by the pack's shadow programs.
@@ -6370,6 +6374,30 @@ impl Renderer {
         } else if scaled.is_some() {
             self.world_post
                 .finish(&self.queue, &mut encoder, &view_target);
+        }
+        if !frame.title {
+            let (depth, depth_size) = match &scaled {
+                Some((_, depth)) => (depth, self.world_post.size().unwrap_or(size)),
+                None => (&self.depth, size),
+            };
+            native_render::native_world_drawn(&mut native_render::WorldDrawn {
+                device: &self.device,
+                queue: &self.queue,
+                encoder: &mut encoder,
+                color: &target_texture,
+                color_view: &view_target,
+                color_format: self.config.format.remove_srgb_suffix(),
+                size,
+                depth,
+                depth_size,
+                view_proj,
+                jittered,
+                camera: frame.camera,
+                entities: frame.entities,
+                spans: frame.entity_spans,
+                atlas: self.hud.atlas_texture.as_ref(),
+                quad_indices: &self.indices,
+            });
         }
         if let Some(hdr) = &self.hdr {
             hdr.keep_world(&mut encoder);

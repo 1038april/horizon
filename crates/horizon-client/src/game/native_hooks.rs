@@ -3219,6 +3219,12 @@ mod tests {
                     .next()
             })
             .collect();
+        // The renderer's hook points (`horizon_client_render::gfx::native_render`).
+        let render_hooks: BTreeSet<_> =
+            include_str!("../../../horizon-client-render/src/gfx/native_render.rs")
+                .lines()
+                .filter_map(|line| line.strip_prefix("pub fn native_")?.split('(').next())
+                .collect();
         let declared: BTreeSet<_> = section
             .lines()
             .chain(level_section.lines())
@@ -3228,6 +3234,7 @@ mod tests {
                     .split('(')
                     .next()
             })
+            .chain(render_hooks.iter().copied())
             .collect();
         let mut names = BTreeSet::new();
         let mut contracts = BTreeSet::new();
@@ -3239,15 +3246,14 @@ mod tests {
                 "invalid or duplicate hook: {name} v{version}"
             );
             names.insert(name);
-            let owner = if level_hooks.contains(name) {
-                "GameLevel"
+            let target = if render_hooks.contains(name) {
+                format!("horizon_client_render::gfx::native_render::native_{name}")
+            } else if level_hooks.contains(name) {
+                format!("horizon_client::game::native_hooks::GameLevel<'_>::native_{name}")
             } else {
-                "Game"
+                format!("horizon_client::game::native_hooks::Game<'_>::native_{name}")
             };
-            assert_eq!(
-                hook["target"].as_str().unwrap(),
-                format!("horizon_client::game::native_hooks::{owner}<'_>::native_{name}")
-            );
+            assert_eq!(hook["target"].as_str().unwrap(), target);
         }
         assert_eq!(names, declared);
     }

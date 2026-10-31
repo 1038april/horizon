@@ -773,3 +773,19 @@ stock client shows as a chest (`generic_9x1` to `generic_9x6`); nothing is insta
 
 The menu hooks run with no player's state swapped in; `native_player_stacks` and `native_exchange_items` refuse a
 player whose state is (inside `native_perform_command`): call them from a menu hook or `native_server_tick`.
+
+### Render hook points
+
+`crates/horizon-client-render/src/gfx/native_render.rs`: the renderer's own hook points, free functions rather than
+`Game` methods, which a bundle targets as `horizon_client_render::gfx::native_render::native_<name>`. They run on the
+render thread with the frame's wgpu objects; what a mod draws there shows in that frame.
+
+- `native_world_drawn(world)`: the world is drawn (sky, terrain, entities, particles, weather and the world post pass),
+  the first-person hand, the HUD and screens not yet. `WorldDrawn` holds the device, queue and encoder, the frame's
+  colour target (copy it out before sampling it), the world's reversed depth and its size, the camera's position and
+  its matrices with and without TAA's jitter, the frame's camera-relative entity quads with their runs by entity, the
+  entity atlas and the shared quad index buffer. Not called on the title screen's panorama.
+- `native_render_needs(needs)`: set `entity_spans` to have the entity geometry split into runs by entity without a
+  shader pack (each run's id is stable from frame to frame: a hash of the entity type's name, a block entity's state),
+  and `world_depth` to keep the world pass's depth when nothing else needs it. Set what you need and leave the rest:
+  several mods can ask. It's asked as each frame is built, so keep it cheap.
