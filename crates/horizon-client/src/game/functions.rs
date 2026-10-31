@@ -744,10 +744,17 @@ impl Game<'_> {
             _ => None,
         };
         let selected = self.selected_packs();
-        // Feature packs need features this world lacks: never available.
+        // `DataPackCommand.listAvailablePacks`: a feature pack the world's
+        // features do not cover is not available.
         let available: Vec<String> = std::iter::once("vanilla".to_owned())
             .chain(self.fns.packs.iter().map(|p| p.id.clone()))
             .filter(|p| !selected.contains(p))
+            .filter(|p| {
+                FEATURE_PACKS
+                    .iter()
+                    .find(|(f, _)| *f == p.as_str())
+                    .is_none_or(|(_, flag)| self.level.enabled_features.iter().any(|f| f == flag))
+            })
             .collect();
         let known = |g: &Self, n: &str| {
             n == "vanilla"
@@ -805,7 +812,11 @@ impl Game<'_> {
                 if selected.contains(&name) {
                     return Err(err("commands.datapack.enable.failed", &[&name]));
                 }
-                if let Some((_, flag)) = FEATURE_PACKS.iter().find(|(p, _)| *p == name) {
+                if let Some((_, flag)) = FEATURE_PACKS.iter().find(|(p, _)| *p == name)
+                    && !self.level.enabled_features.iter().any(|f| f == flag)
+                {
+                    // `DataPackCommand`: the pack's requested features must
+                    // be a subset of the world's enabled ones.
                     return Err(err(
                         "commands.datapack.enable.failed.no_flags",
                         &[&name, flag],
@@ -844,6 +855,11 @@ impl Game<'_> {
                 }
                 if !selected.contains(&name) {
                     return Err(err("commands.datapack.disable.failed", &[&name]));
+                }
+                if FEATURE_PACKS.iter().any(|(p, _)| *p == name) {
+                    // `DataPackCommand`'s ERROR_CANNOT_DISABLE_FEATURE: the
+                    // flag stays on for the world's life.
+                    return Err(err("commands.datapack.disable.failed.feature", &[&name]));
                 }
                 if name == "vanilla" {
                     self.cmds.vanilla_disabled = true;
