@@ -4123,6 +4123,8 @@ pub fn {f}("
     /// `$APPIMAGE` names the file the runtime mounted; a path that is not there (moved or deleted
     /// since the launcher started) is no AppImage, and the launcher updates its own binary again.
     /// Nor is one inherited from another AppImage's program: the binary has to run from `$APPDIR`.
+    // AppImages are Linux's, and the paths below are absolute only on Unix.
+    #[cfg(unix)]
     #[test]
     fn only_an_appimage_file_counts() {
         use std::ffi::OsStr;
