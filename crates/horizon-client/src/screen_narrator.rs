@@ -454,7 +454,7 @@ fn narrate(
             .then(|| ctx.frame.tooltip.clone())
             .flatten()
     });
-    if let Some(hint) = hint {
+    if let Some(hint) = hint.filter(|h| !h.is_empty()) {
         out.add(ElementType::Hint, hint);
     }
 }

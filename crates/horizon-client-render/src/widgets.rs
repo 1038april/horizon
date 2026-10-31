@@ -405,8 +405,8 @@ pub struct Narratable {
     /// `isFocused` (a text field with the caret, a focused list).
     pub focused: bool,
     pub what: What,
-    /// Its tooltip's narration (HINT). Without one, the tooltip drawn this
-    /// frame is the hovered widget's.
+    /// Its tooltip's narration (HINT); empty for none. Without one, the
+    /// tooltip drawn this frame is the hovered widget's.
     pub hint: Option<String>,
     /// A row widget of a `ContainerList`: that list's key and the row.
     pub parent: Option<(u64, usize)>,
@@ -557,6 +557,11 @@ impl Narratable {
     pub fn hint(mut self, hint: impl Into<String>) -> Self {
         self.hint = Some(hint.into());
         self
+    }
+    /// No HINT, whatever tooltip the frame draws: the tooltip isn't the
+    /// widget's (a list's row tooltip, drawn by the list).
+    pub fn without_tooltip(self) -> Self {
+        self.hint("")
     }
     /// A widget of row `row` of the `ContainerList` keyed `list`.
     pub fn child_of(mut self, list: u64, row: usize) -> Self {
@@ -729,6 +734,28 @@ pub fn last_narratable_at(index: usize, f: impl FnOnce(&mut Narratable)) {
     }
 }
 
+/// How many narratables the frame has so far, for [`move_narratables`].
+pub fn narratables_mark() -> usize {
+    if !NARRATING.get() {
+        return 0;
+    }
+    NARRATION.with_borrow(|(current, _)| current.items.len())
+}
+
+/// Moves the narratables recorded since `mark` to `index`, in their order:
+/// widgets a screen adds before others it draws first.
+pub fn move_narratables(mark: usize, index: usize) {
+    if NARRATING.get() {
+        NARRATION.with_borrow_mut(|(current, _)| {
+            let items = &mut current.items;
+            let mark = mark.min(items.len());
+            let index = index.min(mark);
+            let moved = items.len() - mark;
+            items[index..].rotate_right(moved);
+        });
+    }
+}
+
 /// Names the edit box recorded last, which a shared drawer recorded without
 /// its `getMessage`.
 pub fn name_last_edit_box(name: impl FnOnce() -> String) {
@@ -851,6 +878,30 @@ mod narration_tests {
         assert_eq!(last.items[0].order, -1);
         set_narrating(false);
         last_narratable(|_| unreachable!("nothing recorded while off"));
+    }
+
+    #[test]
+    fn widgets_drawn_late_can_be_moved_to_where_they_were_added() {
+        set_narrating(true);
+        let _ = frame(4000);
+        begin_screen(|| ScreenInfo::new("command_block", ""));
+        narratable(|| Narratable::button("Done", [0.0; 4], true));
+        narratable(|| Narratable::button("Cancel", [0.0; 4], true));
+        let mark = narratables_mark();
+        narratable(|| Narratable::edit_box("Command", "", [0.0; 4]));
+        narratable(|| Narratable::button("Late", [0.0; 4], true));
+        move_narratables(mark, 0);
+        let order: Vec<String> = frame(4001)
+            .items
+            .iter()
+            .map(|n| match &n.what {
+                What::Button { message, .. } | What::EditBox { message, .. } => message.clone(),
+                _ => String::new(),
+            })
+            .collect();
+        assert_eq!(order, ["Command", "Late", "Done", "Cancel"]);
+        set_narrating(false);
+        assert_eq!(narratables_mark(), 0);
     }
 
     #[test]
