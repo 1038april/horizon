@@ -3145,13 +3145,11 @@ fn config_dir(options: &Path) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// Whether `native_play_local_sound` takes these values: a namespaced event,
-/// a finite position, a volume and pitch at or above 0, and a delay of a
-/// minute at most.
+/// Whether `native_play_local_sound` takes these values: a sound event's id
+/// (`sound_id`, as `native_play_sound` takes), a finite position, a volume
+/// and pitch at or above 0, and a delay of a minute at most.
 fn local_sound_ok(sound: &str, at: [f64; 3], volume: f32, pitch: f32, delay: i32) -> bool {
-    sound
-        .split_once(':')
-        .is_some_and(|(ns, path)| !ns.is_empty() && !path.is_empty())
+    sound_id(sound)
         && at.iter().all(|v| v.is_finite() && v.abs() <= 30_000_000.0)
         && volume.is_finite()
         && volume >= 0.0
@@ -3209,6 +3207,7 @@ mod tests {
         ));
         assert!(!local_sound_ok("boom", at, 1.0, 1.0, 0));
         assert!(!local_sound_ok("ironfall:", at, 1.0, 1.0, 0));
+        assert!(!local_sound_ok("Ironfall:Boom", at, 1.0, 1.0, 0));
         assert!(!local_sound_ok(
             "ironfall:boom",
             [f64::NAN, 0.0, 0.0],
