@@ -303,7 +303,7 @@ impl Game<'_> {
         let Some(chunk) = self.world.chunks.get(&(x >> 4, z >> 4)) else {
             return BiomeFacts::default();
         };
-        let b = self.res.biomes().get(chunk.biome(x, y, z));
+        let b = world_biomes!(self).get(chunk.biome(x, y, z));
         let tags = self.res.mob_data();
         let has = |t: &str| tags.biome_has(t, &b.name);
         let climate = if has("minecraft:spawns_warm_variant_farm_animals") {
@@ -650,7 +650,7 @@ impl Game<'_> {
             thundering: weather && thunder > 0.9,
             nether: self.dim == Dim::Nether,
             block_tags: &self.items().block_tags,
-            biomes: self.res.biomes(),
+            biomes: world_biomes!(self),
             mob_griefing: self.ui.rules.bool("mob_griefing"),
             universal_anger: self.ui.rules.bool("universal_anger"),
             mob_drops: self.ui.rules.bool("mob_drops"),
@@ -661,6 +661,11 @@ impl Game<'_> {
             teams: std::sync::Arc::new(self.mob_teams()),
             items: Some(self.items()),
             lid_openers: &self.lid_openers,
+            mod_effects: if self.remote.is_none() {
+                Some(self)
+            } else {
+                None
+            },
             // The first player in the level: a server has no player of its own.
             difficulty: self.local_difficulty(
                 self.level_players()
@@ -1141,6 +1146,7 @@ impl Game<'_> {
         let projectile = match d.kind {
             DamageKind::Arrow => Some("minecraft:arrow"),
             DamageKind::Fireball => Some("minecraft:fireball"),
+            DamageKind::WitherSkull => Some("minecraft:wither_skull"),
             DamageKind::Fireworks => Some("minecraft:firework_rocket"),
             _ => None,
         };
@@ -1241,6 +1247,10 @@ impl Game<'_> {
                 }),
                 DamageKind::Fireball => Some(LootEntity {
                     kind: "minecraft:fireball".into(),
+                    ..LootEntity::default()
+                }),
+                DamageKind::WitherSkull => Some(LootEntity {
+                    kind: "minecraft:wither_skull".into(),
                     ..LootEntity::default()
                 }),
                 DamageKind::Fireworks => Some(LootEntity {
@@ -2829,6 +2839,7 @@ impl Game<'_> {
         damage_type: &str,
         known: Option<Option<u32>>,
     ) -> bool {
+        let post_attack_if_alive = std::mem::take(&mut self.combat.post_attack_if_alive);
         let rocket = std::mem::take(&mut self.combat.rocket_hit);
         // ServerPlayer.canHarmPlayer refused another player's projectile.
         if self.creative || self.combat.refuse_player_hit {
@@ -2865,6 +2876,7 @@ impl Game<'_> {
                 }),
         };
         // The causing entity for the death message.
+        let marks = self.pending_marks();
         let owner = self.combat.projectile_owner.take();
         if let Some(a) = attacker.or(owner) {
             self.note_attacker(damage_type, a);
@@ -2879,6 +2891,11 @@ impl Game<'_> {
         // DamageSource.scalesWithDifficulty: a mob (or its projectile's
         // owner) caused the hit, not a player.
         let living_cause = attacker.or(owner).is_some();
+        // The native damage hook's causing entity: the one given, or the
+        // owner of the projectile that hit (`projectile_owner` outlives a
+        // projectile's other hits), not the guessed melee attacker.
+        let owner = owner.filter(|_| projectile);
+        let causing = known.flatten().or(owner).map_or(0, |id| id as i32);
         let mut outcome = horizon_client::health::BlockOutcome::default();
         if let Some(player) = self.player.as_mut()
             && let Some(id) = self.motion.health.damage.id(damage_type)
@@ -2889,6 +2906,7 @@ impl Game<'_> {
                 amount,
                 blocking,
                 living_cause,
+                causing,
             )
             && {
                 outcome = o;
@@ -2914,12 +2932,21 @@ impl Game<'_> {
                 }
             }
             // The thorns hurt the entity that caused the hit, if there is one.
-            if let Some(a) = attacker.or(owner) {
+            let killed = self.player.as_ref().is_some_and(|p| {
+                super::wither::killed(true, p.health.dead_or_dying(), p.health.totem_used)
+            });
+            if let Some(a) = attacker.or(owner)
+                && !(post_attack_if_alive && killed)
+            {
                 self.thorns(a);
             }
         }
         // LivingEntity.hurtServer: ENTITY_HURT_PLAYER, unless it returned
         // early (invulnerable, or inside the hurt cooldown).
+        // A hit a native mod canceled records no damage (hurtServer never ran).
+        if outcome.canceled {
+            self.drop_pending_since(marks);
+        }
         if outcome.hurt || outcome.sound {
             let source = attacker
                 .or(owner)
@@ -3674,10 +3701,13 @@ impl Game<'_> {
         ) {
             return self.wind_charge_hit(p, hit);
         }
+        // A wither skull's hit on a part or crystal goes through
+        // `wither_skull_hit` below, as on any entity, and then explodes.
         if let Hit::Entity {
             who: Who::Mob(id), ..
         } = hit
             && id >= super::dragon::SPECIAL
+            && !matches!(p.kind, ProjectileKind::WitherSkull { .. })
         {
             let by_player = p.owner == Some(Who::Player);
             if p.arrow.is_some() {
@@ -3792,6 +3822,7 @@ impl Game<'_> {
                 } else {
                     EntityHit::Refused
                 };
+                self.burning_arrow_primes(p, who);
                 self.finish_arrow_hit(trident, outcome);
             }
             // AbstractArrow.onHitBlock plays its sound itself (ArrowEvent).
@@ -3866,6 +3897,7 @@ impl Game<'_> {
                         hurt
                     }
                 };
+                self.burning_arrow_primes(p, who);
                 // doKnockback: Punch pushes along the flight, less the target's
                 // knockback resistance.
                 let flight = (p.velocity.x * p.velocity.x + p.velocity.z * p.velocity.z).sqrt();
@@ -5371,7 +5403,7 @@ impl Game<'_> {
     /// the mob it spawned, once the guards let it through, as
     /// `TypedEntityData.loadInto`: the mob's own compound, the data merged over
     /// it, loaded back into the same mob (`/data merge entity`'s loader).
-    fn apply_spawn_egg_entity_data(&mut self, id: u32, stack: &ItemStack) {
+    pub(super) fn apply_spawn_egg_entity_data(&mut self, id: u32, stack: &ItemStack) {
         let Some(i) = self.mobs.iter().position(|m| m.id == id) else {
             return;
         };
@@ -5469,6 +5501,7 @@ impl Game<'_> {
         let atlas = &self.gui.atlas;
         let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
         let scale = self.view_scale();
+        self.rendered_mobs.set(0);
         for mob in &self.mobs {
             let entity_start = out.len();
             let outline = self.mob_outline(mob);
@@ -5515,6 +5548,7 @@ impl Game<'_> {
                 }
             }
             self.mark_entity(entity_start, &mob.kind.id);
+            self.rendered_mobs.set(self.rendered_mobs.get() + 1);
             let light = self.world.light(
                 mob.position.x.floor() as i32,
                 (mob.position.y + mob.eye_height()).floor() as i32,
@@ -5961,6 +5995,22 @@ fn bucketable(species: Species) -> Option<(&'static str, &'static str)> {
 pub(super) fn source_damage_type(d: Damage) -> &'static str {
     damage_type(d.kind, d.attacker.is_some())
 }
+/// Whether the causing entity deals `kind` itself, so it is the source's
+/// direct entity too: a melee hit (`DamageSources.mobAttack`, `playerAttack`,
+/// a mace's or a spear's), a sting, a sonic boom, thorns.
+pub(super) fn melee(kind: horizon_client::mobs::DamageKind) -> bool {
+    use horizon_client::mobs::DamageKind as K;
+    matches!(
+        kind,
+        K::PlayerAttack
+            | K::MaceSmash
+            | K::Spear
+            | K::MobAttack
+            | K::Sting
+            | K::SonicBoom
+            | K::Thorns
+    )
+}
 /// The damage type id of a Horizon damage kind. `caused`: the source has a
 /// causing entity (only a blast asks).
 pub(super) fn damage_type(kind: horizon_client::mobs::DamageKind, caused: bool) -> &'static str {
@@ -6008,6 +6058,7 @@ pub(super) fn damage_type(kind: horizon_client::mobs::DamageKind, caused: bool) 
         K::SulfurCubeHot => "minecraft:sulfur_cube_hot",
         K::WindCharge => "minecraft:wind_charge",
         K::Wither => "minecraft:wither",
+        K::WitherSkull => "minecraft:wither_skull",
     }
 }
 /// A Horizon item stack as a loot stack (id, count, damage, enchantments).
@@ -6323,6 +6374,7 @@ mod pearl_tests {
             sea_level: 63,
             items: Some(&items),
             lid_openers: &lid_openers,
+            mod_effects: None,
         };
         let pw = ProjWorld {
             w: &w,
