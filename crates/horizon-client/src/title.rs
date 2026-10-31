@@ -2719,6 +2719,10 @@ impl Title {
     fn click_action(&mut self, x: f32, y: f32, (w, h): (f32, f32), hit: Option<u8>) -> Action {
         match (&mut self.mode, hit) {
             (Mode::Main, Some(1)) => {
+                // The title button is no longer part of the world-select screen.
+                // Clear it so Enter can activate the selected world after a
+                // mouse click opened Select World.
+                self.focused_button = None;
                 self.enter_singleplayer();
                 Action::None
             }

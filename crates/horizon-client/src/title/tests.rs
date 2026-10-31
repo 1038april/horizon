@@ -1280,6 +1280,7 @@ fn title_screen_keyboard_navigation_and_activation() {
     assert_eq!(action, Action::None);
     assert!(sound);
     assert!(matches!(f.title.mode, Mode::Select { .. }));
+    assert_eq!(f.title.focused_button, None);
 
     // Navigate to Create New World button (id 11) on the select screen
     f.title.focused_button = Some(11);
@@ -1310,6 +1311,27 @@ fn title_screen_keyboard_navigation_and_activation() {
     f.title.focused_button = Some(23);
     let (action, sound) = f.title.confirm_key_size(size);
     assert_eq!(action, Action::None);
+    assert!(sound);
+}
+
+#[test]
+fn mouse_opening_singleplayer_does_not_steal_select_world_enter() {
+    let mut f = Fixture::new();
+    f.world("w1", "World 1");
+
+    assert_eq!(f.click("Singleplayer"), Action::None);
+    assert!(matches!(f.title.mode, Mode::Select { .. }));
+    assert_eq!(f.title.focused_button, None);
+
+    // Select the row, then press Enter as a keyboard user would.
+    f.title.click(240.0, 60.0, (480.0, 262.0));
+    let (action, sound) = f.title.confirm_key_size((480.0, 262.0));
+    assert_eq!(
+        action,
+        Action::Play {
+            folder: "w1".to_owned()
+        }
+    );
     assert!(sound);
 }
 

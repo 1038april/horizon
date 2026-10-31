@@ -123,6 +123,12 @@ fn icon_active(icon: usize, friends: bool) -> bool {
         _ => false,
     }
 }
+fn pause_icon_focus_ids(friends: bool) -> Vec<u8> {
+    (0..4)
+        .filter(|&i| icon_active(i, friends))
+        .map(|i| if i == FRIENDS_ICON { 10 } else { 12 + i as u8 })
+        .collect()
+}
 fn pause_icons(w: f32, h: f32, links: bool) -> [(f32, f32, &'static str); 4] {
     let x0 = ((w - 212.0) * 0.5).floor() + 60.0;
     let y = ((h - 166.0 - if links { 24.0 } else { 0.0 }) * 0.25).floor() + 98.0;
@@ -316,9 +322,8 @@ impl Game<'_> {
         let links = !self.server_links().is_empty();
         let buttons = pause_buttons(w, h, self.external_server(), links);
         let mut active_ids: Vec<u8> = buttons.into_iter().filter(|b| b.5).map(|b| b.4).collect();
-        if self.friends_view().shown {
-            active_ids.push(10);
-        }
+        let friends = self.friends_view().shown;
+        active_ids.extend(pause_icon_focus_ids(friends));
         if active_ids.is_empty() {
             return Ok(());
         }
@@ -362,9 +367,12 @@ impl Game<'_> {
                     .filter(|b| b.5)
                     .map(|b| (b.4, b.0, b.1, b.2))
                     .collect();
-                if self.friends_view().shown {
-                    let f = pause_icons(w, h, links)[FRIENDS_ICON];
-                    rects.push((10, f.0, f.1, 20.0));
+                let friends = self.friends_view().shown;
+                for (i, (x, y, _)) in pause_icons(w, h, links).into_iter().enumerate() {
+                    if icon_active(i, friends) {
+                        let id = if i == FRIENDS_ICON { 10 } else { 12 + i as u8 };
+                        rects.push((id, x, y, 20.0));
+                    }
                 }
                 let cur_id = self.pause_focus.unwrap_or(0);
                 if let Some(cur) = rects.iter().find(|r| r.0 == cur_id) {
@@ -510,6 +518,7 @@ impl Game<'_> {
     /// LocalPlayer.respawn: the player comes back (the death screen's
     /// button, or at once with `immediate_respawn`).
     pub(super) fn respawn_player(&mut self) -> Result<()> {
+        self.death_focus = None;
         if self.remote.is_none() {
             // PlayerList.respawn removes the dead player, and Player.remove's
             // inventoryMenu.removed drops what the cursor held, whatever
@@ -668,7 +677,9 @@ impl Game<'_> {
             KeyCode::ArrowUp => self.death_focus = Some(0),
             KeyCode::ArrowDown => self.death_focus = Some(1),
             KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Space => {
-                let hit = self.death_focus.unwrap_or(0);
+                let Some(hit) = self.death_focus else {
+                    return Ok(());
+                };
                 self.audio.play_button_click();
                 if hit == 1 && !self.level.hardcore {
                     self.ui.death_confirm = Some(std::time::Instant::now());
@@ -708,7 +719,7 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Screen, death_buttons, pause_buttons, pause_icons};
+    use super::{Screen, death_buttons, pause_buttons, pause_icon_focus_ids, pause_icons};
 
     #[test]
     fn death_buttons_sit_on_whole_gui_pixels() {
@@ -767,6 +778,12 @@ mod tests {
         assert!(icon_active(0, false) && icon_active(1, false));
         assert!(icon_active(FRIENDS_ICON, true) && !icon_active(FRIENDS_ICON, false));
         assert!(!icon_active(3, true));
+    }
+
+    #[test]
+    fn pause_keyboard_focus_includes_the_active_icon_buttons() {
+        assert_eq!(pause_icon_focus_ids(false), [12, 13]);
+        assert_eq!(pause_icon_focus_ids(true), [12, 13, 10]);
     }
 
     #[test]

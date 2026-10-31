@@ -3527,6 +3527,8 @@ impl OptionsUi {
         self.selected_key = None;
         self.selected_pad_action = None;
         self.focus = None;
+        self.settings_search.focused = false;
+        self.language_search.focused = false;
         self.can_change_value = false;
         match page {
             Page::Language => {
@@ -3731,29 +3733,17 @@ impl OptionsUi {
                     Action::Done => events.extend(self.back(s)),
                 }
             }
-            if handled {
-                return events;
-            }
             if key == K::Escape {
                 events.extend(self.back(s));
+                return events;
+            }
+            if handled {
                 return events;
             }
             return events;
         }
 
-        // If a focused slider is in value-change mode, Escape cancels value-change mode
-        // before leaving the screen.
-        if self.can_change_value && key == K::Escape {
-            self.can_change_value = false;
-            return Vec::new();
-        }
         if key == K::Escape {
-            if self.focus == Some(FocusId::Search) {
-                self.focus = None;
-                self.settings_search.focused = false;
-                self.language_search.focused = false;
-                return Vec::new();
-            }
             return self.back(s);
         }
 
@@ -5872,18 +5862,33 @@ mod tests {
         ui.key(&mut s, &atlas, KeyCode::ArrowRight, None);
         assert_eq!(s.fov, 70.0);
 
-        // 8. Escape while in can_change_value mode cancels value editing without closing screen
-        ui.key(&mut s, &atlas, KeyCode::Escape, None);
+        // 8. Escape closes the options page immediately, even while a slider
+        // is focused for value changes.
+        let events = ui.key(&mut s, &atlas, KeyCode::Escape, None);
         assert!(!ui.can_change_value);
         assert_eq!(
             ui.page(),
             Page::Main,
-            "Screen must not close on first Escape from value edit"
+            "Escape must close the options page from value edit"
         );
+        assert!(events.contains(&Event::Close));
+    }
 
-        // 9. Second Escape closes screen back to previous
+    #[test]
+    fn escape_closes_options_with_search_focused() {
+        use winit::keyboard::KeyCode;
+        let atlas = atlas();
+        let mut s = Settings::default();
+        let mut ui = OptionsUi::default();
+        ui.show(Page::Video);
+        ui.focus = Some(FocusId::Search);
+        ui.settings_search.focused = true;
+
         let events = ui.key(&mut s, &atlas, KeyCode::Escape, None);
-        assert!(events.contains(&Event::Changed) || ui.stack.is_empty());
+        assert!(events.contains(&Event::Changed));
+        assert_eq!(ui.page(), Page::Main);
+        assert_eq!(ui.focus, None);
+        assert!(!ui.settings_search.focused);
     }
 
     #[test]
