@@ -606,8 +606,13 @@ impl Game<'_> {
     fn move_along_track_new(&mut self, c: &mut Minecart, _rail: &Rail, intent: [f64; 2]) {
         c.fall_distance = 0.0;
         let ridden = Some(c.id) == self.riding;
-        let mut movement_left = 0.0;
+        // `TrackIteration`: the slope, halt and boost speeds each apply once
+        // per tick, and the iteration keeps moving while distance is left.
         let mut first = true;
+        let mut movement_left = 0.0;
+        let mut slope_done = false;
+        let mut halted = false;
+        let mut boosted = false;
         for _ in 0..16 {
             if !first && movement_left <= 1.0e-5 {
                 break;
@@ -619,23 +624,26 @@ impl Game<'_> {
             };
             let initial_h = c.velocity.x.hypot(c.velocity.z);
             let mut v = c.velocity;
-            // calculateSlopeSpeed: the slide grows with the speed, so a
-            // descending cart keeps its pace.
-            let base: f64 = if self.cart_in_water(c) {
-                0.0078125 * 0.2
-            } else {
-                0.0078125
-            };
-            let slide = base.max(initial_h * 0.02);
-            match rail.shape {
-                Shape::AscendingEast => v.x -= slide,
-                Shape::AscendingWest => v.x += slide,
-                Shape::AscendingNorth => v.z += slide,
-                Shape::AscendingSouth => v.z -= slide,
-                _ => {}
+            // calculateSlopeSpeed (once per tick): the slide grows with the
+            // speed, so a descending cart keeps its pace.
+            if !slope_done {
+                let base: f64 = if self.cart_in_water(c) {
+                    0.0078125 * 0.2
+                } else {
+                    0.0078125
+                };
+                let slide = base.max(initial_h * 0.02);
+                let before = v.x.hypot(v.z);
+                match rail.shape {
+                    Shape::AscendingEast => v.x -= slide,
+                    Shape::AscendingWest => v.x += slide,
+                    Shape::AscendingNorth => v.z += slide,
+                    Shape::AscendingSouth => v.z -= slide,
+                    _ => {}
+                }
+                slope_done = v.x.hypot(v.z) != before;
             }
-            // calculatePlayerInputSpeed; otherwise the natural slowdown and
-            // the speed cap, once (`calculateTrackSpeed`).
+            // calculatePlayerInputSpeed (first iteration).
             if first
                 && ridden
                 && (intent[0] != 0.0 || intent[1] != 0.0)
@@ -644,7 +652,20 @@ impl Game<'_> {
                 let l = (intent[0] * intent[0] + intent[1] * intent[1]).sqrt();
                 v.x += intent[0] / l * 0.001;
                 v.z += intent[1] / l * 0.001;
-            } else if first {
+                halted = true;
+            }
+            // calculateHaltTrackSpeed (until the input halted).
+            if !halted && &*rail.name == "minecraft:powered_rail" && !rail.powered {
+                let before = v.x.hypot(v.z);
+                if before < 0.03 {
+                    v = Vec3::ZERO;
+                } else {
+                    v = Vec3::new(v.x * 0.5, v.y, v.z * 0.5);
+                }
+                halted = v.x.hypot(v.z) != before;
+            }
+            // applyNaturalSlowdown and the speed cap (first iteration).
+            if first {
                 v = self.natural_slowdown(c, ridden, 0.975);
                 let len = v.x.hypot(v.z);
                 if len > 0.0 {
@@ -652,17 +673,8 @@ impl Game<'_> {
                     v = Vec3::new(v.x / len * speed, v.y, v.z / len * speed);
                 }
             }
-            // calculateHaltTrackSpeed.
-            if &*rail.name == "minecraft:powered_rail" && !rail.powered {
-                let len = v.x.hypot(v.z);
-                if len < 0.03 {
-                    v = Vec3::ZERO;
-                } else {
-                    v = Vec3::new(v.x * 0.5, v.y, v.z * 0.5);
-                }
-            }
-            // calculateBoostTrackSpeed.
-            if &*rail.name == "minecraft:powered_rail" && rail.powered {
+            // calculateBoostTrackSpeed (once per tick).
+            if !boosted && &*rail.name == "minecraft:powered_rail" && rail.powered {
                 let len = v.x.hypot(v.z);
                 if len > 0.01 {
                     v = Vec3::new(v.x / len * (len + 0.06), v.y, v.z / len * (len + 0.06));
@@ -672,6 +684,7 @@ impl Game<'_> {
                         v = Vec3::new(dir.x * 0.2, v.y, dir.z * 0.2);
                     }
                 }
+                boosted = true;
             }
             c.velocity = v;
             let new_h = v.x.hypot(v.z);
@@ -719,10 +732,19 @@ impl Game<'_> {
             out_pos.y += 1.0;
         }
         let towards_out = c.position.vector_to(out_pos).normalize();
+        // The movement turns onto the exit's direction, at the same speed
+        // (`this.setDeltaMovement(movement)` at stepAlongTrack's end).
+        let h_speed = movement.x.hypot(movement.z);
+        let th = towards_out.x.hypot(towards_out.z);
+        let movement = towards_out.scale(h_speed / th);
         let mut new_pos = if in_hill {
-            old.add_vector(towards_out.scale(movement_left * std::f64::consts::SQRT_2))
+            old.add_vector(
+                movement
+                    .normalize()
+                    .scale(movement_left * std::f64::consts::SQRT_2),
+            )
         } else {
-            old.add_vector(towards_out.scale(movement_left))
+            old.add_vector(movement.normalize().scale(movement_left))
         };
         if out_pos.distance(old) <= new_pos.distance(old) {
             movement_left = out_pos.vector_to(new_pos).horizontal_distance();
@@ -746,7 +768,7 @@ impl Game<'_> {
             }
             let h_dist = (out_pos.x - c.position.x).hypot(out_pos.z - c.position.z);
             let project = out_pos.y
-                + if Self::is_descending(c.velocity, rail.shape) {
+                + if Self::is_descending(movement, rail.shape) {
                     h_dist
                 } else {
                     -h_dist
@@ -755,6 +777,12 @@ impl Game<'_> {
                 c.position.y = project;
             }
         }
+        // The cart did not move but the step would have: it is stuck.
+        if c.position.distance(old) < 1.0e-5 && new_pos.distance(old) > 1.0e-5 {
+            c.velocity = Vec3::ZERO;
+            return 0.0;
+        }
+        c.velocity = movement;
         movement_left
     }
     /// `comeOffTrack`.
