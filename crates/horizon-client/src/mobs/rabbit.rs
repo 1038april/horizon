@@ -146,8 +146,9 @@ fn start_jumping(m: &mut Mob) {
     }
 }
 
-/// Rabbit.customServerAiStep: start a hop toward the current path waypoint.
-pub fn server_ai_step(m: &mut Mob, w: &MobWorld) {
+/// Rabbit.customServerAiStep: start a hop toward the current path waypoint;
+/// `target` is where the rabbit's target stands, if it has one.
+pub fn server_ai_step(m: &mut Mob, target: Option<Vec3>) {
     if m.extra.variant == EVIL {
         set_evil(m);
     }
@@ -166,13 +167,12 @@ pub fn server_ai_step(m: &mut Mob, w: &MobWorld) {
         // A killer bunny within 4 blocks of its target faces it and hops at it.
         if m.extra.variant == EVIL
             && m.extra.ints[MOVE_DELAY] == 0
-            && let Some(t) = m.target_info(w)
-            && m.distance_sqr(t.position) < 16.0
+            && let Some(t) = target
+            && m.distance_sqr(t) < 16.0
         {
-            face_point(m, t.position.x, t.position.z);
+            face_point(m, t.x, t.z);
             let speed = m.ai.mov.speed_modifier;
-            m.ai.mov
-                .set_wanted(t.position.x, t.position.y, t.position.z, speed);
+            m.ai.mov.set_wanted(t.x, t.y, t.z, speed);
             start_jumping(m);
         }
         if !m.ai.jump && m.ai.mov.has_wanted() && m.extra.ints[MOVE_DELAY] == 0 {
@@ -453,14 +453,14 @@ mod tests {
         let mut m = rabbit();
         m.on_ground = true;
         m.ai.mov.set_wanted(0.0, 0.0, 5.0, 0.6);
-        server_ai_step(&mut m);
+        server_ai_step(&mut m, None);
         assert_eq!(m.extra.ints[MOVE_DELAY], 10);
         assert!(!m.ai.jumping);
         for _ in 0..9 {
-            server_ai_step(&mut m);
+            server_ai_step(&mut m, None);
         }
         assert!(!m.ai.jumping);
-        server_ai_step(&mut m);
+        server_ai_step(&mut m, None);
         assert!(m.ai.jumping);
         assert_eq!(m.extra.ints[JUMP_DURATION], 15);
         assert_eq!(m.anim.states[0].started, None);
@@ -498,7 +498,7 @@ mod tests {
         let mut m = rabbit();
         m.on_ground = true;
         m.ai.mov.set_wanted(0.0, 0.0, 5.0, 2.2);
-        server_ai_step(&mut m);
+        server_ai_step(&mut m, None);
         assert_eq!(m.extra.ints[MOVE_DELAY], 3);
         m.ai.jump = true;
         m.jump_control_tick();
@@ -568,7 +568,7 @@ mod tests {
         assert!(m.ai.nav.can_float);
         m.extra.flag = false;
         m.ai.mov.set_wanted(0.0, 0.0, 5.0, 2.2);
-        server_ai_step(&mut m);
+        server_ai_step(&mut m, None);
         assert_eq!(m.ai.mov.speed_modifier, 1.5);
         assert_eq!(m.extra.ints[MOVE_DELAY], 10);
     }
