@@ -151,6 +151,23 @@ uniform! {
         downfall: f32,
         /// `rain`, smoothed: rises over about 30 seconds and dries over about 10, 0..1.
         wetness: f32,
+        /// Last frame's camera-relative world to clip space (its `projection * view`); a point
+        /// at camera-relative `p` now was at `p + camera_motion` relative to last frame's camera.
+        /// This frame's on the first frame and after a gap of over half a second (a pause, a
+        /// world load), when last frame's camera says nothing about this one.
+        previous_view_projection: [[f32; 4]; 4],
+        /// How far the camera moved since last frame, in blocks (0 after such a gap).
+        camera_motion: [f32; 3],
+        /// Seconds since last frame (0 on the first and after such a gap).
+        delta_time: f32,
+        /// `eye_light` eased with a half-life of 2 seconds: it follows the light levels' steps
+        /// without stepping itself (for exposure and indoor fog).
+        eye_light_smooth: [f32; 2],
+        /// 1 while the camera is in water (`eye_in` 1), eased with a half-life of a quarter
+        /// second in and out.
+        in_water: f32,
+        /// The same for lava (`eye_in` 2).
+        in_lava: f32,
     }
 }
 
@@ -217,9 +234,9 @@ mod tests {
     #[test]
     fn frame_fields_carry_their_docs() {
         let wgsl = Frame::WGSL;
-        assert_eq!(wgsl.fields.len(), 32);
+        assert_eq!(wgsl.fields.len(), 38);
         assert!(wgsl.fields.iter().all(|f| !f.doc.trim().is_empty()));
-        assert_eq!(std::mem::size_of::<Frame>(), 4 * 64 + 10 * 16);
+        assert_eq!(std::mem::size_of::<Frame>(), 5 * 64 + 12 * 16);
         assert!(
             wgsl.wgsl()
                 .contains("    camera_position: vec3<f32>,\n    time: f32,\n")

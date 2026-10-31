@@ -142,6 +142,12 @@ The frame, as `frame` in every stage. Positions and directions are in world axes
 | `temperature` | `f32` | 404 | The biome at the camera's temperature (vanilla's, -0.7..2.0; it snows below 0.15). |
 | `downfall` | `f32` | 408 | The biome at the camera's downfall, 0..1. |
 | `wetness` | `f32` | 412 | `rain`, smoothed: rises over about 30 seconds and dries over about 10, 0..1. |
+| `previous_view_projection` | `mat4x4<f32>` | 416 | Last frame's camera-relative world to clip space (its `projection * view`); a point at camera-relative `p` now was at `p + camera_motion` relative to last frame's camera. This frame's on the first frame and after a gap of over half a second (a pause, a world load), when last frame's camera says nothing about this one. |
+| `camera_motion` | `vec3<f32>` | 480 | How far the camera moved since last frame, in blocks (0 after such a gap). |
+| `delta_time` | `f32` | 492 | Seconds since last frame (0 on the first and after such a gap). |
+| `eye_light_smooth` | `vec2<f32>` | 496 | `eye_light` eased with a half-life of 2 seconds: it follows the light levels' steps without stepping itself (for exposure and indoor fog). |
+| `in_water` | `f32` | 504 | 1 while the camera is in water (`eye_in` 1), eased with a half-life of a quarter second in and out. |
+| `in_lava` | `f32` | 508 | The same for lava (`eye_in` 2). |
 
 ## Options
 

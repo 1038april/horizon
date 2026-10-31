@@ -43,6 +43,11 @@ pub struct NativeFrame {
     /// The world's colour before translucent terrain (`opaque_color`, binding 11), copied
     /// with it; 1×1 while the world draws straight to the window.
     pub opaque_color: wgpu::Texture,
+    /// Last frame's view-projection, camera and time (`write`).
+    last: Option<([[f32; 4]; 4], glam::DVec3, std::time::Instant)>,
+    /// The eased eye light (block, sky) and being in water and lava (`write`); NaN until the
+    /// first frame sets them.
+    eye: [f32; 4],
     start: std::time::Instant,
     frames: u32,
     /// `frame.wetness`, and when it was last written.
@@ -100,6 +105,19 @@ fn frame_entry(visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
+/// Seconds between frames past which the last one is forgotten (`NativeFrame::write`).
+const MAX_FRAME_GAP: f32 = 0.5;
+
+/// `value` moved toward `target` over `dt` seconds by a half-life in seconds; a NaN `value`
+/// (the first frame) starts at `target`.
+fn eased(value: f32, target: f32, half_life: f32, dt: f32) -> f32 {
+    if value.is_nan() {
+        target
+    } else {
+        target + (value - target) * 0.5f32.powf(dt / half_life)
+    }
+}
+
 impl NativeFrame {
     pub fn new(device: &wgpu::Device) -> Self {
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -125,6 +143,8 @@ impl NativeFrame {
             group,
             opaque_depth,
             opaque_color,
+            last: None,
+            eye: [f32::NAN; 4],
             start: std::time::Instant::now(),
             frames: 0,
             wetness: (0.0, None),
@@ -201,10 +221,41 @@ impl NativeFrame {
     pub fn write(&mut self, queue: &wgpu::Queue, frame: &Frame, size: [u32; 2]) {
         let seconds = self.start.elapsed().as_secs_f32() % 3600.0;
         let now = std::time::Instant::now();
-        let dt = self.wetness.1.map_or(0.0, |t| (now - t).as_secs_f32());
-        self.wetness = (wetness(self.wetness.0, frame.pack.rain, dt), Some(now));
+        let since = self.wetness.1.map_or(0.0, |t| (now - t).as_secs_f32());
+        self.wetness = (wetness(self.wetness.0, frame.pack.rain, since), Some(now));
         let mut inputs = frame_inputs(frame, size, seconds, self.frames);
         inputs.wetness = self.wetness.0;
+        let view_proj = (Mat4::from_cols_array_2d(&inputs.projection)
+            * Mat4::from_cols_array_2d(&inputs.view))
+        .to_cols_array_2d();
+        inputs.previous_view_projection = view_proj;
+        // `write` skips title frames, so a gap means a pause or another world: the frame
+        // before says nothing about this one, and the eased values start over.
+        match self.last {
+            Some((previous, camera, time)) if (now - time).as_secs_f32() < MAX_FRAME_GAP => {
+                inputs.previous_view_projection = previous;
+                inputs.camera_motion = (frame.camera - camera).as_vec3().to_array();
+                inputs.delta_time = (now - time).as_secs_f32();
+            }
+            _ => self.eye = [f32::NAN; 4],
+        }
+        self.last = Some((view_proj, frame.camera, now));
+        // The eye's light and medium eased by half-lives in seconds, from where they are at
+        // first.
+        let targets = [
+            (inputs.eye_light[0], 2.0),
+            (inputs.eye_light[1], 2.0),
+            (f32::from(u8::from(inputs.eye_in == 1)), 0.25),
+            (f32::from(u8::from(inputs.eye_in == 2)), 0.25),
+        ];
+        let dt = inputs.delta_time;
+        for (value, (target, half_life)) in self.eye.iter_mut().zip(targets) {
+            *value = eased(*value, target, half_life, dt);
+        }
+        let [block, sky, water, lava] = self.eye;
+        inputs.eye_light_smooth = [block, sky];
+        inputs.in_water = water;
+        inputs.in_lava = lava;
         self.frames = self.frames.wrapping_add(1);
         queue.write_buffer(&self.buffer, 0, bytemuck::bytes_of(&inputs));
     }
@@ -545,11 +596,25 @@ pub fn frame_inputs(frame: &Frame, size: [u32; 2], seconds: f32, index: u32) -> 
         temperature: pack.temperature,
         downfall: pack.rainfall,
         wetness: pack.rain,
+        // Filled by `NativeFrame::write`, which remembers the frames before.
+        previous_view_projection: m(Mat4::IDENTITY),
+        camera_motion: [0.0; 3],
+        delta_time: 0.0,
+        eye_light_smooth: [level(pack.eye_light[0]), level(pack.eye_light[1])],
+        in_water: f32::from(u8::from(pack.eye_in as u32 == 1)),
+        in_lava: f32::from(u8::from(pack.eye_in as u32 == 2)),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn eased_values_start_at_the_target_and_halve_the_distance() {
+        use super::eased;
+        assert_eq!(eased(f32::NAN, 0.25, 2.0, 0.0), 0.25);
+        assert_eq!(eased(1.0, 0.0, 2.0, 2.0), 0.5);
+        assert_eq!(eased(1.0, 0.0, 2.0, 0.0), 1.0);
+    }
     use super::*;
     use horizon_shader_api::{MANIFEST, Pack, check};
 
