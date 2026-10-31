@@ -1,6 +1,6 @@
 //! Read-only block queries for a native server tick hook.
 use super::{Dim, Game, native_lifecycle::NativeLifecycleContext};
-use horizon_client::world::World;
+use horizon_client::{items::ItemStack, world::World};
 use horizon_world::{chunk::BlockState, registry::BlockRegistry};
 
 /// Why a server block cannot be read.
@@ -17,6 +17,39 @@ pub(super) enum NativeBlockReadError {
 }
 
 impl Game<'_> {
+    /// Test a block state's name against the world's merged block tags. API 28.
+    #[allow(dead_code)]
+    pub(super) fn native_block_in_tag(
+        &self,
+        context: &NativeLifecycleContext,
+        state: &BlockState,
+        tag: &str,
+    ) -> Result<bool, NativeBlockReadError> {
+        if !self.native_lifecycle.permits_read(context) {
+            return Err(NativeBlockReadError::InactiveContext);
+        }
+        Ok(self.items().block_in_tag(tag, &state.name))
+    }
+
+    /// Test an item stack against the world's merged item tags. API 28.
+    #[allow(dead_code)]
+    pub(super) fn native_item_in_tag(
+        &self,
+        context: &NativeLifecycleContext,
+        stack: &ItemStack,
+        tag: &str,
+    ) -> Result<bool, NativeBlockReadError> {
+        if !self.native_lifecycle.permits_read(context) {
+            return Err(NativeBlockReadError::InactiveContext);
+        }
+        let item = if stack.count == 0 {
+            "minecraft:air"
+        } else {
+            &stack.item
+        };
+        Ok(self.items().item_in_tag(tag, item))
+    }
+
     /// Read a loaded block in a server tick hook, without loading a chunk.
     /// The returned name and properties are owned and remain valid after the hook.
     #[allow(dead_code)]
@@ -41,20 +74,19 @@ impl Game<'_> {
             self.levels.parked_world(dim)
         }
         .ok_or(NativeBlockReadError::UnavailableDimension)?;
-        read_block(world, dim, self.pack.assets.registry, pos)
+        read_block(world, self.pack.assets.registry, pos)
     }
 }
 
 /// Resolve an existing world state, preserving unloaded and invalid states.
 fn read_block(
     world: &World,
-    dimension: Dim,
     registry: &BlockRegistry,
     [x, y, z]: [i32; 3],
 ) -> Result<BlockState, NativeBlockReadError> {
     if !(-30_000_000..30_000_000).contains(&x)
         || !(-30_000_000..30_000_000).contains(&z)
-        || !(dimension.min_y()..=dimension.max_y()).contains(&y)
+        || !(world.shape.min_y..world.shape.max_y()).contains(&y)
     {
         return Err(NativeBlockReadError::OutOfBounds);
     }
@@ -84,30 +116,32 @@ mod tests {
         let mut world = World::new(BlockStateId(0), 0);
         world.chunks.insert((-1, 0), Arc::new(Chunk::empty(-1, 0)));
         world.set(-1, 64, 1, BlockStateId(1)).unwrap();
-        let block = read_block(&world, Dim::Overworld, &registry, [-1, 64, 1]).unwrap();
+        // The Nether's build range starts at y 0 (its level's shape).
+        let mut nether = World::new(BlockStateId(0), 0);
+        nether.shape = horizon_client::chunk::LevelShape::NETHER;
+        nether.chunks.insert((-1, 0), Arc::new(Chunk::empty(-1, 0)));
+        let block = read_block(&world, &registry, [-1, 64, 1]).unwrap();
         assert_eq!(block.name, "test:pillar");
         assert_eq!(block.properties["axis"], "x");
         assert_eq!(
-            read_block(&world, Dim::Overworld, &registry, [-1, 65, 1])
-                .unwrap()
-                .name,
+            read_block(&world, &registry, [-1, 65, 1]).unwrap().name,
             "minecraft:air"
         );
         assert_eq!(
-            read_block(&world, Dim::Overworld, &registry, [0, 64, 1]),
+            read_block(&world, &registry, [0, 64, 1]),
             Err(NativeBlockReadError::Unloaded)
         );
         assert_eq!(
-            read_block(&world, Dim::Nether, &registry, [-1, -1, 1]),
+            read_block(&nether, &registry, [-1, -1, 1]),
             Err(NativeBlockReadError::OutOfBounds)
         );
         assert_eq!(
-            read_block(&world, Dim::Overworld, &registry, [30_000_000, 64, 1]),
+            read_block(&world, &registry, [30_000_000, 64, 1]),
             Err(NativeBlockReadError::OutOfBounds)
         );
         world.set(-1, 64, 1, BlockStateId(99)).unwrap();
         assert_eq!(
-            read_block(&world, Dim::Overworld, &registry, [-1, 64, 1]),
+            read_block(&world, &registry, [-1, 64, 1]),
             Err(NativeBlockReadError::InvalidState)
         );
         assert_eq!(world.chunks.len(), 1, "reads must not load chunks");
