@@ -6189,6 +6189,8 @@ impl Game<'_> {
         let spin_targets = self.spin_targets();
         let sprint_window = self.settings.sprint_window;
         self.sync_player_body();
+        // Read before `player` borrows `self` mutably.
+        let dialog = self.dialog_open();
         let Some(player) = self.player.as_mut() else {
             // A dedicated server has no local player: the world still runs.
             if self.options.dedicated.is_some() {
@@ -6204,8 +6206,7 @@ impl Game<'_> {
         if !self.streaming.is_lit(cx, cz) {
             return Ok(());
         }
-        let playing =
-            self.screen == Screen::Playing && self.sleeping.is_none() && !self.dialog_open();
+        let playing = self.screen == Screen::Playing && self.sleeping.is_none() && !dialog;
         let held = |k| playing && self.keys.contains(&k);
         let keys = Keys {
             forward: held(KeyCode::KeyW),
@@ -6657,11 +6658,8 @@ impl Game<'_> {
                 (_, false) => KeyAction::Press,
                 (_, true) => KeyAction::Repeat,
             };
-            let screen_open = !gameplay_has_keyboard(
-                self.screen,
-                self.title.is_some(),
-                self.dialog_open(),
-            );
+            let screen_open =
+                !gameplay_has_keyboard(self.screen, self.title.is_some(), self.dialog_open());
             self.toggles.key(slot, action, screen_open, option);
             self.sync_toggle(slot);
             if !pressed {
@@ -15268,8 +15266,7 @@ impl ApplicationHandler for Game<'_> {
                                         self.dialog_open(),
                                     ),
                                     action,
-                                )
-                                {
+                                ) {
                                     self.play_mouse(button, pressed)?;
                                 }
                             }
