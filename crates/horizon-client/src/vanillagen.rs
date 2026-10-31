@@ -613,6 +613,22 @@ impl ChunkGenerator for VanillaTerrain {
         }
         writes
     }
+    fn final_block_entities(
+        &self,
+        proto: &Proto,
+        writes: &[([i32; 3], u32)],
+    ) -> Vec<((i32, i32, i32), crate::chunk::block_entity::BlockEntity)> {
+        let Some(VanillaProto::Ready(chunk)) = proto.downcast_ref::<VanillaProto>() else {
+            return Vec::new();
+        };
+        if chunk.block_entities.is_empty() {
+            return Vec::new();
+        }
+        let (made, _rolled) = crate::structure_blocks::block_entities(chunk, self.loot.as_deref());
+        made.into_iter()
+            .filter(|((x, y, z), _)| writes.iter().any(|(p, _)| *p == [*x, *y, *z]))
+            .collect()
+    }
     fn decorate(&self, worker: &mut GeneratorWorker, region: &mut [Proto; 9]) {
         let taken: Vec<Box<VanillaProto>> = region
             .iter_mut()

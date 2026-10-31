@@ -88,6 +88,16 @@ pub trait ChunkGenerator: Send + Sync + 'static {
     fn final_writes(&self, _snapshot: &Chunk, _proto: &Proto) -> Vec<([i32; 3], u32)> {
         Vec::new()
     }
+    /// The block entities decoration made at the blocks `writes` put into a
+    /// final chunk (a chest of a structure piece, a spawner), with their
+    /// contents.
+    fn final_block_entities(
+        &self,
+        _proto: &Proto,
+        _writes: &[([i32; 3], u32)],
+    ) -> Vec<((i32, i32, i32), crate::chunk::block_entity::BlockEntity)> {
+        Vec::new()
+    }
     fn finish(&self, proto: Proto) -> Chunk;
     /// Whether `proto` has been decorated (a saved one can come back decorated).
     fn is_decorated(&self, _proto: &Proto) -> bool {
@@ -208,13 +218,19 @@ enum Job {
     /// is given back here, not in the frame.
     Free(Vec<((i32, i32, i32), SectionMesh)>),
 }
+/// What decoration wrote into the final chunks of its region.
+#[derive(Default)]
+pub struct FinalWrites {
+    blocks: Vec<([i32; 3], u32)>,
+    block_entities: Vec<((i32, i32, i32), crate::chunk::block_entity::BlockEntity)>,
+}
 pub enum Done {
     Generated(Chunk),
     /// A proto chunk, and whether it was decorated (loaded so from the save).
     Proto(i32, i32, Proto, bool),
     /// A decorated region, the region indices of its final chunks and what
     /// decoration wrote into them.
-    Decorated(i32, i32, Box<[Proto; 9]>, Vec<usize>, Vec<([i32; 3], u32)>),
+    Decorated(i32, i32, Box<[Proto; 9]>, Vec<usize>, FinalWrites),
     Lit(i32, i32, Vec<crate::chunk::Light>, u64),
     Meshed(i32, i32, i32, SectionMesh, u64),
     Saved(Vec<((i32, i32), Proto)>),
@@ -644,10 +660,13 @@ impl Streaming {
                                         }
                                     }
                                     generator.decorate(&mut worker, &mut region);
-                                    let mut writes = Vec::new();
+                                    let mut writes = FinalWrites::default();
                                     for (i, snapshot) in &finals {
-                                        writes
-                                            .extend(generator.final_writes(snapshot, &region[*i]));
+                                        let blocks = generator.final_writes(snapshot, &region[*i]);
+                                        writes.block_entities.extend(
+                                            generator.final_block_entities(&region[*i], &blocks),
+                                        );
+                                        writes.blocks.extend(blocks);
                                         region[*i] = Box::new(());
                                     }
                                     let finals = finals.into_iter().map(|(i, _)| i).collect();
@@ -884,7 +903,7 @@ impl Streaming {
         z: i32,
         region: [Proto; 9],
         finals: Vec<usize>,
-        writes: Vec<([i32; 3], u32)>,
+        writes: FinalWrites,
         world: &mut World,
     ) {
         self.generation_scan.exhausted = false;
@@ -901,8 +920,15 @@ impl Streaming {
             self.protos.insert(key, Some(proto));
             self.written.insert(key);
         }
-        for ([bx, by, bz], state) in writes {
+        for ([bx, by, bz], state) in writes.blocks {
             let _ = world.set(bx, by, bz, horizon_world::registry::BlockStateId(state));
+        }
+        // After the blocks: the write of a block with a block entity made a
+        // default one, which the generated one replaces.
+        for (pos, entity) in writes.block_entities {
+            if world.chunks.contains_key(&(pos.0 >> 4, pos.2 >> 4)) {
+                world.block_entities.insert(pos, entity);
+            }
         }
     }
     /// Saved proto chunks come back; those now out of range are dropped by
