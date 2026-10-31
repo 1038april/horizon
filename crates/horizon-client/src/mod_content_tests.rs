@@ -938,7 +938,8 @@ fn content_root_carries_a_structure_mod() {
             "data/huts/tags/worldgen/biome/has_hut.json",
             r##"{"values": ["#minecraft:is_overworld", "#c:is_plains", "othermod:glade", "minecraft:plains"]}"##,
         ),
-        // Additions to vanilla's set and pool; a target nobody defines is skipped.
+        // Additions to vanilla's set, pool and processor list; a target nobody
+        // defines is skipped. A lower priority goes first.
         (
             "data/huts/worldgen/structure_set/added/villages.json",
             r#"{"horizon:add_to": "minecraft:villages",
@@ -949,6 +950,16 @@ fn content_root_carries_a_structure_mod() {
             r#"{"horizon:add_to": ["othermod:houses", "minecraft:village/plains/houses"],
                 "elements": [{"weight": 2, "element": {"element_type": "minecraft:single_pool_element",
                 "location": "huts:hut", "projection": "rigid", "processors": "minecraft:empty"}}]}"#,
+        ),
+        (
+            "data/huts/worldgen/template_pool/added/more_houses.json",
+            r#"{"horizon:add_to": "minecraft:village/plains/houses", "horizon:priority": 10,
+                "elements": [{"weight": 1, "element": {"element_type": "minecraft:empty_pool_element"}}]}"#,
+        ),
+        (
+            "data/huts/worldgen/processor_list/added/mossy.json",
+            r#"{"horizon:add_to": "minecraft:mossify_10_percent",
+                "processors": [{"processor_type": "minecraft:nop"}]}"#,
         ),
     ];
     for (name, text) in files {
@@ -985,14 +996,23 @@ fn content_root_carries_a_structure_mod() {
             "structure_sets.json",
             "minecraft:villages",
             "structures",
-            serde_json::json!({"structure": "huts:hut", "weight": 3}),
+            vec![serde_json::json!({"structure": "huts:hut", "weight": 3})],
         ),
         (
             "template_pools.json",
             "minecraft:village/plains/houses",
             "elements",
-            serde_json::json!({"weight": 2, "element": {"element_type": "minecraft:single_pool_element",
+            vec![
+                serde_json::json!({"weight": 1, "element": {"element_type": "minecraft:empty_pool_element"}}),
+                serde_json::json!({"weight": 2, "element": {"element_type": "minecraft:single_pool_element",
                 "location": "huts:hut", "projection": "rigid", "processors": "minecraft:empty"}}),
+            ],
+        ),
+        (
+            "processor_lists.json",
+            "minecraft:mossify_10_percent",
+            "processors",
+            vec![serde_json::json!({"processor_type": "minecraft:nop"})],
         ),
     ] {
         let (ours, vanilla) = (bundle(name, &root), bundle(name, &base));
@@ -1001,7 +1021,7 @@ fn content_root_carries_a_structure_mod() {
             v[list].as_array().unwrap().clone()
         };
         let mut expected = entries(&vanilla[id]);
-        expected.push(added);
+        expected.extend(added);
         assert_eq!(entries(&ours[id]), expected, "{id}");
         assert!(!ours.keys().any(|k| k.starts_with("huts:added/")), "{name}");
         assert!(!ours.contains_key("othermod:houses"));
@@ -1268,6 +1288,102 @@ fn a_replacing_mod_tag_reaches_the_root() {
     assert!(
         warnings.starts_with("mod towns replaces data/minecraft/tags/worldgen/biome/has_structure/village_plains.json: vanilla's entries and those of adds are left out"),
         "{warnings}"
+    );
+    let _ = fs::remove_dir_all(&scratch);
+}
+
+/// `StructureCheck.onStructureLoad`: the references a chunk saved for its start
+/// count, so a map skips a start a vanilla map already pointed at.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn exploration_maps_skip_the_starts_a_chunk_saved_as_referenced() {
+    let Some(base) = prepared() else {
+        return;
+    };
+    let assets = Assets::load(&base).unwrap();
+    let biomes = crate::biome::Biomes::load(&base).unwrap();
+    let terrain = crate::vanillagen::VanillaTerrain::new(
+        &base.join("worldgen"),
+        assets.registry,
+        &biomes,
+        1234,
+    )
+    .unwrap();
+    let names = ["minecraft:buried_treasure".to_owned()];
+    let first = terrain
+        .locate_for_map(&names, [0, 64, 0], 50, true)
+        .unwrap();
+    // Another terrain, on the same seed, whose chunks saved one reference for it.
+    let fresh = crate::vanillagen::VanillaTerrain::new(
+        &base.join("worldgen"),
+        assets.registry,
+        &biomes,
+        1234,
+    )
+    .unwrap();
+    let (name, at) = (first.0.clone(), (first.1[0] >> 4, first.1[2] >> 4));
+    fresh.set_saved_references(std::sync::Arc::new(move |n, x, z| {
+        i32::from(n == name && (x, z) == at)
+    }));
+    let next = fresh.locate_for_map(&names, [0, 64, 0], 50, true).unwrap();
+    assert_ne!(next.1, first.1, "the saved reference is skipped");
+    assert_eq!(
+        fresh.locate_for_map(&names, [0, 64, 0], 50, false).unwrap(),
+        first,
+        "a map that does not skip still finds it"
+    );
+}
+
+/// `ChunkGenerator.findNearestMapStructure` with `createReference`: an
+/// exploration map that skips known structures points at a start no map
+/// pointed at before, and a reopened world remembers which.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn exploration_maps_skip_the_structures_maps_pointed_at() {
+    let Some(base) = prepared() else {
+        return;
+    };
+    let scratch = std::env::temp_dir().join(format!("horizon-map-refs-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let assets = Assets::load(&base).unwrap();
+    let biomes = crate::biome::Biomes::load(&base).unwrap();
+    let open = || {
+        let terrain = crate::vanillagen::VanillaTerrain::new(
+            &base.join("worldgen"),
+            assets.registry,
+            &biomes,
+            1234,
+        )
+        .unwrap();
+        terrain.set_reference_file(scratch.join("refs.json"));
+        terrain
+    };
+    let names = ["minecraft:buried_treasure".to_owned()];
+    let terrain = open();
+    let first = terrain
+        .locate_for_map(&names, [0, 64, 0], 50, true)
+        .unwrap();
+    assert_eq!(
+        terrain.locate(&names, [0, 64, 0], 50).unwrap(),
+        first,
+        "/locate still finds the nearest"
+    );
+    let second = terrain
+        .locate_for_map(&names, [0, 64, 0], 50, true)
+        .unwrap();
+    assert_ne!(second.1, first.1, "the second map points elsewhere");
+    let again = terrain
+        .locate_for_map(&names, [0, 64, 0], 50, false)
+        .unwrap();
+    assert_eq!(
+        again, first,
+        "without skipping the nearest is still the first"
+    );
+    drop(terrain);
+    let third = open().locate_for_map(&names, [0, 64, 0], 50, true).unwrap();
+    assert!(
+        third.1 != first.1 && third.1 != second.1,
+        "a reopened world remembers {first:?} and {second:?}, found {third:?}"
     );
     let _ = fs::remove_dir_all(&scratch);
 }

@@ -373,52 +373,52 @@ impl Game<'_> {
         self.load_scoreboard();
         let events = std::mem::take(&mut self.stats.events);
         self.stat_criteria_changed(PLAYER_NAME, events);
-        let board = &mut self.score.board;
-        if !board.objectives.is_empty() {
-            let display = self.player_display_comp();
-            if let Some(p) = self.player.as_mut() {
-                let health_and_absorption = p.health.health() + p.health.absorption();
-                let food = p.health.food.food;
-                // getArmorValue: the armor attribute rounded down.
-                let armor = p
-                    .attribute("minecraft:armor")
-                    .or_else(|_| p.attribute("armor"))
-                    .unwrap_or(0.0)
-                    .floor() as i32;
-                let rec = &mut self.score.recorded;
-                let board = &mut self.score.board;
-                if rec.health_and_absorption != Some(health_and_absorption) {
-                    rec.health_and_absorption = Some(health_and_absorption);
-                    let value = health_and_absorption.ceil() as i32;
-                    board.for_all_objectives_with(
-                        sb::CRITERIA_HEALTH,
-                        PLAYER_NAME,
-                        Some(&display),
-                        |_| value,
-                    );
-                }
-                for (criteria, last, value) in [
-                    (sb::CRITERIA_FOOD, &mut rec.food, food),
-                    // The air supply is full unless the player is drowning.
-                    (sb::CRITERIA_AIR, &mut rec.air, 300),
-                    (sb::CRITERIA_ARMOR, &mut rec.armor, armor),
-                    (sb::CRITERIA_XP, &mut rec.xp, self.experience.total),
-                    (sb::CRITERIA_LEVEL, &mut rec.level, self.experience.level),
-                ] {
-                    if *last != Some(value) {
-                        *last = Some(value);
-                        board.for_all_objectives_with(
-                            criteria,
-                            PLAYER_NAME,
-                            Some(&display),
-                            |_| value,
-                        );
-                    }
-                }
-            }
-        }
+        let mut rec = std::mem::take(&mut self.score.recorded);
+        self.record_player_scores(&mut rec);
+        self.score.recorded = rec;
         if self.ticks.is_multiple_of(20) {
             self.sync_score_registries();
+        }
+    }
+    /// `ServerPlayer.doTick`'s `updateScoreForCriteria` calls for the acting
+    /// player (the host's own, or a guest swapped in): the health, food, air,
+    /// armor, experience and level objectives follow what changed since `rec`.
+    pub(super) fn record_player_scores(&mut self, rec: &mut Recorded) {
+        self.load_scoreboard();
+        if self.score.board.objectives.is_empty() {
+            return;
+        }
+        let display = self.player_display_comp();
+        let name = self.acting_player_name().to_owned();
+        let Some(p) = self.player.as_mut() else {
+            return;
+        };
+        let health_and_absorption = p.health.health() + p.health.absorption();
+        let food = p.health.food.food;
+        // getArmorValue: the armor attribute rounded down.
+        let armor = p
+            .attribute("minecraft:armor")
+            .or_else(|_| p.attribute("armor"))
+            .unwrap_or(0.0)
+            .floor() as i32;
+        let board = &mut self.score.board;
+        if rec.health_and_absorption != Some(health_and_absorption) {
+            rec.health_and_absorption = Some(health_and_absorption);
+            let value = health_and_absorption.ceil() as i32;
+            board.for_all_objectives_with(sb::CRITERIA_HEALTH, &name, Some(&display), |_| value);
+        }
+        for (criteria, last, value) in [
+            (sb::CRITERIA_FOOD, &mut rec.food, food),
+            // The air supply is full unless the player is drowning.
+            (sb::CRITERIA_AIR, &mut rec.air, 300),
+            (sb::CRITERIA_ARMOR, &mut rec.armor, armor),
+            (sb::CRITERIA_XP, &mut rec.xp, self.experience.total),
+            (sb::CRITERIA_LEVEL, &mut rec.level, self.experience.level),
+        ] {
+            if *last != Some(value) {
+                *last = Some(value);
+                board.for_all_objectives_with(criteria, &name, Some(&display), |_| value);
+            }
         }
     }
     /// `ServerPlayer.die`: the death count.

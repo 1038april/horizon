@@ -360,8 +360,9 @@ pub fn prime(m: &mut Mob, imminent: bool) -> bool {
     m.extra.scratch[1] = 1;
     true
 }
-/// `hurtServer`: fire or explosions light an explosive cube; with a block
-/// it shrugs off blows, falls and explosions and is only knocked about.
+/// `hurtServer`: fire or `#is_explosion` (a firework rocket's burst too)
+/// light an explosive cube; with a block it shrugs off blows, falls and
+/// explosions and is only knocked about.
 pub fn accepts_damage(m: &mut Mob, source: &Damage, amount: f32) -> bool {
     if !has_body(m) {
         return true;
@@ -369,7 +370,7 @@ pub fn accepts_damage(m: &mut Mob, source: &Damage, amount: f32) -> bool {
     if can_explode(m) && !primed(m) {
         if source.is_fire() {
             prime(m, false);
-        } else if source.kind == DamageKind::Explosion {
+        } else if matches!(source.kind, DamageKind::Explosion | DamageKind::Fireworks) {
             prime(m, true);
         }
     }
@@ -382,6 +383,7 @@ pub fn accepts_damage(m: &mut Mob, source: &Damage, amount: f32) -> bool {
             | DamageKind::Arrow
             | DamageKind::Thrown
             | DamageKind::Explosion
+            | DamageKind::Fireworks
             | DamageKind::Fall
             | DamageKind::Sting
             | DamageKind::Cactus
@@ -739,5 +741,36 @@ mod fuse_anim_tests {
         // Stops at counter2 == 1 → fuse 0 (primed until the server removes it).
         assert_eq!(m.extra.counter2, 1);
         assert_eq!(fuse(&m), 0);
+    }
+
+    #[test]
+    fn a_rockets_burst_primes_a_tnt_cube_that_shrugs_it_off() {
+        // `fireworks` is in #is_explosion, so it lights the short fuse
+        // (`PrimedTnt.getRandomShortFuse`: 15 to 44 of 120 ticks), and so in
+        // #sulfur_cube_with_block_immune_to; it is not in #no_knockback.
+        load_archetype_items(&HashMap::from([(
+            "minecraft:sulfur_cube_archetype/explosive".to_owned(),
+            HashSet::from(["minecraft:tnt".to_owned()]),
+        )]));
+        let source = Damage::fireworks(Some(crate::mobs::Who::Player), [2.0, 0.0, 0.0]);
+        assert_eq!(source.kind, DamageKind::Fireworks);
+        assert!(!source.no_knockback());
+        let mut m = cube();
+        m.extra.head = Some("minecraft:tnt".into());
+        let health = m.health;
+        m.damage(7.0, source);
+        assert!((15..45).contains(&fuse(&m)), "fuse {}", fuse(&m));
+        assert_eq!(m.health, health);
+        assert!(m.velocity.x < 0.0);
+        // Without a block it takes the hit, records it and is knocked away
+        // from the rocket.
+        let mut m = cube();
+        m.damage(1.0, source);
+        assert_eq!(m.health, health - 1.0);
+        assert_eq!(
+            m.last_damage.map(|(d, _)| d.kind),
+            Some(DamageKind::Fireworks)
+        );
+        assert!(m.velocity.x < 0.0);
     }
 }
