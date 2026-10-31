@@ -264,6 +264,13 @@ pub fn fuse(m: &Mob) -> i32 {
 pub fn primed(m: &Mob) -> bool {
     fuse(m) >= 0
 }
+/// Client copy of `tickFuse`: count the fuse down for the renderer. The
+/// server alone explodes (`ai_step`); a guest never fires `Explode` here.
+pub fn client_tick(m: &mut Mob) {
+    if m.extra.counter2 > 1 {
+        m.extra.counter2 -= 1;
+    }
+}
 fn can_explode(m: &Mob) -> bool {
     archetype(m).is_some_and(|a| a.explosion.is_some()) && m.alive() && !primed(m)
 }
@@ -353,8 +360,9 @@ pub fn prime(m: &mut Mob, imminent: bool) -> bool {
     m.extra.scratch[1] = 1;
     true
 }
-/// `hurtServer`: fire or explosions light an explosive cube; with a block
-/// it shrugs off blows, falls and explosions and is only knocked about.
+/// `hurtServer`: fire or `#is_explosion` (a firework rocket's burst too)
+/// light an explosive cube; with a block it shrugs off blows, falls and
+/// explosions and is only knocked about.
 pub fn accepts_damage(m: &mut Mob, source: &Damage, amount: f32) -> bool {
     if !has_body(m) {
         return true;
@@ -362,7 +370,7 @@ pub fn accepts_damage(m: &mut Mob, source: &Damage, amount: f32) -> bool {
     if can_explode(m) && !primed(m) {
         if source.is_fire() {
             prime(m, false);
-        } else if source.kind == DamageKind::Explosion {
+        } else if matches!(source.kind, DamageKind::Explosion | DamageKind::Fireworks) {
             prime(m, true);
         }
     }
@@ -375,6 +383,7 @@ pub fn accepts_damage(m: &mut Mob, source: &Damage, amount: f32) -> bool {
             | DamageKind::Arrow
             | DamageKind::Thrown
             | DamageKind::Explosion
+            | DamageKind::Fireworks
             | DamageKind::Fall
             | DamageKind::Sting
             | DamageKind::Cactus
@@ -451,6 +460,17 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if fuse(m) == 0
         && let Some((_, power, _)) = archetype(m).and_then(|a| a.explosion)
     {
+        // `level.explode(this, ...)`: the cube is the blast's source and its
+        // causing entity, so its entity query leaves it out.
+        let name = match &m.custom_name {
+            Some(name) => crate::text::Text::literal(name.clone()),
+            None => crate::text::Text::translate("entity.minecraft.sulfur_cube", &[]),
+        };
+        events.push(MobEvent::ExplosionSource {
+            mob: m.id,
+            charged: false,
+            name,
+        });
         events.push(MobEvent::Explode(
             [m.position.x, m.position.y + 0.0625, m.position.z],
             power,
@@ -703,5 +723,84 @@ pub fn from_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
     m.extra.counter2 = int("fuse").unwrap_or(-1).max(-1) + 1;
     if primed(m) {
         m.invulnerable_flag = true;
+    }
+}
+
+#[cfg(test)]
+mod fuse_anim_tests {
+    use super::*;
+    use crate::mobs::{Mob, Species};
+    use horizon_core::geometry::Vec3;
+    use std::sync::Arc;
+
+    fn cube() -> Mob {
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.species = Species::SulfurCube;
+        Mob::new(1, Arc::new(kind), Vec3::ZERO, 0.0)
+    }
+
+    #[test]
+    fn a_primed_cube_is_still_knocked_about() {
+        // SulfurCube.hurtServer runs the immune knockback before
+        // LivingEntity's invulnerability check, and priming makes it invulnerable.
+        load_archetype_items(&HashMap::from([(
+            "minecraft:sulfur_cube_archetype/explosive".to_owned(),
+            HashSet::from(["minecraft:tnt".to_owned()]),
+        )]));
+        let mut m = cube();
+        m.extra.head = Some("minecraft:tnt".into());
+        assert!(prime(&mut m, false));
+        assert!(m.invulnerable_flag);
+        let (health, fuse_left) = (m.health, fuse(&m));
+        m.damage(5.0, crate::mobs::Damage::player([2.0, 0.0, 0.0]));
+        assert!(m.velocity.x < 0.0, "velocity {:?}", m.velocity);
+        assert_eq!(m.health, health);
+        assert_eq!(fuse(&m), fuse_left);
+    }
+
+    #[test]
+    fn client_fuse_counts_down_without_going_negative() {
+        let mut m = cube();
+        m.extra.counter2 = 5; // fuse() == 4
+        assert!(primed(&m));
+        client_tick(&mut m);
+        assert_eq!(fuse(&m), 3);
+        for _ in 0..10 {
+            client_tick(&mut m);
+        }
+        // Stops at counter2 == 1 → fuse 0 (primed until the server removes it).
+        assert_eq!(m.extra.counter2, 1);
+        assert_eq!(fuse(&m), 0);
+    }
+
+    #[test]
+    fn a_rockets_burst_primes_a_tnt_cube_that_shrugs_it_off() {
+        // `fireworks` is in #is_explosion, so it lights the short fuse
+        // (`PrimedTnt.getRandomShortFuse`: 15 to 44 of 120 ticks), and so in
+        // #sulfur_cube_with_block_immune_to; it is not in #no_knockback.
+        load_archetype_items(&HashMap::from([(
+            "minecraft:sulfur_cube_archetype/explosive".to_owned(),
+            HashSet::from(["minecraft:tnt".to_owned()]),
+        )]));
+        let source = Damage::fireworks(Some(crate::mobs::Who::Player), [2.0, 0.0, 0.0]);
+        assert_eq!(source.kind, DamageKind::Fireworks);
+        assert!(!source.no_knockback());
+        let mut m = cube();
+        m.extra.head = Some("minecraft:tnt".into());
+        let health = m.health;
+        m.damage(7.0, source);
+        assert!((15..45).contains(&fuse(&m)), "fuse {}", fuse(&m));
+        assert_eq!(m.health, health);
+        assert!(m.velocity.x < 0.0);
+        // Without a block it takes the hit, records it and is knocked away
+        // from the rocket.
+        let mut m = cube();
+        m.damage(1.0, source);
+        assert_eq!(m.health, health - 1.0);
+        assert_eq!(
+            m.last_damage.map(|(d, _)| d.kind),
+            Some(DamageKind::Fireworks)
+        );
+        assert!(m.velocity.x < 0.0);
     }
 }

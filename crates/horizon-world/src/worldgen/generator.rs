@@ -1711,8 +1711,15 @@ where
             })
             .collect()
     }
-    fn set_valid_biomes(&mut self, biomes: &BTreeSet<BiomeId>) {
-        self.valid = biomes.clone();
+    /// `None` is `/place structure`'s `biome -> true`: every biome the bundle
+    /// knows counts as valid.
+    fn set_valid_biomes(&mut self, biomes: Option<&BTreeSet<BiomeId>>) {
+        self.valid = match biomes {
+            Some(biomes) => biomes.clone(),
+            None => (0..self.pipeline.data.biome_names().len() as u32)
+                .map(BiomeId)
+                .collect(),
+        };
     }
 }
 
@@ -2055,6 +2062,14 @@ trait SeededPipeline: Send + Sync {
         worker: &mut WorkerState,
         pos: ChunkPos,
     ) -> Vec<Arc<super::structure::start::StructureStart>>;
+    /// `Structure.generate` for one structure in one chunk (`/place
+    /// structure`), outside any structure set's placement.
+    fn structure_start(
+        &self,
+        worker: &mut WorkerState,
+        structure: &str,
+        chunk: ChunkPos,
+    ) -> Option<Arc<super::structure::start::StructureStart>>;
     fn unsupported_features(&self) -> Vec<(String, String)>;
     fn use_saved_start(
         &self,
@@ -2073,6 +2088,7 @@ trait SeededPipeline: Send + Sync {
         names: &[String],
         from: [i32; 3],
         radius: i32,
+        skip: &dyn Fn(&str, ChunkPos) -> bool,
     ) -> Option<(String, [i32; 3])>;
     fn find_closest_biome(
         &self,
@@ -2161,6 +2177,25 @@ where
             None => Vec::new(),
         }
     }
+    fn structure_start(
+        &self,
+        worker: &mut WorkerState,
+        structure: &str,
+        chunk: ChunkPos,
+    ) -> Option<Arc<super::structure::start::StructureStart>> {
+        self.structures
+            .as_ref()?
+            .structure_start(
+                &mut StructureQueries {
+                    pipeline: self,
+                    worker,
+                    valid: BTreeSet::new(),
+                },
+                structure,
+                chunk,
+            )
+            .map(Arc::new)
+    }
     fn unsupported_features(&self) -> Vec<(String, String)> {
         self.decoration
             .as_ref()
@@ -2219,6 +2254,7 @@ where
         names: &[String],
         from: [i32; 3],
         radius: i32,
+        skip: &dyn Fn(&str, ChunkPos) -> bool,
     ) -> Option<(String, [i32; 3])> {
         self.structures.as_ref()?.locate(
             &mut StructureQueries {
@@ -2229,6 +2265,7 @@ where
             names,
             from,
             radius,
+            skip,
         )
     }
     fn find_closest_biome(
@@ -3037,7 +3074,20 @@ impl GeneratorWorker {
         from: [i32; 3],
         radius: i32,
     ) -> Option<(String, [i32; 3])> {
-        self.pipeline.locate(&mut self.state, names, from, radius)
+        self.locate_skipping(names, from, radius, &|_, _| false)
+    }
+    /// `ChunkGenerator.findNearestMapStructure`: like `locate`, past the
+    /// starts `skip` says can't be referenced again (an explorer map that
+    /// skips known structures).
+    pub fn locate_skipping(
+        &mut self,
+        names: &[String],
+        from: [i32; 3],
+        radius: i32,
+        skip: &dyn Fn(&str, ChunkPos) -> bool,
+    ) -> Option<(String, [i32; 3])> {
+        self.pipeline
+            .locate(&mut self.state, names, from, radius, skip)
     }
     /// Direct far sampling: work scales with rendered vertical resolution,
     /// without allocating chunks, carving masks or propagated aquifers.
@@ -3079,6 +3129,16 @@ impl GeneratorWorker {
         pos: ChunkPos,
     ) -> Vec<Arc<super::structure::start::StructureStart>> {
         self.pipeline.structure_starts(&mut self.state, pos)
+    }
+    /// `Structure.generate` for `/place structure`: the start `structure`
+    /// builds in `chunk`, whatever its placement set says about that chunk.
+    pub fn structure_start(
+        &mut self,
+        structure: &str,
+        chunk: ChunkPos,
+    ) -> Option<Arc<super::structure::start::StructureStart>> {
+        self.pipeline
+            .structure_start(&mut self.state, structure, chunk)
     }
     /// Puts a saved start of `structure` (its pieces as a save lists them, in
     /// JSON) in `chunk`, in place of the one generation builds there, until
