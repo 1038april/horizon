@@ -33,6 +33,7 @@ use horizon_world::{
     block_collision_scan::BlockCollisionScan,
     collision_context::CollisionContext,
     nbt::{JavaString, Tag},
+    world_movement::in_range_of_ground,
 };
 use std::sync::{Arc, Mutex, atomic::Ordering};
 
@@ -40,6 +41,7 @@ use std::sync::{Arc, Mutex, atomic::Ordering};
 pub mod chat;
 
 pub mod game_event {
+    pub const NO_RESPAWN_BLOCK_AVAILABLE: u8 = 0;
     pub const START_RAINING: u8 = 1;
     pub const STOP_RAINING: u8 = 2;
     pub const CHANGE_GAME_MODE: u8 = 3;
@@ -1320,6 +1322,7 @@ impl Hub {
     /// players' latencies.
     pub fn tick(&mut self, ctx: &mut TickCtx) -> Vec<HostEvent> {
         let mut events = self.poll(ctx);
+        events.extend(self.drain_packets(ctx));
         events.extend(self.tick_level(ctx));
         self.end_tick();
         events
@@ -1407,10 +1410,12 @@ impl Hub {
         events
     }
 
-    /// The level in place's part of the tick (`ServerLevel.tick`'s chunk
-    /// map and the connections of the players in it): their packets, then
-    /// the chunks, block changes, containers and entities they see.
-    pub fn tick_level(&mut self, ctx: &mut TickCtx) -> Vec<HostEvent> {
+    /// Handle the players in this level's packets (`ServerGamePacketListenerImpl`
+    /// for each), before the level's scheduled block ticks so a place landed in
+    /// the same tick as a falling block's schedule still sees the support
+    /// (#4510). `tick_level` then syncs what those packets (and the block ticks)
+    /// changed.
+    pub fn drain_packets(&mut self, ctx: &mut TickCtx) -> Vec<HostEvent> {
         let mut events = Vec::new();
         for i in 0..self.guests.len() {
             if self.here(&self.guests[i]) {
@@ -1418,6 +1423,15 @@ impl Hub {
                 self.tick_floating(i, &mut events);
             }
         }
+        events
+    }
+
+    /// The level in place's part of the tick (`ServerLevel.tick`'s chunk
+    /// map and the connections of the players in it): the chunks, block
+    /// changes, containers and entities they see. Player packets are drained
+    /// earlier (`drain_packets`) so scheduled ticks see what they placed.
+    pub fn tick_level(&mut self, ctx: &mut TickCtx) -> Vec<HostEvent> {
+        let events = Vec::new();
         if !self.guests.iter().any(|g| self.here(g)) {
             // ServerTickRateManager broadcasts a change to the players there
             // are; one who joins later is sent the state as it is then
@@ -1943,7 +1957,7 @@ impl Hub {
             for &(x, y, z) in &positions {
                 // A decorated pot is no block entity: its tag is the chunk's saved one.
                 let tag = match world.block_entities.get(&(x, y, z)) {
-                    Some(entity) => super::chunks::entity_tag(entity),
+                    Some(entity) => self.encoder.update_tag((x, y, z), entity),
                     None => world
                         .chunks
                         .get(&(x >> 4, z >> 4))
@@ -2271,11 +2285,24 @@ impl Hub {
     /// starts the wake-up fade (100).
     pub fn wake(&mut self, i: usize) {
         let g = &mut self.guests[i];
-        if g.bed.take().is_none() && !g.sleeping {
+        let head = g.bed.take();
+        if head.is_none() && !g.sleeping {
             return;
+        }
+        if let Some(head) = head {
+            g.woke_from = Some(head);
         }
         g.sleeping = false;
         g.sleep_timer = 100;
+        if g.sent_bed.take().is_some() {
+            g.send(&C::SetEntityData(play::SetEntityData {
+                id: g.entity_id,
+                values: vec![
+                    (6, serializer::POSE, Value::Id(0)),
+                    (14, serializer::OPTIONAL_BLOCK_POS, Value::OptPos(None)),
+                ],
+            }));
+        }
         let (id, at) = (g.entity_id, g.position);
         // ClientboundAnimatePacket.WAKE_UP.
         self.broadcast_near(
@@ -2559,10 +2586,26 @@ impl Hub {
     /// A move still queued for guest `i`, which a packet the game handles
     /// after this pass must not overtake.
     fn move_queued(&self, i: usize) -> bool {
-        self.guests[i]
-            .inbox
-            .iter()
-            .any(|(p, _)| matches!(p, S::MovePlayerPos(_) | S::MovePlayerPosRot(_)))
+        self.guests[i].inbox.iter().any(|(p, _)| {
+            matches!(
+                p,
+                S::MovePlayerPos(_)
+                    | S::MovePlayerPosRot(_)
+                    | S::MovePlayerRot(_)
+                    | S::MovePlayerStatus(_)
+            )
+        })
+    }
+
+    /// handlePlayerCommand's START_SPRINTING and STOP_SPRINTING: `setSprinting`, whose movement
+    /// speed modifier the attributes then sync to the client (which takes the modifiers as sent:
+    /// one without it would slow a sprinting client to a walk).
+    fn set_sprinting(&mut self, i: usize, sprinting: bool) {
+        let g = &mut self.guests[i];
+        g.sprinting = sprinting;
+        if let Some(m) = g.motion.as_mut() {
+            let _ = m.set_sprint_modifier(sprinting);
+        }
     }
 
     fn process_inbox(&mut self, i: usize, ctx: &mut TickCtx, events: &mut Vec<HostEvent>) {
@@ -2685,6 +2728,21 @@ impl Hub {
                     g.max_unacknowledged = 10;
                 }
                 S::Pong(p) => self.anticheat_pong(i, p.id),
+                // handleAttack is the game's too: a move queued behind an attack would move
+                // the player (or land them on the ground, losing a falling attack's critical
+                // hit) before the game checks their reach and state.
+                S::Attack(p) => {
+                    if !self.anticheat_attack(i, p.id, events) {
+                        events.push(HostEvent::Packet(conn, Box::new(S::Attack(p))));
+                        if self.move_queued(i) {
+                            break;
+                        }
+                    }
+                }
+                S::Punch(p) => {
+                    self.anticheat_swing(i);
+                    events.push(HostEvent::Packet(conn, Box::new(S::Punch(p))));
+                }
                 S::ClientTickEnd(_) => {
                     // handleClientTickEnd: no move this tick, no known movement.
                     let g = &mut self.guests[i];
@@ -2742,8 +2800,7 @@ impl Hub {
                     events.push(HostEvent::Packet(conn, Box::new(S::PlayerCommand(p))));
                 }
                 S::PlayerCommand(p) => match p.action {
-                    1 => self.guests[i].sprinting = true,
-                    2 => self.guests[i].sprinting = false,
+                    1 | 2 => self.set_sprinting(i, p.action == 1),
                     // STOP_SLEEPING.
                     0 => self.wake(i),
                     _ => {}
@@ -2772,6 +2829,14 @@ impl Hub {
                 // placer's client plays (BlockItem.place's playSound(player, ...)).
                 S::UseItemOn(p) => {
                     events.push(HostEvent::Packet(conn, Box::new(S::UseItemOn(p))));
+                    if self.move_queued(i) {
+                        break;
+                    }
+                }
+                // handleInteract is the game's too, like handleAttack above: a move queued
+                // behind it waits for the next tick.
+                S::Interact(p) => {
+                    events.push(HostEvent::Packet(conn, Box::new(S::Interact(p))));
                     if self.move_queued(i) {
                         break;
                     }
@@ -3107,7 +3172,13 @@ impl Hub {
     }
 
     /// Set a guest's game mode and tell everyone (ServerPlayer.setGameMode).
-    pub fn set_game_mode(&mut self, conn: u32, mode: i32) {
+    pub fn set_game_mode(
+        &mut self,
+        conn: u32,
+        mode: i32,
+        world: &World,
+        collision: Option<&BlockCollisionRegistry<'_>>,
+    ) {
         let Some(g) = self.guest_mut(conn) else {
             return;
         };
@@ -3118,6 +3189,21 @@ impl Hub {
             g.flying = true;
         } else if !g.creative() {
             g.flying = false;
+        }
+        // ServerPlayerGameMode.changeGameModeForPlayer: a player left flying
+        // by the change lands when the ground is within a block.
+        if !g.spectator()
+            && g.flying
+            && let Some(binding) = collision
+        {
+            let mut scene = SceneCollisions {
+                world,
+                binding,
+                subject: None,
+            };
+            if in_range_of_ground(&mut scene, g.bounds()) {
+                g.flying = false;
+            }
         }
         let uuid = g.uuid;
         g.send(&C::GameEvent(play::GameEvent {
@@ -3191,6 +3277,19 @@ impl Hub {
         }
     }
 
+    /// A respawn point whose block is gone or blocked: the respawning player
+    /// is sent NO_RESPAWN_BLOCK_AVAILABLE and says
+    /// `block.minecraft.spawn.not_valid` in its chat.
+    pub fn missing_respawn_block(&self, conn: u32) {
+        self.send_to(
+            conn,
+            &C::GameEvent(play::GameEvent {
+                event: game_event::NO_RESPAWN_BLOCK_AVAILABLE,
+                param: 0.0,
+            }),
+        );
+    }
+
     /// PlayerList.respawn: back to `at` with a fresh start. The vanilla client waits on its
     /// level loading screen from the Respawn packet until the level info's "level chunks load
     /// start" event and the chunk under the player, so the packets follow vanilla's order.
@@ -3200,6 +3299,9 @@ impl Hub {
         let g = &mut self.guests[i];
         // PlayerList.respawn: into the level in place (the respawn level).
         g.dimension = self.config.dimension.clone();
+        // restartClientLoadTimerAfterRespawn: the client loads a whole new level before it
+        // reports it loaded.
+        g.load_timeout = super::guest::CLIENT_LOADED_TIMEOUT;
         // ServerLevel.removePlayerImmediately: the dead player's
         // Entity.setRemoved (KILLED) stops its riding; the new player rides
         // nothing.
@@ -3326,6 +3428,8 @@ impl Hub {
         self.close_container_for(i);
         let g = &mut self.guests[i];
         g.dimension = self.config.dimension.clone();
+        // The load timer is not restarted: vanilla resets the client's loaded state on death and
+        // respawn only, and covers a level change with its separate `isChangingDimension` term.
         g.tracker.clear();
         g.sent_chunks.clear();
         g.chunk_queue.clear();
