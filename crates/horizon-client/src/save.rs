@@ -4445,7 +4445,7 @@ fn decode_lod_surfaces(
     let mut columns: Box<[crate::lod::Column; 256]> =
         Box::new(std::array::from_fn(|_| crate::lod::Column {
             surface: None,
-            spans: Vec::new(),
+            spans: crate::lod::Spans::new(),
         }));
     let mut water = [None; 256];
     let light = lod_light_layers(&sections, layout, sky_light);
