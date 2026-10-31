@@ -149,7 +149,7 @@ impl Game<'_> {
             .is_some_and(|(_, seen)| *seen != signature);
         self.pack_folder = Some((now, signature));
         if changed {
-            let infos = super::packs::pack_infos(&self.vanilla_root());
+            let infos = super::packs::pack_infos(&self.vanilla_root(), &self.server_packs.active);
             self.ui.options.update_pack_infos(infos);
         }
     }
@@ -158,6 +158,42 @@ impl Game<'_> {
         let mut ui = std::mem::take(&mut self.ui.options);
         ui.draw(&self.settings, batch, &self.gui.atlas, self.cursor);
         self.ui.options = ui;
+        self.show_calibration(batch.height);
+    }
+    /// HDR calibration's test picture to the renderer, full screen while it runs: the
+    /// window goes fullscreen for it and back after, if it wasn't already.
+    pub(super) fn show_calibration(&mut self, h: f32) {
+        let picture = (self.screen == Screen::Options)
+            .then(|| self.ui.options.calibration_picture(h))
+            .flatten();
+        if let Some(r) = self.renderer.as_mut() {
+            r.set_hdr_calibration(picture.map(|(step, nits, band)| {
+                horizon_client::gfx::HdrCalibration {
+                    step: step.number(),
+                    nits,
+                    band,
+                }
+            }));
+        }
+        let Some(window) = &self.window else {
+            return;
+        };
+        match (picture.is_some(), self.ui.options.calibration_fullscreen) {
+            (true, None) => {
+                let was = window.fullscreen().is_some();
+                if !was {
+                    window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+                }
+                self.ui.options.calibration_fullscreen = Some(was);
+            }
+            (false, Some(was)) => {
+                if !was {
+                    window.set_fullscreen(None);
+                }
+                self.ui.options.calibration_fullscreen = None;
+            }
+            _ => {}
+        }
     }
     pub(super) fn options_mouse(&mut self, pressed: bool, right: bool) -> Result<()> {
         if !pressed {
@@ -288,6 +324,8 @@ impl Game<'_> {
                         self.capture(true);
                     }
                     self.dragging = false;
+                    // Closed from calibration (horizon-ctl, a lost window): out of it.
+                    self.show_calibration(0.0);
                 }
                 Event::Language(code) => {
                     self.load_language(&code);
@@ -302,8 +340,9 @@ impl Game<'_> {
                     super::packs::open_folder(&dir);
                 }
                 Event::DataPacks(ids) => {
+                    let resources = self.vanilla_root();
                     if let Some(title) = &mut self.title {
-                        title.set_data_packs(ids);
+                        title.offer_data_packs(&resources, ids);
                     }
                 }
                 Event::OpenDataPackFolder(dir) => {
@@ -346,11 +385,13 @@ impl Game<'_> {
     /// the compositor set up.
     fn apply_fullscreen(&mut self) {
         if let Some(w) = self.window.clone() {
-            let modes = w
-                .current_monitor()
-                .or_else(|| w.primary_monitor())
-                .map(|m| horizon_client::window::monitor_video_modes(&m))
-                .unwrap_or_default();
+            let monitor = w.current_monitor().or_else(|| w.primary_monitor());
+            if let Some(modes) = self
+                .video_modes
+                .refresh(monitor, horizon_client::window::monitor_video_modes)
+            {
+                self.settings.video_modes = modes;
+            }
             let in_video_screen = self.screen == Screen::Options
                 && self.ui.options.page() == horizon_client::options_ui::Page::Video;
             let wanted = self.settings.fullscreen;
@@ -363,7 +404,6 @@ impl Game<'_> {
                 .and_then(horizon_client::window::VideoMode::read);
             self.fullscreen
                 .apply(&w, wanted, exclusive, preferred, in_video_screen);
-            self.settings.video_modes = modes;
         }
     }
     /// Settings that Horizon applies beyond render distance, volume and GUI scale.
@@ -419,6 +459,11 @@ impl Game<'_> {
     /// `Window.updateFullscreenState`: a fullscreen change made by the window
     /// system is adopted by the option (`Minecraft.fullscreenStateChanged`).
     pub(super) fn observe_fullscreen(&mut self) {
+        // HDR calibration's own fullscreen is not the player's option: it
+        // goes back to what it was when the calibration ends.
+        if self.ui.options.calibration_fullscreen.is_some() {
+            return;
+        }
         let Some(w) = &self.window else { return };
         if let Some(now) = self.fullscreen.observe(w.fullscreen().is_some())
             && self.settings.fullscreen != now

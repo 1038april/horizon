@@ -18,9 +18,9 @@ Mods are **off by default**. A fresh install has no `horizon-mods` folder and pl
    game folder (the one holding `options.txt`): a content mod's `.hmod` (or a folder holding `horizon-mod.toml`) in
    `horizon-mods/`. Native mods go in `horizon-native-mods/`, and the launcher builds them
    ([native-mods.md](native-mods.md)).
-2. Options > **Mods** lists them with what each may do ("May add blocks and items to your worlds") and a switch.
-   They start off. The choice is kept in `horizon-mods.txt` (`mod.<id>:true`).
-3. A content mod's blocks and items load once, when the game starts: restart the game after a switch.
+2. Options > **Mods** lists them with what each may do ("May add blocks, items and mob effects to your worlds") and a
+   switch. They start off. The choice is kept in `horizon-mods.txt` (`mod.<id>:true`).
+3. A content mod's blocks, items and mob effects load once, when the game starts: restart the game after a switch.
 4. A mod that can't load shows why, in red, on its row.
 
 Two turned-on content mods never own the same namespace: the first by file name loads, and the other stays out with
@@ -71,13 +71,34 @@ Unknown keys are refused, so a typo is an error, not a silently ignored permissi
 
 A content mod has capability `registries` and carries `assets/` and `data/` in the `.hmod`. It adds blocks and items
 by declaring them in `data/<id>/horizon/block/*.json` and `data/<id>/horizon/item/*.json`, each copying a vanilla
-template ([modpacks.md](modpacks.md#registries-02-data-driven-blocks-and-items)):
+template ([modpacks.md](modpacks.md#registries-02-data-driven-blocks-items-and-mob-effects)), and mob effects (below):
 
 ```json
 { "template": "minecraft:iron_block",
   "properties": { "hardness": 4.0, "light": 3, "sounds": "minecraft:amethyst_block" },
   "item": true }
 ```
+
+A block copies its template's states. It can also declare state properties of
+its own, which its template does not have — how a pipe says which sides it
+connects to, or a machine whether it is running. Its states then become its
+template's states times the combinations of the ones it declares, in a fixed
+order with every declared default first, so ids do not move between loads:
+
+```json
+{ "template": "minecraft:stone",
+  "state_properties": {
+    "facing": { "type": "enum", "values": ["north", "south", "east", "west"] },
+    "lit": { "type": "boolean" } },
+  "default_state": { "lit": "true" } }
+```
+
+A `boolean` is `false` and `true`, as vanilla spells them; an `enum` is a list
+of values, and a name or value is lower case letters, digits and underscores.
+A declared name may not be one the template already has, and `default_state`
+takes one value per declared property too, so a block's default is exactly one
+state of its own. Every combination has to fit in the states a world holds
+(2^20), so a declaration that would not is refused when the mods load.
 
 An item copies its template's data components, with `max_stack_size` and
 `rarity` changed, and any other 26.3 component set or removed in
@@ -95,10 +116,63 @@ gets its own damage and durability, or a tool its mining speed:
     "!minecraft:repairable": {} } }
 ```
 
+A block's item takes the same `components`, over the components of its
+template block's item; a block with `"item": false` can't have them. Block files
+have no `max_stack_size` or `rarity` keys, so those two go in `components` here
+(an integer 1 to 99, and one of `common`, `uncommon`, `rare`, `epic`):
+
+```json
+{ "template": "minecraft:iron_block",
+  "components": {
+    "minecraft:max_stack_size": 16,
+    "minecraft:damage_resistant": { "types": "#minecraft:is_fire" } } }
+```
+
+A mod's creative inventory tabs are `data/<id>/horizon/creative_tab/*.json`:
+a title, the item on the tab's button, and its items in order (items the game
+doesn't have are left out):
+
+```json
+{ "title": "Ruby", "icon": "ruby:ruby", "items": ["ruby:ruby", "ruby:ruby_block"] }
+```
+
+They come after vanilla's tabs, ten to a page as NeoForge pages them; the
+buttons above the inventory turn the pages. The title is a lang key or English
+text: `"title": "itemGroup.ruby"` uses that key from the mod's lang files, and a
+lang file's `itemGroup.<mod id>.<file name>` (`creative_tab/gems.json` →
+`itemGroup.ruby.gems`) translates any title. A mod's items join the search tab
+under their names.
+
 A component type no vanilla item has is refused, so a misspelt one fails
 the load instead of doing nothing. Behaviour the game ties to a vanilla
 item's id doesn't come along yet: a copy of the trident doesn't throw
 ([#3305](https://github.com/horizon-rust/horizon/issues/3305)).
+
+A mod effect is declared in `data/<id>/horizon/mob_effect/<name>.json` with what vanilla's `MobEffect` takes: its
+category (`beneficial`, `harmful` or `neutral`) and its RGB colour (0 to `0xFFFFFF`), which its particles take:
+
+```json
+{ "category": "harmful", "color": 9154528 }
+```
+
+It is the effect `<id>:<name>`: `/effect give @s ruby:glow 30` gives it, saves and mobs keep it, and it reaches LAN and
+dedicated server players who run the same mods (its network id follows vanilla's). Its name is the translation
+`effect.<id>.<name>` from the mod's `assets/<id>/lang/`, its icon `assets/<id>/textures/mob_effect/<name>.png` (18x18,
+as vanilla's; without one it draws as the missing texture). It does nothing on its own yet: no tick behaviour and no
+attribute modifiers. A world opened without the mod drops the effect from its players and mobs. Clients join a server
+only with the same mods' effects, as with its blocks.
+
+`crafting_remainder` names what the item leaves in the crafting grid when a
+recipe uses it, as a milk bucket leaves a bucket (vanilla's
+`Item.Properties.craftRemainder`, not a data component): a vanilla item or
+one of the mod's own, refused at load otherwise. It holds on the crafting
+table, the inventory grid and the crafter, not yet as furnace fuel or in a
+brewing stand. What the item leaves once eaten
+or drunk is the `minecraft:use_remainder` component instead:
+
+```json
+{ "template": "minecraft:mushroom_stew", "crafting_remainder": "minecraft:bowl" }
+```
 
 The fence: files go in the mod's own namespaces (`assets/<id>/`,
 `data/<id>/`, and those its manifest lists), plus additions to vanilla tags
@@ -117,7 +191,7 @@ namespaces = ["kaisyn", "towns_and_towers"]
 ```
 
 A listed namespace is the mod's as its id is: its `assets/` and `data/` files load, and the game reads its tags,
-recipes, names and loot. Blocks and items are still declared under `data/<id>/horizon/` only. `minecraft`, `c` and
+recipes, names and loot. Blocks, items and mob effects are declared in `data/<id>/horizon/` only. `minecraft`, `c` and
 `horizon` cannot be listed. Two mods that are on may not own the same namespace (one's id or listed namespace being
 the other's): the game keeps the first in load order and leaves the other's content out, with "mods A and B both use
 the namespace N; turn one of them off" in the log. Paths use vanilla's resource characters, at most 65,536 files, 16
@@ -134,9 +208,10 @@ still add theirs, as a higher data pack does. Since the result depends on load o
 of adds are left out, ...". Tags are the only `minecraft` files a mod may hold: its other content stays in its own
 namespaces.
 
-A mod adds to structure sets and template pools that are not its own (vanilla's villages, another mod's houses) with
-a set or pool file in its own namespace holding `horizon:add_to`, a key vanilla data never has. Its entries are
-appended to each set or pool named, after every mod's own files, in mod and file order; the file is no set or pool
+A mod adds to structure sets, template pools and processor lists that are not its own (vanilla's villages, another
+mod's houses) with a set, pool or processor list file in its own namespace holding `horizon:add_to`, a key vanilla data
+never has. Its entries are appended to each set, pool or list named, after every mod's own files, by
+`horizon:priority` (lower first, 1000 when it has none), then in mod and file order; the file is no set, pool or list
 itself. A name nobody defines is skipped.
 
 ```json
@@ -144,8 +219,14 @@ itself. A name nobody defines is skipped.
   "structures": [ { "structure": "mymod:village_beach", "weight": 10 } ] }
 ```
 
-A pool addition holds `"elements"` as a pool does. `horizon-port-pack carry` writes these from the Lithostitched
-modifiers `add_structure_set_entries` and `add_template_pool_elements`.
+A pool addition holds `"elements"` as a pool does, a processor list addition `"processors"`. This is what
+Lithostitched's `add_structure_set_entries`, `add_template_pool_elements` and `add_processor_list_processors` modifiers
+do on NeoForge and Fabric, and `horizon-port-pack carry` writes the last two from those.
+
+A pool element may be one of Lithostitched's: `lithostitched:limited` (`delegate`, `limit`, `min_depth`) places its
+`delegate` at most `limit` times in one structure start, and `lithostitched:guaranteed` (`delegate`, `count`,
+`min_depth`) is tried before its pool's other elements at each jigsaw that reaches that pool (as target or fallback)
+until `count` are placed. Neither goes below a piece shallower than `min_depth` (the start is at depth 0).
 
 A structure (and any of its pool elements, in place of the structure's) may hold
 `horizon:enhanced_terrain_adaptation`: MoogsStructureLib's terrain kernel, which carves or buries terrain around the
@@ -166,6 +247,11 @@ Behaviour that needs code (a new key, a HUD, a tool that changes how mining work
 a `horizon-mixin.toml` and a few `.rs` helpers that hook into named functions of the game. Start from
 [horizon-native-mod-template](https://github.com/horizon-rust/horizon-native-mod-template). How the launcher builds
 one, what it pins and why it is not sandboxed: [native-mods.md](native-mods.md).
+
+A native mod's config files go in the game's shared `config/` folder, beside `options.txt` (on a dedicated server,
+beside `server.properties`), as Fabric and NeoForge mods' do: the mod picks its own file names, such as
+`config/<mod id>.json`. It asks for the folder with `Game::native_config_dir()` (hook points API 26), which needs no
+game, so it works from any hook, and makes the folder when missing. Settings kept with `native_set_setting` stay where they were, in `horizon-mods/.horizon-mod-data/<id>/`.
 
 ## Publish your mod
 

@@ -52,10 +52,19 @@ pub const SYNCHRONIZED: &[&str] = &[
 /// KnownPack.vanilla("core") for this version.
 pub const CORE_PACK: (&str, &str, &str) = ("minecraft", "core", horizon_protocol::GAME_VERSION);
 
+/// Synchronized registries a world's data packs add entries to (or replace
+/// them in). The others stay the game's own: Horizon's gameplay reads them
+/// from the prepared resources only.
+const PACK_REGISTRIES: &[&str] = &["minecraft:dialog"];
+
 /// A data-driven registry: entry names in network order and their JSON.
+#[derive(Clone)]
 struct Entries {
     names: Vec<String>,
     json: Vec<Value>,
+    /// The entry comes from a world's data pack, which no client knows, so
+    /// its data is always sent.
+    from_pack: Vec<bool>,
 }
 
 pub struct SyncData {
@@ -99,6 +108,45 @@ fn walk(dir: &Path, prefix: &str, out: &mut BTreeMap<String, Value>) {
             out.insert(format!("{prefix}{stem}"), value);
         }
     }
+}
+
+/// A synchronized registry's entries from the world's data packs (`<dir>/`
+/// files, the top pack's for each id) over the game's own. Each entry is
+/// ((namespace, path), JSON, from a pack); `file_order` sorts them.
+fn pack_entries(
+    dir: &str,
+    overlay: &horizon_world::loot::PackOverlay,
+    entries: &mut Vec<((String, String), Value, bool)>,
+) {
+    for (id, files) in overlay.kind(dir) {
+        let Some((ns, path)) = id.split_once(':') else {
+            continue;
+        };
+        let top = horizon_world::loot::PackOverlay::top(files);
+        let value = match serde_json::from_slice::<Value>(top) {
+            Ok(value) => value,
+            Err(e) => {
+                log::warn!("Horizon: data pack {dir} {id} is not read: {e}");
+                continue;
+            }
+        };
+        let key = (ns.to_owned(), path.to_owned());
+        match entries.iter_mut().find(|(k, ..)| *k == key) {
+            Some(entry) => {
+                entry.1 = value;
+                entry.2 = true;
+            }
+            None => entries.push((key, value, true)),
+        }
+    }
+}
+
+/// ResourceManagerRegistryLoadTask.load: the entries register sorted by the
+/// file `Identifier` FileToIdConverter.listMatchingResources keys them by
+/// (`<dir>/<path>.json`), path first, then namespace (Identifier.compareTo).
+/// The `.json` counts: `x-y` comes before `x`, as `-` sorts before `.`.
+fn file_order<T>(entries: &mut [((String, String), T, bool)]) {
+    entries.sort_by_cached_key(|((ns, path), ..)| (format!("{path}.json"), ns.clone()));
 }
 
 /// A JSON value as the NBT that vanilla's NbtOps would produce from the codec
@@ -168,30 +216,37 @@ impl SyncData {
             let path = key.trim_start_matches("minecraft:");
             let mut found = BTreeMap::new();
             walk(&root.join(path), "", &mut found);
-            let (names, json): (Vec<_>, Vec<_>) = found
+            let mut entries: Vec<_> = found
                 .into_iter()
-                .map(|(n, v)| (format!("minecraft:{n}"), v))
-                .unzip();
+                .map(|(p, v)| (("minecraft".to_owned(), p), v, false))
+                .collect();
+            if PACK_REGISTRIES.contains(key) {
+                pack_entries(path, overlay, &mut entries);
+            }
+            file_order(&mut entries);
+            let mut e = Entries {
+                names: Vec::new(),
+                json: Vec::new(),
+                from_pack: Vec::new(),
+            };
+            for ((ns, p), v, from_pack) in entries {
+                e.names.push(format!("{ns}:{p}"));
+                e.json.push(v);
+                e.from_pack.push(from_pack);
+            }
             dynamic.registries.insert(
                 (*key).to_owned(),
-                names.iter().map(|n| (n.clone(), None)).collect(),
+                e.names.iter().map(|n| (n.clone(), None)).collect(),
             );
-            registries.push(((*key).to_owned(), Entries { names, json }));
+            registries.push(((*key).to_owned(), e));
         }
-        // RegistryDataLoader: the world's packs' dialogs over the resource
-        // root's, new entries after them. `minecraft:dialog` is the registry
-        // the Quick Actions key and `show_dialog` read.
-        if let Some((_, entries)) = registries.iter_mut().find(|(k, _)| k == "minecraft:dialog") {
-            Self::merge_dialog_entries(entries, overlay);
-            dynamic.registries.insert(
-                "minecraft:dialog".to_owned(),
-                entries.names.iter().map(|n| (n.clone(), None)).collect(),
-            );
-        }
+        // The world's packs' dialogs joined the registry above
+        // (`pack_entries`); their `minecraft:dialog` tags join the root's here,
+        // for the Quick Actions key and `show_dialog`.
         let mut tags = Self::load_tags(&root, &builtin, &dynamic);
         Self::merge_dialog_tags(&mut tags, &root, overlay, &builtin, &dynamic);
         let content_identity = if resources.join(crate::content_identity::MARKER).exists() {
-            Some(crate::content_identity::identity(resources)?)
+            Some(crate::content_identity::identity(resources).map_err(|error| error.to_string())?)
         } else {
             None
         };
@@ -208,6 +263,27 @@ impl SyncData {
         };
         sync.recipes = super::recipes::update_recipes(resources, &sync, overlay);
         Ok(sync)
+    }
+
+    /// MinecraftServer.reloadResources: `/reload` keeps the synchronized
+    /// registries the server started with (`kept`'s, its
+    /// LayeredRegistryAccess) and reads the tags against them
+    /// (TagLoader.loadTagsForExistingRegistries); the rest stays reloaded.
+    pub fn keep_registries(&mut self, resources: &Path, kept: &SyncData) {
+        self.dynamic = kept.dynamic.clone();
+        self.registries = kept.registries.clone();
+        self.tags = Self::load_tags(
+            &resources.join("data/minecraft"),
+            &self.builtin,
+            &self.dynamic,
+        );
+    }
+
+    /// Whether a synchronized registry holds an entry from a world's pack.
+    pub fn has_pack_entries(&self) -> bool {
+        self.registries
+            .iter()
+            .any(|(_, e)| e.from_pack.contains(&true))
     }
 
     /// The id of a name in a built-in or synchronized registry.
@@ -240,7 +316,8 @@ impl SyncData {
                     .names
                     .iter()
                     .zip(&e.json)
-                    .map(|(name, json)| {
+                    .zip(&e.from_pack)
+                    .map(|((name, json), &from_pack)| {
                         let changed = (key == "minecraft:dimension_type")
                             .then(|| changed_dimension_type(name, json, levels))
                             .flatten();
@@ -248,7 +325,7 @@ impl SyncData {
                             id: name.clone(),
                             data: match changed {
                                 Some(json) => Some(json_to_nbt(&json)),
-                                None if known_pack && !always_sent(key) => None,
+                                None if known_pack && !from_pack && !always_sent(key) => None,
                                 None => Some(json_to_nbt(json)),
                             },
                         }
@@ -257,28 +334,6 @@ impl SyncData {
             })
             .collect()
     }
-
-    /// The world's packs' `data/<ns>/dialog/*.json` over the resource root's
-    /// entries: an id a pack has replaces that entry, a new id goes after the
-    /// rest (`RegistryDataLoader`).
-    fn merge_dialog_entries(entries: &mut Entries, overlay: &horizon_world::loot::PackOverlay) {
-        for (id, files) in overlay.kind("dialog") {
-            let Some(bytes) = files.last() else {
-                continue;
-            };
-            let Ok(json) = serde_json::from_slice::<Value>(bytes) else {
-                continue;
-            };
-            match entries.names.iter().position(|n| n == id) {
-                Some(i) => entries.json[i] = json,
-                None => {
-                    entries.names.push(id.to_owned());
-                    entries.json.push(json);
-                }
-            }
-        }
-    }
-
     /// The `minecraft:dialog` tags of the pack stack: the resource root's
     /// files, then each world pack's in order (`TagLoader`: a file adds its
     /// values, or replaces the earlier ones with `"replace": true`), nested
@@ -299,10 +354,10 @@ impl SyncData {
         for (name, value) in own {
             Self::add_tag_values(files.entry(qualified(&name)).or_default(), &value);
         }
-        for (id, packs) in overlay.kind("tags/dialog") {
+        for (id, packs) in overlay.tag_kind("dialog") {
             for bytes in packs {
                 if let Ok(value) = serde_json::from_slice::<Value>(bytes) {
-                    Self::add_tag_values(files.entry(id.to_owned()).or_default(), &value);
+                    Self::add_tag_values(files.entry(id.clone()).or_default(), &value);
                 }
             }
         }
@@ -486,13 +541,14 @@ mod tests {
     #[test]
     fn world_packs_supply_dialog_entries_and_tags() {
         use horizon_world::loot::PackOverlay;
-        let mut entries = Entries {
-            names: vec![
-                "minecraft:quick_actions".into(),
-                "minecraft:server_links".into(),
-            ],
-            json: vec![serde_json::json!({ "type": "minecraft:dialog_list" }); 2],
+        let vanilla = |p: &str| {
+            (
+                ("minecraft".to_owned(), p.to_owned()),
+                serde_json::json!({ "type": "minecraft:dialog_list" }),
+                false,
+            )
         };
+        let mut found = vec![vanilla("quick_actions"), vanilla("server_links")];
         let files = vec![
             (
                 "dialog/test:menu".to_owned(),
@@ -503,32 +559,35 @@ mod tests {
                 vec![br#"{"type":"minecraft:dialog_list","title":"Quick"}"#.to_vec()],
             ),
             (
-                "tags/dialog/minecraft:quick_actions".to_owned(),
+                "tags/minecraft:dialog/quick_actions".to_owned(),
                 vec![br##"{"values":["test:menu","#minecraft:more"]}"##.to_vec()],
             ),
             (
-                "tags/dialog/minecraft:more".to_owned(),
+                "tags/minecraft:dialog/more".to_owned(),
                 vec![br#"{"values":["minecraft:server_links"]}"#.to_vec()],
             ),
         ];
         let overlay = PackOverlay { files: &files };
-        SyncData::merge_dialog_entries(&mut entries, &overlay);
+        pack_entries("dialog", &overlay, &mut found);
+        file_order(&mut found);
+        let names: Vec<String> = found
+            .iter()
+            .map(|((ns, p), _, _)| format!("{ns}:{p}"))
+            .collect();
+        // Identifier order: by path, then namespace.
         assert_eq!(
-            entries.names,
+            names,
             [
+                "test:menu",
                 "minecraft:quick_actions",
-                "minecraft:server_links",
-                "test:menu"
+                "minecraft:server_links"
             ]
         );
-        assert_eq!(
-            entries.json[0]["title"], "Quick",
-            "a pack overrides an entry"
-        );
+        assert_eq!(found[1].1["title"], "Quick", "a pack overrides an entry");
         let dynamic = Dynamic {
             registries: HashMap::from([(
                 "minecraft:dialog".to_owned(),
-                entries.names.iter().map(|n| (n.clone(), None)).collect(),
+                names.iter().map(|n| (n.clone(), None)).collect(),
             )]),
             ..Default::default()
         };
@@ -554,7 +613,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             quick.ids,
-            [2, 1],
+            [0, 2],
             "the pack's dialog, then the nested tag's"
         );
     }

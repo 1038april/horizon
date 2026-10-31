@@ -206,6 +206,8 @@ impl Game<'_> {
         self.dialogs.waiting = None;
         self.keys.clear();
         self.physical_keys.clear();
+        self.left = false;
+        self.right = false;
         self.capture(false);
     }
 
@@ -244,7 +246,7 @@ impl Game<'_> {
         // the dialog stays unless the confirmation takes over (Web Links off,
         // or Prompt on Links off, opens nothing or the browser behind it).
         if let Some(Click::OpenUrl(url)) = &click
-            && !(self.settings.chat_links && self.settings.file.bool("chatLinksPrompt"))
+            && !(self.settings.chat_links && self.settings.chat_links_prompt)
         {
             if self.settings.chat_links {
                 super::packs::open_uri(url);
@@ -268,8 +270,7 @@ impl Game<'_> {
             Some(Click::RunCommand(command)) => {
                 // In configuration there is nothing to run it (vanilla warns).
                 if self.player.is_some() {
-                    let command = command.strip_prefix('/').unwrap_or(&command);
-                    self.send_chat(&format!("/{command}"));
+                    self.send_unattended_command(&command);
                 } else {
                     log::warn!(
                         "Horizon: commands are not supported in configuration, trying to run '{command}'"

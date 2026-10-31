@@ -24,6 +24,8 @@ env:
   HORIZON_TELEMETRY_URL: "off"
 
 jobs:
+  # One job, not one per check: each job takes a runner from the organisation's shared pool, and with every pull request
+  # and every merge to main starting this workflow, three jobs a run left the pool's queue tens of minutes deep.
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -41,10 +43,19 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 tools/ci/rust_changes.py "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+      # A pull request adds only its own commits to main, so it reads those; main's pushes read every ref's history.
       - name: Keep game artifacts out of Git
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           python tools/check_public_tree.py
-          python tools/check_public_tree.py --history
+          if [ "$EVENT" = pull_request ]; then
+            python tools/check_public_tree.py --range "$BASE_SHA..$HEAD_SHA"
+          else
+            python tools/check_public_tree.py --history
+          fi
       - name: Test offline research tooling
         run: python -m unittest discover -s tests -v
       - name: Install Rust toolchain and the ALSA and udev headers the client links against
@@ -67,6 +78,8 @@ jobs:
           cargo +stable clippy -p horizon-client --all-targets --no-default-features -- -D warnings
       # Libraries, binaries and integration tests, then doc tests: not the ~275 examples, which clippy above already
       # type-checks and the parity job builds and runs (they were most of this step's build and link time).
+      # cargo test, not nextest: nextest's process per test reloads each binary's shared tables for every test, and on
+      # these 4-core runners it was no faster (#4978).
       - name: Test Rust core and voxel kernel correctness
         if: steps.rust.outputs.required != 'false'
         run: |

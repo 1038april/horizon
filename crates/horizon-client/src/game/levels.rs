@@ -97,6 +97,8 @@ pub(super) struct Pass {
     pub first: bool,
     pub last: bool,
     pub running: Option<bool>,
+    /// Set once this level's player packets were handled before block ticks.
+    pub packets_drained: bool,
 }
 
 impl Default for Pass {
@@ -105,6 +107,7 @@ impl Default for Pass {
             first: true,
             last: true,
             running: None,
+            packets_drained: false,
         }
     }
 }
@@ -119,6 +122,11 @@ impl Levels {
     /// A parked level, without opening or loading it.
     pub(super) fn parked_world(&self, dim: Dim) -> Option<&World> {
         self.parked.get(&dim).map(|level| &level.world)
+    }
+
+    /// The world of the level not in place, in `dim`, to change.
+    pub(super) fn parked_world_mut(&mut self, dim: Dim) -> Option<&mut World> {
+        self.parked.get_mut(&dim).map(|level| &mut level.world)
     }
 
     /// The level not in place, in `dim`.
@@ -156,6 +164,7 @@ impl Game<'_> {
             dim,
             self.level_shapes.get(dim.id()),
             self.level.seed,
+            &self.level.enabled_features,
         )?;
         let mut world = World::new(self.res.facts().air, self.level.seed);
         world.shape = self.level_shapes.get(dim.id());
@@ -381,6 +390,8 @@ impl Game<'_> {
         {
             self.native_lifecycle_server_tick_start(running);
         }
+        let observe_level =
+            running.is_some() && (self.serving.is_some() || self.options.dedicated.is_some());
         let dims = self.levels_to_tick();
         let n = dims.len();
         let mut result = Ok(());
@@ -393,7 +404,11 @@ impl Game<'_> {
                 first: k == 0,
                 last: k + 1 == n,
                 running,
+                packets_drained: false,
             };
+            if observe_level {
+                self.native_level_tick_pre(dim.id());
+            }
             self.update_dedicated_streaming();
             self.update_world();
             result = if paused {
@@ -411,6 +426,10 @@ impl Game<'_> {
             if result.is_err() {
                 break;
             }
+            if observe_level {
+                self.native_level_tick_post(dim.id());
+            }
+            self.publish_server_debug(dim);
         }
         self.level_pass = Pass::default();
         if result.is_err() {

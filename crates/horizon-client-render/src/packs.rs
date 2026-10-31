@@ -582,31 +582,11 @@ fn link(target: &Path, at: &Path) -> io::Result<()> {
         fs::hard_link(target, at).or_else(|_| fs::copy(target, at).map(|_| ()))
     }
 }
-/// A directory junction, which Windows creates without privileges (a directory symlink needs
-/// developer mode). The mirror falls back to copying the tree when it fails.
+/// A directory junction (`horizon_threads::junction`); the mirror falls back to copying the
+/// tree when it fails.
 #[cfg(windows)]
 fn junction(target: &Path, at: &Path) -> io::Result<()> {
-    use std::os::windows::process::CommandExt;
-    // cmd parses its own line: Rust quotes only paths with spaces, so `&` or `^` in an
-    // unquoted path would split or change the command. A Windows path cannot hold `"`.
-    let quoted = |path: &Path| -> io::Result<std::ffi::OsString> {
-        let mut quoted = std::ffi::OsString::from("\"");
-        quoted.push(std::path::absolute(path)?);
-        quoted.push("\"");
-        Ok(quoted)
-    };
-    let status = std::process::Command::new("cmd")
-        .args(["/C", "mklink", "/J"])
-        .raw_arg(quoted(at)?)
-        .raw_arg(quoted(target)?)
-        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()?;
-    status
-        .success()
-        .then_some(())
-        .ok_or_else(|| io::Error::other("mklink /J failed"))
+    horizon_threads::junction(target, at)
 }
 #[cfg(not(windows))]
 fn junction(_: &Path, _: &Path) -> io::Result<()> {
@@ -980,6 +960,30 @@ impl Selectable {
             compatible: true,
         }
     }
+    /// A server's downloaded pack (`DownloadedPackSource.DOWNLOADED_PACK_SELECTION`):
+    /// required, fixed at the top, so the pack screen cannot remove or reorder it.
+    pub fn downloaded(id: &str, compatible: bool) -> Self {
+        Self {
+            id: id.to_owned(),
+            required: true,
+            position: Position::Top,
+            fixed: true,
+            compatible,
+        }
+    }
+}
+
+/// Ids from `DownloadedPackSource` (`server/…`); they must not go into
+/// `options.txt` `resourcePacks`.
+pub fn is_downloaded_pack_id(id: &str) -> bool {
+    id.starts_with("server/")
+}
+
+/// The player's own selection: drop every downloaded server/world pack id.
+pub fn player_pack_ids(ids: impl IntoIterator<Item = String>) -> Vec<String> {
+    ids.into_iter()
+        .filter(|id| !is_downloaded_pack_id(id))
+        .collect()
 }
 
 /// `Pack.Position.insert`: below or above the packs fixed at that end.
@@ -1113,16 +1117,47 @@ impl SelectionModel {
         ok
     }
     /// `commit`: the repository's selection, bottom first, as options.txt
-    /// stores it.
+    /// stores it (downloaded `server/…` packs stay out of that file).
     pub fn commit(&self) -> Vec<String> {
         let ids: Vec<String> = self.selected.iter().rev().map(|p| p.id.clone()).collect();
-        self.rebuild(&ids).into_iter().map(|p| p.id).collect()
+        player_pack_ids(self.rebuild(&ids).into_iter().map(|p| p.id))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `DownloadedPackSource.DOWNLOADED_PACK_SELECTION`: the pack is selected,
+    /// fixed at the top, cannot be removed, and stays out of options.txt.
+    #[test]
+    fn a_downloaded_server_pack_is_fixed_selected_and_not_committed() {
+        let server = "server/00000000000000000000000000000001/hash.zip";
+        let available = vec![
+            Selectable::optional("file/Mine", true),
+            Selectable::downloaded(server, true),
+            Selectable::vanilla(),
+        ];
+        let model = SelectionModel::new(available, &["file/Mine".into()]);
+        assert_eq!(
+            model
+                .selected
+                .iter()
+                .map(|p| p.id.as_str())
+                .collect::<Vec<_>>(),
+            [server, "file/Mine", "vanilla"]
+        );
+        assert!(!model.can_unselect(true, 0));
+        // A neighbour cannot move up past the fixed server pack.
+        assert!(!model.can_move_up(true, 1));
+        assert_eq!(
+            model.commit(),
+            vec!["vanilla".to_owned(), "file/Mine".to_owned()]
+        );
+        assert!(is_downloaded_pack_id(server));
+        assert!(!is_downloaded_pack_id("file/Mine"));
+    }
+
     #[test]
     fn mcmeta_with_utf8_bom_is_read() {
         let dir = std::env::temp_dir().join(format!("horizon-bom-{}", std::process::id()));

@@ -24,7 +24,8 @@ impl Screen {
             | Self::Friends
             | Self::ServerLinks
             | Self::ConfirmLink
-            | Self::DialogWarning => true,
+            | Self::DialogWarning
+            | Self::DebugOptions => true,
             Self::Playing
             | Self::GameModeSwitcher
             | Self::Chat

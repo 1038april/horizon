@@ -68,6 +68,114 @@ fn item_components_patch_the_template_entry() {
 }
 
 #[test]
+fn creative_tabs_keep_vanilla_items_missing_from_search() {
+    let tab = horizon_mods::content::CreativeTab {
+        id: "test:restricted".into(),
+        title: "Restricted".into(),
+        icon: "minecraft:barrier".into(),
+        items: [
+            "minecraft:barrier",
+            "minecraft:command_block",
+            "minecraft:written_book",
+            "minecraft:knowledge_book",
+        ]
+        .map(str::to_owned)
+        .into(),
+    };
+    let plan = Plan {
+        blocks: Vec::new(),
+        items: Vec::new(),
+        vanilla_items: tab.items.iter().cloned().collect(),
+        effects: Vec::new(),
+        states: 0,
+        defaults: BTreeMap::new(),
+        sounds: BTreeMap::new(),
+        tabs: vec![&tab],
+        names: BTreeMap::new(),
+    };
+    let mut doc: J = serde_json::from_str(
+        r#"{"tabs":[{"type":"SEARCH","items":["{count:1,id:\"minecraft:stone\"}"]}]}"#,
+    )
+    .unwrap();
+    plan.creative_tabs(&mut doc).unwrap();
+    let doc: serde_json::Value = serde_json::to_value(doc).unwrap();
+    assert_eq!(
+        doc["tabs"][1]["items"],
+        serde_json::json!([
+            "{count:1,id:\"minecraft:barrier\"}",
+            "{count:1,id:\"minecraft:command_block\"}",
+            "{count:1,id:\"minecraft:written_book\"}",
+            "{count:1,id:\"minecraft:knowledge_book\"}",
+        ])
+    );
+}
+
+/// A block item's patch goes over its template block's item, and a type no
+/// vanilla item has fails the build.
+#[test]
+fn block_items_patch_their_template_item() {
+    let scratch = std::env::temp_dir().join(format!("horizon-block-item-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let base = scratch.join("base");
+    fs::create_dir_all(&base).unwrap();
+    fs::write(
+        base.join("facts.json"),
+        r#"{"states": [["minecraft:iron_block"]], "defaults": {"minecraft:iron_block": 0}}"#,
+    )
+    .unwrap();
+    fs::write(
+        base.join("gameplay-facts.json"),
+        r#"{"states": [{"item": "minecraft:iron_block"}]}"#,
+    )
+    .unwrap();
+    let items = r##"{"minecraft:iron_block": {"minecraft:max_stack_size": 64,
+        "minecraft:item_name": {"translate": "block.minecraft.iron_block"}},
+        "minecraft:netherite_block": {"minecraft:damage_resistant": {"types": "#minecraft:is_fire"}}}"##;
+    let block = |dir: &str, components: &str| {
+        folder_mod(
+            &scratch.join(dir),
+            &[
+                ("horizon-mod.toml", &manifest("ruby", "")),
+                (
+                    "data/ruby/horizon/block/ruby_block.json",
+                    &format!(
+                        r#"{{"template": "minecraft:iron_block", "components": {components}}}"#
+                    ),
+                ),
+            ],
+        )
+    };
+    let mods = [block(
+        "ruby",
+        r##"{"minecraft:max_stack_size": 16, "minecraft:damage_resistant": {"types": "#minecraft:is_fire"}}"##,
+    )];
+    let mut doc: J = serde_json::from_str(items).unwrap();
+    Plan::new(&base, &mods)
+        .unwrap()
+        .json("items.json", &mut doc)
+        .unwrap();
+    let doc: serde_json::Value = serde_json::to_value(&doc).unwrap();
+    assert_eq!(
+        doc["ruby:ruby_block"],
+        serde_json::json!({"minecraft:max_stack_size": 16,
+            "minecraft:item_name": {"translate": "block.ruby.ruby_block"},
+            "minecraft:damage_resistant": {"types": "#minecraft:is_fire"}})
+    );
+    assert_eq!(doc["minecraft:iron_block"]["minecraft:max_stack_size"], 64);
+    let mods = [block("typo", r#"{"minecraft:fod": {}}"#)];
+    let mut doc: J = serde_json::from_str(items).unwrap();
+    let e = Plan::new(&base, &mods)
+        .unwrap()
+        .json("items.json", &mut doc)
+        .unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "ruby:ruby_block: minecraft:fod is no component a vanilla item has"
+    );
+    fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
 fn tags_merge_without_repeats() {
     let vanilla = r#"{"values": ["minecraft:stone"]}"#;
     let more = [
@@ -111,7 +219,10 @@ fn allocated_ids_follow_mod_and_entry_order_after_vanilla() {
         r#"{"minecraft:item":{"entries":{"minecraft:stone":{"protocol_id":4},
             "minecraft:iron_block":{"protocol_id":9}}},
             "minecraft:block":{"entries":{"minecraft:stone":{"protocol_id":7},
-            "minecraft:iron_block":{"protocol_id":11}}}}"#,
+            "minecraft:iron_block":{"protocol_id":11}}},
+            "minecraft:mob_effect":{"entries":{"minecraft:speed":{"protocol_id":0},
+            "minecraft:luck":{"protocol_id":25}}},
+            "minecraft:block_entity_type":{"entries":{"minecraft:chest":{"protocol_id":1}}}}"#,
     )
     .unwrap();
     fs::create_dir_all(base.join("assets/minecraft/blockstates")).unwrap();
@@ -133,6 +244,10 @@ fn allocated_ids_follow_mod_and_entry_order_after_vanilla() {
                 "data/ruby/horizon/item/aitem.json",
                 r#"{"template":"minecraft:stone"}"#,
             ),
+            (
+                "data/ruby/horizon/mob_effect/glow.json",
+                r#"{"category":"beneficial","color":16711680}"#,
+            ),
         ],
     );
     let alpha = folder_mod(
@@ -146,6 +261,14 @@ fn allocated_ids_follow_mod_and_entry_order_after_vanilla() {
             (
                 "data/alpha/horizon/item/aitem.json",
                 r#"{"template":"minecraft:stone"}"#,
+            ),
+            (
+                "data/alpha/horizon/mob_effect/zap.json",
+                r#"{"category":"harmful","color":255}"#,
+            ),
+            (
+                "data/alpha/horizon/mob_effect/dull.json",
+                r#"{"category":"neutral","color":0}"#,
             ),
         ],
     );
@@ -179,7 +302,10 @@ fn allocated_ids_follow_mod_and_entry_order_after_vanilla() {
             r#"{"minecraft:item":{"entries":{"minecraft:stone":{"protocol_id":4},
                 "minecraft:iron_block":{"protocol_id":9}}},
                 "minecraft:block":{"entries":{"minecraft:stone":{"protocol_id":7},
-                "minecraft:iron_block":{"protocol_id":11}}}}"#,
+                "minecraft:iron_block":{"protocol_id":11}}},
+                "minecraft:mob_effect":{"entries":{"minecraft:speed":{"protocol_id":0},
+                "minecraft:luck":{"protocol_id":25}}},
+                "minecraft:block_entity_type":{"entries":{"minecraft:chest":{"protocol_id":1}}}}"#,
         )
         .unwrap();
         plan.json("registries.json", &mut registry).unwrap();
@@ -200,6 +326,31 @@ fn allocated_ids_follow_mod_and_entry_order_after_vanilla() {
         assert_eq!(id("minecraft:block", "minecraft:iron_block"), 11);
         assert_eq!(id("minecraft:block", "alpha:zblock"), 12);
         assert_eq!(id("minecraft:block", "ruby:zblock"), 13);
+        // Each mod block names a block entity type, after vanilla's.
+        assert_eq!(id("minecraft:block_entity_type", "minecraft:chest"), 1);
+        assert_eq!(id("minecraft:block_entity_type", "alpha:zblock"), 2);
+        assert_eq!(id("minecraft:block_entity_type", "ruby:zblock"), 3);
+
+        assert_eq!(id("minecraft:mob_effect", "minecraft:luck"), 25);
+        assert_eq!(id("minecraft:mob_effect", "alpha:dull"), 26);
+        assert_eq!(id("minecraft:mob_effect", "alpha:zap"), 27);
+        assert_eq!(id("minecraft:mob_effect", "ruby:glow"), 28);
+
+        // `/effect` and the mob_effect arguments check ids against this table.
+        let mut commands: J = serde_json::from_str(
+            r#"{"blocks":[],"items":[],"effects":["minecraft:speed"],
+                "by_registry":{"minecraft:mob_effect":{"ids":["minecraft:speed"]}}}"#,
+        )
+        .unwrap();
+        plan.json("command-registries.json", &mut commands).unwrap();
+        let commands: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&commands).unwrap()).unwrap();
+        let want = ["minecraft:speed", "alpha:dull", "alpha:zap", "ruby:glow"];
+        assert_eq!(commands["effects"], serde_json::json!(want));
+        assert_eq!(
+            commands["by_registry"]["minecraft:mob_effect"]["ids"],
+            serde_json::json!(want)
+        );
         drop(plan);
 
         let output = scratch.join(format!("output-{index}"));
@@ -226,17 +377,19 @@ fn prepared() -> Option<PathBuf> {
 }
 
 /// A content mod folder: a full block, a door and an item-less glass from
-/// templates, an item, a vanilla tag addition and a language file.
+/// templates, items, a recipe, a vanilla tag addition and a language file.
 fn ruby_mod(dir: &Path) -> ContentMod {
-    let files: [(&str, &str); 9] = [
+    let files: [(&str, &str); 11] = [
         (
             "horizon-mod.toml",
             "id = \"ruby\"\nname = \"Ruby\"\nversion = \"0.1.0\"\napi = \"0.2\"\nside = \"both\"\ncapabilities = [\"registries\"]\n",
         ),
         (
             "data/ruby/horizon/block/ruby_block.json",
-            r#"{"template": "minecraft:iron_block", "properties": {"hardness": 4.0, "light": 3,
-                "sounds": "minecraft:amethyst_block", "map_color": 28, "friction": 0.8}}"#,
+            r##"{"template": "minecraft:iron_block", "properties": {"hardness": 4.0, "light": 3,
+                "sounds": "minecraft:amethyst_block", "map_color": 28, "friction": 0.8},
+                "components": {"minecraft:max_stack_size": 16,
+                    "minecraft:damage_resistant": {"types": "#minecraft:is_fire"}}}"##,
         ),
         (
             "data/ruby/horizon/block/ruby_door.json",
@@ -257,6 +410,15 @@ fn ruby_mod(dir: &Path) -> ContentMod {
                     "id": "minecraft:base_attack_damage", "amount": 7.0,
                     "operation": "add_value", "slot": "mainhand"}],
                 "!minecraft:repairable": {}}}"#,
+        ),
+        (
+            "data/ruby/horizon/item/ruby_stew.json",
+            r#"{"template": "minecraft:mushroom_stew", "crafting_remainder": "minecraft:bowl"}"#,
+        ),
+        (
+            "data/ruby/recipe/ruby_from_stew.json",
+            r#"{"type": "minecraft:crafting_shapeless", "category": "misc",
+                "ingredients": ["ruby:ruby_stew"], "result": {"id": "ruby:ruby"}}"#,
         ),
         // Carried-over tags name blocks left out and other mods' ids too.
         (
@@ -425,6 +587,9 @@ fn content_root_loads_with_every_table() {
     let items = Items::load(&root, new, &facts, &PackOverlay::NONE).unwrap();
     let ruby_block = &items.items["ruby:ruby_block"];
     assert_eq!(ruby_block.block, Some(ruby));
+    let iron_block = &items.items["minecraft:iron_block"];
+    assert_eq!((ruby_block.max_stack, iron_block.max_stack), (16, 64));
+    assert!(ruby_block.fire_resistant && !iron_block.fire_resistant);
     let gem = &items.items["ruby:ruby"];
     assert_eq!(gem.max_stack, 16);
     let sword = &items.items["ruby:ruby_sword"];
@@ -433,6 +598,24 @@ fn content_root_loads_with_every_table() {
     assert_eq!(sword.modifiers.len(), 1);
     assert_eq!(sword.modifiers[0].2, 7.0);
     assert_eq!(sword.tool.len(), iron_sword.tool.len());
+    // The stew leaves its bowl in the grid; vanilla's stew leaves none.
+    let stew = &items.items["ruby:ruby_stew"];
+    assert_eq!(stew.crafting_remainder.as_deref(), Some("minecraft:bowl"));
+    assert_eq!(
+        items.items["minecraft:mushroom_stew"].crafting_remainder,
+        None
+    );
+    let recipes = crate::crafting::Recipes::load(&root, &items, &PackOverlay::NONE).unwrap();
+    let grid = [
+        Some(crate::items::ItemStack::new("ruby:ruby_stew", 1)),
+        None,
+        None,
+        None,
+    ];
+    let (id, result) = recipes.find(&grid, 2).unwrap();
+    assert_eq!(&*result.item, "ruby:ruby");
+    let rest = recipes.remainders(id, &grid, 2);
+    assert_eq!(rest[0].as_ref().map(|s| &*s.item), Some("minecraft:bowl"));
     assert!(!items.items.contains_key("ruby:ruby_glass"));
     let pickaxe = &items.block_tags["minecraft:mineable/pickaxe"];
     assert!(pickaxe.contains("ruby:ruby_block"));
@@ -473,6 +656,19 @@ fn refuses_unknown_templates_and_vanilla_ids() {
     m.content.blocks[0].template = "minecraft:not_a_block".into();
     let e = build(&base, std::slice::from_ref(&m), &scratch.join("out")).unwrap_err();
     assert!(e.to_string().contains("is not a block"), "{e}");
+    m.content.blocks[0].template = "minecraft:iron_block".into();
+    let stew = m
+        .content
+        .items
+        .iter_mut()
+        .find(|i| i.id == "ruby:ruby_stew");
+    stew.unwrap().crafting_remainder = Some("minecraft:bowll".into());
+    let e = build(&base, std::slice::from_ref(&m), &scratch.join("out")).unwrap_err();
+    assert!(
+        e.to_string()
+            .contains(r#"crafting_remainder "minecraft:bowll" is not an item"#),
+        "{e}"
+    );
     fs::remove_dir_all(&scratch).unwrap();
 }
 
@@ -792,7 +988,8 @@ fn content_root_carries_a_structure_mod() {
             "data/huts/tags/worldgen/biome/has_hut.json",
             r##"{"values": ["#minecraft:is_overworld", "#c:is_plains", "othermod:glade", "minecraft:plains"]}"##,
         ),
-        // Additions to vanilla's set and pool; a target nobody defines is skipped.
+        // Additions to vanilla's set, pool and processor list; a target nobody
+        // defines is skipped. A lower priority goes first.
         (
             "data/huts/worldgen/structure_set/added/villages.json",
             r#"{"horizon:add_to": "minecraft:villages",
@@ -803,6 +1000,16 @@ fn content_root_carries_a_structure_mod() {
             r#"{"horizon:add_to": ["othermod:houses", "minecraft:village/plains/houses"],
                 "elements": [{"weight": 2, "element": {"element_type": "minecraft:single_pool_element",
                 "location": "huts:hut", "projection": "rigid", "processors": "minecraft:empty"}}]}"#,
+        ),
+        (
+            "data/huts/worldgen/template_pool/added/more_houses.json",
+            r#"{"horizon:add_to": "minecraft:village/plains/houses", "horizon:priority": 10,
+                "elements": [{"weight": 1, "element": {"element_type": "minecraft:empty_pool_element"}}]}"#,
+        ),
+        (
+            "data/huts/worldgen/processor_list/added/mossy.json",
+            r#"{"horizon:add_to": "minecraft:mossify_10_percent",
+                "processors": [{"processor_type": "minecraft:nop"}]}"#,
         ),
     ];
     for (name, text) in files {
@@ -839,14 +1046,23 @@ fn content_root_carries_a_structure_mod() {
             "structure_sets.json",
             "minecraft:villages",
             "structures",
-            serde_json::json!({"structure": "huts:hut", "weight": 3}),
+            vec![serde_json::json!({"structure": "huts:hut", "weight": 3})],
         ),
         (
             "template_pools.json",
             "minecraft:village/plains/houses",
             "elements",
-            serde_json::json!({"weight": 2, "element": {"element_type": "minecraft:single_pool_element",
+            vec![
+                serde_json::json!({"weight": 1, "element": {"element_type": "minecraft:empty_pool_element"}}),
+                serde_json::json!({"weight": 2, "element": {"element_type": "minecraft:single_pool_element",
                 "location": "huts:hut", "projection": "rigid", "processors": "minecraft:empty"}}),
+            ],
+        ),
+        (
+            "processor_lists.json",
+            "minecraft:mossify_10_percent",
+            "processors",
+            vec![serde_json::json!({"processor_type": "minecraft:nop"})],
         ),
     ] {
         let (ours, vanilla) = (bundle(name, &root), bundle(name, &base));
@@ -855,7 +1071,7 @@ fn content_root_carries_a_structure_mod() {
             v[list].as_array().unwrap().clone()
         };
         let mut expected = entries(&vanilla[id]);
-        expected.push(added);
+        expected.extend(added);
         assert_eq!(entries(&ours[id]), expected, "{id}");
         assert!(!ours.keys().any(|k| k.starts_with("huts:added/")), "{name}");
         assert!(!ours.contains_key("othermod:houses"));
@@ -894,6 +1110,81 @@ fn content_root_carries_a_structure_mod() {
     assert_eq!(name, "huts:hut");
     assert!(at[0].abs() < 1024 && at[2].abs() < 1024, "{at:?}");
     let _ = fs::remove_dir_all(&scratch);
+}
+
+/// A mod's mob effect gets the network id after vanilla's last, on the game
+/// and its server alike, and joins the ids `/effect` and its suggestions
+/// check.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn content_root_registers_a_mod_mob_effect() {
+    let Some(base) = prepared() else {
+        return;
+    };
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-effect-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let m = folder_mod(
+        &scratch.join("glow"),
+        &[
+            ("horizon-mod.toml", &manifest("glow", "")),
+            (
+                "data/glow/horizon/mob_effect/radiance.json",
+                r#"{"category": "beneficial", "color": 16773120}"#,
+            ),
+        ],
+    );
+    let root = resource_root(&base, std::slice::from_ref(&m), &scratch.join("cache")).unwrap();
+    let report = |root: &Path| {
+        horizon_protocol::registry::Builtin::load(&root.join("registries.json")).unwrap()
+    };
+    let (vanilla, ids) = (report(&base), report(&root));
+    let vanilla = vanilla.get("minecraft:mob_effect").unwrap();
+    let ids = ids.get("minecraft:mob_effect").unwrap();
+    let count = (0..).take_while(|&i| vanilla.name(i).is_some()).count() as i32;
+    assert_eq!(ids.id("glow:radiance"), Some(count));
+    assert_eq!(ids.id("minecraft:speed"), vanilla.id("minecraft:speed"));
+    let commands: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("command-registries.json")).unwrap()).unwrap();
+    for ids in [
+        &commands["effects"],
+        &commands["by_registry"]["minecraft:mob_effect"]["ids"],
+    ] {
+        let ids = ids.as_array().unwrap();
+        assert!(ids.contains(&"glow:radiance".into()) && ids.contains(&"minecraft:speed".into()));
+    }
+    assert!(root.join(crate::content_identity::MARKER).exists());
+    fs::remove_dir_all(&scratch).unwrap();
+}
+
+/// A mod that adds only an item still moves the item network ids, so a game
+/// without it must fail the content check rather than show other items.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn content_root_with_only_an_item_checks_its_identity() {
+    let Some(base) = prepared() else {
+        return;
+    };
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-item-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let m = folder_mod(
+        &scratch.join("gem"),
+        &[
+            ("horizon-mod.toml", &manifest("gem", "")),
+            (
+                "data/gem/horizon/item/opal.json",
+                r#"{"template": "minecraft:diamond"}"#,
+            ),
+        ],
+    );
+    let root = resource_root(&base, std::slice::from_ref(&m), &scratch.join("cache")).unwrap();
+    let ids = horizon_protocol::registry::Builtin::load(&root.join("registries.json")).unwrap();
+    assert!(ids.get("minecraft:item").unwrap().id("gem:opal").is_some());
+    assert!(root.join(crate::content_identity::MARKER).exists());
+    assert_ne!(
+        crate::content_identity::identity(&root).unwrap(),
+        crate::content_identity::identity(&base).unwrap()
+    );
+    fs::remove_dir_all(&scratch).unwrap();
 }
 
 /// A content mod folder from `(path, text)` pairs, read as the game reads it.
@@ -1080,6 +1371,140 @@ fn a_replacing_mod_tag_reaches_the_root() {
         "{warnings}"
     );
     let _ = fs::remove_dir_all(&scratch);
+}
+
+/// `StructureCheck.onStructureLoad`: the references a chunk saved for its start
+/// count, so a map skips a start a vanilla map already pointed at.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn exploration_maps_skip_the_starts_a_chunk_saved_as_referenced() {
+    let Some(base) = prepared() else {
+        return;
+    };
+    let assets = Assets::load(&base).unwrap();
+    let biomes = crate::biome::Biomes::load(&base).unwrap();
+    let terrain = crate::vanillagen::VanillaTerrain::new(
+        &base.join("worldgen"),
+        assets.registry,
+        &biomes,
+        1234,
+    )
+    .unwrap();
+    let names = ["minecraft:buried_treasure".to_owned()];
+    let first = terrain
+        .locate_for_map(&names, [0, 64, 0], 50, true)
+        .unwrap();
+    // Another terrain, on the same seed, whose chunks saved one reference for it.
+    let fresh = crate::vanillagen::VanillaTerrain::new(
+        &base.join("worldgen"),
+        assets.registry,
+        &biomes,
+        1234,
+    )
+    .unwrap();
+    let (name, at) = (first.0.clone(), (first.1[0] >> 4, first.1[2] >> 4));
+    fresh.set_saved_references(std::sync::Arc::new(move |n, x, z| {
+        i32::from(n == name && (x, z) == at)
+    }));
+    let next = fresh.locate_for_map(&names, [0, 64, 0], 50, true).unwrap();
+    assert_ne!(next.1, first.1, "the saved reference is skipped");
+    assert_eq!(
+        fresh.locate_for_map(&names, [0, 64, 0], 50, false).unwrap(),
+        first,
+        "a map that does not skip still finds it"
+    );
+}
+
+/// `ChunkGenerator.findNearestMapStructure` with `createReference`: an
+/// exploration map that skips known structures points at a start no map
+/// pointed at before, and a reopened world remembers which.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn exploration_maps_skip_the_structures_maps_pointed_at() {
+    let Some(base) = prepared() else {
+        return;
+    };
+    let scratch = std::env::temp_dir().join(format!("horizon-map-refs-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let assets = Assets::load(&base).unwrap();
+    let biomes = crate::biome::Biomes::load(&base).unwrap();
+    let open = || {
+        let terrain = crate::vanillagen::VanillaTerrain::new(
+            &base.join("worldgen"),
+            assets.registry,
+            &biomes,
+            1234,
+        )
+        .unwrap();
+        terrain.set_reference_file(scratch.join("refs.json"));
+        terrain
+    };
+    let names = ["minecraft:buried_treasure".to_owned()];
+    let terrain = open();
+    let first = terrain
+        .locate_for_map(&names, [0, 64, 0], 50, true)
+        .unwrap();
+    assert_eq!(
+        terrain.locate(&names, [0, 64, 0], 50).unwrap(),
+        first,
+        "/locate still finds the nearest"
+    );
+    let second = terrain
+        .locate_for_map(&names, [0, 64, 0], 50, true)
+        .unwrap();
+    assert_ne!(second.1, first.1, "the second map points elsewhere");
+    let again = terrain
+        .locate_for_map(&names, [0, 64, 0], 50, false)
+        .unwrap();
+    assert_eq!(
+        again, first,
+        "without skipping the nearest is still the first"
+    );
+    drop(terrain);
+    let third = open().locate_for_map(&names, [0, 64, 0], 50, true).unwrap();
+    assert!(
+        third.1 != first.1 && third.1 != second.1,
+        "a reopened world remembers {first:?} and {second:?}, found {third:?}"
+    );
+    let _ = fs::remove_dir_all(&scratch);
+}
+
+/// `NoiseBasedChunkGenerator.addDebugScreenInfo`: F3's `Density` line lists
+/// the noise settings' `debug_functions` with three decimals.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn debug_density_line_lists_the_noise_settings_functions() {
+    let Some(base) = prepared() else {
+        return;
+    };
+    let assets = Assets::load(&base).unwrap();
+    let biomes = crate::biome::Biomes::load(&base).unwrap();
+    let terrain = crate::vanillagen::VanillaTerrain::new(
+        &base.join("worldgen"),
+        assets.registry,
+        &biomes,
+        1234,
+    )
+    .unwrap();
+    let line = terrain.density_debug_line([0, 70, 0]).unwrap();
+    let labels: Vec<&str> = line
+        .strip_prefix("Density ")
+        .unwrap()
+        .split(' ')
+        .step_by(2)
+        .collect();
+    assert_eq!(
+        labels,
+        ["N:", "T:", "V:", "C:", "E:", "D:", "W:", "PV:", "PS:"],
+        "{line}"
+    );
+    assert!(
+        line.split(' ')
+            .skip(2)
+            .step_by(2)
+            .all(|v| v.split('.').nth(1).is_some_and(|d| d.len() == 3)),
+        "{line}"
+    );
 }
 
 #[test]
@@ -1272,4 +1697,612 @@ fn shapes_reject_unknown_or_missing_template_values() {
         assert!(e.contains("shapetest:rod"), "{e}");
     }
     fs::remove_dir_all(scratch).unwrap();
+}
+
+/// A recipe's `result` is a stack's fields or a bare item id, as vanilla's `ItemStackTemplate`
+/// codec reads it (#4904): a mod's recipes make its own items either way.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn mod_recipe_results_are_an_item_stack_or_a_bare_item_id() {
+    if prepared().is_none() {
+        return;
+    }
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-results-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let dir = scratch.join("ruby");
+    let _ = ruby_mod(&dir);
+    // Each recipe takes one item no vanilla recipe crafts alone and makes one of the mod's.
+    let cases = [
+        (
+            "stack",
+            "minecraft:diamond",
+            r#"{"id": "ruby:ruby"}"#,
+            "ruby:ruby",
+            1,
+        ),
+        (
+            "bare_id",
+            "minecraft:flint",
+            r#""ruby:ruby""#,
+            "ruby:ruby",
+            1,
+        ),
+        (
+            "bare_block_item",
+            "minecraft:ghast_tear",
+            r#""ruby:ruby_block""#,
+            "ruby:ruby_block",
+            1,
+        ),
+        (
+            "counted",
+            "minecraft:ender_pearl",
+            r#"{"id": "ruby:ruby_block", "count": 3}"#,
+            "ruby:ruby_block",
+            3,
+        ),
+    ];
+    for (name, input, result, _, _) in cases {
+        let recipe = format!(
+            r#"{{"type": "minecraft:crafting_shapeless", "ingredients": ["{input}"], "result": {result}}}"#
+        );
+        fs::write(dir.join(format!("data/ruby/recipe/{name}.json")), recipe).unwrap();
+    }
+    let package = horizon_mods::Package::read(&dir).unwrap();
+    let m = ContentMod {
+        id: "ruby".into(),
+        content: Content::read(&dir, &package.manifest).unwrap(),
+    };
+    let relative = Path::new("../../.local/horizon-client/26.3");
+    let root = resource_root(relative, std::slice::from_ref(&m), &scratch.join("cache")).unwrap();
+    let assets = Assets::load(&root).unwrap();
+    let new = assets.registry;
+    let facts = BlockFacts::load(&root, new).unwrap();
+    let items = Items::load(&root, new, &facts, &PackOverlay::NONE).unwrap();
+    let recipes = crate::crafting::Recipes::load(&root, &items, &PackOverlay::NONE).unwrap();
+    for (name, input, _, item, count) in cases {
+        let grid = [
+            Some(crate::items::ItemStack::new(input, 1)),
+            None,
+            None,
+            None,
+        ];
+        let (_, made) = recipes
+            .find(&grid, 2)
+            .unwrap_or_else(|| panic!("{name}: no recipe"));
+        assert_eq!((&*made.item, made.count), (item, count), "{name}");
+    }
+    fs::remove_dir_all(&scratch).unwrap();
+}
+
+/// A mod's creative tab comes after vanilla's, on page 1 in the first top
+/// slot, with only the items the game has; its new items join the search tab
+/// under their English names.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn creative_tabs_come_on_their_own_page() {
+    let Some(_) = prepared() else {
+        return;
+    };
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-tabs-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let dir = scratch.join("gems");
+    for (name, text) in [
+        (
+            "horizon-mod.toml",
+            "id = \"gems\"\nname = \"Gems\"\nversion = \"0.1.0\"\napi = \"0.2\"\nside = \"both\"\ncapabilities = [\"registries\"]\n",
+        ),
+        (
+            "data/gems/horizon/item/ruby.json",
+            r#"{"template": "minecraft:diamond"}"#,
+        ),
+        (
+            "data/gems/horizon/block/ruby_block.json",
+            r#"{"template": "minecraft:diamond_block"}"#,
+        ),
+        (
+            "data/gems/horizon/creative_tab/gems.json",
+            r#"{"title": "Gems", "icon": "gems:ruby", "items": ["gems:ruby", "minecraft:diamond", "gems:missing"]}"#,
+        ),
+        (
+            "assets/gems/lang/en_us.json",
+            r#"{"item.gems.ruby": "Ruby"}"#,
+        ),
+    ] {
+        let path = dir.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+    let package = horizon_mods::Package::read(&dir).unwrap();
+    let m = ContentMod {
+        id: "gems".into(),
+        content: Content::read(&dir, &package.manifest).unwrap(),
+    };
+    let relative = Path::new("../../.local/horizon-client/26.3");
+    let root = resource_root(relative, std::slice::from_ref(&m), &scratch.join("cache")).unwrap();
+    let mut creative = crate::creative::Creative::load(&root).unwrap();
+    assert_eq!(creative.pages(), 2);
+    let i = creative
+        .tabs
+        .iter()
+        .position(|t| t.id == "gems:gems")
+        .unwrap();
+    let tab = &creative.tabs[i];
+    assert_eq!(
+        (tab.page, tab.top, tab.column, tab.title.as_str()),
+        (1, true, 0, "Gems")
+    );
+    let items: Vec<&str> = tab.items.iter().map(|s| &*s.item).collect();
+    assert_eq!(items, ["gems:ruby", "minecraft:diamond"]);
+    assert!(
+        creative
+            .search_items()
+            .iter()
+            .any(|s| &*s.item == "gems:ruby")
+    );
+    // A block's item is in search once.
+    let blocks = creative
+        .search_items()
+        .iter()
+        .filter(|s| &*s.item == "gems:ruby_block");
+    assert_eq!(blocks.count(), 1);
+    // Search, on every page, stays selected over a page turn.
+    let search = creative.tabs.iter().position(|t| t.search).unwrap();
+    creative.select(search);
+    creative.set_page(1);
+    assert_eq!((creative.selected, creative.page), (search, 1));
+    creative.select(0);
+    // Page 1 shows the mod's tab and the right-hand ones, not vanilla's.
+    creative.set_page(1);
+    assert_eq!(creative.selected, i);
+    let shown: Vec<&str> = creative
+        .tabs
+        .iter()
+        .filter(|t| creative.on_page(t))
+        .map(|t| t.id.as_str())
+        .collect();
+    assert!(
+        shown.contains(&"gems:gems") && shown.contains(&"minecraft:search"),
+        "{shown:?}"
+    );
+    assert!(!shown.contains(&"minecraft:building_blocks"), "{shown:?}");
+    // Selecting a vanilla tab goes back to its page.
+    creative.select(0);
+    assert_eq!(creative.page, 0);
+    fs::remove_dir_all(&scratch).unwrap();
+}
+
+/// A block that gives each of its template's states a run moves a template
+/// state to the first of its own: the combination every declared property is
+/// at its default for, which is the one the id cursor points at first.
+#[test]
+fn a_fan_out_rename_moves_a_template_state_to_its_first_state() {
+    let mut r = Rename::new("minecraft:test", "testmod:test");
+    r.states = 10..12;
+    r.first = 100;
+    r.fanout = 6;
+    assert_eq!(
+        (r.id(9), r.id(10), r.id(11), r.id(12)),
+        (None, Some(100), Some(106), None)
+    );
+}
+
+/// A base root of one template with two states, and a mod that adds a block
+/// to it. `declarations` go in as the block file.
+fn block_base(tag: &str, declarations: &[&str]) -> (PathBuf, Vec<ContentMod>) {
+    block_base_of(
+        tag,
+        declarations,
+        r#"{"states":[
+      ["minecraft:test",false,false,"",{"id":"minecraft:test","properties":{"axis":"x"}}],
+      ["minecraft:test",false,false,"",{"id":"minecraft:test","properties":{"axis":"y"}}]],
+      "defaults":{"minecraft:test":0}}"#,
+    )
+}
+
+/// The same over a base root whose `facts.json` is `facts`: the other tables
+/// the plan reads are built from its state count, so a template can have one
+/// state and no properties of its own (a `stone`) as easily as two.
+fn block_base_of(tag: &str, declarations: &[&str], facts: &str) -> (PathBuf, Vec<ContentMod>) {
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-{tag}-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let base = scratch.join("base");
+    fs::create_dir_all(&base).unwrap();
+    fs::write(base.join("facts.json"), facts).unwrap();
+    let count = match serde_json::from_str::<J>(facts).unwrap().get("states") {
+        Some(J::Arr(rows)) => rows.len(),
+        _ => panic!("{tag}: facts.json has no states"),
+    };
+    let rows = vec![r#"{"item":"minecraft:test"}"#; count].join(",");
+    fs::write(
+        base.join("gameplay-facts.json"),
+        format!(r#"{{"states":[{rows}]}}"#),
+    )
+    .unwrap();
+    fs::write(base.join("items.json"), r#"{"minecraft:test":{}}"#).unwrap();
+    fs::write(
+        base.join("registries.json"),
+        r#"{"minecraft:item":{"entries":{"minecraft:test":{"protocol_id":0}}},"minecraft:block":{"entries":{"minecraft:test":{"protocol_id":0}}}}"#,
+    )
+    .unwrap();
+    let mods: Vec<ContentMod> = declarations
+        .iter()
+        .enumerate()
+        .map(|(i, declaration)| {
+            let dir = scratch.join(format!("mod{i}"));
+            folder_mod(
+                &dir,
+                &[
+                    ("horizon-mod.toml", &manifest("testmod", "")),
+                    ("data/testmod/horizon/block/test.json", *declaration),
+                ],
+            )
+        })
+        .collect();
+    (base, mods)
+}
+
+/// A block's states are its template's times the combinations of the state
+/// properties it declares, in a fixed order with every default first.
+#[test]
+fn content_block_state_properties_fan_out_its_states() {
+    let declaration = r#"{"template":"minecraft:test","item":false,
+      "state_properties":{"lit":{"type":"boolean"},
+        "facing":{"type":"enum","values":["north","south","east"]}}}"#;
+    let (base, mods) = block_base("block-states", &[declaration]);
+    let plan = Plan::new(&base, &mods).unwrap();
+    let facts = fs::read_to_string(base.join("facts.json")).unwrap();
+    let mut doc: J = serde_json::from_str(&facts).unwrap();
+    plan.json("facts.json", &mut doc).unwrap();
+    // Two template states times the six combinations, after the template's.
+    let Some(J::Arr(rows)) = doc.get("states") else {
+        panic!("no states")
+    };
+    assert_eq!(rows.len(), 2 + 12);
+    // The default is the first combination of the template's default state.
+    assert_eq!(
+        doc.get("defaults").unwrap().get("testmod:test"),
+        Some(&J::Num(2.into()))
+    );
+    let properties = |i: usize| -> BTreeMap<String, String> {
+        let J::Arr(row) = &rows[i] else {
+            panic!("row {i} is not a state")
+        };
+        let Some(J::Obj(state)) = row.get(4) else {
+            panic!("row {i} has no state")
+        };
+        let Some((_, J::Obj(p))) = state.iter().find(|(k, _)| k == "properties") else {
+            panic!("row {i} has no properties")
+        };
+        p.iter()
+            .map(|(k, v)| match v {
+                J::Str(s) => (k.clone(), s.clone()),
+                _ => panic!("{k} is not a string"),
+            })
+            .collect()
+    };
+    // By name `facing` varies slowest, and each one's default comes first.
+    assert_eq!(
+        properties(2),
+        BTreeMap::from([
+            ("axis".to_owned(), "x".to_owned()),
+            ("facing".to_owned(), "north".to_owned()),
+            ("lit".to_owned(), "false".to_owned()),
+        ])
+    );
+    // And the last is the second template state and the last combination.
+    assert_eq!(
+        properties(13),
+        BTreeMap::from([
+            ("axis".to_owned(), "y".to_owned()),
+            ("facing".to_owned(), "east".to_owned()),
+            ("lit".to_owned(), "true".to_owned()),
+        ])
+    );
+    // Every state of the block is a different one: the registry indexes
+    // states by their name and properties, so a repeat would be a collision.
+    let states: BTreeSet<BTreeMap<String, String>> = (2..14).map(properties).collect();
+    assert_eq!(states.len(), 12);
+    fs::remove_dir_all(&base).unwrap();
+    fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
+}
+
+/// The declared default comes first in the run, so its id is the block's
+/// default with no arithmetic of its own.
+#[test]
+fn content_block_state_properties_put_the_declared_default_first() {
+    let declaration = r#"{"template":"minecraft:test","item":false,
+      "state_properties":{"facing":{"type":"enum","values":["north","south","east"]}},
+      "default_state":{"facing":"south"}}"#;
+    let (base, mods) = block_base("block-default-first", &[declaration]);
+    let plan = Plan::new(&base, &mods).unwrap();
+    let facts = fs::read_to_string(base.join("facts.json")).unwrap();
+    let mut doc: J = serde_json::from_str(&facts).unwrap();
+    plan.json("facts.json", &mut doc).unwrap();
+    let Some(J::Arr(rows)) = doc.get("states") else {
+        panic!("no states")
+    };
+    // Two template states times three values.
+    assert_eq!(rows.len(), 2 + 6);
+    let facing = |i: usize| -> String {
+        let J::Arr(row) = &rows[i] else {
+            panic!("row {i} is not a state")
+        };
+        let Some(J::Obj(state)) = row.get(4) else {
+            panic!("row {i} has no state")
+        };
+        match state
+            .iter()
+            .find(|(k, _)| k == "properties")
+            .map(|(_, p)| p)
+        {
+            Some(p) => match p.get("facing") {
+                Some(J::Str(s)) => s.clone(),
+                _ => panic!("row {i} has no facing"),
+            },
+            None => panic!("row {i} has no properties"),
+        }
+    };
+    // The declared default is the block's default, and it comes first.
+    assert_eq!(
+        doc.get("defaults").unwrap().get("testmod:test"),
+        Some(&J::Num(2.into()))
+    );
+    assert_eq!(facing(2), "south");
+    // The rest keep their declared order, rotated to start at the default.
+    assert_eq!(
+        (facing(3), facing(4)),
+        ("east".to_owned(), "north".to_owned())
+    );
+    fs::remove_dir_all(&base).unwrap();
+    fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
+}
+
+/// What a declaration may not do: shadow its template's property, name a
+/// value its own property does not have, or ask for more states than a world
+/// holds.
+#[test]
+fn content_block_state_properties_are_validated() {
+    // The template's `axis` is not the mod's to redefine.
+    let (base, mods) = block_base(
+        "block-shadow",
+        &[r#"{"template":"minecraft:test","state_properties":{"axis":{"type":"boolean"}}}"#],
+    );
+    let error = match Plan::new(&base, &mods) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("a shadowed template property was accepted"),
+    };
+    assert!(error.contains("axis is already on"), "{error}");
+    fs::remove_dir_all(&base).unwrap();
+    fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
+
+    // A default is one of the values the block declared.
+    let (base, mods) = block_base(
+        "block-bad-default",
+        &[r#"{"template":"minecraft:test",
+             "state_properties":{"lit":{"type":"boolean"}},"default_state":{"lit":"maybe"}}"#],
+    );
+    let error = match Plan::new(&base, &mods) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("a default outside a property's values was accepted"),
+    };
+    assert!(error.contains("is not one of its values"), "{error}");
+    fs::remove_dir_all(&base).unwrap();
+    fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
+
+    // Twenty-one booleans are more combinations than a world can hold, and
+    // are refused before the product is built.
+    let declared: Vec<String> = (0..21)
+        .map(|i| format!(r#""p{i}":{{"type":"boolean"}}"#))
+        .collect();
+    let declaration = format!(
+        r#"{{"template":"minecraft:test","item":false,"state_properties":{{{}}}}}"#,
+        declared.join(",")
+    );
+    let (base, mods) = block_base("block-too-many", &[&declaration]);
+    let error = match Plan::new(&base, &mods) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("more states than a world holds were accepted"),
+    };
+    assert!(
+        error.contains("more than the") && error.contains("world can hold"),
+        "{error}"
+    );
+    fs::remove_dir_all(&base).unwrap();
+    fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
+}
+
+/// A `default_state` that names only properties the block itself declares
+/// asks the template for nothing: `stone` has a single state and no properties
+/// at all, and a block that gives it `lit` can still default `lit`.
+#[test]
+fn a_declared_property_defaults_on_a_template_with_none() {
+    let declaration = r#"{"template":"minecraft:test","item":false,
+      "state_properties":{"lit":{"type":"boolean"}},
+      "default_state":{"lit":"true"}}"#;
+    let (base, mods) = block_base_of(
+        "block-propertyless-default",
+        &[declaration],
+        r#"{"states":[["minecraft:test",true,true,"",{"id":"minecraft:test"}]],
+      "defaults":{"minecraft:test":0}}"#,
+    );
+    let plan = Plan::new(&base, &mods).unwrap();
+    let mut doc: J =
+        serde_json::from_str(&fs::read_to_string(base.join("facts.json")).unwrap()).unwrap();
+    plan.json("facts.json", &mut doc).unwrap();
+    let Some(J::Arr(rows)) = doc.get("states") else {
+        panic!("no states")
+    };
+    // One template state times the two combinations of `lit`.
+    assert_eq!(rows.len(), 1 + 2);
+    let lit = |i: usize| -> Option<String> {
+        let J::Arr(row) = rows.get(i)? else {
+            return None;
+        };
+        let J::Obj(state) = row.get(4)? else {
+            return None;
+        };
+        let (_, properties) = state.iter().find(|(k, _)| k == "properties")?;
+        match properties.get("lit") {
+            Some(J::Str(s)) => Some(s.clone()),
+            _ => None,
+        }
+    };
+    // The declared default opens the block's run, and the other value follows.
+    assert_eq!(lit(1).as_deref(), Some("true"));
+    assert_eq!(lit(2).as_deref(), Some("false"));
+    // The block's default state is the first of its run.
+    assert_eq!(
+        doc.get("defaults").unwrap().get("testmod:test"),
+        Some(&J::Num(1.into()))
+    );
+    fs::remove_dir_all(&base).unwrap();
+    fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
+}
+
+/// An NBT state row for the two-state `minecraft:test` template, the shape
+/// `BlockState::to_nbt` writes.
+fn test_state_row(axis: &str) -> Tag {
+    Tag::Compound(Compound::from([
+        (
+            JavaString::from("id"),
+            Tag::String(JavaString::from("minecraft:test")),
+        ),
+        (
+            JavaString::from("properties"),
+            Tag::Compound(Compound::from([(
+                JavaString::from("axis"),
+                Tag::String(JavaString::from(axis)),
+            )])),
+        ),
+    ]))
+}
+
+/// The NBT tables fan out like the JSON ones: `cached-collision.nbt`,
+/// `occlusion.nbt` and the rest get one row per combination, so `states` and
+/// `cached_shapes` stay the same length, and each row carries the properties
+/// its combination declares.
+#[test]
+fn the_nbt_tables_fan_out_with_the_states() {
+    let declaration = r#"{"template":"minecraft:test","item":false,
+      "state_properties":{"lit":{"type":"boolean"}}}"#;
+    let (base, mods) = block_base("block-nbt-fanout", &[declaration]);
+    let plan = Plan::new(&base, &mods).unwrap();
+    let mut tag = Tag::Compound(Compound::from([
+        (
+            JavaString::from("states"),
+            Tag::List(vec![test_state_row("x"), test_state_row("y")]),
+        ),
+        (JavaString::from("cached_shapes"), Tag::IntArray(vec![7, 9])),
+    ]));
+    plan.nbt(&mut tag);
+    let Some(Tag::List(states)) = tag.get("states") else {
+        panic!("no states")
+    };
+    let Some(Tag::IntArray(shapes)) = tag.get("cached_shapes") else {
+        panic!("no cached_shapes")
+    };
+    // Two template states times the two combinations of `lit`, and the shapes
+    // stay parallel to the states — that is what makes the file load.
+    assert_eq!(states.len(), 2 + 4);
+    assert_eq!(shapes.len(), states.len());
+    // A combination keeps the shape of the template state it came from.
+    assert_eq!(shapes, &vec![7, 9, 7, 7, 9, 9]);
+    let properties = |i: usize| -> BTreeMap<String, String> {
+        let Some(Tag::Compound(c)) = states.get(i) else {
+            panic!("row {i} is not a compound")
+        };
+        let Some(Tag::Compound(p)) = c.get(&JavaString::from("properties")) else {
+            panic!("row {i} has no properties")
+        };
+        p.iter()
+            .filter_map(|(k, v)| match v {
+                Tag::String(s) => Some((k.to_string_lossy(), s.to_string_lossy())),
+                _ => None,
+            })
+            .collect()
+    };
+    let mut expected: Vec<String> = Vec::new();
+    for axis in ["x", "y"] {
+        for lit in ["false", "true"] {
+            expected.push(format!("{axis}/{lit}"));
+        }
+    }
+    let seen: Vec<String> = (2..states.len())
+        .map(|i| {
+            let p = properties(i);
+            // The declared properties are the only ones on the row.
+            assert_eq!(p.len(), 2, "row {i} is {p:?}");
+            let axis = p.get("axis").cloned().unwrap_or_default();
+            let lit = p.get("lit").cloned().unwrap_or_default();
+            format!("{axis}/{lit}")
+        })
+        .collect();
+    assert_eq!(seen, expected);
+    for i in 2..states.len() {
+        let Some(Tag::String(id)) = states[i].get("id") else {
+            panic!("row {i} has no id")
+        };
+        assert_eq!(id.to_string_lossy(), "testmod:test");
+    }
+    fs::remove_dir_all(&base).unwrap();
+    fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
+}
+
+/// A block's shape and its count in `structure-blocks.json` cover every
+/// combination too: the table's declared total and the lengths of its lists
+/// grow by the fan-out, and every state of the block maps to a shape.
+#[test]
+fn a_shape_and_the_state_count_cover_every_combination() {
+    let declaration = r#"{"template":"minecraft:test","item":false,
+      "state_properties":{"lit":{"type":"boolean"}},
+      "shapes":{"property":"axis","values":{"x":[[0,0,0,1,1,1]],"y":[[0,0,0,0.5,1,1]]}}}"#;
+    let (base, mods) = block_base("block-shape-fanout", &[declaration]);
+    let plan = Plan::new(&base, &mods).unwrap();
+    // The template's two states, no shapes yet, every vanilla state unmapped.
+    // `nbt` grows the arrays to the block's four states and `collision_shapes`
+    // writes into them, in the order the real path applies them.
+    let mut tag = Tag::Compound(Compound::from([
+        (
+            JavaString::from("states"),
+            Tag::List(vec![test_state_row("x"), test_state_row("y")]),
+        ),
+        (JavaString::from("shapes"), Tag::List(Vec::new())),
+        (
+            JavaString::from("cached_shapes"),
+            Tag::IntArray(vec![-1, -1]),
+        ),
+    ]));
+    plan.nbt(&mut tag);
+    plan.collision_shapes(&mut tag).unwrap();
+    let Some(Tag::List(entries)) = tag.get("shapes") else {
+        panic!("no shapes")
+    };
+    let Some(Tag::IntArray(mapping)) = tag.get("cached_shapes") else {
+        panic!("no cached_shapes")
+    };
+    // One shape per template state, shared by that state's combinations.
+    assert_eq!(entries.len(), 2);
+    assert_eq!(mapping.len(), 2 + 4);
+    let added = &mapping[2..];
+    assert!(added.iter().all(|id| *id >= 0), "{added:?}");
+    assert_eq!((added[0], added[1]), (added[0], added[0]));
+    assert_eq!((added[2], added[3]), (added[2], added[2]));
+    assert_ne!(added[0], added[2]);
+
+    let rows = "[[false,false],[false,false]]";
+    let text = format!(r#"{{"rotate":{rows},"mirror":{rows},"full_block":{rows},"states":2}}"#);
+    let mut doc: J = serde_json::from_str(&text).unwrap();
+    plan.json("worldgen/blocks/structure-blocks.json", &mut doc)
+        .unwrap();
+    for key in ["rotate", "mirror", "full_block"] {
+        let Some(J::Arr(list)) = doc.get(key) else {
+            panic!("{key} is not a list")
+        };
+        assert_eq!(list.len(), 2 + 4, "{key}");
+    }
+    // The declared total agrees with the lists, which is what a loader checks.
+    assert_eq!(doc.get("states"), Some(&J::Num(6.into())));
+    fs::remove_dir_all(&base).unwrap();
+    fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
 }

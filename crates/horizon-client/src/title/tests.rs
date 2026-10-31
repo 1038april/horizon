@@ -112,6 +112,7 @@ fn direct_connection_remembers_the_address_on_cancel_escape_and_join() {
         f.click("Join Server"),
         Action::Connect {
             address: "localhost:25569".into(),
+            lan: false,
         }
     );
     assert_eq!(f.title.last_server, "localhost:25569");
@@ -569,10 +570,12 @@ fn classic_navigation_buttons_sound_even_without_a_game_action() {
         (Action::None, false)
     );
     assert_eq!(f.click_with_sound("Create New World"), (Action::None, true));
-    assert_eq!(
-        f.title.click(240.0, 55.0, (480.0, 262.0)),
-        (Action::None, false)
-    );
+    // Create New World prepares the world generation first
+    // (`CreateWorldScreen.openCreateWorldScreen`); the game opens the
+    // screen once that is done.
+    if f.title.click(240.0, 55.0, (480.0, 262.0)).0 == Action::None && f.title.preparing() {
+        f.title.finish_preparing();
+    }
     // The Game tab's game mode cycle button.
     let mode = f
         .title
@@ -906,13 +909,13 @@ fn create_world_tabs_follow_vanilla_and_their_choices_reach_the_action() {
             bonus_chest: true
         }
     );
-    // The More tab: Experiments has no screen yet; Data
+    // The More tab: Game Rules, Experiments and Data Packs all open; Data
     // Packs opens on a new pack folder, and its selection reaches the action.
     f.title.click(54.0 + 248.0 + 10.0, 10.0, size);
     let more = labels(&f);
     assert_eq!(
         more[..3].iter().map(|b| b.3).collect::<Vec<_>>(),
-        [true, false, true]
+        [true, true, true]
     );
     let (action, sound) = f.title.click(more[2].1 + 10.0, more[2].2 + 10.0, size);
     let Action::DataPacks { dir, selected } = action else {

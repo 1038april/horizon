@@ -408,7 +408,19 @@ impl Game<'_> {
             && self.mod_menu_at(pos).is_some()
         {
             if !g.spectator() && menu.slots.still_valid(&self.world, g, menu.pos) {
-                self.mod_menu_button(pos, id);
+                // The clicking player's cursor stack (`clickMenuButton`'s
+                // other half). Single player's own player is a guest of
+                // its own host too (`lan.rs:165`), so this one path covers
+                // both single player and a LAN guest.
+                let mut carried = g.carried.clone();
+                self.mod_menu_button(pos, id, &mut carried);
+                if host.hub.guest(conn).is_some_and(|g| g.carried != carried) {
+                    let net = host.hub.stack(&carried);
+                    if let Some(g) = host.hub.guest_mut(conn) {
+                        g.carried = carried;
+                        g.send(&C::SetCursorItem(play::SetCursorItem { item: net }));
+                    }
+                }
             }
             return;
         }
@@ -564,13 +576,30 @@ impl Game<'_> {
             }
         }
         let data = self.beacon_data(host, pos);
-        let mut updated = false;
+        let mut updated = None;
         self.lan_station_op(host, conn, None, |menu, env| {
             menu.data.copy_from_slice(&data);
             let power = |k: usize| powers[k].as_ref().map(|(id, n)| (*id, n.as_str()));
-            updated = menu.beacon_update(env, power(0), power(1));
+            updated = Some(menu.beacon_update(env, power(0), power(1)));
         });
-        if !updated {
+        // handleSetBeaconPacket: effects the beacon can't give, or no payment, disconnect.
+        if updated == Some(false) {
+            let name = host
+                .hub
+                .guests
+                .iter()
+                .find(|g| g.conn == conn)
+                .map(|g| g.name.clone());
+            eprintln!(
+                "Player {} tried to set invalid beacon effects",
+                name.unwrap_or_default()
+            );
+            host.hub.kick(
+                conn,
+                horizon_protocol::text::translatable("multiplayer.disconnect.generic", &[]),
+            );
+        }
+        if updated != Some(true) {
             return;
         }
         let [primary, secondary] = powers.map(|p| p.map(|(_, n)| n));

@@ -908,12 +908,14 @@ impl Game<'_> {
         let Some(id) = self.spawn_mob_at(&kind, front, facing != Direction::Up) else {
             return Ok((Some(stack), CLICK));
         };
-        // Entity.applyImplicitComponents: a name from an anvil names the mob.
-        if let Some(name) = stack.custom_name()
-            && let Some(m) = self.mobs.iter_mut().find(|m| m.id == id)
-        {
-            m.custom_name = Some(name.to_owned());
+        // EntityType.create: `finalizeSpawn` first, the egg's components after.
+        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+            horizon_client::entity_nbt::apply_item_components(m, &stack);
         }
+        // EntityType.updateCustomEntityTag: a configured egg
+        // (`/give @s pig_spawn_egg[minecraft:entity_data={…}]`) spawns the mob
+        // it describes from a dispenser too, not only from a player's hand.
+        self.apply_spawn_egg_entity_data(id, &stack);
         self.mob_ambient(id)?;
         // SpawnEggItemBehavior: the entity was placed by the dispenser.
         self.post_block_game_event("minecraft:entity_place", [pos.0, pos.1, pos.2], None, None);
@@ -1221,7 +1223,7 @@ impl Game<'_> {
             // persistent) calls out, then ENTITY_PLACE.
             if let Some(id) = self.spawn_mob_at(kind, target, true) {
                 if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
-                    horizon_client::entity_nbt::load_bucket_data(m, &stack);
+                    horizon_client::entity_nbt::apply_item_components(m, &stack);
                 }
                 self.mob_placed(id)?;
             }
@@ -1755,6 +1757,7 @@ impl Game<'_> {
         let id = mob.id;
         self.mobs[index].removed = true;
         self.mobs.push(mob);
+        self.native_mobs_joined(self.mobs.len() - 1, false);
         Some(id)
     }
     /// `ShearsDispenseItemBehavior.tryShearEntity`: the first live, ready
@@ -1813,7 +1816,7 @@ impl Game<'_> {
                                 f64::from(r.next_float() * 0.05),
                                 f64::from((r.next_float() - r.next_float()) * 0.1),
                             ];
-                            if let Some(item) = self.dropped.last_mut() {
+                            if let Some(item) = self.just_spawned_item() {
                                 item.velocity = Vec3::new(
                                     item.velocity.x + push[0],
                                     item.velocity.y + push[1],

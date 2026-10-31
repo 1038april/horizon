@@ -7,7 +7,7 @@ use crate::section_mask::SectionMask;
 use crate::{
     chunk::Chunk,
     light::{LightChanges, LightTables, apply_lighting, apply_relighting, light_chunk},
-    mesher::{MeshTables, Mesher, Region, SectionMesh, borrow},
+    mesher::{MeshScratch, MeshTables, Mesher, Region, SectionMesh, borrow},
     world::World,
 };
 use horizon_core::biome::BiomeZoom;
@@ -170,6 +170,7 @@ impl<G: ChunkGenerator> Saves for G {
 #[derive(Clone, Copy)]
 struct MeshSettings {
     nether: bool,
+    shader_pack_lighting: bool,
     zoom: BiomeZoom,
     blend_radius: i32,
     smooth_lighting: bool,
@@ -234,10 +235,39 @@ struct Shared {
     /// packs reload; each mesh job takes the current one.
     context: RwLock<Arc<WorkerContext>>,
     done: Mailbox,
+    /// Only workers use this pool; frames never wait for its lock. Retaining
+    /// cleared buffers avoids racing the renderer for the process heap.
+    meshes: Mutex<MeshPool>,
     /// Workers that have freed their buffers ([`IDLE_RELEASE`]) and taken no
     /// job since: the last of them gives the freed memory back to the OS.
     released: AtomicUsize,
 }
+#[derive(Default)]
+struct MeshPool {
+    meshes: Vec<SectionMesh>,
+    bytes: usize,
+}
+impl MeshPool {
+    const BYTES: usize = 16 << 20;
+    const COUNT: usize = 128;
+    fn take(&mut self) -> SectionMesh {
+        let mesh = self.meshes.pop().unwrap_or_default();
+        self.bytes -= mesh.capacity_bytes();
+        mesh
+    }
+    /// A rejected mesh is dropped by the caller, after releasing the lock.
+    fn put(&mut self, mut mesh: SectionMesh) -> Option<SectionMesh> {
+        let bytes = mesh.capacity_bytes();
+        if bytes == 0 || self.meshes.len() == Self::COUNT || bytes > Self::BYTES - self.bytes {
+            return Some(mesh);
+        }
+        mesh.clear();
+        self.bytes += bytes;
+        self.meshes.push(mesh);
+        None
+    }
+}
+
 /// Finished jobs, from the workers to the game thread, in the order they
 /// finished. Not an `mpsc` channel: its receiver waits for a sender it finds
 /// half way through a send, and a worker descheduled there on a busy machine
@@ -343,6 +373,9 @@ pub struct Streaming {
     /// Dimension flags: sky light, Nether face shading.
     pub sky_light: bool,
     pub nether_shading: bool,
+    /// A shader pack lights the faces: sections mesh without face shading
+    /// (`Mesher::shader_pack_lighting`).
+    pub shader_pack_lighting: bool,
     /// `BiomeManager`'s zoom seed (the hashed world seed) and `biomeBlendRadius`.
     pub biome_zoom: BiomeZoom,
     pub biome_blend: i32,
@@ -536,6 +569,7 @@ impl Streaming {
             stop: AtomicBool::new(false),
             context: RwLock::new(context.clone()),
             done: Mailbox::default(),
+            meshes: Mutex::new(MeshPool::default()),
             released: AtomicUsize::new(0),
         });
         let workers = threads.max(1);
@@ -556,6 +590,7 @@ impl Streaming {
                         // the worker across mesh jobs, like vanilla's per-thread cache:
                         // cloning it per job copied every state and face shape.
                         let mut faces: Option<(Arc<MeshTables>, FaceVisibility)> = None;
+                        let mut mesh_scratch = MeshScratch::default();
                         loop {
                             let job = {
                                 let mut queue = shared.queue.lock().unwrap();
@@ -580,10 +615,12 @@ impl Streaming {
                                     if wait.timed_out() && queue.is_empty() {
                                         // A server nobody is on, a client standing still:
                                         // free the generator's buffers (and the mesher's
-                                        // face cache) until the next job needs them.
+                                        // face cache and scratch) until the next job
+                                        // needs them.
                                         drop(queue);
                                         generator.idle(&mut worker);
                                         faces = None;
+                                        mesh_scratch = MeshScratch::default();
                                         released = true;
                                         // The allocator keeps freed pages until memory
                                         // runs short: once every worker has freed its own,
@@ -591,6 +628,12 @@ impl Streaming {
                                         if shared.released.fetch_add(1, Ordering::Relaxed) + 1
                                             == workers
                                         {
+                                            // No worker needs retained mesh capacity now.
+                                            // Drop it outside the pool lock before asking
+                                            // the allocator to return freed pages.
+                                            let meshes =
+                                                std::mem::take(&mut *shared.meshes.lock().unwrap());
+                                            drop(meshes);
                                             horizon_threads::release_free_memory();
                                         }
                                         queue = shared.queue.lock().unwrap();
@@ -620,7 +663,10 @@ impl Streaming {
                                     Done::Saved(protos)
                                 }
                                 Job::Free(meshes) => {
-                                    drop(meshes);
+                                    for (_, mesh) in meshes {
+                                        let rejected = shared.meshes.lock().unwrap().put(mesh);
+                                        drop(rejected);
+                                    }
                                     continue;
                                 }
                                 Job::Light(x, z, region, seq, sky) => {
@@ -638,6 +684,7 @@ impl Streaming {
                                     };
                                     let mut mesher = Mesher {
                                         nether_shading: settings.nether,
+                                        shader_pack_lighting: settings.shader_pack_lighting,
                                         zoom: settings.zoom,
                                         blend_radius: settings.blend_radius,
                                         smooth_lighting: settings.smooth_lighting,
@@ -648,7 +695,13 @@ impl Streaming {
                                         biomes: &context.biomes,
                                         visibility,
                                     };
-                                    let mut mesh = mesher.mesh(&borrow(&region), sy);
+                                    let recycled = shared.meshes.lock().unwrap().take();
+                                    let mut mesh = mesher.mesh_reusing(
+                                        &borrow(&region),
+                                        sy,
+                                        recycled,
+                                        &mut mesh_scratch,
+                                    );
                                     mesh.sort_solid();
                                     faces = Some((context.tables.clone(), mesher.visibility));
                                     Done::Meshed(x, sy, z, mesh, seq)
@@ -706,6 +759,7 @@ impl Streaming {
             loading: false,
             sky_light: true,
             nether_shading: false,
+            shader_pack_lighting: false,
             biome_zoom: BiomeZoom::new(0),
             biome_blend: 2,
             smooth_lighting: true,
@@ -1500,6 +1554,7 @@ impl Streaming {
                         self.sequence,
                         MeshSettings {
                             nether: self.nether_shading,
+                            shader_pack_lighting: self.shader_pack_lighting,
                             zoom: self.biome_zoom,
                             blend_radius: self.biome_blend,
                             smooth_lighting: self.smooth_lighting,
@@ -2138,6 +2193,68 @@ fn nearest_first<T: Ord>(candidates: &mut Vec<T>, room: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mesh_pool_reuses_capacity_with_clean_geometry_state() {
+        let mut mesh = SectionMesh::default();
+        mesh.solid.resize(64, bytemuck::Zeroable::zeroed());
+        mesh.translucent.resize(16, bytemuck::Zeroable::zeroed());
+        mesh.block_entities.push(([1, 2, 3], 7));
+        mesh.visibility = 0;
+        mesh.sides = crate::mesher::Sides::unsorted(16);
+        let capacities = mesh.capacity_bytes();
+        let pointers = (mesh.solid.as_ptr(), mesh.translucent.as_ptr());
+        let mut pool = MeshPool::default();
+        assert!(pool.put(mesh).is_none());
+        assert_eq!(pool.bytes, capacities);
+        let reused = pool.take();
+        assert_eq!(reused.capacity_bytes(), capacities);
+        assert_eq!(
+            pointers,
+            (reused.solid.as_ptr(), reused.translucent.as_ptr())
+        );
+        assert!(reused.solid.is_empty());
+        assert!(reused.translucent.is_empty());
+        assert!(reused.block_entities.is_empty());
+        assert_eq!(reused.visibility, crate::mesher::ALL_VISIBLE);
+        assert_eq!(reused.sides, crate::mesher::Sides::default());
+        assert_eq!(pool.bytes, 0);
+    }
+
+    #[test]
+    fn mesh_pool_caps_retained_count_and_bytes() {
+        let mut pool = MeshPool::default();
+        for _ in 0..MeshPool::COUNT {
+            let mut mesh = SectionMesh::default();
+            mesh.solid.reserve_exact(1);
+            assert!(pool.put(mesh).is_none());
+        }
+        let mut extra = SectionMesh::default();
+        extra.solid.reserve_exact(1);
+        assert!(pool.put(extra).is_some());
+        for _ in 0..MeshPool::COUNT {
+            pool.take();
+        }
+        assert_eq!(pool.bytes, 0);
+        for i in 0..2 {
+            let mut mesh = SectionMesh::default();
+            mesh.solid.reserve_exact(
+                MeshPool::BYTES / std::mem::size_of::<crate::mesher::TerrainVertex>() / 2 + 1,
+            );
+            assert_eq!(pool.put(mesh).is_some(), i == 1);
+            assert!(pool.bytes <= MeshPool::BYTES);
+            assert_eq!(pool.meshes.len(), 1);
+        }
+        pool.take();
+        assert_eq!(pool.bytes, 0);
+        let mut huge = SectionMesh::default();
+        huge.solid.reserve_exact(
+            MeshPool::BYTES / std::mem::size_of::<crate::mesher::TerrainVertex>() + 1,
+        );
+        assert!(pool.put(huge).is_some());
+        assert!(pool.meshes.is_empty());
+        assert_eq!(pool.bytes, 0);
+    }
 
     /// The frame never waits for a worker: while one holds the mailbox, the
     /// frame takes nothing and finds the results, in order, the next time.
