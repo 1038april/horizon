@@ -1325,6 +1325,19 @@ mod tests {
     }
 
     #[test]
+    fn images_wait_for_compute_programs() {
+        let fsh = "#version 430\nlayout(rgba8) uniform image2D colorimg0;\n\
+                   void main() { gl_FragData[0] = imageLoad(colorimg0, ivec2(0)); }\n";
+        let e = program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        )
+        .err()
+        .unwrap();
+        assert!(e[0].message.contains("outside compute programs"), "{e:?}");
+    }
+
+    #[test]
     fn a_pack_keeps_its_own_inverse() {
         let fsh = "#version 120\nuniform mat4 gbufferProjection;\n\
                    mat4 inverse(mat4 m) { return m; }\n\

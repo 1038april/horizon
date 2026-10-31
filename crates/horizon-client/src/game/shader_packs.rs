@@ -72,7 +72,10 @@ impl Game<'_> {
                     Ok(pack) => {
                         let macros = Macros::standard();
                         let text = pack.read_text("shaders.properties").unwrap_or_default();
-                        let properties = Properties::parse(&text, &macros);
+                        let properties = Properties::parse(
+                            &text,
+                            &horizon_shaders::with_options(&pack, &macros),
+                        );
                         for note in &properties.notes {
                             log::warn!(
                                 "shader pack {name}: shaders.properties:{}: {}",

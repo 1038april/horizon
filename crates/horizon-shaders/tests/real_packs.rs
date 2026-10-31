@@ -30,7 +30,7 @@ fn real_packs_read() {
         let macros = Macros::standard();
         let shaders = Properties::parse(
             &pack.read_text("shaders.properties").unwrap_or_default(),
-            &macros,
+            &horizon_shaders::with_options(&pack, &macros),
         );
         let ids: Vec<Properties> = ["block", "item", "entity", "dimension"]
             .iter()
