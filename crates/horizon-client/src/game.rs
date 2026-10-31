@@ -185,6 +185,7 @@ mod moving_pistons;
 mod music;
 mod names;
 mod narrator;
+mod native_criteria;
 mod native_entities;
 mod native_hooks;
 mod native_lifecycle;
