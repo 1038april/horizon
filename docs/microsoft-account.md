@@ -224,8 +224,8 @@ To chat on such servers the game (`auth.rs`, `game/remote_chat.rs`, `horizon_pro
 
 `tools/secure_chat_client_e2e.py` checks it against vanilla 26.3's server with a mock of the services
 that issues certificates: online mode with `enforce-secure-profile=true` (signed chat logged as secure,
-a `/msg` whisper delivered, nothing refused) and offline mode (unsigned chat, as before). Other players'
-signatures are not verified yet (no Not Secure marking: `ChatListener.evaluateTrustLevel`).
+a `/msg` whisper delivered, a message flushed from Chat Delay still counted as seen, nothing refused) and
+offline mode (unsigned chat, as before). Other players' signatures are not verified yet.
 
 ## Harnesses
 

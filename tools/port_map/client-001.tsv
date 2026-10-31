@@ -1,5 +1,5 @@
-AccountProfileKeyPairManager.prepareKeyPair	port	crates/horizon-client-render/src/auth.rs::prepare_chat_keys	on a background thread, at start
-AccountProfileKeyPairManager.shouldRefreshKeyPair	port	crates/horizon-client-render/src/auth.rs::prepare_chat_keys	at most hourly; nothing calls it yet but the start
+AccountProfileKeyPairManager.prepareKeyPair	port	crates/horizon-client-render/src/auth.rs::prepare_chat_keys	on a background thread, at start and on each online-mode join
+AccountProfileKeyPairManager.shouldRefreshKeyPair	port	crates/horizon-client-render/src/auth.rs::prepare_chat_keys	at most hourly, from the remote tick, once there is a chat session
 AccountProfileKeyPairManager.readOrFetchProfileKeyPair	port	crates/horizon-client-render/src/auth.rs::prepare_chat_keys	kept until due a refresh; a failed fetch keeps the old pair
 AccountProfileKeyPairManager.readProfileKeyPair	skip:service		the pair stays in memory like the access token; no profilekeys file
 AccountProfileKeyPairManager.writeProfileKeyPair	skip:service		the pair stays in memory like the access token; no profilekeys file
