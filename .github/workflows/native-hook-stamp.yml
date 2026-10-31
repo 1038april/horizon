@@ -1,4 +1,6 @@
 name: native hook stamp
+# Opens a PR that numbers pending fragments after they merge. Only pushes to
+# main run main's own tool; fragments are read as data, not PR code.
 
 on:
   push:
@@ -7,8 +9,7 @@ on:
       - 'tools/native-hook-fragments/*.json'
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 concurrency:
   group: native-hook-stamp
@@ -18,6 +19,9 @@ jobs:
   stamp:
     if: github.repository == 'horizon-rust/horizon'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
