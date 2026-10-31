@@ -354,7 +354,7 @@ pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
         receive_vibration(m, dimension(w), info);
     }
 }
-/// `Allay.travel`: `travelFlying(input, getSpeed())` â€” the airborne speed is
+/// `Allay.travel`: `travelFlying(input, getSpeed())` — the airborne speed is
 /// the one the move control set this tick, and no gravity applies, so an
 /// allay never falls under its own travel.
 pub fn travel(m: &mut Mob, w: &MobWorld, input: Vec3, events: &mut Vec<MobEvent>) -> bool {
