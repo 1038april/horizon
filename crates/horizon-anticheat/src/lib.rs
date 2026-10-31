@@ -153,9 +153,12 @@ checks! {
 
     /// Ground: a move that says it ends on the ground with nothing there to stand on: no-fall (claiming
     /// the ground to skip fall damage) and walking on water. The claim is dropped, so vanilla's
-    /// fall damage follows; from `setback` on the player is also sent back. Logging only (`setback = 0`,
-    /// the default), the claim stands. Once trusted: `setback = 5`, `alert = 15`, `kick = 60`.
-    ground: Ground => GroundConfig [0.0, 0.0, 0.0, 2.0, 0] {}
+    /// fall damage follows; from `setback` on the player is also sent back, and a player that keeps
+    /// claiming is kicked, then banned at the second kick (`ban_after = 2`). A claim standing still isn't
+    /// judged (no fall to skip). On the official server's first two hours (67 players), every player who
+    /// wasn't flying or walking on water peaked at level 7 (4 claims standing still in one second); the
+    /// ones who were, at 113 to 3749.
+    ground: Ground => GroundConfig [10.0, 15.0, 30.0, 2.0, 2] {}
 
     /// Prediction: each move played again from the client's own inputs with vanilla's movement code,
     /// and compared (speed, step, fly, jesus...). Each player's client ticks are recorded
@@ -323,14 +326,19 @@ mod tests {
     }
 
     #[test]
-    fn on_by_default_but_only_combat_acts() {
+    fn on_by_default_but_only_combat_and_ground_act() {
         let c = Config::from_server_toml("[server]\nport = 25565\n").unwrap();
         assert_eq!(c, Config::default());
         for &check in Check::ALL {
             assert!(c.runs(check), "{}", check.name());
             let a = c.actions(check);
             let acts = [a.setback, a.alert, a.kick] != [0.0; 3];
-            assert_eq!(acts, check == Check::Combat, "{}", check.name());
+            assert_eq!(
+                acts,
+                matches!(check, Check::Combat | Check::Ground),
+                "{}",
+                check.name()
+            );
         }
         let off = Config::from_server_toml("[anticheat]\nenabled = false\n").unwrap();
         assert!(Check::ALL.iter().all(|&check| !off.runs(check)));

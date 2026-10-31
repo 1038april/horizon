@@ -313,6 +313,11 @@ impl Hub {
         if !self.anticheat.as_deref()?.config.runs(Check::Ground) {
             return None;
         }
+        // Standing still: no fall to skip, whatever holds the player up (a block the server doesn't
+        // have, seen on the official server after a long teleport). Hovering is vanilla's floating kick.
+        if self.guests[i].position == to {
+            return None;
+        }
         let ticks = self.ticks;
         if stands || self.ground_holds(i, to, ctx)? {
             self.guests[i].anticheat.ground = Some((ticks, to[1]));
