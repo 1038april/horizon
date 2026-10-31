@@ -150,6 +150,8 @@ Slice=$slice
 WorkingDirectory=$dir
 ExecStart=/usr/bin/taskset -c $cpus $dir/bin/runsvc.sh
 Nice=19
+# GitHub's runners' umask: a user service's is 0002, and tests check the modes of the files they write.
+UMask=0022
 # runsvc.sh hands SIGTERM to the runner, which stops after cancelling its job.
 KillMode=mixed
 KillSignal=SIGTERM
