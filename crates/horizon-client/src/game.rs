@@ -15360,7 +15360,7 @@ impl ApplicationHandler for Game<'_> {
                     // Screen.keyPressed sees the physical key, repeats included.
                     if event.state == ElementState::Pressed
                         && self.screen == Screen::Inventory
-                        && self.merchant_key(key)
+                        && (self.merchant_key(key) || self.recipe_book_key(key))
                     {
                         return Ok(());
                     }

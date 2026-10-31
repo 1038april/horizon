@@ -97,6 +97,8 @@ address. The script then checks, from both sides, what a guest's game used to ge
               places a log in the inventory's crafting grid (the server places it).
 - recipe_removal: the host and guest each forget all and individual recipes while the book
               is open; it stays empty when reopened, and a later grant appears (#1495).
+- recipe-reselect: the host and the guest each craft wool three times from one recipe-book click: Space
+              (a key repeat, Shift held: as many as fit) and Enter (one) place the recipe clicked last again.
 - recipe_targets: `/recipe give|take <other player>` changes that player's book, the host's
               for the guest and (server thread) the guest's for the host; their open book shows it.
 - feedback:  the guest's command feedback names the guest and shows the numbers, and the host (an
@@ -8158,6 +8160,72 @@ def check_recipe_removal(host, guest, out):
 
 CHECKS += ['recipe_removal']
 CHECK_FNS.update(recipe_removal=check_recipe_removal)
+
+
+def check_recipe_reselect(host, guest, out):
+    """RecipeBookComponent.keyPressed: Enter or Space (key repeats too) places `lastRecipe`, the recipe the
+    last book click placed, again, with the key's Shift; slot clicks keep it, so the grid refills after
+    every craft taken from the result slot."""
+    seen = {}
+    for game in (host, guest):
+        back_to_game(game)
+        game('command', command='gamemode survival')
+        game('command', command='clear @s')
+        # Picking up string unlocks more recipes: take them, so wool's is the book's only button.
+        game('command', command='give @s minecraft:string 12')
+        game.wait(20)
+        game('command', command='recipe take @s *')
+        game('command', command='recipe give @s minecraft:white_wool_from_string')
+        game.wait(20)
+        game.raw('key', 'e', 'tap')
+        game.wait(5)
+        try:
+            book = game('screen').get('recipe_book')
+            assert book, f'{game.name}: the inventory has no recipe book'
+            if len(book['targets']) == 1:
+                game.raw('click-at', *centre(book['targets'][0]))
+                game.wait(5)
+                book = game('screen')['recipe_book']
+            buttons = [r for r in book['targets'] if r[2:] == [25.0, 25.0]]
+            assert len(buttons) == 1, f'{game.name}: expected the wool button alone: {book}'
+            steps = []
+            # 12 string: Shift places 3 per grid slot, a plain press 1.
+            for press, shift, per_slot in (('click', True, 3), ('space repeat', True, 3), ('enter tap', False, 1)):
+                if press != 'click':
+                    game('command', command='give @s minecraft:string 12')
+                    game.wait(10)
+                if shift:
+                    game.raw('key', 'shift', 'down')
+                if press == 'click':
+                    game.raw('click-at', *centre(buttons[0]))
+                else:
+                    game.raw('key', *press.split())
+                if shift:
+                    game.raw('key', 'shift', 'up')
+                game.wait(10)
+                grid = {s['slot']: (s['stack']['item'], s['stack']['count'])
+                        for s in game.raw('menu')['slots'] if 100 <= s['slot'] < 109}
+                steps.append({'press': press, 'grid': grid})
+                counts = sorted(c for item, c in grid.values() if item == 'minecraft:string')
+                assert counts == [per_slot] * 4, f'{game.name}-{press}: grid {grid}'
+                game.raw('click-slot', 200, 'shift')
+                game.wait(10)
+            game.shot(out, 'recipe-reselect')
+            game.raw('key', 'esc', 'tap')
+            game.wait(10)
+            case = {'steps': steps, 'server': {item: server_count(game, item) for item in ('string', 'white_wool')}}
+            seen[game.name] = case
+            # 36 string in, 3 + 3 + 1 wool out at 4 string each.
+            assert case['server'] == {'string': 8, 'white_wool': 7}, f'{game.name}: {case}'
+        finally:
+            back_to_game(game)
+            game('command', command='clear @s')
+            game('command', command='recipe give @s *')
+    return seen
+
+
+CHECKS += ['recipe-reselect']
+CHECK_FNS['recipe-reselect'] = check_recipe_reselect
 
 
 def check_recipe_settings(host, guest, out):
