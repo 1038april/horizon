@@ -320,11 +320,15 @@ impl Loading {
             gui.atlas.font.japanese = self.settings.japanese_glyphs;
         }
         if let Some(window) = self.window.clone() {
-            let modes = window
+            let monitor = window
                 .current_monitor()
-                .or_else(|| window.primary_monitor())
-                .map(|m| horizon_client::window::monitor_video_modes(&m))
-                .unwrap_or_default();
+                .or_else(|| window.primary_monitor());
+            if let Some(modes) = self
+                .video_modes
+                .refresh(monitor, horizon_client::window::monitor_video_modes)
+            {
+                self.settings.video_modes = modes;
+            }
             let preferred = self
                 .settings
                 .file
@@ -338,7 +342,6 @@ impl Loading {
                 preferred,
                 false,
             );
-            self.settings.video_modes = modes;
         }
         self.update_menu_cursor();
     }
@@ -384,7 +387,7 @@ impl Loading {
     fn open_menu_options(&mut self, page: Page) {
         self.menu.options.open_at(false, page);
         self.menu.options.languages = horizon_client::lang::available(&[&self.menu.root]);
-        self.menu.options.pack_infos = packs::pack_infos(&self.vanilla_root);
+        self.menu.options.pack_infos = packs::pack_infos(&self.vanilla_root, &[]);
         self.menu.options.pack_selection = self.settings.resource_packs.clone();
         self.menu.options.pack_screen = None;
         self.menu.options_open = true;
@@ -423,8 +426,9 @@ impl Loading {
                     packs::open_folder(&dir);
                 }
                 Event::DataPacks(ids) => {
+                    let resources = self.vanilla_root.clone();
                     if let Some(title) = &mut self.menu.title {
-                        title.set_data_packs(ids);
+                        title.offer_data_packs(&resources, ids);
                     }
                 }
                 Event::OpenDataPackFolder(dir) => {
@@ -551,6 +555,13 @@ impl Loading {
             }
             WindowEvent::RedrawRequested => self.draw(),
             WindowEvent::ModifiersChanged(modifiers) => self.menu.modifiers = modifiers.state(),
+            // `PackSelectionScreen.onFilesDrop`: a pack dropped on the window
+            // joins the Create New World screen's data packs.
+            WindowEvent::DroppedFile(path) => {
+                if let Some(title) = &mut self.menu.title {
+                    title.drop_file(path);
+                }
+            }
             WindowEvent::Focused(false) => {
                 self.menu.modifiers = ModifiersState::empty();
                 self.menu.physical_keys.clear();
@@ -818,6 +829,7 @@ mod tests {
             gui: None,
             settings: Settings::default(),
             fullscreen: horizon_client::window::FullscreenState::new(false),
+            video_modes: Default::default(),
             options: None,
             vanilla_root: PathBuf::new(),
             pack_error: None,

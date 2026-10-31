@@ -30,6 +30,8 @@ pub struct PackInputs {
     pub biome_precipitation: i32,
     pub temperature: f32,
     pub rainfall: f32,
+    /// Whether the biome at the camera is known (its chunk is loaded).
+    pub biome_known: bool,
     /// `heldItemId`, `heldItemId2` (item.properties, 5.3) and `heldBlockLightValue(2)`.
     pub held_items: [i32; 2],
     pub held_light: [i32; 2],

@@ -509,7 +509,7 @@ impl Game<'_> {
             });
         let flat = preset == horizon_client::save::WorldPreset::Flat;
         let settings = if flat {
-            let biomes = self.res.biomes();
+            let biomes = world_biomes!(self);
             let (settings, errors) = horizon_client::flatgen::settings_from_json(
                 &props.generator_settings,
                 |b| self.pack.assets.registry.default_state(b).is_some(),
@@ -1717,7 +1717,8 @@ impl Game<'_> {
         self.native_server_stopping(true);
         log("INFO", "Stopping server");
         log("INFO", "Saving players");
-        if let Some(host) = self.lan.take() {
+        if let Some(mut host) = self.lan.take() {
+            self.flush_native_net(&mut host);
             for g in &host.hub.guests {
                 // The vehicle the guest rides, for the file that names it.
                 let vehicle = self.root_vehicle_uuid(g.vehicle);
