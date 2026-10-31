@@ -40,7 +40,7 @@ DecoratedPotBlock.getStateForPlacement	port	crates/horizon-world/src/level/place
 DecoratedPotBlock.useWithoutItem	port	crates/horizon-client/src/game/decorated_pot.rs::Game::use_decorated_pot	empty-hand path plays insert_fail, negative wobble and block change
 DecoratedPotBlock.createBlockStateDefinition	skip:data		facing, waterlogged and cracked properties come from the block state tables
 DecoratedPotBlock.getFluidState	skip:data		waterlogged water source comes from the per-state fluid facts table (Level::fluid)
-DecoratedPotBlock.onProjectileHit	missing		player: a projectile hitting a pot does not crack it, and the pot is not broken by the hit
+DecoratedPotBlock.onProjectileHit	port	crates/horizon-client/src/game/creatures.rs::Game::projectile_breaks_block	the pot is cracked first, then shattered
 DecoratedPotBlock.getCloneItemStack	missing		player: middle-click pick of a pot gives an empty pot, not one with its sherd decorations
 DecoratedPotBlock.rotate	skip:data		rotation results come from the exported BlockState rotate table (worldgen/structure.rs)
 DetectorRailBlock.entityInside	port	crates/horizon-world/src/level/hooks.rs::Sim::entity_inside	when not powered, checks for minecarts inside the search box
@@ -66,7 +66,7 @@ DispenserBlock.rotate	skip:data		rotation results come from the exported BlockSt
 DispenserBlock.createBlockStateDefinition	skip:data		facing and triggered properties come from the block state tables
 DoorBlock.getShape	skip:data		outline shapes come from the per-state shape table (facts shape index)
 DoorBlock.updateShape	port	crates/horizon-world/src/level/shapes.rs::Sim::update_shape_class	Door arm: the other half follows, and the lower half breaks when unsupported
-DoorBlock.onExplosionHit	missing		player: a wind charge blast does not swing a door open; canOpenByWindCharge is read from data but no code uses it
+DoorBlock.onExplosionHit	port	crates/horizon-client/src/game/wind.rs::Game::wind_trigger_block	a can-trigger-blocks burst swings a wooden door and leaves iron ones shut
 DoorBlock.playerWillDestroy	port	crates/horizon-world/src/level/hooks.rs::Sim::player_destroy	creative break of the upper half removes the lower half without drops
 DoorBlock.isPathfindable	skip:data		path types come from the per-state path data (mobs/path.rs)
 DoorBlock.setPlacedBy	port	crates/horizon-world/src/level/place.rs::Sim::set_placed_by	Door branch places the upper half

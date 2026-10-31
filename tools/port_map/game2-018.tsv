@@ -5,9 +5,9 @@ SkullBlockEntity.collectImplicitComponents	port	crates/horizon-client/src/block_
 SkullBlockEntity.removeComponentsFromTag	inline	crates/horizon-client/src/block_entity_item.rs::pick	the three keys are removed from the saved NBT inside pick's part loop
 SpawnerBlockEntity.triggerEvent	port	crates/horizon-client/src/mobs/spawner.rs::Spawner::client_event	event 1 resets the client spawn delay to the minimum; other events return false
 SpawnerBlockEntity.setEntityData	missing		minor: an op's spawn egg with an ENTITY_DATA component only sets the mob type on a spawner here (use_spawn_egg_on_spawner); the rest of the egg's entity data is dropped
-StructureBlockEntity.updateBlockState	missing		player: the structure block's mode is never written to its block state, so the block does not switch between SAVE, LOAD, CORNER and DATA
-StructureBlockEntity.usedBy	missing		player: right-clicking a structure block opens no edit screen; Horizon has no structure block screen
-StructureBlockEntity.setStructureName	missing		player: the structure name box does nothing; the structure block edit packet (SET_STRUCTURE_BLOCK, id 60) has no handler
+StructureBlockEntity.updateBlockState	port	crates/horizon-client/src/game/structure_blocks.rs::Game::set_structure_mode	the mode is written to the block's mode property too
+StructureBlockEntity.usedBy	port	crates/horizon-client/src/game/block_editor.rs::Game::open_block_editor_if_editable	a game master's right click opens the structure block screen
+StructureBlockEntity.setStructureName	port	crates/horizon-client-render/src/structure_block.rs::StructureBlock::set_structure_name	the SET_STRUCTURE_BLOCK packet's name reaches the entity
 StructureBlockEntity.setMode	port	crates/horizon-client/src/game/structure_blocks.rs::Game::set_structure_mode	the screen's mode buttons write both the entity and the block state's mode
 StructureBlockEntity.detectSize	port	crates/horizon-client/src/game/structure_blocks.rs::Game::detect_structure_size	Detect Size finds the box between the corner blocks
 StructureBlockEntity.getEnclosingBoundingBox	port	crates/horizon-client-render/src/structure_block.rs::StructureBlock::enclosing_box	the box between the corner blocks
@@ -41,8 +41,8 @@ TrialSpawnerBlockEntity.markUpdated	port	crates/horizon-client/src/game/trial_sp
 TrialSpawner.removeOminous	inline	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawner::tick_and_get_next	the cooldown branch clears the ominous flag and emits OminousSet(false); the block write goes through set_trial_spawner_state
 TrialSpawner.shouldMobBeUntracked	port	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawner::server_tick	gap: minor: drops mobs that are gone or beyond 47 blocks; no separate alive or dimension check
 TrialSpawner.addBecomeOminousParticles	inline	crates/horizon-client/src/game/trial_visuals.rs::Game::trial_level_event	the 3020 arm draws the 20 trial omen and soul fire flame particles
-TrialSpawner.overrideEntityToSpawn	missing		player: a spawn egg on a trial spawner cannot change its mob; the egg only reaches spawners
-TrialSpawner.FullConfig.overrideEntity	missing		player: same as overrideEntityToSpawn; the trial spawner's mob type cannot be set from an egg
+TrialSpawner.overrideEntityToSpawn	port	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawnerExt::override_entity	a spawn egg on a trial spawner rewrites its spawn potentials and returns it to INACTIVE
+TrialSpawner.FullConfig.overrideEntity	port	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawnerExt::override_entity	both configs' spawn potentials are rewritten
 TrialSpawner.FullConfig.overrideEntityData	missing		player: same as overrideEntityToSpawn; egg entity data never reaches a trial spawner
 TrialSpawnerState.calculatePositionToSpawnSpawner	port	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawner::item_spawner_position	
 TrialSpawnerState.calculatePositionAbove	inline	crates/horizon-client/src/mobs/trial_spawner.rs::TrialSpawner::item_spawner_position	the clip two to five blocks above the chosen entity and the drop point under it
