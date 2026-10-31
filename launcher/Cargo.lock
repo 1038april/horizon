@@ -981,6 +981,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "clap_complete"
+version = "4.6.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "037e2a1a92236d0aff7e845093f64661d6df4c02c9fcc61a60e9e1d736fa392f"
+dependencies = [
+ "clap",
+]
+
+[[package]]
 name = "clap_derive"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2723,6 +2732,7 @@ dependencies = [
  "base64",
  "chrono",
  "clap",
+ "clap_complete",
  "dirs 5.0.1",
  "flate2",
  "futures-lite 2.6.1",
@@ -2747,7 +2757,6 @@ dependencies = [
  "proc-macro2",
  "pulldown-cmark",
  "raw-window-handle",
- "self-replace",
  "serde",
  "serde_json",
  "sha1",
@@ -5263,17 +5272,6 @@ checksum = "6ce2691df843ecc5d231c0b14ece2acc3efb62c0a398c7e1d875f3983ce020e3"
 dependencies = [
  "core-foundation-sys",
  "libc",
-]
-
-[[package]]
-name = "self-replace"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03ec815b5eab420ab893f63393878d89c90fdd94c0bcc44c07abb8ad95552fb7"
-dependencies = [
- "fastrand 2.5.0",
- "tempfile",
- "windows-sys 0.52.0",
 ]
 
 [[package]]
