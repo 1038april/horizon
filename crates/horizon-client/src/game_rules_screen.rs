@@ -96,6 +96,21 @@ fn footer(w: f32, h: f32) -> [(f32, f32); 2] {
 fn yellow() -> u32 {
     named_color("yellow").unwrap_or(0xFFFF55)
 }
+/// RuleList.addEntry's `narration`: the rule's description, when it has
+/// one, over its default value.
+fn narration(r: &Rule) -> String {
+    let default = Text::translate(
+        "editGamerule.default",
+        &[Text::literal(r.default.to_string())],
+    )
+    .plain();
+    let description = format!("{}.description", name_key(r));
+    if lang::has(&description) {
+        format!("{}\n{default}", lang::get(&description))
+    } else {
+        default
+    }
+}
 
 /// ConfirmScreen "Game Rule Changes".
 fn confirm(font: &Font, size: (f32, f32)) -> Confirm {
@@ -388,6 +403,22 @@ impl RulesScreen {
     pub fn draw(&mut self, batch: &mut HudBatch, atlas: &HudAtlas, cursor: (f32, f32)) {
         let (w, h) = (batch.width, batch.height);
         ui::menu_background(batch, atlas, 0.0, 0.0, w, h, self.in_world);
+        // AbstractGameRulesScreen: its title; InWorldGameRulesScreen's
+        // discard question is a ConfirmScreen (title and message).
+        crate::widgets::begin_screen(|| {
+            let tr = |key: &str| Text::translate(key, &[]).plain();
+            if self.confirm {
+                crate::widgets::ScreenInfo::new(
+                    "game_rules/discard",
+                    crate::widgets::join_for_narration(&[
+                        &tr("editGamerule.inGame.discardChanges.title"),
+                        &tr("editGamerule.inGame.discardChanges.message"),
+                    ]),
+                )
+            } else {
+                crate::widgets::ScreenInfo::new("game_rules", tr("editGamerule.title"))
+            }
+        });
         if self.confirm {
             let labels = [
                 Text::translate("gui.yes", &[]),
@@ -450,6 +481,12 @@ impl RulesScreen {
                             if let Some(b) = self.number(r.name) {
                                 b.x = x;
                                 b.y = cy;
+                                // IntegerRuleEntry's box: the rule's name, its
+                                // description and default, a line each.
+                                if crate::widgets::narrating() {
+                                    b.message =
+                                        format!("{}\n{}\n", lang::get(&name_key(r)), narration(r));
+                                }
                                 b.draw(batch, atlas, None);
                             }
                         }

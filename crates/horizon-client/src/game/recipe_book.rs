@@ -377,6 +377,7 @@ impl Game<'_> {
         }
         if self.recipe_ui.search.is_none() {
             let mut search = EditBox::new(0.0, 0.0, 81.0, 14.0);
+            search.message = super::screen_info::tr("itemGroup.search", &[]);
             search.max_length = 50;
             search.focused = false;
             search.text_color = u32::MAX;
