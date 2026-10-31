@@ -7263,6 +7263,11 @@ impl Game<'_> {
             + self.clock.fraction() as f32)
             / 24000.0;
         let (w, h) = (batch.width, batch.height);
+        // HDR calibration ends when its page does, whatever moved the screen
+        // off Options (a death screen opened by a server, say).
+        if self.screen != Screen::Options && self.ui.options.calibration_fullscreen.is_some() {
+            self.show_calibration(h);
+        }
         if self.screen == Screen::Win {
             self.draw_win_screen(&mut batch);
             return batch;
