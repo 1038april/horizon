@@ -1679,6 +1679,20 @@ impl Game<'_> {
         reason: &str,
     ) {
         let Some(lists) = &self.server_lists else {
+            // No ban list to add to: the anticheat's kick, so a flagged cheater still doesn't stay.
+            log(
+                "WARN",
+                &format!("Can't ban {name} ({reason}): no ban list; kicked"),
+            );
+            let conns: Vec<u32> = hub
+                .guests
+                .iter()
+                .filter(|g| g.uuid == uuid)
+                .map(|g| g.conn)
+                .collect();
+            for conn in conns {
+                hub.anticheat_kick(conn);
+            }
             return;
         };
         let user = NameAndId {

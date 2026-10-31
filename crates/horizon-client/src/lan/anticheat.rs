@@ -450,6 +450,11 @@ impl Hub {
         let Some(ac) = self.anticheat.as_deref_mut() else {
             return false;
         };
+        // Kicked or banned already, and leaving: what it still had queued (a lagging client's ticks)
+        // is dropped, and counts no second strike in the session the first kick warned.
+        if !self.guests[i].left_reason.is_empty() {
+            return true;
+        }
         let g = &mut self.guests[i];
         let v = g.anticheat.flag(&ac.config, check, weight, ticks);
         let (uuid, name) = (g.uuid, g.name.clone());
@@ -513,14 +518,18 @@ impl Hub {
                 reason: format!("Horizon anticheat: {}", check.name()),
             });
         } else if v.kick {
-            let conn = self.guests[i].conn;
-            self.kick(conn, text("Kicked by the server's anticheat", "white"));
+            self.anticheat_kick(self.guests[i].conn);
         } else if v.setback && check != Check::Combat && self.guests[i].awaiting_teleport.is_none()
         {
             // A combat setback drops the attack (`anticheat_attack`); the others send the player back.
             self.resend_teleport(i, back);
         }
         v.setback || v.kick
+    }
+
+    /// Disconnects `conn` for the anticheat.
+    pub fn anticheat_kick(&mut self, conn: u32) {
+        self.kick(conn, text("Kicked by the server's anticheat", "white"));
     }
 }
 
