@@ -45,14 +45,25 @@ pub fn conditions_hold(v: &Value, loaded: &ModLoaded) -> bool {
 /// anywhere in the tree leaves the file out, through `not` and the
 /// combinators alike.
 fn known(c: &Value) -> bool {
-    matches!(
+    if !matches!(
         c["type"].as_str(),
         Some("neoforge:mod_loaded")
             | Some("neoforge:true")
             | Some("neoforge:not")
             | Some("neoforge:and")
             | Some("neoforge:or")
-    )
+    ) {
+        return false;
+    }
+    // The whole tree must be known, not only this node: an unknown kind
+    // nested inside `not` or a combinator leaves the file out too.
+    match c["type"].as_str() {
+        Some("neoforge:not") => known(&c["value"]),
+        Some("neoforge:and") | Some("neoforge:or") => {
+            c["values"].as_array().into_iter().flatten().all(known)
+        }
+        _ => true,
+    }
 }
 
 #[cfg(test)]
@@ -111,6 +122,31 @@ mod tests {
         let mut f = serde_json::Map::new();
         f.insert("neoforge:conditions".to_owned(), failing);
         assert!(!conditions_hold(&Value::Object(f), &loaded));
+    }
+
+    #[test]
+    fn an_unknown_kind_nested_in_the_tree_leaves_the_file_out() {
+        // `not` of `not` of an unknown: the unknown is two levels down.
+        let nested_not = json!({
+            "neoforge:conditions": [
+                {"type": "neoforge:not", "value":
+                    {"type": "neoforge:not", "value":
+                        {"type": "example:unknown"}}}
+            ]
+        });
+        assert!(!conditions_hold(&nested_not, &loaded));
+        // `or` with a `true` beside a `not` of an unknown: one child is
+        // known-true, but the other's subtree holds an unknown.
+        let nested_or = json!({
+            "neoforge:conditions": [
+                {"type": "neoforge:or", "values": [
+                    {"type": "neoforge:true"},
+                    {"type": "neoforge:not", "value":
+                        {"type": "example:unknown"}}
+                ]}
+            ]
+        });
+        assert!(!conditions_hold(&nested_or, &loaded));
     }
 
     #[test]
