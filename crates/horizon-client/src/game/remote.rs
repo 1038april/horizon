@@ -568,16 +568,27 @@ impl Game<'_> {
         name: &str,
         cookies: Option<horizon_client::net::Cookies>,
     ) -> Result<()> {
+        self.connect_server_with_options(address, name, cookies, false)
+    }
+    /// `ConnectScreen.startConnecting`: keep LAN discovery's server kind through loading.
+    pub(super) fn connect_server_with_options(
+        &mut self,
+        address: &str,
+        name: &str,
+        cookies: Option<horizon_client::net::Cookies>,
+        lan: bool,
+    ) -> Result<()> {
         super::world_loading::preload_server_loot(&self.options.resources);
         if self.defer_world_entry(super::PendingWorldEntry::Server {
             address: address.to_owned(),
             name: name.to_owned(),
             cookies: cookies.clone(),
+            lan,
         })? {
             return Ok(());
         }
         self.join_world_rest()?;
-        if let Err(error) = self.join_server(address, name, None, cookies) {
+        if let Err(error) = self.join_server(address, name, None, cookies, lan) {
             log::warn!("Horizon: could not join server: {error}");
             if self.title.is_none() {
                 self.title = Some(
@@ -603,7 +614,7 @@ impl Game<'_> {
         pipe: horizon_protocol::connection::Pipe,
         name: &str,
     ) -> Result<()> {
-        self.join_server("local", name, Some(pipe), None)
+        self.join_server("local", name, Some(pipe), None, false)
     }
     fn join_server(
         &mut self,
@@ -611,6 +622,7 @@ impl Game<'_> {
         name: &str,
         local: Option<horizon_protocol::connection::Pipe>,
         cookies: Option<horizon_client::net::Cookies>,
+        lan: bool,
     ) -> Result<()> {
         self.reset_tutorial();
         self.perf.world_opening();
@@ -648,7 +660,7 @@ impl Game<'_> {
                 Session::connect_local(pipe, name, info.clone(), lang.clone(), root.clone())
             }
             None => {
-                self.extras_connecting(address, name);
+                self.extras_connecting(address, name, lan);
                 match cookies {
                     Some(cookies) => Session::connect_transferred(
                         address,
@@ -659,14 +671,21 @@ impl Game<'_> {
                         cookies,
                         root.clone(),
                     ),
-                    None => Session::connect(
-                        address,
-                        name,
-                        auth.clone(),
-                        info.clone(),
-                        lang.clone(),
-                        root.clone(),
-                    ),
+                    None => {
+                        let connect = if lan {
+                            Session::connect_lan
+                        } else {
+                            Session::connect
+                        };
+                        connect(
+                            address,
+                            name,
+                            auth.clone(),
+                            info.clone(),
+                            lang.clone(),
+                            root.clone(),
+                        )
+                    }
                 }
             }
         };

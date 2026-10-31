@@ -10410,8 +10410,8 @@ impl Game<'_> {
                 creative,
                 options,
             } => self.open_world(&folder, Some(&name), seed, creative, Some(&options))?,
-            Action::Connect { address } => {
-                self.connect_server(&address, &self.options.player_name())?
+            Action::Connect { address, lan } => {
+                self.connect_server_with_options(&address, &self.options.player_name(), None, lan)?
             }
             Action::DataPacks { dir, selected } => {
                 self.keys.clear();
@@ -16267,6 +16267,7 @@ enum PendingWorldEntry {
     Server {
         address: String,
         name: String,
+        lan: bool,
         /// A transfer's carried-over server cookies (`TransferState`).
         cookies: Option<horizon_client::net::Cookies>,
     },
@@ -16364,8 +16365,9 @@ impl Game<'_> {
                 address,
                 name,
                 cookies,
+                lan,
             }) => {
-                self.connect_server_with_cookies(&address, &name, cookies)?;
+                self.connect_server_with_options(&address, &name, cookies, lan)?;
             }
             None => {}
         }
