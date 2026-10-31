@@ -846,7 +846,8 @@ impl Game<'_> {
         }
         if new_mode != g.game_mode {
             let conn = g.conn;
-            host.hub.set_game_mode(conn, new_mode);
+            host.hub
+                .set_game_mode(conn, new_mode, &self.world, Some(self.collision));
         }
         // LivingEntity.checkTotemDeathProtection's entity event, to every
         // client around, the guest's own included; this window draws it too.
@@ -2621,7 +2622,8 @@ impl Game<'_> {
         // ServerGamePacketListenerImpl.handleClientCommand: a hardcore world's
         // respawned player only watches.
         if self.level.hardcore {
-            host.hub.set_game_mode(conn, SPECTATOR);
+            host.hub
+                .set_game_mode(conn, SPECTATOR, &self.world, Some(self.collision));
         }
         if let Some(config) = elsewhere {
             self.respawn_trip(conn, config);
