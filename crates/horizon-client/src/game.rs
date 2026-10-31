@@ -169,6 +169,7 @@ mod mounts;
 mod moving_pistons;
 mod music;
 mod names;
+mod native_explosions;
 mod native_hooks;
 mod native_lifecycle;
 mod native_menus;
