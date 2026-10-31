@@ -2137,7 +2137,7 @@ struct Game<'a> {
     loading_progress: f32,
     /// `CreateWorldScreen.openCreateWorldScreen`'s data read, on a worker,
     /// while the title says `createWorld.preparing`.
-    creation_job: Option<std::thread::JoinHandle<()>>,
+    creation_job: Option<std::thread::JoinHandle<std::result::Result<(), String>>>,
     /// When `loading_progress` last eased (the server thread's load, 50 ms a step).
     loading_progress_at: Option<std::time::Instant>,
     /// The world spawn search's origin chunk and fallback height, once known.
@@ -10737,6 +10737,18 @@ impl Game<'_> {
             (sky.star_brightness > 0.0).then(|| (frame(sky.star_angle), sky.star_brightness));
         (out, stars)
     }
+    /// `onAbort`: the confirm screen's Back or Escape reopens the Data
+    /// Packs screen with the selection it had.
+    fn reopen_data_packs(&mut self, event_loop: &dyn EventLoopCtl) -> Result<()> {
+        let action = self
+            .title
+            .as_mut()
+            .and_then(|t| t.reopen_data_packs_action());
+        if let Some(action) = action {
+            self.title_action(event_loop, action)?;
+        }
+        Ok(())
+    }
     /// What the title screen asked for, from a click or Enter.
     fn title_action(&mut self, event_loop: &dyn EventLoopCtl, action: Action) -> Result<()> {
         match action {
@@ -15737,6 +15749,7 @@ impl Game<'_> {
                         self.audio.play_button_click();
                     }
                     self.title_action(event_loop, action)?;
+                    self.reopen_data_packs(event_loop)?;
                 }
                 WindowEvent::MouseInput { .. } if self.title.is_some() => {}
                 WindowEvent::MouseInput { state, button, .. } if self.book.is_some() => {
@@ -16132,6 +16145,7 @@ impl Game<'_> {
                             PhysicalKey::Code(KeyCode::Escape) => {
                                 if let Some(t) = self.title.as_mut() {
                                     t.escape();
+                                    self.reopen_data_packs(event_loop)?;
                                 }
                                 self.save_title_options();
                             }
@@ -17181,12 +17195,25 @@ impl Game<'_> {
         if self.creation_job.is_none() {
             let dir = self.options.resources.join("worldgen");
             let registry = self.pack.assets.registry;
+            // The chosen packs' worldgen over the game's own:
+            // `applyNewPackConfig` reloads with the new pack config.
+            let overrides = title
+                .creation_packs()
+                .map(|(dir, packs)| {
+                    world_loading::creation_worldgen_overrides(
+                        dir.as_deref(),
+                        &self.options.resources,
+                        &packs,
+                        self.res.biomes(),
+                    )
+                })
+                .unwrap_or_default();
             self.creation_job = std::thread::Builder::new()
                 .name("world-creation".into())
                 .spawn(move || {
-                    if let Err(e) = horizon_client::vanillagen::shared_data(&dir, registry) {
-                        log::warn!("Horizon: preparing world creation failed: {e}");
-                    }
+                    horizon_client::vanillagen::shared_data_with(&dir, &overrides, registry)
+                        .map(|_| ())
+                        .map_err(|e| e.to_string())
                 })
                 .ok();
             return;
@@ -17198,11 +17225,30 @@ impl Game<'_> {
         {
             return;
         }
-        if let Some(job) = self.creation_job.take() {
-            let _ = job.join();
-        }
+        let outcome = self.creation_job.take().and_then(|job| job.join().ok());
         if let Some(title) = self.title.as_mut() {
-            title.finish_preparing();
+            match outcome {
+                Some(Ok(())) => title.finish_preparing(),
+                // `applyNewPackConfig`'s failure: back out of the read with
+                // the message, the Create screen's options intact.
+                outcome => {
+                    let e = outcome
+                        .and_then(|r| r.err())
+                        .unwrap_or_else(|| "the read never ran".to_owned());
+                    log::warn!("Horizon: preparing world creation failed: {e}");
+                    // Clear the flag first: `failed` sets the error screen
+                    // with Create as its back target, which
+                    // `finish_preparing` would replace with a fresh world.
+                    title.finish_preparing();
+                    title.failed(format!(
+                        "{}: {e}",
+                        horizon_client::lang::get_or(
+                            "createWorld.preparing",
+                            "Preparing for world creation..."
+                        )
+                    ));
+                }
+            }
         }
     }
 
