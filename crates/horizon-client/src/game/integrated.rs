@@ -13,8 +13,8 @@
 use super::{
     Dim, Game, Options, PackResources, Resources, UiResources, WorldIcon,
     execution_role::ExecutionRole,
-    lan::{LanSettings, Owner},
-    world_loading::WorldRequest,
+    lan::{LanSettings, Owner, SyncPreload, preload_sync_data},
+    world_loading::{WorldLoader, WorldRequest},
 };
 use horizon_client::level_loading::{STATUS_RADIUS, Stage};
 use horizon_client::{
@@ -508,8 +508,9 @@ impl Game<'_> {
         flags: Arc<Flags>,
         tasks: Receiver<Task>,
         ready: &Sender<Ready>,
+        opening: Opening,
     ) -> Result<()> {
-        let result = self.run_integrated_inner(launch, flags, tasks, ready);
+        let result = self.run_integrated_inner(launch, flags, tasks, ready, opening);
         if let Err(error) = &result {
             self.native_lifecycle_close_failed(&error.to_string());
         }
@@ -522,10 +523,11 @@ impl Game<'_> {
         flags: Arc<Flags>,
         tasks: Receiver<Task>,
         ready: &Sender<Ready>,
+        opening: Opening,
     ) -> Result<()> {
         // The open segment runs as one unit (`integrated_open`) so its
         // failures fire `WorldOpenFailed` with the engine's own error text.
-        if let Err(e) = self.integrated_open(&launch, &flags, tasks, ready) {
+        if let Err(e) = self.integrated_open(&launch, &flags, tasks, ready, opening) {
             self.native_lifecycle_world_failed(&e.to_string());
             return Err(e);
         }
@@ -608,15 +610,18 @@ impl Game<'_> {
         flags: &Arc<Flags>,
         tasks: Receiver<Task>,
         ready: &Sender<Ready>,
+        opening: Opening,
     ) -> Result<()> {
+        // MinecraftServer.loadLevel's start: nothing is loaded yet.
+        self.native_server_about_to_start(false);
         self.native_lifecycle_open_started();
-        self.load_world(WorldRequest::new(
-            &launch.folder,
-            launch.name.as_deref(),
-            launch.seed,
-            launch.creative,
-            launch.create.as_ref(),
-        )?)?;
+        // `load_world`, with the world `serve` started preparing.
+        self.join_world_rest()?;
+        self.perf.world_opening();
+        self.finish_open_world(opening.world?.finish()?)?;
+        if let Some(sync) = opening.sync {
+            sync.adopt(&self.pack_files());
+        }
         let saved = Box::new(self.level.clone());
         // IntegratedServer runs the server mods; the window the client mods.
         self.mods.dev = self.options.dev_mods.clone();
@@ -704,6 +709,8 @@ impl Game<'_> {
     fn stop_integrated(&mut self) -> Result<()> {
         // The close request: lifecycle observation stops.
         self.native_lifecycle.begin_close();
+        // MinecraftServer.stopServer's start: everyone is still here.
+        self.native_server_stopping(false);
         // IntegratedServer.stopServer: teardownPublishedState.
         if let Some(s) = self.serving.take() {
             s.flags.published.store(0, Ordering::Relaxed);
@@ -988,7 +995,8 @@ impl Game<'_> {
                 .find(|g| g.uuid == owner)
                 .map(|g| g.conn)
         {
-            host.hub.set_game_mode(conn, mode);
+            host.hub
+                .set_game_mode(conn, mode, &self.world, Some(self.collision));
         }
     }
     /// `IntegratedServer.setWorldAllowCommands`: the owner is an operator
@@ -1020,8 +1028,46 @@ fn serve(
     tasks: Receiver<Task>,
     ready: &Sender<Ready>,
 ) -> Result<()> {
-    let mut server = server_game(res, pack, options, settings)?;
-    server.run_integrated(launch, flags, tasks, ready)
+    // The world prepares, and the registries the server sends are read, on
+    // helper threads while this one builds the server's own Game: none of
+    // them reads what another makes (`integrated_open` takes them up).
+    let world = WorldRequest::new(
+        &launch.folder,
+        launch.name.as_deref(),
+        launch.seed,
+        launch.creative,
+        launch.create.as_ref(),
+    )
+    .and_then(|request| {
+        WorldLoader::start(
+            request,
+            res.clone(),
+            pack.clone(),
+            options.clone(),
+            settings.clone(),
+        )
+    });
+    let opening = Opening {
+        world,
+        sync: preload_sync_data(&options.resources),
+    };
+    let mut server = match server_game(res, pack, options, settings) {
+        Ok(server) => server,
+        Err(e) => {
+            // The world's session lock is let go before the failure is told.
+            if let Ok(world) = opening.world {
+                drop(world.finish());
+            }
+            return Err(e);
+        }
+    };
+    server.run_integrated(launch, flags, tasks, ready, opening)
+}
+
+/// What `serve` starts beside the server's own Game.
+struct Opening {
+    world: Result<WorldLoader>,
+    sync: Option<SyncPreload>,
 }
 
 /// Component oracles supply their own synthetic levels and entity phases.

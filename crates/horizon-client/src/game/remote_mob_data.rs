@@ -6,7 +6,7 @@ use super::Game;
 use horizon_client::mobs::render::{PROFESSIONS, VILLAGER_TYPES};
 use horizon_client::mobs::{
     Mob, Species, Who, armadillo, bat, bee, camel, creaking, equine, finalize, illusioner, panda,
-    sniffer, sync, tame, zombie_villager,
+    phantom, sniffer, sync, tame, zombie_villager,
 };
 use horizon_client::particles::{ParticleOptions, ParticleType};
 use horizon_protocol::entity_data::{Particle, ParticleData, Value};
@@ -56,8 +56,9 @@ fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_enti
             // Entity.DATA_POSE: the pose the species animates by.
             (6, Value::Id(pose)) => sync::set_pose(m, (*pose).clamp(0, 17) as u8),
             // LivingEntity.DATA_LIVING_ENTITY_FLAGS: using an item 1, in the
-            // off hand 2. The flag starts and stops the use; the client ticks
-            // the count itself (a bow's pull follows it).
+            // off hand 2. Bit 0 starts and stops the use; the client ticks the
+            // count itself (a bow's pull follows it). stopUsingItem clears
+            // only bit 0, so a stopped off-hand use arrives as 2.
             (8, Value::Byte(flags)) => {
                 m.extra.using_off_hand = flags & 2 != 0;
                 if flags & 1 == 0 {
@@ -164,6 +165,9 @@ fn apply(m: &mut Mob, values: &[(u8, i32, Value)], builtin: &Builtin, local_enti
             (Species::SulfurCube, 19, Value::Bool(from_bucket)) => {
                 m.extra.scratch[3] = i32::from(*from_bucket);
             }
+            // Phantom.ID_SIZE: `updatePhantomSizeInfo` grows its box and bite,
+            // and `PhantomRenderer.scale` its model.
+            (Species::Phantom, 16, Value::Int(size)) => phantom::set_size(m, *size),
             // Enderman.DATA_CREEPY (after DATA_CARRY_STATE): the open mouth
             // and raised head of an angry enderman.
             (Species::Enderman, 17, Value::Bool(creepy)) => m.extra.flag = *creepy,
@@ -831,8 +835,14 @@ mod tests {
         apply(&mut m, &[(8, s::BYTE, Value::Byte(1))]);
         assert_eq!(m.extra.using_item, 1);
         assert!(!m.extra.using_off_hand);
-        // Using in the off hand.
+        // Using in the off hand: bit 0 for the use, bit 1 for the hand.
         apply(&mut m, &[(8, s::BYTE, Value::Byte(3))]);
+        assert_eq!(m.extra.using_item, 1);
+        assert!(m.extra.using_off_hand);
+        // LivingEntity.stopUsingItem clears bit 0 only, so the stop of an
+        // off-hand use arrives as 2.
+        apply(&mut m, &[(8, s::BYTE, Value::Byte(2))]);
+        assert_eq!(m.extra.using_item, 0);
         assert!(m.extra.using_off_hand);
         apply(&mut m, &[(8, s::BYTE, Value::Byte(0))]);
         assert_eq!(m.extra.using_item, 0);
@@ -880,6 +890,29 @@ mod tests {
             &[(17, s::RESOLVABLE_PROFILE, Value::Profile(profile.clone()))],
         );
         assert_eq!(m.profile, Some(profile));
+    }
+
+    /// `LivingEntity.getDimensions`: the pose's box times `minecraft:scale` —
+    /// a lobby's giant fake player is clickable on its visible body, not only
+    /// on the unscaled box at its feet.
+    #[test]
+    fn a_scaled_fake_player_gets_a_scaled_box() {
+        for kind in ["minecraft:player", "minecraft:mannequin"] {
+            let Some(mut m) = mob(kind) else {
+                continue;
+            };
+            let (w, h, e) = m.dims();
+            assert!(
+                (w - 0.6).abs() < 1e-6 && (h - 1.8).abs() < 1e-6 && (e - 1.62).abs() < 1e-5,
+                "{kind}: {w}x{h}x{e}"
+            );
+            m.extra.model_scale = 4.0;
+            let (w, h, e) = m.dims();
+            assert!(
+                (w - 2.4).abs() < 1e-6 && (h - 7.2).abs() < 1e-6 && (e - 6.48).abs() < 1e-5,
+                "{kind} scaled: {w}x{h}x{e}"
+            );
+        }
     }
 
     /// #4548: SulfurCube.MAX_FUSE copies into the fuse the client ticks for swell.
