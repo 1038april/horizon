@@ -100,6 +100,8 @@ stages.
 
 ## Changelog
 
+- 2026-10-31: API 0.1 (additions): `Frame.mods`, eight `vec4<f32>` a native mod hands the pack it bundles each
+  frame (`native_shader_params` in docs/native-mods.md), all 0 when no mod sets them.
 - 2026-10-30: API 0.1 (additions): `Frame.previous_view_projection`, `camera_motion` and
   `delta_time` for temporal passes (reprojection, motion blur); `eye_light_smooth`, `in_water`
   and `in_lava`, eased so exposure and underwater fog fade instead of stepping.

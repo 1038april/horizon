@@ -148,6 +148,7 @@ The frame, as `frame` in every stage. Positions and directions are in world axes
 | `eye_light_smooth` | `vec2<f32>` | 496 | `eye_light` eased with a half-life of 2 seconds: it follows the light levels' steps without stepping itself (for exposure and indoor fog). |
 | `in_water` | `f32` | 504 | 1 while the camera is in water (`eye_in` 1), eased with a half-life of a quarter second in and out. |
 | `in_lava` | `f32` | 508 | The same for lava (`eye_in` 2). |
+| `mods` | `array<vec4<f32>, 8>` | 512 | Eight values a native mod hands its own pack each frame (`native_shader_params`, docs/native-mods.md): what they mean is that mod's, such as where and when something happened in the world. All 0 when no mod sets them. |
 
 ## Options
 

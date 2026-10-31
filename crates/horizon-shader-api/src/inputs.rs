@@ -51,6 +51,7 @@ wgsl_types! {
     [f32; 3] => "vec3<f32>",
     [f32; 4] => "vec4<f32>",
     [[f32; 4]; 4] => "mat4x4<f32>",
+    [[f32; 4]; 8] => "array<vec4<f32>, 8>",
 }
 
 /// A uniform struct: the Rust type the renderer uploads, and its WGSL.
@@ -168,6 +169,10 @@ uniform! {
         in_water: f32,
         /// The same for lava (`eye_in` 2).
         in_lava: f32,
+        /// Eight values a native mod hands its own pack each frame (`native_shader_params`,
+        /// docs/native-mods.md): what they mean is that mod's, such as where and when
+        /// something happened in the world. All 0 when no mod sets them.
+        mods: [[f32; 4]; 8],
     }
 }
 
@@ -234,9 +239,9 @@ mod tests {
     #[test]
     fn frame_fields_carry_their_docs() {
         let wgsl = Frame::WGSL;
-        assert_eq!(wgsl.fields.len(), 38);
+        assert_eq!(wgsl.fields.len(), 39);
         assert!(wgsl.fields.iter().all(|f| !f.doc.trim().is_empty()));
-        assert_eq!(std::mem::size_of::<Frame>(), 5 * 64 + 12 * 16);
+        assert_eq!(std::mem::size_of::<Frame>(), 5 * 64 + 12 * 16 + 8 * 16);
         assert!(
             wgsl.wgsl()
                 .contains("    camera_position: vec3<f32>,\n    time: f32,\n")

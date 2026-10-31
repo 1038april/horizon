@@ -603,6 +603,7 @@ pub fn frame_inputs(frame: &Frame, size: [u32; 2], seconds: f32, index: u32) -> 
         eye_light_smooth: [level(pack.eye_light[0]), level(pack.eye_light[1])],
         in_water: f32::from(u8::from(pack.eye_in as u32 == 1)),
         in_lava: f32::from(u8::from(pack.eye_in as u32 == 2)),
+        mods: pack.mod_params,
     }
 }
 
