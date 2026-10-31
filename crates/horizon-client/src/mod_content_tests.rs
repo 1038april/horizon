@@ -101,11 +101,11 @@ fn component_validation_isolates_mods() {
         )
     };
     let known = component_types(
-        &serde_json::from_str(r#"{"minecraft:stone":{"minecraft:max_stack_size":64}}"#).unwrap(),
+        &serde_json::from_str(r#"{"minecraft:stone":{"minecraft:repairable":{}}}"#).unwrap(),
     );
     let good = make(
         "good",
-        r#"{"native:test":{"value":5},"!minecraft:max_stack_size":{}}"#,
+        r#"{"native:test":{"value":5},"!minecraft:repairable":{}}"#,
         false,
     );
     let removal = make("remove", r#"{"!native:test":{}}"#, true);
@@ -143,7 +143,7 @@ fn component_validation_isolates_mods() {
     )
     .unwrap();
     let mut items: J =
-        serde_json::from_str(r#"{"minecraft:stone":{"minecraft:max_stack_size":64}}"#).unwrap();
+        serde_json::from_str(r#"{"minecraft:stone":{"minecraft:repairable":{}}}"#).unwrap();
     Plan::new(&base, &accepted)
         .unwrap()
         .json("items.json", &mut items)
@@ -153,11 +153,7 @@ fn component_validation_isolates_mods() {
         items["good:thing"]["native:test"],
         serde_json::json!({"value":5})
     );
-    assert!(
-        items["good:thing"]
-            .get("minecraft:max_stack_size")
-            .is_none()
-    );
+    assert!(items["good:thing"].get("minecraft:repairable").is_none());
     assert!(items.get("bad:thing").is_none());
     fs::remove_dir_all(scratch).unwrap();
 }
