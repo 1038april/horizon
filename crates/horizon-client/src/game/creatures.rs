@@ -2,7 +2,7 @@
 //! chunk-generation spawning (`NaturalSpawner`), mob events (attacks,
 //! breeding, conversions, drops), projectiles, player interactions
 //! (feeding, shearing, milking, spawn eggs, throwing) and rendering.
-use super::{Dim, Game, dispenser, view_vector};
+use super::{Dim, Game, InteractTarget, dispenser, view_vector};
 use horizon_assets::item_model::DisplayContext;
 use horizon_client::{
     Result,
@@ -227,6 +227,20 @@ fn flame_geometry(
 pub(super) fn seen(m: &Mob, player: Option<[i32; 4]>) -> Seen {
     m.seen(player)
 }
+/// Whether a mob a packet named may take the click: `mob_hit` skips a mob in
+/// its death animation, the one the player rides (it shares the player's root
+/// vehicle) and the camera entity the pick starts from, so a packet that names
+/// one of those does nothing rather than reaching the feed, shear, leash or
+/// name paths the pick path refuses.
+pub(super) fn named_mob_pickable(
+    alive: bool,
+    id: u32,
+    riding: Option<u32>,
+    camera: Option<u32>,
+) -> bool {
+    alive && Some(id) != riding && Some(id) != camera
+}
+
 impl Game<'_> {
     pub(super) fn player_view(&self) -> Option<PlayerView> {
         let p = self.player.as_ref()?;
@@ -303,7 +317,7 @@ impl Game<'_> {
         let Some(chunk) = self.world.chunks.get(&(x >> 4, z >> 4)) else {
             return BiomeFacts::default();
         };
-        let b = self.res.biomes().get(chunk.biome(x, y, z));
+        let b = world_biomes!(self).get(chunk.biome(x, y, z));
         let tags = self.res.mob_data();
         let has = |t: &str| tags.biome_has(t, &b.name);
         let climate = if has("minecraft:spawns_warm_variant_farm_animals") {
@@ -457,6 +471,107 @@ impl Game<'_> {
         if broke {
             // LivingEntity.entityEventForEquipmentBreak: head 49, body 65.
             self.lan_entity_event(id as i32, if body { 65 } else { 49 }, at);
+        }
+    }
+    /// `LivingEntity.hurtArmor` -> `LivingEntity.doHurtEquipment`, from the hit
+    /// `MobEvent::ArmorHurt` reported: every worn piece that wears when its
+    /// wearer is hurt loses `max(1, damage / 4)` durability, Unbreaking
+    /// applied, and at its maximum the slot empties and the equipment-break
+    /// event goes out (`LivingEntity.entityEventForEquipmentBreak`: 49 to 52
+    /// for the armour, 65 for the body). A fire hit leaves a fire-resistant
+    /// piece alone (`ItemStack.canBeHurtBy`).
+    fn hurt_mob_armor(&mut self, id: u32, damage: f32, kind: horizon_client::mobs::DamageKind) {
+        use horizon_client::mobs::drops;
+        use horizon_world::player_inventory::EquipmentSlot;
+        if damage <= 0.0 {
+            return;
+        }
+        let Some(m) = self.mobs.iter().find(|m| m.id == id) else {
+            return;
+        };
+        let at = [m.position.x, m.position.y, m.position.z];
+        let body_armour = drops::head_is_body(m.species());
+        let amount = ((damage / 4.0) as u32).max(1);
+        let name = damage_type(kind, false);
+        let fire = self
+            .motion
+            .health
+            .damage
+            .id(name)
+            .is_some_and(|d| self.motion.health.damage.in_tag(d, "minecraft:is_fire"));
+        // A piece's maximum, or none when it may not lose durability at all.
+        fn wearable(me: &Game<'_>, stack: &ItemStack, fire: bool, name: &str) -> Option<u32> {
+            let info = me.res.items().get(&stack.item)?;
+            if !info.equip_damage_on_hurt
+                || info.max_damage == 0
+                || !horizon_client::stations::is_damageable(me.res.items(), stack)
+                || (fire && me.res.items().resists_fire(stack, name))
+            {
+                return None;
+            }
+            Some(info.max_damage)
+        }
+        let mut broke: Vec<i8> = Vec::new();
+        // The four armour slots, then the body slot (`extra.head`).
+        let event_of = horizon_client::mobs::item_break::equipment_break_event;
+        for (index, slot) in [
+            (0usize, EquipmentSlot::Head),
+            (1, EquipmentSlot::Chest),
+            (2, EquipmentSlot::Legs),
+            (3, EquipmentSlot::Feet),
+        ] {
+            let Some(m) = self.mobs.iter().find(|m| m.id == id) else {
+                return;
+            };
+            let Some(stack) = m.extra.armor[index].clone() else {
+                continue;
+            };
+            let Some(max) = wearable(self, &stack, fire, name) else {
+                continue;
+            };
+            let loss = self.durability_loss(&stack, amount);
+            if loss == 0 {
+                continue;
+            }
+            let lost = stack.damage + loss;
+            let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
+                return;
+            };
+            if lost >= max {
+                m.extra.armor[index] = None;
+                broke.push(event_of(slot));
+            } else if let Some(worn) = m.extra.armor[index].as_mut() {
+                worn.damage = lost;
+            }
+        }
+        if body_armour {
+            let body = self
+                .mobs
+                .iter()
+                .find(|m| m.id == id)
+                .and_then(|m| m.item_by_slot(EquipmentSlot::Body));
+            if let Some(body) = body
+                && let Some(max) = wearable(self, &body, fire, name)
+            {
+                let loss = self.durability_loss(&body, amount);
+                if loss > 0 {
+                    let lost = body.damage + loss;
+                    let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
+                        return;
+                    };
+                    if lost >= max {
+                        m.extra.head = None;
+                        m.extra.body_damage = 0;
+                        broke.push(event_of(EquipmentSlot::Body));
+                    } else {
+                        m.extra.body_damage = lost as i32;
+                    }
+                }
+            }
+        }
+        for event in broke {
+            // LivingEntity.onEquippedItemBroken through the level's broadcast.
+            self.lan_entity_event(id as i32, event, at);
         }
     }
     /// What a converted frog gets once its tadpole has grown up: the spawn
@@ -650,7 +765,7 @@ impl Game<'_> {
             thundering: weather && thunder > 0.9,
             nether: self.dim == Dim::Nether,
             block_tags: &self.items().block_tags,
-            biomes: self.res.biomes(),
+            biomes: world_biomes!(self),
             mob_griefing: self.ui.rules.bool("mob_griefing"),
             universal_anger: self.ui.rules.bool("universal_anger"),
             mob_drops: self.ui.rules.bool("mob_drops"),
@@ -661,6 +776,11 @@ impl Game<'_> {
             teams: std::sync::Arc::new(self.mob_teams()),
             items: Some(self.items()),
             lid_openers: &self.lid_openers,
+            mod_effects: if self.remote.is_none() {
+                Some(self)
+            } else {
+                None
+            },
             // The first player in the level: a server has no player of its own.
             difficulty: self.local_difficulty(
                 self.level_players()
@@ -1141,6 +1261,7 @@ impl Game<'_> {
         let projectile = match d.kind {
             DamageKind::Arrow => Some("minecraft:arrow"),
             DamageKind::Fireball => Some("minecraft:fireball"),
+            DamageKind::WitherSkull => Some("minecraft:wither_skull"),
             DamageKind::Fireworks => Some("minecraft:firework_rocket"),
             _ => None,
         };
@@ -1241,6 +1362,10 @@ impl Game<'_> {
                 }),
                 DamageKind::Fireball => Some(LootEntity {
                     kind: "minecraft:fireball".into(),
+                    ..LootEntity::default()
+                }),
+                DamageKind::WitherSkull => Some(LootEntity {
+                    kind: "minecraft:wither_skull".into(),
                     ..LootEntity::default()
                 }),
                 DamageKind::Fireworks => Some(LootEntity {
@@ -1491,6 +1616,7 @@ impl Game<'_> {
                     self.drown_particles(at, v);
                 }
                 MobEvent::SunProtectionWear { mob } => self.wear_sun_protection(mob),
+                MobEvent::ArmorHurt { mob, amount, kind } => self.hurt_mob_armor(mob, amount, kind),
                 MobEvent::EntityEvent { mob, event, at } => {
                     self.lan_entity_event(mob as i32, event, at)
                 }
@@ -2829,6 +2955,7 @@ impl Game<'_> {
         damage_type: &str,
         known: Option<Option<u32>>,
     ) -> bool {
+        let post_attack_if_alive = std::mem::take(&mut self.combat.post_attack_if_alive);
         let rocket = std::mem::take(&mut self.combat.rocket_hit);
         // ServerPlayer.canHarmPlayer refused another player's projectile.
         if self.creative || self.combat.refuse_player_hit {
@@ -2865,6 +2992,7 @@ impl Game<'_> {
                 }),
         };
         // The causing entity for the death message.
+        let marks = self.pending_marks();
         let owner = self.combat.projectile_owner.take();
         if let Some(a) = attacker.or(owner) {
             self.note_attacker(damage_type, a);
@@ -2879,6 +3007,11 @@ impl Game<'_> {
         // DamageSource.scalesWithDifficulty: a mob (or its projectile's
         // owner) caused the hit, not a player.
         let living_cause = attacker.or(owner).is_some();
+        // The native damage hook's causing entity: the one given, or the
+        // owner of the projectile that hit (`projectile_owner` outlives a
+        // projectile's other hits), not the guessed melee attacker.
+        let owner = owner.filter(|_| projectile);
+        let causing = known.flatten().or(owner).map_or(0, |id| id as i32);
         let mut outcome = horizon_client::health::BlockOutcome::default();
         if let Some(player) = self.player.as_mut()
             && let Some(id) = self.motion.health.damage.id(damage_type)
@@ -2889,6 +3022,7 @@ impl Game<'_> {
                 amount,
                 blocking,
                 living_cause,
+                causing,
             )
             && {
                 outcome = o;
@@ -2914,12 +3048,21 @@ impl Game<'_> {
                 }
             }
             // The thorns hurt the entity that caused the hit, if there is one.
-            if let Some(a) = attacker.or(owner) {
+            let killed = self.player.as_ref().is_some_and(|p| {
+                super::wither::killed(true, p.health.dead_or_dying(), p.health.totem_used)
+            });
+            if let Some(a) = attacker.or(owner)
+                && !(post_attack_if_alive && killed)
+            {
                 self.thorns(a);
             }
         }
         // LivingEntity.hurtServer: ENTITY_HURT_PLAYER, unless it returned
         // early (invulnerable, or inside the hurt cooldown).
+        // A hit a native mod canceled records no damage (hurtServer never ran).
+        if outcome.canceled {
+            self.drop_pending_since(marks);
+        }
         if outcome.hurt || outcome.sound {
             let source = attacker
                 .or(owner)
@@ -3674,10 +3817,13 @@ impl Game<'_> {
         ) {
             return self.wind_charge_hit(p, hit);
         }
+        // A wither skull's hit on a part or crystal goes through
+        // `wither_skull_hit` below, as on any entity, and then explodes.
         if let Hit::Entity {
             who: Who::Mob(id), ..
         } = hit
             && id >= super::dragon::SPECIAL
+            && !matches!(p.kind, ProjectileKind::WitherSkull { .. })
         {
             let by_player = p.owner == Some(Who::Player);
             if p.arrow.is_some() {
@@ -3792,6 +3938,7 @@ impl Game<'_> {
                 } else {
                     EntityHit::Refused
                 };
+                self.burning_arrow_primes(p, who);
                 self.finish_arrow_hit(trident, outcome);
             }
             // AbstractArrow.onHitBlock plays its sound itself (ArrowEvent).
@@ -3866,6 +4013,7 @@ impl Game<'_> {
                         hurt
                     }
                 };
+                self.burning_arrow_primes(p, who);
                 // doKnockback: Punch pushes along the flight, less the target's
                 // knockback resistance.
                 let flight = (p.velocity.x * p.velocity.x + p.velocity.z * p.velocity.z).sqrt();
@@ -4371,12 +4519,28 @@ impl Game<'_> {
         };
         self.audio.play(sound, Some(at), 1.0, 1.0);
     }
-    /// Right click on a mob (Mob.interact / mobInteract). Returns true when consumed.
-    pub(super) fn interact_mob(&mut self) -> Result<bool> {
-        let Some((index, distance)) = self.mob_hit() else {
+    /// Right click on a mob (Mob.interact / mobInteract), on the mob under the
+    /// crosshair or on the one a guest's interact packet named: returns true
+    /// when consumed.
+    pub(super) fn interact_mob(&mut self, target: Option<InteractTarget>) -> Result<bool> {
+        let Some((index, distance)) = (match target {
+            // The id the packet named, under the filters the crosshair pick
+            // applies (`mob_hit`): a mob in its death animation is not clicked
+            // by either path, so naming one in a packet must not reach the
+            // feed, shear, leash or name paths either.
+            Some(t) => Self::named_entity(&self.mobs, t.id, |m| m.id)
+                .filter(|&i| {
+                    let m = &self.mobs[i];
+                    named_mob_pickable(m.alive(), m.id, self.riding, self.remote_camera_id())
+                })
+                .map(|i| (i, 0.0)),
+            None => self.mob_hit(),
+        }) else {
             return Ok(false);
         };
-        if let Some(hit) = self.pick_unfiltered()
+        // Only a client's own pick is stopped by a block: the range check passed.
+        if target.is_none()
+            && let Some(hit) = self.pick_unfiltered()
             && let Some(eye) = self.eye_position()
         {
             let d = ((hit.point[0] - eye[0]).powi(2)
@@ -5371,7 +5535,7 @@ impl Game<'_> {
     /// the mob it spawned, once the guards let it through, as
     /// `TypedEntityData.loadInto`: the mob's own compound, the data merged over
     /// it, loaded back into the same mob (`/data merge entity`'s loader).
-    fn apply_spawn_egg_entity_data(&mut self, id: u32, stack: &ItemStack) {
+    pub(super) fn apply_spawn_egg_entity_data(&mut self, id: u32, stack: &ItemStack) {
         let Some(i) = self.mobs.iter().position(|m| m.id == id) else {
             return;
         };
@@ -5469,6 +5633,7 @@ impl Game<'_> {
         let atlas = &self.gui.atlas;
         let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
         let scale = self.view_scale();
+        self.rendered_mobs.set(0);
         for mob in &self.mobs {
             let entity_start = out.len();
             let outline = self.mob_outline(mob);
@@ -5515,6 +5680,7 @@ impl Game<'_> {
                 }
             }
             self.mark_entity(entity_start, &mob.kind.id);
+            self.rendered_mobs.set(self.rendered_mobs.get() + 1);
             let light = self.world.light(
                 mob.position.x.floor() as i32,
                 (mob.position.y + mob.eye_height()).floor() as i32,
@@ -5961,6 +6127,22 @@ fn bucketable(species: Species) -> Option<(&'static str, &'static str)> {
 pub(super) fn source_damage_type(d: Damage) -> &'static str {
     damage_type(d.kind, d.attacker.is_some())
 }
+/// Whether the causing entity deals `kind` itself, so it is the source's
+/// direct entity too: a melee hit (`DamageSources.mobAttack`, `playerAttack`,
+/// a mace's or a spear's), a sting, a sonic boom, thorns.
+pub(super) fn melee(kind: horizon_client::mobs::DamageKind) -> bool {
+    use horizon_client::mobs::DamageKind as K;
+    matches!(
+        kind,
+        K::PlayerAttack
+            | K::MaceSmash
+            | K::Spear
+            | K::MobAttack
+            | K::Sting
+            | K::SonicBoom
+            | K::Thorns
+    )
+}
 /// The damage type id of a Horizon damage kind. `caused`: the source has a
 /// causing entity (only a blast asks).
 pub(super) fn damage_type(kind: horizon_client::mobs::DamageKind, caused: bool) -> &'static str {
@@ -6008,6 +6190,7 @@ pub(super) fn damage_type(kind: horizon_client::mobs::DamageKind, caused: bool) 
         K::SulfurCubeHot => "minecraft:sulfur_cube_hot",
         K::WindCharge => "minecraft:wind_charge",
         K::Wither => "minecraft:wither",
+        K::WitherSkull => "minecraft:wither_skull",
     }
 }
 /// A Horizon item stack as a loot stack (id, count, damage, enchantments).
@@ -6323,6 +6506,7 @@ mod pearl_tests {
             sea_level: 63,
             items: Some(&items),
             lid_openers: &lid_openers,
+            mod_effects: None,
         };
         let pw = ProjWorld {
             w: &w,
