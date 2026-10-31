@@ -196,5 +196,8 @@
   "Threads that generate, light and mesh chunks. Next start.": "负责生成、光照与网格化区块的线程数。下次启动生效。",
   "Vulkan, then DirectX 12 (Windows) or OpenGL (Linux) where it fails. Next start.": "优先 Vulkan，失败时用 DirectX 12（Windows）或 OpenGL（Linux）。下次启动生效。",
   "Mesh data sent to the GPU per frame. Lower is smoother while loading.": "每帧发送给 GPU 的网格数据。越低加载时越流畅。",
-  "Frame rate and frame times over the game, with a graph.": "游戏运行时的帧率与帧时间，附带图表。"
+  "Frame rate and frame times over the game, with a graph.": "游戏运行时的帧率与帧时间，附带图表。",
+  "horizon.multiplayer.finding_friend": "正在查找好友的世界…",
+  "horizon.loading.opening_world": "正在打开世界",
+  "horizon.loading.cancelling_world": "正在取消"
 }

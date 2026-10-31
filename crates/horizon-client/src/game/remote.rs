@@ -694,12 +694,15 @@ impl Game<'_> {
             quiet_commands: false,
             mod_net: false,
             builtin: Arc::new(builtin),
+            status: lang
+                .get("connect.connecting")
+                .cloned()
+                .unwrap_or_else(|| "Connecting to the server...".into()),
             lang,
             registries: Arc::new(Dynamic::default()),
             joined: false,
             reconfiguring: None,
             logged_in: false,
-            status: "Connecting to the server...".into(),
             entity_id: 0,
             camera: None,
             use_item: None,
