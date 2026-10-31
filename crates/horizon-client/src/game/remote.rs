@@ -7405,12 +7405,10 @@ impl Game<'_> {
     /// `causeExtraKnockback`: the 0.6 horizontal speed cut and the sprint
     /// stop. Without it the next move outruns the server's player.
     fn remote_player_attack(&mut self, mob: usize) {
-        let id = self.mobs[mob].id as i32;
-        if !self
-            .remote
-            .as_ref()
-            .is_some_and(|r| r.level_players.contains_key(&id))
-        {
+        // Java dispatches this through the target's RemotePlayer type. The
+        // level_players map is profile bookkeeping and can lag the entity;
+        // mobs must stay out because their hurtClient returns false.
+        if self.mobs[mob].kind.id != "minecraft:player" {
             return;
         }
         // `getAttackStrengthScale(0.5)`: here the ticker is `hand_strength`'s
