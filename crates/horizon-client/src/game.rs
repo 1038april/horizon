@@ -736,9 +736,9 @@ enum Screen {
     DebugOptions,
 }
 impl Screen {
-    /// The id native mods see for this screen (`NativeScreenView.id`, from
-    /// `Game::screen_id`): one per variant, and a hook's contract, so it
-    /// stays the same from release to release. A new variant must add one.
+    /// The id native mods see for this screen (`NativeScreenView.id`, the
+    /// `screen_render_post` hook): one per variant, and a hook's contract, so
+    /// it stays the same from release to release. A new variant must add one.
     fn id(self) -> &'static str {
         match self {
             Screen::Playing => "playing",
@@ -7217,12 +7217,6 @@ impl Game<'_> {
             || self.link_prompt.is_some()
             || self.server_packs.prompt.is_some()
     }
-    /// The id native mods see for the open screen (`NativeScreenView.id`,
-    /// the `screen_render_post` hook): `inventory`, `paused` and so on, one
-    /// per `Screen` variant, from `Screen::id`.
-    fn screen_id(&self) -> &'static str {
-        self.screen.id()
-    }
     /// `Minecraft.pauseIfInactive`: a window without focus for more than 500 ms
     /// pauses the game. An open screen (books, signs, the pack prompt, a server
     /// dialog) stays instead of pausing (`Gui.setPauseScreen`).
@@ -7588,7 +7582,7 @@ impl Game<'_> {
             self.draw_win_screen(&mut batch);
             // The early return skips the match below: the hook still sees the
             // screen, after its own drawing.
-            self.fire_screen_render_post(&mut batch, Screen::Win);
+            self.fire_screen_render_post(&mut batch);
             return batch;
         }
         if self.screen == Screen::Options {
@@ -7597,7 +7591,7 @@ impl Game<'_> {
                 self.update_remote_skins();
             }
             self.draw_options(&mut batch);
-            self.fire_screen_render_post(&mut batch, Screen::Options);
+            self.fire_screen_render_post(&mut batch);
             return batch;
         }
         if let Some(title) = &mut self.title {
@@ -7911,10 +7905,11 @@ impl Game<'_> {
             Screen::Chat => self.draw_chat_screen(&mut batch),
             Screen::Playing | Screen::Options | Screen::Win => {}
         }
-        // ScreenEvent.Render.Post: the open screen (never `Playing`: a pack
-        // prompt reports `Playing` and draws nothing) has drawn itself and its
-        // tooltips, so a native mod draws over it here.
-        self.fire_screen_render_post(&mut batch, screen);
+        // ScreenEvent.Render.Post: the open screen has drawn itself and its
+        // tooltips, so a native mod draws over it here. Never `Playing`: the
+        // prompts, books and sign editors drawn over gameplay keep it, draw
+        // after this point and so over what a mod drew.
+        self.fire_screen_render_post(&mut batch);
         self.draw_saving_indicator(&mut batch);
         // ToastManager.extractRenderState: F1 hides the toasts too.
         self.draw_toasts(&mut batch, !show_hud);
@@ -7929,14 +7924,16 @@ impl Game<'_> {
         batch
     }
     /// `native_screen_render_post` (`ScreenEvent.Render.Post`) for the open
-    /// screen, once a frame: `screen` is what `hud_layers` draws (the Win and
-    /// Options screens call this on their own path). Not while playing with
-    /// no screen. Client only, read-only: what a mod draws is its own.
-    fn fire_screen_render_post(&self, batch: &mut HudBatch, screen: Screen) {
+    /// screen, once a frame; the Win and Options screens call this on their
+    /// own path. Reads `self.screen`, the one `hud_layers` drew. Not while
+    /// playing with no screen. Client only, read-only: what a mod draws is
+    /// its own.
+    fn fire_screen_render_post(&self, batch: &mut HudBatch) {
+        let screen = self.screen;
         if screen == Screen::Playing {
             return;
         }
-        let view = self.screen_view(batch);
+        let view = self.screen_view(batch, screen);
         self.native_screen_render_post(batch, &view);
     }
     /// `CreativeModeInventoryScreen.hasPermissions` (`canUseGameMasterBlocks`
@@ -8024,6 +8021,64 @@ impl Game<'_> {
             }
         }
         v
+    }
+    /// How many slots `slots` lists, counted without building the list: the
+    /// screen render hook asks once a frame and must not allocate. Same
+    /// branches in the same order, so the two stay in step.
+    fn slot_count(&self) -> usize {
+        if self.creative_inventory_open() {
+            return Creative::inventory_slots().count();
+        }
+        if self.creative_tab_open() {
+            return Creative::tab_slots().count();
+        }
+        if let Some(n) = self
+            .station_slot_count()
+            .or_else(|| self.mount_slot_count())
+        {
+            return n;
+        }
+        let inventory = 36;
+        if let Some(shown) = self.native_screen_slot_count() {
+            return inventory + shown;
+        }
+        let container = match self.container_kind() {
+            Some(BlockEntity::Chest(_)) => self.container_size(),
+            Some(BlockEntity::Furnace(_)) => 3,
+            Some(BlockEntity::Brewing(_)) => 5,
+            Some(BlockEntity::Crafter(_)) => 10,
+            Some(
+                BlockEntity::Sign(_)
+                | BlockEntity::Jukebox(_)
+                | BlockEntity::Beacon(_)
+                | BlockEntity::Lectern(_)
+                | BlockEntity::Sculk(_)
+                | BlockEntity::Banner(_)
+                | BlockEntity::CreakingHeart(_)
+                | BlockEntity::Spawner(_)
+                | BlockEntity::TrialSpawner(_)
+                | BlockEntity::Vault(_)
+                | BlockEntity::Beehive(_)
+                | BlockEntity::CommandBlock(_)
+                | BlockEntity::EndGateway(_)
+                | BlockEntity::Skull(_)
+                | BlockEntity::DaylightDetector
+                | BlockEntity::Campfire(_)
+                | BlockEntity::ChiseledBookshelf(_)
+                | BlockEntity::Brushable(_)
+                | BlockEntity::Shelf(_)
+                | BlockEntity::Mod(_)
+                | BlockEntity::PotentSulfur(_)
+                | BlockEntity::StructureBlock(_)
+                | BlockEntity::JigsawBlock(_)
+                | BlockEntity::TestBlock(_)
+                | BlockEntity::TestInstanceBlock(_),
+            ) => 0,
+            None => {
+                self.craft_size * self.craft_size + 1 + if self.craft_size == 2 { 5 } else { 0 }
+            }
+        };
+        inventory + container
     }
     /// InventoryMenu / CraftingMenu slot layouts.
     fn slot_position(&self, i: usize) -> (f32, f32) {

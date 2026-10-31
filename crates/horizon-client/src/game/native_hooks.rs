@@ -536,26 +536,44 @@ pub struct NativeScreen {
 }
 
 /// The open screen, for `native_screen_render_post` (`ScreenEvent.Render.Post`):
-/// what it is, its title, where its container panel is and how many slots its
-/// menu has.
+/// what it is, its menu and title, where its container panel is, how many
+/// slots its menu has, and where the mouse and the frame's partial tick are.
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub struct NativeScreenView<'a> {
-    /// One id per `Screen` (`Screen::id`, from `Game::screen_id`): `inventory`,
-    /// `creative`, `paused`, `stats`, `options`, `win`… Stable across releases,
-    /// so a mod can match on it.
+    /// One id per `Screen` (`Screen::id`): `inventory`, `creative`, `paused`,
+    /// `stats`, `options`, `win`… Stable across releases, so a mod can match
+    /// on it. Every container, station and mod window draws on the inventory
+    /// screen and so reports `inventory`: tell them apart by `menu` and
+    /// `title` (both None on a window the client opened itself) and by
+    /// `slots`.
     pub id: &'static str,
+    /// The vanilla menu type of the menu the server opened for this screen
+    /// (`minecraft:generic_9x3`, `minecraft:furnace`, a mod's own id), as
+    /// `MenuType` names them. None on a screen without one: the client's own
+    /// inventory, creative, the pause menu, stats…
+    pub menu: Option<&'a str>,
     /// The title the server gave the open menu, if it has one: the component
     /// itself, not a copy (`.plain()` it to draw, `chars()` for the styles).
-    /// None on a screen the client opened, and while playing.
+    /// None when the server gave none, on a screen the client opened, and
+    /// while playing.
     pub title: Option<&'a Text>,
     /// The screen's container panel in GUI pixels, `[x, y, width, height]`;
-    /// the whole window for a screen with none.
+    /// the whole window for a screen with none. A vanilla-sized window is 176
+    /// wide (a taller station is still 176 wide; a mod screen reports its
+    /// own size).
     pub rect: [f32; 4],
     /// The slots the open menu has, as `Game::slots` counts them: the player
-    /// inventory's 36, then the container's or the crafting grid's (a screen
-    /// with no menu of its own still counts the inventory menu's).
+    /// inventory's 36, then the container's, the station's, the mod screen's
+    /// or the crafting grid's (a screen with no menu of its own still counts
+    /// the inventory menu's). Counted, not listed.
     pub slots: usize,
+    /// The pointer in GUI pixels (`Screen.mouseX`, `mouseY`, from the
+    /// window's top left), as `native_cursor` gives it: for hover highlights.
+    pub mouse: [f32; 2],
+    /// This frame's partial tick (`getGameTimeDeltaPartialTick(false)`, 0 to
+    /// 1): what the screen draws animation against.
+    pub partial_tick: f32,
 }
 
 /// The mod screen open on this client: the block it is for, the key its
@@ -1079,8 +1097,15 @@ impl Game<'_> {
     /// the point of `ScreenEvent.Render.Post`): draw over it with
     /// `native_fill`, `native_sprite` and `native_text`, `screen.rect` being
     /// its container panel (or the whole window) and `screen.id` the screen
-    /// it is. Once a frame on the window, while a screen is open and never
-    /// while playing with no screen; `&self`, so it reads and draws only.
+    /// it is. Once a frame on the window, never while playing with no screen;
+    /// `&self`, so it reads and draws only. The Win and Options screens call
+    /// it on their own path, after their drawing.
+    ///
+    /// It does not fire on the title screen, which returns before its point,
+    /// nor for the screens drawn over gameplay after it (a server dialog, the
+    /// server pack, link and code-of-conduct prompts, a book, a sign editor):
+    /// those keep `Screen::Playing`, which it skips, and draw over what it
+    /// drew, while vanilla's `ScreenEvent.Render.Post` fires for them.
     /// API @API:screen_render_post@.
     pub(super) fn native_screen_render_post(
         &self,
@@ -1090,24 +1115,30 @@ impl Game<'_> {
         let _ = (batch, screen);
     }
     /// The open screen as a native mod sees it (`NativeScreenView`): its id,
-    /// the open menu's title and slot count, and its panel's rectangle.
-    /// Borrowed: nothing is copied per frame.
-    pub(super) fn screen_view(&self, batch: &HudBatch) -> NativeScreenView<'_> {
+    /// the open menu's type and title, its slot count, and its panel's
+    /// rectangle, with the mouse and the partial tick. `screen` is the screen
+    /// drawn this frame, which `NativeScreenView.id` comes from. Borrowed:
+    /// nothing is copied per frame.
+    pub(super) fn screen_view(&self, batch: &HudBatch, screen: Screen) -> NativeScreenView<'_> {
         NativeScreenView {
-            id: self.screen_id(),
+            id: screen.id(),
+            menu: self.remote_menu_type(),
             title: self.remote.as_ref().and_then(|r| r.menu_title.as_ref()),
-            rect: self.screen_rect(batch),
-            slots: self.slots().len(),
+            rect: self.screen_rect(batch, screen),
+            slots: self.slot_count(),
+            mouse: self.native_cursor(),
+            partial_tick: self.clock.fraction() as f32,
         }
     }
-    /// The open screen's container panel in GUI pixels, or the whole window
-    /// for a screen with none (`NativeScreenView.rect`).
-    pub(super) fn screen_rect(&self, batch: &HudBatch) -> [f32; 4] {
-        if self.screen != Screen::Inventory && self.screen != Screen::Creative {
+    /// The open screen's container panel in GUI pixels (`screen`'s, the one
+    /// this frame draws), or the whole window for a screen with none
+    /// (`NativeScreenView.rect`).
+    pub(super) fn screen_rect(&self, batch: &HudBatch, screen: Screen) -> [f32; 4] {
+        if screen != Screen::Inventory && screen != Screen::Creative {
             return [0.0, 0.0, batch.width, batch.height];
         }
         let (x, y) = self.inventory_origin(batch);
-        if self.screen == Screen::Creative {
+        if screen == Screen::Creative {
             return [x, y, Creative::WIDTH, Creative::HEIGHT];
         }
         let width = self.native_screen_width().unwrap_or(176.0);
@@ -2885,6 +2916,12 @@ impl Game<'_> {
                 .map(|(i, _)| 300 + i)
                 .collect(),
         )
+    }
+    /// How many of those slots `native_screen_slots` lists, without building
+    /// it (`Game::slot_count` asks every frame).
+    pub(super) fn native_screen_slot_count(&self) -> Option<usize> {
+        let s = self.shown_native_screen()?;
+        Some(s.screen.slots.iter().filter(|p| p.is_some()).count())
     }
     /// The first row of the player's inventory on the open mod screen.
     pub(super) fn native_screen_inventory_y(&self) -> Option<f32> {
