@@ -7,7 +7,8 @@ use std::fmt::Write;
 use naga::ShaderStage;
 
 use super::scan::{
-    LATER_KEYWORDS, Stage, UNIFORM_STATE, VERTEX_INPUTS, is_ident, is_sampler_type, significant,
+    LATER_KEYWORDS, NOT_CONSTANT, Stage, UNIFORM_STATE, VERTEX_INPUTS, is_ident, is_sampler_type,
+    significant,
 };
 use super::{Sampler, split_sampler};
 
@@ -36,7 +37,8 @@ impl Stage<'_> {
              vec3 hz_modf(vec3 x, out vec3 i) { i = trunc(x); return x - i; }\n\
              vec4 hz_modf(vec4 x, out vec4 i) { i = trunc(x); return x - i; }\n\
              struct hz_FogParameters { vec4 color; float density; float start; float end; float scale; };\n\
-             hz_FogParameters hz_Fog;\n",
+             hz_FogParameters hz_Fog;\n\
+             float hz_zero = 0.0;\n",
         );
         if self.inverse {
             p.push_str(INVERSE);
@@ -115,6 +117,28 @@ impl Stage<'_> {
                 }
                 continue;
             }
+            // `sqrt(-1.0)`: GL's NaN at run time, which naga would fold and refuse.
+            if t == "sqrt"
+                && let Some(open) = next(i).filter(|&j| self.tokens[j] == "(")
+                && let Some(minus) = next(open).filter(|&j| self.tokens[j] == "-")
+                && let Some(n) = next(minus).filter(|&j| {
+                    self.tokens[j].starts_with(|c: char| c.is_ascii_digit() || c == '.')
+                })
+                && let Some(close) = next(n).filter(|&j| self.tokens[j] == ")")
+                && !is_zero_literal(self.tokens[n])
+            {
+                out.push_str("(hz_zero / hz_zero)");
+                skip_until = close + 1;
+                continue;
+            }
+            // `x / 0.0`: GL's infinity at run time, which naga would fold and refuse.
+            if t == "/"
+                && let Some(j) = next(i).filter(|&j| is_zero_literal(self.tokens[j]))
+            {
+                out.push_str("/ hz_zero");
+                skip_until = j + 1;
+                continue;
+            }
             let called = next(i).is_some_and(|j| self.tokens[j] == "(");
             match t {
                 "{" => depth += 1,
@@ -158,6 +182,10 @@ impl Stage<'_> {
             }
             if !is_ident(t) {
                 out.push_str(t);
+                continue;
+            }
+            // A local `const` that calls a built-in naga cannot evaluate: an ordinary local.
+            if t == "const" && depth > 0 && self.calls_not_constant(i) {
                 continue;
             }
             // A function definition's sampler parameters: `sampler2D s` → `texture2D s, sampler hz_s_s`.
@@ -230,6 +258,10 @@ impl Stage<'_> {
                 {
                     Some("textureLod".into())
                 }
+                // GL_EXT_gpu_shader4's names (Bliss).
+                "texelFetch1D" | "texelFetch2D" | "texelFetch3D" if called => {
+                    Some("texelFetch".into())
+                }
                 "texture2DProj" if called => Some("textureProj".into()),
                 "texture2DGrad" | "texture2DGradARB" if called => Some("textureGrad".into()),
                 "shadow2D" if called => Some("vec4(texture".into()),
@@ -277,6 +309,21 @@ impl Stage<'_> {
 }
 
 impl Stage<'_> {
+    /// Whether the declaration after token `i` calls a built-in in `NOT_CONSTANT` before its `;`.
+    pub(super) fn calls_not_constant(&self, i: usize) -> bool {
+        for (j, &t) in self.tokens.iter().enumerate().skip(i + 1) {
+            if matches!(t, ";" | "{" | "}") {
+                return false;
+            }
+            if NOT_CONSTANT.contains(&t)
+                && self.tokens[j + 1..].iter().find(|t| significant(t)) == Some(&"(")
+            {
+                return true;
+            }
+        }
+        false
+    }
+
     /// The element count of an unsized array whose `[]` ends at `close`: the arguments of the
     /// constructor that follows (`[] = T[](...)` or `[](...)`).
     pub(super) fn array_length(&self, close: usize) -> Option<usize> {
@@ -307,6 +354,12 @@ impl Stage<'_> {
 }
 
 /// What our vertex `main` gives a vertex input of a composite-style program.
+/// `0.0`, `0.`, `.0`, `0.0f`: a floating-point literal zero.
+fn is_zero_literal(t: &str) -> bool {
+    let t = t.trim_end_matches(['f', 'F']);
+    t.contains('.') && !t.contains(['e', 'E']) && t.chars().all(|c| c == '0' || c == '.')
+}
+
 pub(super) fn attribute_value(name: &str, ty: &str) -> String {
     match name {
         "vaPosition" => "vec3(hz_p, 0.0)".into(),
