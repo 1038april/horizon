@@ -418,11 +418,15 @@ pub fn mob_to_nbt(
             .iter()
             .map(|&(effect, duration, amplifier)| {
                 let shown = !m.extra.hidden_effects.contains(&effect);
+                let ambient = m.extra.ambient_effects.contains(&effect);
                 let mut e = vec![
                     ("id", string(crate::brewing::namespaced(effect))),
                     ("amplifier", Tag::Byte(amplifier.clamp(0, 255) as u8 as i8)),
                     ("duration", Tag::Int(duration)),
                 ];
+                if ambient {
+                    e.push(("ambient", Tag::Byte(1)));
+                }
                 if !shown {
                     e.push(("show_particles", Tag::Byte(0)));
                 }
@@ -484,8 +488,10 @@ pub fn mob_to_nbt(
         map.insert("InLove".into(), Tag::Int(m.extra.in_love.max(0)));
     }
     let species = m.species();
-    if let Some((_, variant)) =
-        crate::mobs::finalize::species_variant_component(species, m.extra.variant)
+    // MushroomCow saves its variant under `Type` (below), not `variant`.
+    if species != crate::mobs::Species::Mooshroom
+        && let Some((_, variant)) =
+            crate::mobs::finalize::species_variant_component(species, m.extra.variant)
     {
         map.insert("variant".into(), string(&variant));
     }
@@ -922,6 +928,10 @@ pub fn mob_to_nbt(
                 "DarkTicksRemaining".into(),
                 Tag::Int(crate::mobs::aquatic::dark_ticks(m)),
             );
+        }
+        // Phantom.addAdditionalSaveData.
+        "minecraft:phantom" => {
+            map.insert("size".into(), Tag::Int(m.extra.size));
         }
         "minecraft:slime" | "minecraft:magma_cube" => {
             map.insert("Size".into(), Tag::Int(m.extra.size.max(1) - 1));
@@ -1414,6 +1424,11 @@ pub fn mob_from_nbt(
             if number(e.get("show_particles")) == Some(0) {
                 m.extra.hidden_effects.push(effect);
             }
+            // Details.CODEC: `ambient` defaults to false.
+            m.extra.ambient_effects.retain(|h| *h != effect);
+            if number(e.get("ambient")).is_some_and(|a| a != 0) {
+                m.extra.ambient_effects.push(effect);
+            }
         }
     }
     m.silent = flag(tag, "Silent");
@@ -1804,6 +1819,10 @@ pub fn mob_from_nbt(
         }
         m.extra.flag2 = flag(tag, "wasOnGround");
     }
+    if m.species() == crate::mobs::Species::Phantom {
+        // Phantom.readAdditionalSaveData: setPhantomSize(size).
+        crate::mobs::phantom::set_size(&mut m, number(tag.get("size")).unwrap_or(0) as i32);
+    }
     // Zombie, Piglin and Zoglin.readAdditionalSaveData: IsBaby (the baby
     // zombies of trial spawners).
     if !crate::mobs::finalize::ageable(m.species()) && flag(tag, "IsBaby") {
@@ -1934,7 +1953,7 @@ pub fn orb_to_nbt(o: &ExperienceOrb, uuid: [i32; 4]) -> Tag {
     };
     let mut tag = base.tag(None);
     for (key, value) in [
-        ("Health", Tag::Short(5)),
+        ("Health", Tag::Short(o.health as i16)),
         ("Age", Tag::Short(o.age.min(i16::MAX as u32) as i16)),
         ("Value", Tag::Short(o.value.min(i16::MAX as u32) as i16)),
         ("Count", Tag::Int(o.count.min(i32::MAX as u32) as i32)),
@@ -1959,6 +1978,7 @@ pub fn orbs_from_nbt(tag: &Tag) -> Vec<ExperienceOrb> {
         on_ground: flag(tag, "OnGround"),
         count,
         ticks: 0,
+        health: number(tag.get("Health")).unwrap_or(5) as i32,
     };
     vec![orb]
 }
@@ -2877,6 +2897,7 @@ mod tests {
             on_ground: false,
             count: 3,
             ticks: 0,
+            health: 5,
         };
         let tag = orb_to_nbt(&o, [0; 4]);
         let back = orbs_from_nbt(&tag);
@@ -3722,6 +3743,20 @@ mod item_component_tests {
         assert_eq!(hen.extra.variant, 0);
         apply_item_components(&mut hen, &egg);
         assert_eq!(hen.extra.variant, 1, "minecraft:warm, not the biome's");
+        // MushroomCow.applyImplicitComponents: the egg's variant, and the
+        // component the mob reports back.
+        let mut egg = crate::items::ItemStack::new("minecraft:mooshroom_spawn_egg", 1);
+        egg.data_mut().set_other(
+            "minecraft:mooshroom/variant",
+            Some(string("minecraft:brown")),
+        );
+        let mut mooshroom = spawn("minecraft:mooshroom", 3);
+        apply_item_components(&mut mooshroom, &egg);
+        let (id, variant) = crate::mobs::finalize::variant_component(&mooshroom).unwrap();
+        assert_eq!(
+            (id, variant.as_str()),
+            ("minecraft:mooshroom/variant", "minecraft:brown")
+        );
         // Sheep.applyImplicitComponents: the egg's colour over the mob's.
         let mut egg = crate::items::ItemStack::new("minecraft:sheep_spawn_egg", 1);
         egg.data_mut()
@@ -3769,8 +3804,8 @@ mod item_component_tests {
             else {
                 return m;
             };
-            let tag = crate::data_cmd::merged(&mob_to_nbt(&m, [1, 2, 3, 4], None), data);
-            mob_from_nbt(&tag, &types, 2).unwrap()
+            let tag = crate::data_cmd::merged(&mob_to_nbt(&m, [1, 2, 3, 4], None, None), data);
+            mob_from_nbt(&tag, &types, 2, None).unwrap()
         };
         // `entity_data={NoAI:1b}`: no id, so the egg's own type holds the data.
         assert!(spawn(&egg(Some(Tag::compound([("NoAI", Tag::Byte(1))])))).no_ai);
