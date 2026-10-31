@@ -9928,14 +9928,7 @@ impl Game<'_> {
         // A painting nearer than the targeted block and mob breaks instead.
         if let Some((i, d)) = self.painting_hit()
             && self.mob_hit().is_none_or(|m| d < m.1)
-            && self.pick().is_none_or(|h| {
-                let eye = self.eye_position().unwrap_or_default();
-                (0..3)
-                    .map(|a| (h.point[a] - eye[a]).powi(2))
-                    .sum::<f64>()
-                    .sqrt()
-                    > d
-            })
+            && self.before_block(d)
         {
             self.break_painting(i, true);
             return true;
@@ -9957,15 +9950,8 @@ impl Game<'_> {
         let Some((index, distance)) = self.mob_hit() else {
             return false;
         };
-        if let Some(hit) = self.pick() {
-            let eye = self.eye_position().unwrap_or_default();
-            let d = ((hit.point[0] - eye[0]).powi(2)
-                + (hit.point[1] - eye[1]).powi(2)
-                + (hit.point[2] - eye[2]).powi(2))
-            .sqrt();
-            if d < distance {
-                return false;
-            }
+        if !self.before_block(distance) {
+            return false;
         }
         self.attack_mob(index);
         // Minecraft.startAttack swings after the attack.
