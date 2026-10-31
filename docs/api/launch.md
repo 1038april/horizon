@@ -11,7 +11,7 @@ reference implementation. Proposed in horizon-rust/horizon#3545.
 | Version | 0.1.0, printed by `horizon-client --launch-api` |
 | Level | experimental ([stability.md](stability.md)): preview once preparing and the guide are covered too |
 | Covers | starting `horizon-client`: its options, the session JSON, the exit codes, the crash report's path; preparing with `horizon-prepare`: `--output`, `--check`, `--complete`, `--progress json` |
-| Not yet | finding a build, the preparer's named inputs (see Not there yet) |
+| Not yet | finding a build, asking the preparer what it supports (see Not there yet) |
 
 ## Guide
 
@@ -70,6 +70,15 @@ horizon-prepare --check --output PREPARED
   prepares again. A folder being prepared, or whose preparation stopped, is not current.
   `--check` refuses `--progress` and `--complete` (exit 2): they apply to preparing.
 - `--complete`: after preparing, copies the sounds and fails unless `--check` would pass.
+- `--version-json`, `--client-jar`, `--libraries-dir` (Maven layout), `--assets-dir` (`indexes/` and `objects/`):
+  for a launcher whose files aren't laid out like the official launcher's, each names what `--minecraft-dir`
+  would give. Every file is still checked against the pins. When an earlier import beside the preparer is still
+  verified, it is reused and these files aren't read.
+- `--server-jar PATH`: the first `--prepare` needs the server jar, which no launcher keeps. Horizon never
+  downloads it; a launcher downloads it (the version JSON's `downloads.server`) only for a signed-in account
+  that owns Java Edition, as `horizon-launcher` does.
+- `--java-home PATH`: a Java of the pinned version that the launcher manages, tried after `JAVA_HOME` and the
+  `PATH`, before the official launcher's runtimes.
 - Exit codes: 0 done, 1 failed or gaps found, 2 a refused command line.
 
 ### `--progress json`
@@ -96,9 +105,8 @@ test keeps the contract and the code together.
 
 ## Not there yet
 
-- **Preparing from another launcher's files:** explicit inputs (`--version-json`, `--client-jar`,
-  `--libraries-dir`, `--assets-dir`), and a way to ask the preparer what it supports
-  (`horizon-prepare --launch-api`).
+- **Asking the preparer what it supports:** `horizon-prepare --launch-api`, with its output version, schema and
+  Java major.
 - **Finding a build:** a signed release index and builds kept longer than seven days.
 - **A guide**, "Running Horizon from another launcher", from picking a build to playing.
 
@@ -106,4 +114,5 @@ test keeps the contract and the code together.
 
 - 0.1.0 (not released yet, so still one version): `horizon-client`'s `--game-dir`, `--home`, `--fullscreen`,
   `--session-stdin`, `--launch-api`, exit code 2 for a refused command line; `horizon-prepare`'s `--output`,
-  `--check`, `--complete` and `--progress json`.
+  `--check`, `--complete`, `--progress json`, `--version-json`, `--client-jar`, `--libraries-dir`, `--assets-dir`
+  and `--java-home`.

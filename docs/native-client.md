@@ -53,6 +53,19 @@ object a line instead of plain text (its format is part of the Launch API:
 [docs/api/launch.md](api/launch.md#--progress-json)). Exit codes: 0 done, 1 failed or gaps found,
 2 a refused command line.
 
+A launcher whose files are laid out its own way names them one by one instead of
+`--minecraft-dir`: `--version-json` (the pinned version's JSON), `--client-jar`,
+`--libraries-dir` (the client's libraries, Maven layout) and `--assets-dir` (the asset store,
+with `indexes/` and `objects/`); each replaces only what it names, and every file is still
+checked against `research-lock.json`'s pins. When an earlier import beside `--root` is still
+verified, it is reused and the named files aren't read. Two things no such launcher keeps:
+- **The server jar.** The first `--prepare` needs `--server-jar`. Horizon never downloads it; a
+  launcher downloads it (the version JSON's `downloads.server`) only for a signed-in account that
+  owns Minecraft: Java Edition, as `horizon-launcher` does.
+- **Java 25.** `--java-home PATH` names a runtime the launcher manages. The preparer takes the first
+  Java of the pinned version from `JAVA_HOME`, the `PATH`, `--java-home`, then the official
+  launcher's runtimes.
+
 ```sh
 cargo run --release -p horizon-prepare -- --prepare --server-jar ~/Downloads/server.jar
 cargo run --release -p horizon-prepare -- sounds
