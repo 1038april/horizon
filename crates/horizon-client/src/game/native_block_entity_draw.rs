@@ -23,6 +23,8 @@ const VIEW_DISTANCE: f64 = 64.0;
 /// One mod block entity's frame, as `submit` gets it: the render state's
 /// partial tick, game time and light, and the pose stack the helpers draw
 /// under (`native_draw_quad`, `native_draw_cube`, `native_draw_block`).
+// Native mods read and drive it; nothing in Horizon does.
+#[allow(dead_code)]
 pub struct BlockEntityDraw {
     /// The frame's partial tick, 0 to 1 (`BlockEntityRenderState`).
     pub partial: f32,
@@ -37,6 +39,7 @@ pub struct BlockEntityDraw {
     vertices: Vec<Vertex>,
 }
 
+#[allow(dead_code)]
 impl BlockEntityDraw {
     /// `PoseStack.pushPose`: `pop` comes back to the pose as it is now.
     pub fn push(&mut self) {
@@ -109,6 +112,7 @@ impl BlockEntityDraw {
 /// One face of a `native_draw_cube` box: its sprite (`mymod:entity/cog`,
 /// `mymod:block/casing`) and its UVs in texels of 16 per side, as a model
 /// face's `uv` (none takes the box's own, as a model's default).
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub struct CubeFace<'a> {
     pub sprite: &'a str,
@@ -162,7 +166,12 @@ impl Game<'_> {
         }
         *out = draw.vertices;
     }
+}
 
+/// Helpers for drawing mod block entities, kept as stable as the hook points.
+// Native mods use these; nothing in Horizon does.
+#[allow(dead_code)]
+impl Game<'_> {
     /// Draws a quad with `corners` in blocks under `draw`'s pose, in a model
     /// face's order (top left, bottom left, bottom right, top right as seen
     /// from its front), textured with the `uv` rectangle (u0, v0, u1, v1 in
