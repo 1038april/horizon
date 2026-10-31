@@ -537,6 +537,7 @@ impl Game<'_> {
     ) -> Result<()> {
         let result = self.run_integrated_inner(launch, flags, tasks, ready, opening);
         if let Err(error) = &result {
+            self.native_players_leaving();
             self.native_lifecycle_close_failed(&error.to_string());
         }
         result
@@ -741,6 +742,7 @@ impl Game<'_> {
         self.native_lifecycle.begin_close();
         // MinecraftServer.stopServer's start: everyone is still here.
         self.native_server_stopping(false);
+        self.native_players_leaving();
         // IntegratedServer.stopServer: teardownPublishedState.
         if let Some(s) = self.serving.take() {
             s.flags.published.store(0, Ordering::Relaxed);
@@ -749,9 +751,7 @@ impl Game<'_> {
             self.flush_native_net(&mut host);
             // PlayerList.removeAll: the owner and every guest leave the game.
             host.award_leave_game_to_all();
-            for g in &host.hub.guests {
-                self.save_guest(&host, g);
-            }
+            self.save_leaving_guests(&mut host);
             let conns: Vec<u32> = host.hub.guests.iter().map(|g| g.conn).collect();
             for conn in conns {
                 host.hub.kick(

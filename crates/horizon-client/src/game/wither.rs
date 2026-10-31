@@ -225,11 +225,13 @@ impl Game<'_> {
             None => {}
         }
         self.combat.explosion_owner = owner;
+        self.combat.explosion_in_water = p.touching_water;
         // The blast's source names a player owner, for the dragon's kill credit.
         self.set_blast_by_player(live_owner == Some(Who::Player));
         let result = self.with_hive_emptying_blast(|g| g.explode(at, 1.0));
         self.set_blast_by_player(false);
         self.combat.explosion_owner = None;
+        self.combat.explosion_in_water = false;
         result
     }
     /// `livingOwner.heal(5.0F)` after the skull killed: `LivingEntity.heal`
