@@ -89,6 +89,20 @@ impl WorldRequest {
             )
             .into());
         }
+        // LevelSummary.isCompatible, which the dedicated server's `Main` checks before it fixes
+        // a world: a world from another series is refused, never upgraded in place.
+        if let Some(version) = horizon_client::save::incompatible_version(&save_root) {
+            let version = if version.is_empty() {
+                "unknown".to_owned()
+            } else {
+                version
+            };
+            return Err(format!(
+                "Failed to load world \"{folder}\": it was last played in version {version}, \
+                 which cannot be opened in this version."
+            )
+            .into());
+        }
         horizon_client::save::upgrade_older_world_with(&save_root, upgrade)?;
         horizon_client::save::migrate_legacy(&save_root)?;
         let session_lock = horizon_client::save::SessionLock::acquire(&save_root)?;
