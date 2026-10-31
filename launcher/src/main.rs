@@ -789,7 +789,12 @@ impl Launcher {
                     }
                     self.releases = r.map_or_else(Load::Failed, Load::Ready)
                 }
-                Msg::Links(links) => self.links = links,
+                Msg::Links(links) => {
+                    // The official server may have moved: its list entry and its count follow.
+                    self.multiplayer.stale();
+                    telemetry::set_official_server(&links.official_server);
+                    self.links = links;
+                }
                 // The page reads is_prepared when drawn; `changed` redraws it.
                 Msg::Reused(_) => self.installed = backend::installed(),
                 Msg::Keychain(said) => self.keychain = said,
@@ -3291,7 +3296,7 @@ impl Launcher {
                 focused,
                 false,
                 false,
-                "For example --server-thread",
+                tr("For example --server-thread"),
             ))
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                 window.focus(&this.args_focus);
@@ -3313,10 +3318,10 @@ impl Launcher {
         let field = line_edit::mouse(field, cx, |this| &mut this.args_input);
         index_row(
             n,
-            "Game arguments",
+            tr("Game arguments"),
             Some(
                 div()
-                    .child("Extra arguments for the game, passed through as-is (quotes group a word with spaces). Applies the next time the game starts.")
+                    .child(tr("Extra arguments for the game, passed through as-is (quotes group a word with spaces). Applies the next time the game starts."))
                     .into_any_element(),
             ),
             Some(field.into_any_element()),
@@ -3350,7 +3355,7 @@ impl Launcher {
                 focused,
                 false,
                 false,
-                "For example http://127.0.0.1:7890",
+                tr("For example http://127.0.0.1:7890"),
             ))
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
                 window.focus(&this.proxy_focus);
@@ -3374,14 +3379,20 @@ impl Launcher {
         ) {
             (false, Some(why)) => div().text_color(t.danger).child(why).into_any_element(),
             _ => div()
-                .child(
+                .child(tr(
                     "Downloads, sign-ins and updates go through this HTTP proxy \
                      (http://host:port). Empty means none: HTTPS_PROXY is used instead when the \
                      launcher was started with one.",
-                )
+                ))
                 .into_any_element(),
         };
-        index_row(n, "Proxy", Some(detail), Some(field.into_any_element()), &t)
+        index_row(
+            n,
+            tr("Proxy"),
+            Some(detail),
+            Some(field.into_any_element()),
+            &t,
+        )
     }
 
     /// Keeps the Proxy field in `settings.json`, and tells the parts that build their own agents
@@ -3623,7 +3634,7 @@ impl Launcher {
                 ))
             }));
         let releases = match &self.releases {
-            Load::Loading => return page.child(centered("Loading releases…", &t)),
+            Load::Loading => return page.child(centered(tr("Loading releases…"), &t)),
             Load::Failed(e) => {
                 return page.child(centered(&format!("Couldn't load releases. {e}"), &t).child(
                     button("retry", "Try again", Kind::Secondary, &t).on_click(cx.listener(
@@ -3634,7 +3645,9 @@ impl Launcher {
                     )),
                 ))
             }
-            Load::Ready(r) if r.is_empty() => return page.child(centered("No releases yet.", &t)),
+            Load::Ready(r) if r.is_empty() => {
+                return page.child(centered(tr("No releases yet."), &t))
+            }
             Load::Ready(r) => r,
         };
         // A hundred releases: only the rows near the screen are drawn.
@@ -3756,9 +3769,9 @@ impl Launcher {
                     b.into_any_element()
                 };
                 let status = if selected {
-                    Some(caps("In use").text_color(t.accent))
+                    Some(caps(tr("In use")).text_color(t.accent))
                 } else if installed {
-                    Some(caps("Installed").text_color(t.ink_soft))
+                    Some(caps(tr("Installed")).text_color(t.ink_soft))
                 } else {
                     None
                 };
@@ -3846,11 +3859,11 @@ impl Launcher {
                         .child(
                             text(theme::HEADING)
                                 .text_color(t.ink)
-                                .child("Support the work below"),
+                                .child(tr("Support the work below")),
                         )
-                        .child(text(theme::UI).text_color(t.muted).child(
+                        .child(text(theme::UI).text_color(t.muted).child(tr(
                             "Horizon is built in the open. Sponsors fund the next release.",
-                        )),
+                        ))),
                 )
                 .child(
                     button("sponsor", "Sponsor on GitHub", Kind::Secondary, &t)
@@ -3872,7 +3885,7 @@ impl Launcher {
             ))
             .children(sponsor);
         let releases = match &self.releases {
-            Load::Loading => return page.child(centered("Loading patch notes…", &t)),
+            Load::Loading => return page.child(centered(tr("Loading patch notes…"), &t)),
             Load::Failed(e) => {
                 return page.child(
                     centered(&format!("Couldn't load patch notes. {e}"), &t).child(
