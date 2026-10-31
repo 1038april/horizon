@@ -227,6 +227,23 @@ impl Boat {
         self.bubble_angle =
             10.0 * (0.5 * f64::from(self.tick_count)).sin() as f32 * self.bubble_multiplier;
     }
+    /// `AbstractBoat.tickBubbleColumn`'s countdown on the server: the bubble
+    /// time drops while the boat stays over a column and resets when it leaves.
+    /// `Some(down)` on the tick it runs out: the boat is thrown up (`false`) or
+    /// pulled down (`true`).
+    pub(super) fn tick_bubble_countdown(&mut self) -> Option<bool> {
+        if !self.above_bubble_column {
+            self.bubble_time = 0;
+        }
+        if self.bubble_time <= 0 {
+            return None;
+        }
+        self.bubble_time -= 1;
+        let diff = BUBBLE_TIME - self.bubble_time - 1;
+        let fired = (diff > 0 && self.bubble_time == 0).then_some(self.bubble_down);
+        self.above_bubble_column = false;
+        fired
+    }
     /// `getRowingTime`.
     pub fn rowing_time(&self, side: usize, a: f32) -> f32 {
         if self.paddling[side] {
@@ -818,28 +835,18 @@ impl Game<'_> {
     /// a column for `BUBBLE_TIME` ticks is thrown up or pulled down (a down
     /// column lets the riders out first), and every client is told.
     fn tick_boat_bubble_column(&mut self, i: usize) {
-        let b = &mut self.boats[i];
-        if !b.above_bubble_column {
-            b.bubble_time = 0;
-        }
-        if b.bubble_time > 0 {
-            b.bubble_time -= 1;
-            let (time, down) = (b.bubble_time, b.bubble_down);
-            let diff = BUBBLE_TIME - time - 1;
-            if diff > 0 && time == 0 {
-                let (id, p) = (b.id, b.position);
-                let event = if down {
-                    BUBBLE_DOWN_EVENT
-                } else {
-                    BUBBLE_UP_EVENT
-                };
-                if down {
-                    self.eject_boat_riders(i);
-                }
-                self.lan_entity_event(id as i32, event, [p.x, p.y, p.z]);
-                self.handle_bubble_column_effect(i, down);
+        if let Some(down) = self.boats[i].tick_bubble_countdown() {
+            let (id, p) = (self.boats[i].id, self.boats[i].position);
+            let event = if down {
+                BUBBLE_DOWN_EVENT
+            } else {
+                BUBBLE_UP_EVENT
+            };
+            if down {
+                self.eject_boat_riders(i);
             }
-            self.boats[i].above_bubble_column = false;
+            self.lan_entity_event(id as i32, event, [p.x, p.y, p.z]);
+            self.handle_bubble_column_effect(i, down);
         }
     }
     /// `AbstractBoat.tick`: the end of it on the server for boat `i`, the two
@@ -1413,6 +1420,49 @@ mod tests {
         }
         assert_eq!(b.bubble_multiplier, 0.0);
         assert_eq!(b.bubble_angle, 0.0);
+    }
+
+    /// `AbstractBoat.tickBubbleColumn` on the server: a boat held over a
+    /// column fires on the 60th tick, with the column's direction, then the
+    /// time restarts.
+    #[test]
+    fn the_bubble_countdown_fires_every_sixty_ticks_over_a_column() {
+        for down in [false, true] {
+            let mut b = boat();
+            let mut fired = Vec::new();
+            for tick in 1..=130 {
+                // What boat_above_bubble_column does each tick.
+                b.above_bubble_column = true;
+                b.bubble_down = down;
+                if b.bubble_time == 0 {
+                    b.bubble_time = BUBBLE_TIME;
+                }
+                if let Some(d) = b.tick_bubble_countdown() {
+                    fired.push((tick, d));
+                }
+                assert!(!b.above_bubble_column);
+            }
+            assert_eq!(fired, vec![(60, down), (120, down)]);
+        }
+    }
+
+    /// Leaving the column resets the time: nothing fires, and a boat with no
+    /// time left does nothing over a column until the column sets it.
+    #[test]
+    fn leaving_the_column_resets_the_bubble_countdown() {
+        let mut b = boat();
+        b.bubble_time = BUBBLE_TIME;
+        for _ in 0..30 {
+            b.above_bubble_column = true;
+            assert_eq!(b.tick_bubble_countdown(), None);
+        }
+        assert_eq!(b.bubble_time, 30);
+        // A tick away from the column.
+        assert_eq!(b.tick_bubble_countdown(), None);
+        assert_eq!(b.bubble_time, 0);
+        b.above_bubble_column = true;
+        assert_eq!(b.tick_bubble_countdown(), None);
+        assert!(b.above_bubble_column);
     }
 
     #[test]
