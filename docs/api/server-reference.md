@@ -138,6 +138,16 @@ Any other server.properties key, spelled as vanilla spells it, for example: spaw
 | `token` | `""` |  | its token (16 characters or more); "" a new random one at every start |
 | `allow_public` | `false` |  | true lets bind be any address; the token is then all that guards the server |
 
+### `[discord]`
+
+Post the chat, joins, leaves and deaths to a Discord channel, drawn like the in-game chat (docs/hosting.md)
+
+| Key | Default | In `server.properties` | What it does |
+| --- | --- | --- | --- |
+| `webhook` | `""` |  | the channel's webhook URL (a secret: anyone with it can post there); "" off |
+| `events` | `["chat", "join", "leave", "death"]` |  | what is posted; "kick" too if you like |
+| `enabled` | `true` |  | false pauses it and keeps the webhook |
+
 ## Control API (`/api/v1`)
 
 HTTP and JSON on 127.0.0.1. A running server writes its address and a random token to `.horizon/api.json`, readable only by its own user; every request sends `Authorization: Bearer <token>` and a `Host` that is that address. Errors answer `{"error": "..."}` with 400, 401, 403, 404, 405 or 409. The web panel uses the same routes with its session.

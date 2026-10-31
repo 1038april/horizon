@@ -1,6 +1,6 @@
 //! `[discord]`: the server's chat, joins, leaves and deaths posted to a Discord channel through a webhook
 //! (docs/hosting.md). Only outgoing HTTPS to Discord; nothing listens. Lines are batched for 2 s, drawn as
-//! one picture of the in-game chat box (Pixelify Sans, SIL OFL, from horizon-theme: no Mojang asset), and
+//! one picture of the in-game chat's text (Pixelify Sans, SIL OFL, from horizon-theme: no Mojang asset), and
 //! posted at most every 2 s. Nothing posted can ping: `allowed_mentions` is empty and every `@` is defused.
 
 use crate::api::Shared;
@@ -297,12 +297,12 @@ fn payload(lines: &[Line], picture: bool) -> Value {
             payload["avatar_url"] = format!("https://mc-heads.net/avatar/{uuid}/64").into();
         }
     }
-    let alt = truncate(&alt, 1000);
+    // Discord's limits: 1024 characters of alt text, 2000 of message.
     if picture {
-        payload["attachments"] =
-            json!([{ "id": 0, "filename": "chat.png", "description": defuse(&alt, false) }]);
+        let alt = truncate(&defuse(&alt, false), 1000);
+        payload["attachments"] = json!([{ "id": 0, "filename": "chat.png", "description": alt }]);
     } else {
-        payload["content"] = defuse(&alt, true).into();
+        payload["content"] = truncate(&defuse(&alt, true), 1900).into();
     }
     payload
 }
@@ -453,7 +453,7 @@ fn glyph<'a>(font: &FontRef, glyphs: &'a mut HashMap<char, Glyph>, c: char) -> &
     })
 }
 
-/// The lines as an RGBA PNG of the chat box: wrapped at the chat's width, each glyph over its shadow.
+/// The lines as an RGBA PNG on a transparent ground: wrapped at the chat's width, each glyph over its shadow.
 fn render(lines: &[Line], font: &FontRef, glyphs: &mut HashMap<char, Glyph>) -> Option<Vec<u8>> {
     // Wrap into rows of (char, colour, bold, x), breaking at the last space when one fits.
     let mut rows: Vec<Vec<(char, u32, bool, usize)>> = Vec::new();
@@ -494,8 +494,8 @@ fn render(lines: &[Line], font: &FontRef, glyphs: &mut HashMap<char, Glyph>) -> 
         .max()
         .unwrap_or(1);
     let (w, h) = (used + 2 * PAD, rows.len() * LINE_H + 2 * PAD);
-    // Vanilla's chat background: black at half opacity.
-    let mut rgba = [0, 0, 0, 128].repeat(w * h);
+    // Transparent: the glyphs' shadows keep them readable on Discord's light and dark themes.
+    let mut rgba = vec![0; w * h * 4];
     for (r, row) in rows.iter().enumerate() {
         for &(c, color, bold, gx) in row {
             let shadow = (color & 0xFC_FC_FC) >> 2;
@@ -582,6 +582,14 @@ mod tests {
             "never a player's address"
         );
         assert!(Line::from_event(&json!({"type": "log", "line": "x"})).is_none());
+        // A message the server's chat filter held back never reaches Discord, whatever the settings say.
+        let filtered = json!({"type": "chat_filtered", "name": "Kim0", "message": "x"});
+        assert!(Line::from_event(&filtered).is_none());
+        let asked = Settings {
+            events: vec!["chat_filtered".into()],
+            ..Settings::default()
+        };
+        assert!(asked.check().is_err());
     }
 
     #[test]
