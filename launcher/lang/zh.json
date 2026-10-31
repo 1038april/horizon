@@ -480,5 +480,15 @@
   "{name} moved to the trash.": "已将 {name} 移到回收站。",
   "{name} · {index} of {count}": "{name} · 第 {index} / {count} 张",
   "{name}'s shortcut is in the trash.": "{name} 的快捷方式已移到回收站。",
-  "← Newer": "← 较新"
+  "← Newer": "← 较新",
+  "\"I'm playing\" ping": "“正在游玩” Ping",
+  "While you play, the game sends an anonymous \"I'm playing\" ping once a minute, so the launcher can show how many people play Horizon right now. It holds: a random number made when the game starts and forgotten when it closes, the Horizon version, your OS (Linux, macOS or Windows), and whether you have a world open to LAN or friends. It doesn't hold: your account, your install ID, world or server names, or anything you do in the game, and the server doesn't keep your IP address. It is sent whatever the switches say.": "游玩时，游戏每分钟会发送一次匿名的“正在游玩” Ping，以便启动器显示当前有多少人在玩 Horizon。它包含：游戏启动时生成并在关闭时遗忘的随机数、Horizon 版本、您的操作系统（Linux、macOS 或 Windows）以及是否向局域网或好友开放了世界。它不包含：您的账户、安装 ID、世界或服务器名称，或您在游戏中的任何操作，且服务器不会保留您的 IP 地址。无论开关设置如何，它都会发送。",
+  "runs {command} first": "先运行 {command}",
+  "through {wrapper}": "通过 {wrapper}",
+  "runs {command} after": "退出后运行 {command}",
+  "with GameMode": "启用 GameMode",
+  "with MangoHud": "启用 MangoHud",
+  "on the dedicated GPU": "在独立显卡上",
+  "with 1 variable": "含 1 个变量",
+  "with {count} variables": "含 {count} 个变量"
 }

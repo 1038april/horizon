@@ -480,5 +480,15 @@
   "{name} moved to the trash.": "Se movió {name} a la papelera.",
   "{name} · {index} of {count}": "{name} · {index} de {count}",
   "{name}'s shortcut is in the trash.": "El acceso directo de {name} está en la papelera.",
-  "← Newer": "← Más recientes"
+  "← Newer": "← Más recientes",
+  "\"I'm playing\" ping": "Ping «Estoy jugando»",
+  "While you play, the game sends an anonymous \"I'm playing\" ping once a minute, so the launcher can show how many people play Horizon right now. It holds: a random number made when the game starts and forgotten when it closes, the Horizon version, your OS (Linux, macOS or Windows), and whether you have a world open to LAN or friends. It doesn't hold: your account, your install ID, world or server names, or anything you do in the game, and the server doesn't keep your IP address. It is sent whatever the switches say.": "Mientras juegas, el juego envía un ping anónimo «Estoy jugando» una vez por minuto para que el lanzador pueda mostrar cuántas personas juegan a Horizon en este momento. Incluye: un número aleatorio generado al iniciar el juego y descartado al cerrarlo, la versión de Horizon, tu sistema operativo (Linux, macOS o Windows) y si tienes un mundo abierto en LAN o para amigos. No incluye: tu cuenta, tu ID de instalación, nombres de mundos o servidores, ni nada de lo que hagas en el juego, y el servidor no guarda tu dirección IP. Se envía independientemente de cómo estén configuradas las opciones.",
+  "runs {command} first": "ejecuta primero {command}",
+  "through {wrapper}": "a través de {wrapper}",
+  "runs {command} after": "ejecuta después {command}",
+  "with GameMode": "con GameMode",
+  "with MangoHud": "con MangoHud",
+  "on the dedicated GPU": "en la GPU dedicada",
+  "with 1 variable": "con 1 variable",
+  "with {count} variables": "con {count} variables"
 }
