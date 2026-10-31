@@ -227,6 +227,13 @@ need `"hooks": 40`.
 API 41 adds bundles' data files (`native_data!`, `native_built_data`; "Data files" below). Bundles that use them need
 `"hooks": 41`.
 
+API 42 adds the item entities near a block, for machines that pick up items as a hopper does:
+`native_item_entities(dimension, min, max)` lists those whose box meets `min`..`max` (vanilla's
+`Level.getEntitiesOfClass(ItemEntity.class, box)`), each with its entity ID, position, stack and pickup delay, and
+`native_set_item_entity(dimension, id, stack)` changes one's stack, or removes it when the stack is empty, as a hopper
+does with what it takes. Both act on the level in place, as `native_set_block` does. Bundles that use them need
+`"hooks": 42`.
+
 ## A bundle
 
 A bundle is a folder with a `horizon-mixin.toml`. Besides its helpers and modules (horizon-mixins' README) it can
