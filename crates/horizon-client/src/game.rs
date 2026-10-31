@@ -10827,7 +10827,7 @@ impl Game<'_> {
         if let Some(r) = self.renderer.as_mut() {
             r.clear_sections(self.world.layout());
         }
-// Clear sync data (registries, dialog tags) so dialogs don't leak
+        // Clear sync data (registries, dialog tags) so dialogs don't leak
         // between worlds.
         lan::forget_sync_data();
         self.title = Some(
