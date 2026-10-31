@@ -39,6 +39,51 @@ pub struct EntityMemory {
     /// player's file: their chunk copies must not spawn a second one. Cleared
     /// with the rest when a world closes.
     restored: HashSet<[i32; 4]>,
+    /// Entities a native mod kept out of the level (`native_entity_join_level`),
+    /// counted so `/summon` can fail as vanilla's refused add does.
+    pub(super) joins_canceled: u32,
+}
+
+/// The key that marks a compound queued with the chunk loads as a fresh add
+/// (`PersistentEntitySectionManager.addNewEntity`: `/summon`, a portal
+/// arrival), not an entity loaded from disk. Taken off before the compound
+/// is kept or saved.
+const FRESH_ADD: &str = "horizon:fresh_add";
+
+/// Queue `tag` with the chunk loads as a fresh add.
+pub(super) fn mark_fresh(tag: &mut Tag) {
+    if let Tag::Compound(c) = tag {
+        c.insert(FRESH_ADD.into(), Tag::Byte(1));
+    }
+}
+
+/// The key that marks a compound queued with the chunk loads as an entity
+/// moving within its level (an End gateway: `Entity.teleport` takes
+/// `teleportSameDimension`, which moves the entity without removing it), so
+/// it doesn't join the level again. Taken off like [`FRESH_ADD`].
+const SAME_LEVEL_MOVE: &str = "horizon:same_level_move";
+
+/// Queue `tag` with the chunk loads as an entity moving within its level.
+pub(super) fn mark_moved(tag: &mut Tag) {
+    if let Tag::Compound(c) = tag {
+        c.insert(SAME_LEVEL_MOVE.into(), Tag::Byte(1));
+    }
+}
+
+/// Whether `tag` was queued as a move within its level; the mark comes off.
+fn take_moved(tag: &mut Tag) -> bool {
+    match tag {
+        Tag::Compound(c) => c.remove(&SAME_LEVEL_MOVE.into()).is_some(),
+        _ => false,
+    }
+}
+
+/// Whether `tag` was queued as a fresh add; the mark comes off.
+fn take_fresh(tag: &mut Tag) -> bool {
+    match tag {
+        Tag::Compound(c) => c.remove(&FRESH_ADD.into()).is_some(),
+        _ => false,
+    }
 }
 
 fn anon_key(kind: &str, p: Vec3) -> (String, [u64; 3]) {
@@ -250,7 +295,11 @@ impl Game<'_> {
         let loaded = std::mem::take(&mut self.world.loaded_entities);
         let player_uuid = self.level.player_uuid;
         for (key, tags) in loaded {
-            for tag in tags {
+            for mut tag in tags {
+                // PersistentEntitySectionManager.addEntity's `loaded`.
+                let from_disk = !take_fresh(&mut tag);
+                // An End gateway's traveller never left the level: nothing joins.
+                let moved = take_moved(&mut tag);
                 let kind = entity_nbt::kind(&tag).unwrap_or_default();
                 let uuid = entity_nbt::uuid(&tag);
                 if uuid.is_some_and(|u| self.restored_vehicle(u).is_some()) {
@@ -280,15 +329,34 @@ impl Game<'_> {
                         if let Some(e) =
                             entity_nbt::item_entity_from_nbt(&tag, self.next_entity, bob)
                         {
+                            let (id, p) = (e.id, e.position);
                             self.remember(e.id, uuid, tag);
                             self.dropped.push(e);
+                            if !moved
+                                && !self.native_entity_joins(
+                                    id,
+                                    "minecraft:item",
+                                    [p.x, p.y, p.z],
+                                    from_disk,
+                                )
+                            {
+                                self.dropped.pop();
+                                self.forget_entity(id);
+                            }
                         }
                     }
                     "minecraft:experience_orb" => {
                         for mut orb in entity_nbt::orbs_from_nbt(&tag) {
                             self.next_entity += 1;
                             orb.id = self.next_entity;
+                            let (id, p) = (orb.id, orb.position);
                             self.orbs.push(orb);
+                            let kind = "minecraft:experience_orb";
+                            if !moved
+                                && !self.native_entity_joins(id, kind, [p.x, p.y, p.z], from_disk)
+                            {
+                                self.orbs.pop();
+                            }
                         }
                     }
                     "minecraft:arrow" => {
@@ -396,12 +464,17 @@ impl Game<'_> {
                     }
                     k if super::minecarts::CartKind::from_id(k).is_some() => {
                         let kind = super::minecarts::CartKind::from_id(k).unwrap();
+                        let mut tag = tag;
+                        let riders = self.take_mob_passengers(&mut tag);
                         let id = self.next_entity + 1;
                         if let Some(mut c) = super::minecarts::Minecart::from_nbt(&tag, id, kind) {
                             self.roll_cart_loot(&mut c, &tag);
                             self.next_entity = id;
                             self.remember(id, uuid, tag);
                             self.carts.push(c);
+                            for rider in riders {
+                                self.load_mob(rider, Some(id));
+                            }
                         }
                     }
                     "minecraft:ominous_item_spawner" => self.load_ominous_item_spawner(tag),
@@ -504,10 +577,12 @@ impl Game<'_> {
             horizon_client::mobs::camel::finish_load(&mut m, self.world.game_time);
         }
         // `NeutralMob.readPersistentAngerSaveData`: the anger runs until its
-        // end time, and the mob is angry at the target again.
+        // end time, and the mob is angry at the target again, through
+        // `Mob.setTarget` -> `asValidTarget`: a player the golem cannot attack
+        // (`IronGolem.canAttack`) comes back as no target.
         m.extra.anger = horizon_client::mobs::anger_left(m.extra.anger_end, self.world.game_time);
         if m.extra.anger > 0 && m.extra.angry_at.is_some() {
-            m.ai.target = Some(horizon_client::mobs::Who::Player);
+            m.ai.target = (!m.built_by_player()).then_some(horizon_client::mobs::Who::Player);
         }
         m.extra.mount = mount;
         m.extra.passenger = mount.is_some();
@@ -873,10 +948,9 @@ impl Game<'_> {
         let mobs: Vec<usize> = (0..self.mobs.len())
             .filter(|&i| {
                 self.mob_root(i) == i
-                    && self.mobs[i]
-                        .extra
-                        .mount
-                        .is_none_or(|v| self.boats.iter().all(|b| b.id != v))
+                    && self.mobs[i].extra.mount.is_none_or(|v| {
+                        self.boats.iter().all(|b| b.id != v) && self.carts.iter().all(|c| c.id != v)
+                    })
                     && keys.contains(&chunk_of(self.mobs[i].position))
                     && self.mobs[i].alive()
                     && !self.mobs[i].removed
@@ -1012,17 +1086,21 @@ impl Game<'_> {
                 out.entry(chunk_of(at)).or_default().push(tag);
             }
         }
-        for c in &self.carts {
-            if keys.contains(&chunk_of(c.position)) {
-                let uuid = self
-                    .persist
-                    .uuids
-                    .get(&c.id)
-                    .copied()
-                    .unwrap_or_else(random_uuid);
-                let tag = c.to_nbt(uuid, self.persist.raw.get(&c.id));
-                out.entry(chunk_of(c.position)).or_default().push(tag);
-            }
+        let carts: Vec<usize> = (0..self.carts.len())
+            .filter(|&i| keys.contains(&chunk_of(self.carts[i].position)))
+            .collect();
+        for i in carts {
+            let id = self.carts[i].id;
+            let at = self.carts[i].position;
+            let uuid = self
+                .persist
+                .uuids
+                .get(&id)
+                .copied()
+                .unwrap_or_else(random_uuid);
+            let mut tag = self.carts[i].to_nbt(uuid, self.persist.raw.get(&id));
+            self.put_mob_passengers(&mut tag, id);
+            out.entry(chunk_of(at)).or_default().push(tag);
         }
         for a in &self.armor_stands {
             if keys.contains(&chunk_of(a.position)) {
@@ -1184,6 +1262,7 @@ impl Game<'_> {
                 }
                 keep
             });
+            let (items_before, orbs_before) = (self.dropped_ids(), self.orb_ids());
             self.dropped.retain(|e| {
                 let keep = !gone(e.position);
                 if !keep {
@@ -1192,6 +1271,9 @@ impl Game<'_> {
                 keep
             });
             self.orbs.retain(|o| !gone(o.position));
+            // Unloaded with their chunk: PersistentEntitySectionManager.stopTracking.
+            self.native_items_left_since(&items_before);
+            self.native_orbs_left_since(&orbs_before);
             self.creatures
                 .projectiles
                 .retain(|p| p.arrow.is_none() || !gone(p.position));
@@ -1264,5 +1346,23 @@ impl Game<'_> {
 fn strip_finalize(tag: &mut Tag) {
     if let Tag::Compound(c) = tag {
         c.remove(&"horizon:finalize".into());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Tag, mark_fresh, take_fresh};
+
+    /// A portal arrival or a `/summon` is told as a fresh add, and the mark
+    /// never reaches the entity's kept or saved compound.
+    #[test]
+    fn a_fresh_add_is_told_apart_from_a_load_and_unmarked() {
+        let mut loaded = Tag::Compound(Default::default());
+        assert!(!take_fresh(&mut loaded));
+        let mut fresh = Tag::Compound(Default::default());
+        mark_fresh(&mut fresh);
+        assert!(take_fresh(&mut fresh));
+        assert!(!take_fresh(&mut fresh));
+        assert_eq!(fresh, Tag::Compound(Default::default()));
     }
 }
