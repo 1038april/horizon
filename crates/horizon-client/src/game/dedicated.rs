@@ -1032,11 +1032,12 @@ impl Game<'_> {
     /// nobody is online a dedicated server keeps none (vanilla has no spawn
     /// ticket), an integrated one the spawn chunk's.
     pub(super) fn update_dedicated_streaming(&mut self) {
+        let rule = self.ui.rules.bool("spectators_generate_chunks");
         let guest = self.lan.as_ref().and_then(|h| {
             h.hub
                 .guests
                 .iter()
-                .find(|g| h.hub.here(g))
+                .find(|g| h.hub.here(g) && super::game_mode::loads_chunks(rule, g.spectator()))
                 .map(|g| g.chunk())
         });
         if self.standalone_server() {

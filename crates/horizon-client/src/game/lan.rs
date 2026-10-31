@@ -2341,11 +2341,12 @@ impl Game<'_> {
         // covers what the player tracks (`ChunkTrackingView`, within its view
         // distance + 1) and those chunks' lit neighbours.
         let radius = host.hub.config.view_distance + 1;
+        let rule = self.ui.rules.bool("spectators_generate_chunks");
         self.streaming.extra = host
             .hub
             .guests
             .iter()
-            .filter(|g| host.hub.here(g))
+            .filter(|g| host.hub.here(g) && super::game_mode::loads_chunks(rule, g.spectator()))
             .map(|g| (g.chunk(), radius))
             .chain(
                 self.arrival_chunks(self.dim)
