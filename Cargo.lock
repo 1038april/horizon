@@ -1353,12 +1353,14 @@ dependencies = [
 name = "horizon-server"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "chrono",
  "horizon-anticheat",
  "horizon-bench",
  "horizon-release-sign",
  "horizon-server-files",
  "libc",
+ "png",
  "serde",
  "serde_json",
  "sha2",

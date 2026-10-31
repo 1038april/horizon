@@ -342,8 +342,27 @@ token = "a long random string only the bot knows"
 ```
 
 The same rules as the panel's hold: a tailnet or loopback address, unless `allow_public = true` (the token is then
-all that guards the server, and it warns at every start). The API can't change `[engine]`, `[panel]` or `[api]`,
-nor turn on RCON or another remote console.
+all that guards the server, and it warns at every start). The API can't change `[engine]`, `[panel]`, `[api]` or
+`[discord]`, nor turn on RCON or another remote console.
+
+### Chat in a Discord channel
+
+`[discord]` posts the server's chat, joins, leaves and deaths to a Discord channel. In the channel's settings,
+Integrations → Webhooks → New Webhook → Copy Webhook URL, then:
+
+```toml
+[discord]
+webhook = "https://discord.com/api/webhooks/..."   # a secret: whoever has it can post in the channel
+events = ["chat", "join", "leave", "death"]        # and "kick"
+enabled = true                                     # false pauses it and keeps the webhook
+```
+
+The lines of each 2 seconds are drawn as one picture of the in-game chat box, colours included, and a channel
+gets at most one post every 2 seconds (more when Discord asks for it: a burst beyond 20 lines is counted, not
+drawn). Posts never ping: they allow no mention, and an `@everyone` typed in game reaches Discord defused. One
+player's lines carry their head as the avatar (mc-heads.net, by UUID); players' addresses are never sent. The
+server only makes outgoing HTTPS calls to Discord; the API and the panel show the webhook as `(set)`. The
+letters are Pixelify Sans (SIL Open Font License, `crates/horizon-theme/fonts`), not Minecraft's font.
 
 ## 7. Backups
 
