@@ -12,6 +12,11 @@ pub(super) fn tr(key: &str, args: &[&str]) -> String {
     horizon_client::screen_narrator::translate(key, args)
 }
 
+/// `CommonComponents.joinLines`: the parts, a line each.
+fn join_lines(parts: &[&str]) -> String {
+    parts.join("\n")
+}
+
 /// `ChatScreen.updateNarrationState` (and `InBedChatScreen`'s): its title,
 /// how to send (and that the chat is restricted), and the message typed so
 /// far one level in. No widget and no navigation.
@@ -50,6 +55,43 @@ pub(super) fn level_loading(progress: Option<f32>, tr: Tr<'_>) -> ScreenInfo {
         }
         None => info,
     }
+}
+
+/// `BookEditScreen.getNarrationMessage`: its title and the page indicator.
+pub(super) fn book_edit(page: usize, pages: usize, tr: Tr<'_>) -> ScreenInfo {
+    let indicator = tr(
+        "book.pageIndicator",
+        &[&(page + 1).to_string(), &pages.max(1).to_string()],
+    );
+    ScreenInfo::new(
+        "book/edit",
+        join_for_narration(&[&tr("book.edit.title", &[]), &indicator]),
+    )
+}
+
+/// `BookViewScreen.getNarrationMessage` (and `LecternScreen`'s): its title,
+/// the page indicator and the page's text, a line each.
+pub(super) fn book_view(page: usize, pages: usize, text: &str, tr: Tr<'_>) -> ScreenInfo {
+    let indicator = tr(
+        "book.pageIndicator",
+        &[&(page + 1).to_string(), &pages.to_string()],
+    );
+    ScreenInfo::new(
+        "book/view",
+        join_lines(&[&tr("book.view.title", &[]), &indicator, text]),
+    )
+}
+
+/// An `AbstractContainerScreen` opens: its narration is its title, which
+/// its drawer names with `name_container` once it knows the menu (the
+/// creative inventory's is empty). Slots are never narrated.
+pub(super) fn begin_container(id: &'static str) {
+    horizon_client::widgets::begin_screen(|| ScreenInfo::new(id, ""));
+}
+
+/// The open container screen's title (`AbstractContainerScreen`'s `title`).
+pub(super) fn name_container(title: impl FnOnce() -> String) {
+    horizon_client::widgets::screen_mut(|s| s.title = title());
 }
 
 /// `ConfirmScreen.getNarrationMessage` (`PackConfirmScreen`,
@@ -116,6 +158,19 @@ mod tests {
                 0,
                 vec!["loading.progress(56)".to_owned()]
             )]
+        );
+    }
+
+    #[test]
+    fn books_name_their_page() {
+        // An empty book still counts one page while it is written.
+        assert_eq!(
+            book_edit(0, 0, &keys).title,
+            "book.edit.title. book.pageIndicator(1, 1)"
+        );
+        assert_eq!(
+            book_view(1, 3, "Second page", &keys).title,
+            "book.view.title\nbook.pageIndicator(2, 3)\nSecond page"
         );
     }
 

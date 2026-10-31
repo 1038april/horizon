@@ -681,6 +681,10 @@ impl Game<'_> {
             ("sign.edit", "Edit Sign Message")
         };
         let title = self.translate(key, fallback);
+        // SignEditScreen / HangingSignEditScreen: their title.
+        horizon_client::widgets::begin_screen(|| {
+            horizon_client::widgets::ScreenInfo::new("sign_edit", title.clone())
+        });
         let tw = HudBatch::text_width(atlas, &title);
         batch.text(atlas, &title, (w - tw) / 2.0, 40.0, u32::MAX, true);
         let name = self
@@ -771,6 +775,13 @@ impl Game<'_> {
             horizon_client::preedit::report_caret(caret_x, ly, line_height);
         }
         let (bx, by) = done_button(w, h);
+        horizon_client::widgets::narratable(|| {
+            horizon_client::widgets::Narratable::button(
+                super::screen_info::tr("gui.done", &[]),
+                [bx, by, 200.0, 20.0],
+                true,
+            )
+        });
         batch.sprite_scaled(
             atlas,
             "gui/sprites/widget/button",
