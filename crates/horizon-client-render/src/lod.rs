@@ -1848,25 +1848,7 @@ impl Lod {
                     canceled,
                 } => {
                     self.outstanding_meshes = self.outstanding_meshes.saturating_sub(1);
-                    // A result newer than what is shown is useful even when a
-                    // still newer job is pending. Keep that newer revision
-                    // dirty so a busy frontier cannot discard every result.
-                    if !canceled.load(Ordering::Acquire)
-                        && self.active.contains(&key)
-                        && self
-                            .shown_version
-                            .get(&key)
-                            .is_none_or(|shown| version > *shown)
-                    {
-                        self.shown_version.insert(key, version);
-                        meshes.push((key, mesh));
-                        self.meshed.insert(key);
-                        if self.mesh_version.get(&key) == Some(&version) {
-                            self.mesh_cancel.remove(&key);
-                            self.unmeshed.remove(&key);
-                            self.cutout_waiting.remove(&key);
-                        }
-                    }
+                    self.accept_mesh(key, version, mesh, canceled.load(Ordering::Acquire), meshes);
                 }
                 Done::MeshCanceled { key, version } => {
                     self.outstanding_meshes = self.outstanding_meshes.saturating_sub(1);
@@ -1875,6 +1857,41 @@ impl Lod {
                     }
                 }
             }
+        }
+    }
+    /// A finished mesh: shown when it is newer than what the tile shows now.
+    /// A result newer than the frame's current one is still useful while a
+    /// newer job is pending — re-marking a tile re-dirties its neighbours and
+    /// ancestors, so on a busy frontier the newest job is not the one that
+    /// arrives next, and accepting only it left tiles unmeshed with their
+    /// removals blocked.
+    fn accept_mesh(
+        &mut self,
+        key: TileKey,
+        version: u64,
+        mesh: SectionMesh,
+        canceled: bool,
+        meshes: &mut Vec<(TileKey, SectionMesh)>,
+    ) {
+        let newest = self.mesh_version.get(&key) == Some(&version);
+        if canceled
+            || !self.active.contains(&key)
+            || self
+                .shown_version
+                .get(&key)
+                .is_some_and(|shown| version <= *shown)
+        {
+            return;
+        }
+        self.shown_version.insert(key, version);
+        meshes.push((key, mesh));
+        self.meshed.insert(key);
+        // Only the newest revision settles the tile; an older one fills the
+        // frame and stays dirty, so the pending job still runs.
+        if newest {
+            self.mesh_cancel.remove(&key);
+            self.unmeshed.remove(&key);
+            self.cutout_waiting.remove(&key);
         }
     }
     /// Takes the new full-detail columns, when they changed (`None`: not).
@@ -3192,6 +3209,62 @@ mod tests {
         assert_eq!([1, 2, 4, 8, 11].map(sampling_threads), [1, 1, 1, 4, 5]);
         assert_eq!([12, 16, 64].map(sampling_threads), [6, 8, 8]);
         assert_eq!([2, 8, 12, 16].map(meshing_threads), [1, 3, 5, 7]);
+    }
+
+    /// Review point 3 on #4747: a result from a batch that is no longer the
+    /// newest still fills the frame when it is newer than what the tile shows,
+    /// and the tile keeps waiting for the job that is still pending. Accepting
+    /// only the newest revision threw every older result away — and re-marking
+    /// a tile happens again before its mesh arrives on a busy frontier, so no
+    /// result was ever accepted and the tile's removal stayed blocked.
+    #[test]
+    fn a_result_newer_than_the_shown_one_is_kept_while_a_newer_one_is_pending() {
+        let mut lod = Lod::scheduler_for_test();
+        let key = TileKey {
+            x: 0,
+            z: 0,
+            level: 0,
+        };
+        lod.active.insert(key);
+        // Two marks: the second revision is what the tile is waiting for.
+        lod.mark_mesh(key);
+        let older = *lod.mesh_version.get(&key).unwrap();
+        lod.mark_mesh(key);
+        let newest = *lod.mesh_version.get(&key).unwrap();
+        assert!(newest > older);
+        let mut meshes = Vec::new();
+
+        // The older batch's result arrives while the newer job is pending.
+        lod.accept_mesh(key, older, SectionMesh::default(), false, &mut meshes);
+        assert_eq!(meshes.len(), 1, "an older result newer than shown is used");
+        assert_eq!(lod.shown_version.get(&key), Some(&older));
+        assert!(lod.meshed.contains(&key));
+        // Still waiting: the pending job owns the tile, so it stays unmeshed
+        // and keeps being dispatched.
+        assert!(lod.unmeshed.contains(&key), "the pending job still owns it");
+
+        // A result older than what is shown is not drawn again.
+        lod.accept_mesh(key, older, SectionMesh::default(), false, &mut meshes);
+        assert_eq!(meshes.len(), 1, "the same revision is not redrawn");
+
+        // The newest settles the tile.
+        lod.accept_mesh(key, newest, SectionMesh::default(), false, &mut meshes);
+        assert_eq!(meshes.len(), 2);
+        assert_eq!(lod.shown_version.get(&key), Some(&newest));
+        assert!(
+            !lod.unmeshed.contains(&key),
+            "the newest revision settles it"
+        );
+
+        // A canceled result, and one for a tile that left the view, are dropped
+        // however new they are.
+        lod.mark_mesh(key);
+        let next = *lod.mesh_version.get(&key).unwrap();
+        lod.accept_mesh(key, next, SectionMesh::default(), true, &mut meshes);
+        assert_eq!(meshes.len(), 2, "a canceled result is dropped");
+        lod.active.remove(&key);
+        lod.accept_mesh(key, next + 1, SectionMesh::default(), false, &mut meshes);
+        assert_eq!(meshes.len(), 2, "a tile that left the view is dropped");
     }
 
     #[test]
