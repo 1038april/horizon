@@ -1338,6 +1338,13 @@ pub enum MobEvent {
     /// The centre, the radius and the kind of the mob blowing up (it may be
     /// gone from the list by the time the blast is handled).
     Explode([f64; 3], f32, Species),
+    /// `Creeper.spawnLingeringCloud`, right after its `Explode`: an `AreaEffectCloud` at the
+    /// creeper with its active effects `(id, remaining ticks, amplifier)`, in their mixed colour.
+    LingeringCloud {
+        at: [f64; 3],
+        effects: Vec<(&'static str, i32, i32)>,
+        color: u32,
+    },
     /// Melee or ranged damage to another mob.
     AttackMob {
         target: u32,

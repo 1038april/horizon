@@ -1544,6 +1544,9 @@ impl Game<'_> {
                         self.combat.charged_exploders.push(mob);
                     }
                 }
+                MobEvent::LingeringCloud { at, effects, color } => {
+                    self.spawn_creeper_cloud(at, effects, color);
+                }
                 MobEvent::Explode(at, radius, species) => {
                     // The exploding mob causes the damage (Creeper.explodeCreeper).
                     let noted = self.combat.explosion_source.is_some();
