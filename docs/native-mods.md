@@ -355,6 +355,13 @@ horizon-mixins failed (exit status: 1). The end of its output, the whole of it i
 E_CRATE_DEPENDENCY: crate_lock needs rand ^0.9, which isn't in Horizon's Cargo.lock (…/horizon-mixin.toml)
 ```
 
+### A mod's own consume effects
+
+A consumable's `on_consume_effects` entry of a type in a namespace of its own — where the old loader
+dropped it silently — reaches `native_consume_effect(kind, data)` when the item is consumed, on the server
+thread, for the acting player. The kind and the JSON the file wrote are there; the game's own effects,
+sounds, teleports and drops are open to the hook. An unclaimed kind does nothing.
+
 ### Data files
 
 A bundle's `data/` folder (any files) is staged as `native-data/<mod>/` at the root of the workspace. A helper or

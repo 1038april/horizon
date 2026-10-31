@@ -1014,6 +1014,15 @@ impl Game<'_> {
     pub(super) fn native_block_entity_tick(&mut self, pos: [i32; 3], entity: &mut ModBlockEntity) {
         let _ = (pos, entity);
     }
+    /// A consumable's effect of a mod's own kind: the item's `on_consume_effects`
+    /// entry is of a type in a namespace of its own, and the loader kept it
+    /// for this call. The kind and the JSON the file wrote are here; the acting
+    /// player is the one consuming, and the game's own effects,
+    /// sounds, teleports and drops are open. An unclaimed kind does
+    /// nothing. API @API:consume_effect@.
+    pub(super) fn native_consume_effect(&mut self, kind: &str, data: &serde_json::Value) {
+        let _ = (kind, data);
+    }
     /// What clients get of the block entity at `pos` when its `id` is
     /// yours (`BlockEntity.getUpdateTag`): set `tag` to it, read from
     /// `entity` alone. Asked on the server whenever a chunk holding it is
