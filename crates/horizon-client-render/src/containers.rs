@@ -4,7 +4,7 @@
 pub use crate::chunk::block_entity::{
     Banner, Beacon, BlockEntity, Brushable, Campfire, ChiseledBookshelf, Crafter, CreakingHeart,
     EndGateway, Furnace, FurnaceKind, Jukebox, Lectern, MOD_MENUS, ModBlockEntity, ModContainer,
-    PotentSulfur, Shelf, Skull, SkullSkin,
+    ModFluidTanks, PotentSulfur, Shelf, Skull, SkullSkin,
 };
 use crate::items::ItemStack;
 use std::collections::HashMap;
@@ -80,6 +80,17 @@ pub fn display_name(custom: Option<&str>, default_key: &str) -> horizon_world::n
 /// `FIRST`), else the second's, else `container.chestDouble`.
 pub fn double_chest_name(first: Option<&str>, second: Option<&str>) -> horizon_world::nbt::Tag {
     display_name(first.or(second), "container.chestDouble")
+}
+
+/// `BaseContainerBlockEntity.sendChestLockedNotifications`: the action bar
+/// message of a container that refuses to open, `container.isLocked` naming it
+/// by its display name.
+pub fn locked_message(title: &horizon_world::nbt::Tag) -> horizon_world::nbt::Tag {
+    use horizon_world::nbt::Tag;
+    Tag::compound([
+        ("translate", Tag::String("container.isLocked".into())),
+        ("with", Tag::List(vec![title.clone()])),
+    ])
 }
 
 /// The menu a container vehicle's `createMenu` builds (`ContainerEntity`):
@@ -410,7 +421,7 @@ impl BlockEntity {
             Self::Furnace(f) => f.items.iter().flatten().cloned().collect(),
             Self::Brewing(b) => b.items.iter().flatten().cloned().collect(),
             Self::Sign(_) => Vec::new(),
-            Self::Jukebox(j) => j.record.iter().cloned().collect(),
+            Self::Jukebox(j) => j.items.iter().flatten().cloned().collect(),
             Self::Beacon(_)
             | Self::CreakingHeart(_)
             | Self::Spawner(_)
@@ -443,7 +454,6 @@ impl BlockEntity {
             Self::Furnace(f) => &f.items,
             Self::Brewing(b) => &b.items,
             Self::Sign(_)
-            | Self::Jukebox(_)
             | Self::Beacon(_)
             | Self::Lectern(_)
             | Self::Sculk(_)
@@ -457,6 +467,7 @@ impl BlockEntity {
             | Self::TestInstanceBlock(_)
             | Self::DaylightDetector
             | Self::Brushable(_) => &[],
+            Self::Jukebox(j) => &j.items,
             Self::Crafter(c) => &c.items,
             Self::ChiseledBookshelf(b) => &b.items,
             Self::Shelf(b) => &b.items,
@@ -477,7 +488,6 @@ impl BlockEntity {
             Self::Furnace(f) => &mut f.items,
             Self::Brewing(b) => &mut b.items,
             Self::Sign(_)
-            | Self::Jukebox(_)
             | Self::Beacon(_)
             | Self::Lectern(_)
             | Self::Sculk(_)
@@ -491,6 +501,7 @@ impl BlockEntity {
             | Self::TestInstanceBlock(_)
             | Self::DaylightDetector
             | Self::Brushable(_) => &mut [],
+            Self::Jukebox(j) => &mut j.items,
             Self::Crafter(c) => &mut c.items,
             Self::ChiseledBookshelf(b) => &mut b.items,
             Self::Shelf(b) => &mut b.items,
@@ -632,6 +643,26 @@ mod tests {
         let mut fifth = ItemStack::new("minecraft:potato", 1);
         assert!(!c.place_food(&mut fifth, 600));
         assert_eq!(fifth.count, 1);
+    }
+
+    /// `JukeboxBlockEntity`'s single slot is a `Container` slot, so a hopper
+    /// (`HopperBlockEntity.getContainerAt`) can reach the disc in it.
+    #[test]
+    fn a_jukebox_offers_its_record_as_its_one_container_slot() {
+        let mut entity = BlockEntity::Jukebox(Jukebox::default());
+        assert_eq!(entity.slots().len(), 1);
+        assert!(entity.slots()[0].is_none(), "empty until a disc lands");
+        let disc = ItemStack::new("minecraft:cat", 1);
+        entity.slots_mut()[0] = Some(disc.clone());
+        let slots = entity.slots();
+        assert_eq!(slots[0].as_ref().map(|s| &*s.item), Some("minecraft:cat"));
+        match &entity {
+            BlockEntity::Jukebox(j) => {
+                assert_eq!(j.record().map(|s| &*s.item), Some("minecraft:cat"));
+            }
+            _ => panic!("a jukebox"),
+        }
+        assert_eq!(entity.contents().len(), 1);
     }
 
     /// A whole amount pays itself without a draw; a fraction is a chance of one more.

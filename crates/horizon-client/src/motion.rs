@@ -401,6 +401,8 @@ pub struct PlayerMotion {
     /// server hurts it (`Entity.hurt` does nothing on a client) and ticks its
     /// food (`ServerPlayer.tick`). Its hurt animation comes from the server.
     pub client_side: bool,
+    /// The player's entity id (a guest's, set as its turn starts).
+    pub entity_id: i32,
     /// The player's client has loaded the world since its last respawn or
     /// level change (`ServerGamePacketListenerImpl.hasClientLoaded`); a guest's
     /// turn takes it from its connection.
@@ -586,6 +588,7 @@ impl PlayerMotion {
             server_copy: false,
             wall_hit_events: None,
             client_side: false,
+            entity_id: 0,
             client_loaded: true,
             block_effects: true,
             powder_snow_entered: Vec::new(),
@@ -797,6 +800,12 @@ impl PlayerMotion {
     }
     pub fn set_sprinting(&mut self, sprinting: bool) -> Result<()> {
         self.sprinting = sprinting;
+        self.set_sprint_modifier(sprinting)
+    }
+    /// The movement speed's `minecraft:sprinting` modifier alone, the flag left as it is:
+    /// `ClientPacketListener.handleUpdateAttributes` takes the server's modifiers as sent, so a
+    /// client can sprint without it.
+    pub fn set_sprint_modifier(&mut self, sprinting: bool) -> Result<()> {
         let key = self
             .attributes
             .key("minecraft:movement_speed")
@@ -821,6 +830,20 @@ impl PlayerMotion {
             })
             .map_err(attribute_error)?;
         Ok(())
+    }
+    /// Whether the movement speed has the `minecraft:sprinting` modifier.
+    pub fn has_sprint_modifier(&self) -> bool {
+        let Some(key) = self.attributes.key("minecraft:movement_speed") else {
+            return false;
+        };
+        self.attributes
+            .lookup(Some(&key))
+            .and_then(|h| self.attributes.instance(&h).ok())
+            .is_some_and(|i| {
+                i.modifiers()
+                    .iter()
+                    .any(|m| m.id() == "minecraft:sprinting")
+            })
     }
     /// Local input sprint phase (`LocalPlayer.aiStep`'s sprint decisions).
     /// Vehicle bindings remain separate; hunger, flight, water, collision, the
