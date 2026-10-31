@@ -227,12 +227,20 @@ need `"hooks": 40`.
 API 41 adds bundles' data files (`native_data!`, `native_built_data`; "Data files" below). Bundles that use them need
 `"hooks": 41`.
 
-API 42 adds the server starting and stopping, on the single player server thread and on a dedicated server:
+API 42 adds the item entities near a block, for machines that pick up items as a hopper does:
+`native_item_entities(dimension, min, max)` lists those whose box meets `min`..`max` (vanilla's
+`Level.getEntitiesOfClass(ItemEntity.class, box)`), each with its entity ID, position, stack and pickup delay, and
+`native_set_item_entity(dimension, id, stack)` changes one's stack, or removes it when the stack is empty, as a hopper
+does with what it takes. Both act on the level in place, as `native_set_block` does. Bundles that use them need
+`"hooks": 42`.
+
+API 43 adds the server starting and stopping, on the single player server thread and on a dedicated server:
 `native_server_about_to_start(dedicated)` before the worlds load (NeoForge's `ServerAboutToStartEvent`), and
 `native_server_stopping(dedicated)` when an orderly stop begins, with the players still connected and not yet saved
 (`ServerStoppingEvent`). Each start is followed by `native_world_lifecycle`'s `WorldOpenReady` or `WorldOpenFailed`,
 and each stop by `WorldCloseFinal`; a server whose loop fails reports `WorldCloseFailed` instead of stopping. Bundles
-that use them need `"hooks": 42`.
+that use them need `"hooks": 43`.
+
 
 ## A bundle
 
