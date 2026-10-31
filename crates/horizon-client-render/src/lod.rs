@@ -728,7 +728,6 @@ enum Done {
     Mesh {
         key: TileKey,
         version: u64,
-        seq: u64,
         mesh: SectionMesh,
     },
 }
@@ -738,7 +737,6 @@ struct MeshJob {
     snapshot: Arc<Snapshot>,
     key: TileKey,
     version: u64,
-    seq: u64,
     finer: Vec<TileKey>,
     covered: Arc<FxHashSet<(i32, i32)>>,
     bounds: Option<[i32; 4]>,
@@ -833,12 +831,6 @@ pub struct Lod {
     outstanding_meshes: usize,
     /// Workers in the mesh pool (dispatch coalesces above four each).
     mesh_workers: usize,
-    /// Sequence of the last dispatched mesh batch.
-    dispatch_seq: u64,
-    /// Jobs still in flight, by batch sequence.
-    in_flight: FxHashMap<u64, usize>,
-    /// The batch a pending cutout must wait for; later batches do not block.
-    cutout_target: Option<u64>,
     /// Tiles whose active replacement mesh has been returned and applied.
     meshed: FxHashSet<TileKey>,
     /// Active tiles whose current revision has no mesh yet.
@@ -865,6 +857,8 @@ pub struct Lod {
     /// Covered columns changed while meshes were in flight: the renderer must
     /// not drop full-detail sections before every replacement is uploaded.
     cutout_pending: Option<FxHashSet<(i32, i32)>>,
+    /// Active tiles whose mesh must be accepted before the cutout publishes.
+    cutout_waiting: FxHashSet<TileKey>,
     /// Unsample final tiles, nearest first. Rebuilt when the view changes,
     /// not scanned every frame.
     wanted: std::collections::BinaryHeap<std::cmp::Reverse<Wanted>>,
@@ -950,7 +944,6 @@ impl Lod {
                                     .send(Done::Mesh {
                                         key: job.key,
                                         version: job.version,
-                                        seq: job.seq,
                                         mesh,
                                     })
                                     .is_err()
@@ -1124,9 +1117,6 @@ impl Lod {
             next_version: 1,
             outstanding_meshes: 0,
             mesh_workers: meshing_threads(cores),
-            dispatch_seq: 0,
-            in_flight: FxHashMap::default(),
-            cutout_target: None,
             meshed: FxHashSet::default(),
             unmeshed: FxHashSet::default(),
             removed_pending: FxHashSet::default(),
@@ -1137,6 +1127,7 @@ impl Lod {
             retiring: FxHashSet::default(),
             cutout: None,
             cutout_pending: None,
+            cutout_waiting: FxHashSet::default(),
             wanted: std::collections::BinaryHeap::new(),
             wanted_at: None,
             wanted_stale: true,
@@ -1377,6 +1368,8 @@ impl Lod {
                     self.mesh_version.remove(&node);
                     self.meshed.remove(&node);
                     self.unmeshed.remove(&node);
+                    self.dirty.remove(&node);
+                    self.transfer_cutout_wait(node);
                 }
             }
             // A pure completion change on an undrawn node changes no mesh;
@@ -1746,6 +1739,15 @@ impl Lod {
         self.dirty.retain(|key, _| self.active.contains(key));
         self.meshed.retain(|key| self.active.contains(key));
         self.unmeshed.retain(|key| self.active.contains(key));
+        let inactive_waiting: Vec<_> = self
+            .cutout_waiting
+            .iter()
+            .copied()
+            .filter(|key| !self.active.contains(key))
+            .collect();
+        for key in inactive_waiting {
+            self.transfer_cutout_wait(key);
+        }
         self.removed_pending
             .retain(|key| !self.active.contains(key));
         let changed: Vec<_> = old.symmetric_difference(&self.active).copied().collect();
@@ -1753,6 +1755,7 @@ impl Lod {
             if old.contains(&key) && !self.active.contains(&key) {
                 self.removed_pending.insert(key);
                 self.meshed.remove(&key);
+                self.dirty.remove(&key);
             }
             self.mark_selection_changed(key);
         }
@@ -1769,24 +1772,14 @@ impl Lod {
                 }
                 Done::DetailRequested => self.detail_request_pending = false,
                 Done::Sample { key, samples } => self.finish_sample(key, samples),
-                Done::Mesh {
-                    key,
-                    version,
-                    seq,
-                    mesh,
-                } => {
+                Done::Mesh { key, version, mesh } => {
                     self.outstanding_meshes = self.outstanding_meshes.saturating_sub(1);
-                    if let Some(left) = self.in_flight.get_mut(&seq) {
-                        *left = left.saturating_sub(1);
-                        if *left == 0 {
-                            self.in_flight.remove(&seq);
-                        }
-                    }
                     // A newer batch (or the tile leaving) makes this stale.
                     if self.active.contains(&key) && self.mesh_version.get(&key) == Some(&version) {
                         meshes.push((key, mesh));
                         self.meshed.insert(key);
                         self.unmeshed.remove(&key);
+                        self.cutout_waiting.remove(&key);
                     }
                 }
             }
@@ -1868,21 +1861,39 @@ impl Lod {
             self.refresh_path(TileKey { x, z, level: 0 });
         }
         self.cutout_pending = Some(self.covered.clone());
-        // The replacements are the next mesh batch, or the jobs already in
-        // flight when no active tile needs remeshing.
-        self.cutout_target = Some(self.dispatch_seq + u64::from(!self.dirty.is_empty()));
+        // Every active tile whose mesh clips an old/new covered column is
+        // dirty now; the cutout waits for their replacement meshes, not for
+        // every later job.
+        self.cutout_waiting.extend(
+            self.dirty
+                .keys()
+                .filter(|key| self.active.contains(key))
+                .copied(),
+        );
     }
-    /// Publishes the pending cutout once the batch that had to replace the
-    /// affected tiles is in. Later batches (even while loading continues) do
-    /// not delay it.
-    fn publish_cutout_if_ready(&mut self) {
-        let Some(target) = self.cutout_target else {
-            return;
-        };
-        if !self.dirty.is_empty() || self.in_flight.keys().any(|seq| *seq <= target) {
+    /// A waiting tile that left the selection is replaced by its active
+    /// descendants; the cutout must wait for those meshes instead.
+    fn transfer_cutout_wait(&mut self, key: TileKey) {
+        if !self.cutout_waiting.remove(&key) {
             return;
         }
-        self.cutout_target = None;
+        if key.level == 0 {
+            return;
+        }
+        let mut descendants = Vec::new();
+        self.collect_active_descendants(key, &mut descendants);
+        self.cutout_waiting.extend(
+            descendants
+                .into_iter()
+                .filter(|key| !self.meshed.contains(key)),
+        );
+    }
+    /// Publishes the pending cutout once every active tile that had to stop
+    /// clipping the changed columns has an accepted mesh.
+    fn publish_cutout_if_ready(&mut self) {
+        if self.cutout_pending.is_none() || !self.cutout_waiting.is_empty() {
+            return;
+        }
         self.cutout = self.cutout_pending.take();
     }
     /// Releases tiles whose every overlapping replacement already has a mesh.
@@ -1958,8 +1969,6 @@ impl Lod {
             reduced: self.reduced.clone(),
         });
         let covered = Arc::new(self.covered.clone());
-        self.dispatch_seq += 1;
-        let seq = self.dispatch_seq;
         let mut queued = self.shared.mesh_jobs.lock().unwrap();
         let count = keys.len();
         for (key, version) in keys {
@@ -1973,7 +1982,6 @@ impl Lod {
                     snapshot: snapshot.clone(),
                     key,
                     version,
-                    seq,
                     finer,
                     covered: covered.clone(),
                     bounds: self.covered_bounds,
@@ -1982,7 +1990,6 @@ impl Lod {
         }
         drop(queued);
         self.outstanding_meshes += count;
-        *self.in_flight.entry(seq).or_default() += count;
         self.shared.mesh_wake.notify_all();
     }
     fn finer_of(&self, key: TileKey) -> Vec<TileKey> {
@@ -3268,29 +3275,72 @@ mod tests {
     }
 
     #[test]
-    fn a_cutout_waits_for_its_batch_not_every_later_one() {
+    fn a_cutout_wait_follows_a_retired_tile_to_its_children() {
         let mut lod = Lod::scheduler_for_test();
-        lod.cutout_pending = Some([(1, 2)].into_iter().collect());
-        lod.cutout_target = Some(1);
-        lod.in_flight.insert(1, 1);
+        let parent = TileKey {
+            x: 0,
+            z: 0,
+            level: 1,
+        };
+        let child = parent.children()[0];
+        lod.plan.nodes.insert(parent);
+        lod.plan.split.insert(parent);
+        lod.plan.nodes.insert(child);
+        lod.active.insert(child);
+        lod.unmeshed.insert(child);
+        lod.cutout_pending = Some([(0, 0)].into_iter().collect());
+        lod.cutout_waiting.insert(parent);
+        lod.transfer_cutout_wait(parent);
+        assert!(!lod.cutout_waiting.contains(&parent));
+        assert!(lod.cutout_waiting.contains(&child));
         lod.publish_cutout_if_ready();
-        assert!(lod.take_cutout().is_none(), "cutout before its batch");
-        lod.in_flight.clear();
-        lod.in_flight.insert(2, 1);
+        assert!(lod.take_cutout().is_none());
+        lod.cutout_waiting.remove(&child);
+        lod.publish_cutout_if_ready();
+        assert!(lod.take_cutout().is_some());
+        // A level-0 waiter has no children to hand the wait to.
+        let fine = TileKey {
+            x: 5,
+            z: 5,
+            level: 0,
+        };
+        lod.cutout_pending = Some([(5, 5)].into_iter().collect());
+        lod.cutout_waiting.insert(fine);
+        lod.transfer_cutout_wait(fine);
+        assert!(!lod.cutout_waiting.contains(&fine));
+        lod.publish_cutout_if_ready();
+        assert!(lod.take_cutout().is_some());
+    }
+
+    #[test]
+    fn a_cutout_waits_for_the_tiles_it_affected() {
+        let mut lod = Lod::scheduler_for_test();
+        let tile = TileKey {
+            x: 0,
+            z: 0,
+            level: 0,
+        };
+        lod.cutout_pending = Some([(1, 2)].into_iter().collect());
+        lod.cutout_waiting.insert(tile);
+        lod.publish_cutout_if_ready();
+        assert!(lod.take_cutout().is_none(), "cutout before its replacement");
+        // A later, unrelated mesh does not stand in for the affected tile.
+        lod.meshed.insert(TileKey {
+            x: 8,
+            z: 8,
+            level: 0,
+        });
+        lod.publish_cutout_if_ready();
+        assert!(lod.take_cutout().is_none());
+        lod.cutout_waiting.remove(&tile);
         lod.publish_cutout_if_ready();
         assert_eq!(lod.take_cutout(), Some([(1, 2)].into_iter().collect()));
+        // A second change unions tiles still waiting from the first.
         lod.cutout_pending = Some([(3, 4)].into_iter().collect());
-        lod.cutout_target = Some(2);
-        lod.dirty.insert(
-            TileKey {
-                x: 0,
-                z: 0,
-                level: 0,
-            },
-            7,
-        );
+        lod.cutout_waiting.insert(tile);
+        lod.cutout_waiting.remove(&tile);
         lod.publish_cutout_if_ready();
-        assert!(lod.take_cutout().is_none(), "undispatched replacement");
+        assert_eq!(lod.take_cutout(), Some([(3, 4)].into_iter().collect()));
     }
 
     /// A saved summary is not detail: a covered empty stand-in must not let
