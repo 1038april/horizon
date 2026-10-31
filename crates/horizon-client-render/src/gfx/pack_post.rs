@@ -253,12 +253,11 @@ pub(super) struct Weather {
     pub generation: u64,
 }
 
-/// Shadow cache for temporal reprojection: stores the last valid shadow map
-/// to avoid re-rendering when the sun and camera haven't moved significantly.
+/// Shadow cache: the key of the shadow map the shadow targets hold. Only the
+/// shadow passes write those targets, so while the key matches they still hold
+/// it and the pass is skipped.
 #[derive(Default)]
 struct ShadowCache {
-    /// The cached shadow targets (depth, depth1, color buffers).
-    targets: Option<super::pack_shadow::ShadowTargets>,
     key: Option<ShadowCacheKey>,
 }
 
@@ -2315,22 +2314,14 @@ impl PackPost {
             .is_some_and(|entities| entities.geometry.draws.iter().any(|draw| draw.shadow));
         let cache_hit = !has_shadow_entities
             && self.shadow_cache.key == Some(cache_key)
-            && self.shadow_cache.targets.is_some()
             && self.shadow_targets.is_some();
-
         if cache_hit {
-            // Cache hit: copy the cached textures to the current shadow targets.
-            if let Some(cached) = &self.shadow_cache.targets
-                && let Some(t) = &mut self.shadow_targets
-            {
-                Self::copy_cached_shadow_targets(encoder, cached, t);
-            }
+            // The targets still hold this map (and `main`, the A/B side
+            // `shadowcomp` left current).
             return;
         }
-
-        // Cache miss: run the normal shadow pass, then store the result.
         self.draw_shadow_pass(device, queue, encoder, terrain);
-        self.store_shadow_cache(device, encoder, cache_key);
+        self.shadow_cache.key = self.shadow_targets.is_some().then_some(cache_key);
     }
 
     /// The shadow pass body: terrain, entities, clears, and `shadowcomp`.
@@ -2499,205 +2490,6 @@ impl PackPost {
             }
         }
         hasher.finish()
-    }
-
-    /// Copies the cached shadow targets to the current shadow targets.
-    fn copy_cached_shadow_targets(
-        encoder: &mut wgpu::CommandEncoder,
-        cached: &super::pack_shadow::ShadowTargets,
-        current: &mut super::pack_shadow::ShadowTargets,
-    ) {
-        // Copy depth texture (shadowtex0).
-        encoder.copy_texture_to_texture(
-            cached.depth.0.as_image_copy(),
-            current.depth.0.as_image_copy(),
-            cached.depth.0.size(),
-        );
-
-        // Copy depth1 texture (shadowtex1) if it exists.
-        if let (Some((cached_tex, _)), Some((current_tex, _))) = (&cached.depth1, &current.depth1) {
-            encoder.copy_texture_to_texture(
-                cached_tex.as_image_copy(),
-                current_tex.as_image_copy(),
-                cached_tex.size(),
-            );
-        }
-
-        // Copy color textures (shadowcolor buffers).
-        for i in 0..2 {
-            if let (Some(cached_views), Some(current_views)) =
-                (cached.color[i].as_ref(), current.color[i].as_ref())
-            {
-                for side in 0..2 {
-                    encoder.copy_texture_to_texture(
-                        cached_views[side].texture().as_image_copy(),
-                        current_views[side].texture().as_image_copy(),
-                        current_views[side].texture().size(),
-                    );
-                }
-            }
-        }
-
-        // Copy the main buffer index.
-        current.main = cached.main;
-    }
-
-    /// Stores the current shadow targets into the cache for future reuse.
-    /// Creates cache textures with COPY_SRC | COPY_DST usage and copies the live textures.
-    fn store_shadow_cache(
-        &mut self,
-        device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
-        cache_key: ShadowCacheKey,
-    ) {
-        let Some(current) = &self.shadow_targets else {
-            return;
-        };
-
-        // Create cache targets if they don't exist or if the size changed.
-        let cache_size = self
-            .shadow_cache
-            .targets
-            .as_ref()
-            .map(|t| t.size)
-            .unwrap_or(0);
-        if cache_size != current.size || self.shadow_cache.targets.is_none() {
-            // Create new cache targets with COPY_SRC | COPY_DST usage.
-            let copy_usage = wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST;
-            let depth_format = wgpu::TextureFormat::Depth32Float;
-
-            // Create cache depth texture.
-            let depth = Self::create_cache_texture(
-                device,
-                "shadow_cache_depth",
-                current.size,
-                depth_format,
-                copy_usage,
-            );
-
-            // Create cache depth1 texture if needed.
-            let depth1 = current.depth1.as_ref().map(|_| {
-                Self::create_cache_texture(
-                    device,
-                    "shadow_cache_depth1",
-                    current.size,
-                    depth_format,
-                    copy_usage,
-                )
-            });
-
-            // Create cache color textures.
-            let mut color = [None, None];
-            for n in 0..2 {
-                if let Some(current_views) = &current.color[n] {
-                    // Get the format from the actual color texture.
-                    let color_format = current_views[0].texture().format();
-                    color[n] = Some([
-                        Self::create_cache_texture(
-                            device,
-                            &format!("shadow_cache_color{}_A", n),
-                            current.size,
-                            color_format,
-                            copy_usage,
-                        )
-                        .1,
-                        Self::create_cache_texture(
-                            device,
-                            &format!("shadow_cache_color{}_B", n),
-                            current.size,
-                            color_format,
-                            copy_usage,
-                        )
-                        .1,
-                    ]);
-                }
-            }
-
-            self.shadow_cache.targets = Some(super::pack_shadow::ShadowTargets {
-                size: current.size,
-                depth,
-                depth1,
-                color,
-                clears: current.clears,
-                main: current.main,
-                fresh: false,
-                cleared: 0,
-                comparison: device.create_sampler(&wgpu::SamplerDescriptor {
-                    label: Some("Shader pack shadow cache comparison"),
-                    compare: Some(wgpu::CompareFunction::LessEqual),
-                    mag_filter: wgpu::FilterMode::Linear,
-                    min_filter: wgpu::FilterMode::Linear,
-                    ..Default::default()
-                }),
-            });
-        }
-
-        // Copy current shadow targets to cache targets.
-        if let Some(cached) = &self.shadow_cache.targets {
-            // Copy depth texture.
-            encoder.copy_texture_to_texture(
-                current.depth.0.as_image_copy(),
-                cached.depth.0.as_image_copy(),
-                current.depth.0.size(),
-            );
-
-            // Copy depth1 texture if it exists.
-            if let (Some((current_tex, _)), Some((cached_tex, _))) =
-                (&current.depth1, &cached.depth1)
-            {
-                encoder.copy_texture_to_texture(
-                    current_tex.as_image_copy(),
-                    cached_tex.as_image_copy(),
-                    current_tex.size(),
-                );
-            }
-
-            // Copy color textures.
-            for n in 0..2 {
-                if let (Some(current_views), Some(cached_views)) =
-                    (&current.color[n], &cached.color[n])
-                {
-                    for side in 0..2 {
-                        encoder.copy_texture_to_texture(
-                            current_views[side].texture().as_image_copy(),
-                            cached_views[side].texture().as_image_copy(),
-                            current_views[side].texture().size(),
-                        );
-                    }
-                }
-            }
-        }
-
-        // Update the cache key.
-        self.shadow_cache.key = Some(cache_key);
-    }
-
-    /// Creates a texture with COPY_SRC | COPY_DST usage for cache storage.
-    fn create_cache_texture(
-        device: &wgpu::Device,
-        label: &str,
-        size: u32,
-        format: wgpu::TextureFormat,
-        usage: wgpu::TextureUsages,
-    ) -> (wgpu::Texture, wgpu::TextureView) {
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some(label),
-            size: wgpu::Extent3d {
-                width: size,
-                height: size,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::RENDER_ATTACHMENT
-                | usage,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&Default::default());
-        (texture, view)
     }
 
     /// Runs the pack over the world drawn into `world` (colour) and `world_depth`, then draws
