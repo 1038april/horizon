@@ -1239,6 +1239,47 @@ fn a_superflat_world_keeps_its_strongholds_on_every_seed_and_leaves_null_layers_
     );
 }
 
+/// `structure_overrides` is a lenient field: a list naming a structure set that does not exist
+/// fails to decode and counts as absent, so every set generates.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn a_superflat_structure_override_naming_no_set_lets_every_set_generate() {
+    let Some(base) = prepared() else {
+        return;
+    };
+    let assets = Assets::load(&base).unwrap();
+    let biomes = crate::biome::Biomes::load(&base).unwrap();
+    let flat = horizon_world::worldgen::generator::FlatSettings {
+        layers: vec![
+            ("minecraft:bedrock".into(), 1),
+            ("minecraft:dirt".into(), 2),
+            ("minecraft:grass_block".into(), 1),
+        ],
+        biome: "minecraft:plains".into(),
+        structure_overrides: Some(vec!["minecraft:village".into()]),
+    };
+    let terrain = crate::vanillagen::VanillaTerrain::for_flat(
+        &base.join("worldgen"),
+        &Default::default(),
+        assets.registry,
+        &biomes,
+        1234,
+        &flat,
+        true,
+    )
+    .unwrap();
+    assert!(
+        terrain
+            .locate(&["minecraft:stronghold".to_owned()], [0, 64, 0], 12)
+            .is_some()
+    );
+    assert!(
+        terrain
+            .locate(&["minecraft:village_plains".to_owned()], [0, 64, 0], 12)
+            .is_some()
+    );
+}
+
 /// A mod's mob effect gets the network id after vanilla's last, on the game
 /// and its server alike, and joins the ids `/effect` and its suggestions
 /// check.

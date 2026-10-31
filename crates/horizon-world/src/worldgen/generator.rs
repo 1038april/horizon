@@ -1210,6 +1210,9 @@ where
             let rings = pipeline.data.rings_for(seed, generator);
             pipeline.structures =
                 super::generator_structures::StructureState::new(&pipeline.data, &possible, rings)?;
+            if let Some(state) = pipeline.structures.as_mut() {
+                state.fixed_biome = generator["biome_source"]["type"] == "minecraft:fixed";
+            }
         }
         Ok(pipeline)
     }
@@ -1724,10 +1727,19 @@ where
                 center.z.wrapping_shl(4),
             ))
     }
+    /// The Y range `getBaseHeight` and `getBaseColumn` answer for: the noise's, or a superflat
+    /// world's whole level (its layers are not bound by any noise settings).
+    fn column_range(&self) -> (i32, i32) {
+        if self.flat.is_some() {
+            (self.settings.level_min_y, self.settings.level_height)
+        } else {
+            (self.settings.noise_min_y, self.settings.noise_height)
+        }
+    }
     /// ChunkGenerator.getBaseHeight: the first free Y above the noise column
     /// (with aquifers, without terrain adaptation) for a heightmap type.
     fn base_height(&self, x: i32, z: i32, kind: HeightmapType) -> i32 {
-        let min = self.settings.noise_min_y;
+        let (min, _) = self.column_range();
         let mut found = min;
         self.noise_column(x, z, &mut |y, state| {
             if kind.is_opaque(self.data.states.get(state)) {
@@ -1745,7 +1757,7 @@ where
     }
     /// One noise-column pass, as opacities for each heightmap kind.
     fn base_columns(&self, x: i32, z: i32, kinds: &[HeightmapType]) -> Vec<Vec<bool>> {
-        let (min, height) = (self.settings.noise_min_y, self.settings.noise_height);
+        let (min, height) = self.column_range();
         let mut columns = vec![vec![false; height as usize]; kinds.len()];
         self.noise_column(x, z, &mut |y, state| {
             let state = self.data.states.get(state);
@@ -1761,7 +1773,7 @@ where
     /// are never cobwebs or bamboo saplings).
     fn noise_blocks(&self, x: i32, z: i32) -> super::structure::start::NoiseColumn {
         use super::structure::start::{NoiseBlock, NoiseColumn};
-        let (min, height) = (self.settings.noise_min_y, self.settings.noise_height);
+        let (min, height) = self.column_range();
         let mut blocks = vec![NoiseBlock::Air; height as usize];
         let registry = self.data.registry;
         self.noise_column(x, z, &mut |y, state| {
@@ -3213,11 +3225,17 @@ impl OverworldGenerator {
                 .get("minecraft:overworld")
                 .ok_or_else(|| resource("missing noise settings minecraft:overworld"))?,
         )?;
+        // `Biome.CODEC.lenientOptionalFieldOf("biome")`: an unknown biome is Plains.
+        let biome = if data.biome_id(&flat.biome).is_some() {
+            flat.biome.as_str()
+        } else {
+            "minecraft:plains"
+        };
         let generator = serde_json::json!({
             "type": "minecraft:noise",
             "settings": "minecraft:overworld",
-            "biome_source": { "type": "minecraft:fixed", "biome": flat.biome },
-            "flat": true,
+            "biome_source": { "type": "minecraft:fixed", "biome": biome },
+            "structure_overrides": flat.structure_overrides,
         });
         let mut pipeline = Pipeline::new(
             data.clone(),

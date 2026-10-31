@@ -631,21 +631,28 @@ pub(super) fn make_streaming(
         .flatten()
         .and_then(|s| horizon_client::flatgen::FlatTerrain::structure_settings(&s))
         .filter(|_| horizon_client::save::WorldGen::read(world_root).is_none_or(|w| w.structures));
-    let mut streaming = if let Some(settings) = flat_structures {
+    // A generator that cannot be built (a layer block the registry lacks, a level shorter
+    // than the noise) leaves the world on its flat ground, as it was before.
+    let flat_vanilla = flat_structures.and_then(|settings| {
         let overrides =
             world_worldgen_overrides(world_root, &options.resources, &biomes, enabled_features);
-        let inner = Arc::new(
-            VanillaTerrain::for_flat(
-                &options.resources.join("worldgen"),
-                &overrides,
-                pack.assets.registry,
-                &biomes,
-                seed,
-                &settings,
-                true,
-            )
-            .map_err(|e| format!("{e}\nPrepare the worldgen bundle with the launcher, or: horizon-prepare --prepare"))?,
-        );
+        match VanillaTerrain::for_flat(
+            &options.resources.join("worldgen"),
+            &overrides,
+            pack.assets.registry,
+            &biomes,
+            seed,
+            &settings,
+            true,
+        ) {
+            Ok(terrain) => Some(Arc::new(terrain)),
+            Err(e) => {
+                log::warn!("Horizon: the superflat structures are unavailable: {e}");
+                None
+            }
+        }
+    });
+    let mut streaming = if let Some(inner) = flat_vanilla {
         inner.search_rings_behind();
         inner.set_reference_file(world_root.join("data").join(format!(
             "horizon_structure_references_{}.json",
