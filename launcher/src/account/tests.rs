@@ -1026,3 +1026,75 @@ fn the_java_edition_plays_as_an_owner_even_offline() {
         NoOwner.to_string()
     );
 }
+
+/// A secrets file of the test's own, gone first.
+fn secrets_file(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("horizon-secrets-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    dir.join("launcher").join(SECRETS_FILE)
+}
+
+#[test]
+fn the_secrets_file_keeps_sign_ins_across_starts() {
+    let path = secrets_file("starts");
+    let store = FileStore::new(path.clone());
+    assert!(store.persistent());
+    assert_eq!(store.get(UUID).unwrap(), None);
+    let signed_in = secrets("mc-secret", true);
+    let mut accounts = Accounts::default();
+    accounts.add(&store, notch(), &signed_in).unwrap();
+    // The next start reads the same file.
+    let again = FileStore::new(path.clone());
+    assert_eq!(secrets_in(&again, UUID), Some(signed_in));
+    // Never in accounts.json.
+    assert!(!serde_json::to_string(&accounts)
+        .unwrap()
+        .contains("mc-secret"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "only the player reads it");
+    }
+    assert!(!path.with_extension("json.tmp").exists());
+    // Signing the last account out removes the file: the keychain is used again from the next start.
+    accounts.remove(&again, UUID).unwrap();
+    assert_eq!(again.get(UUID).unwrap(), None);
+    assert!(!path.exists());
+    again.delete(UUID).unwrap();
+    let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+}
+
+#[test]
+fn the_secrets_file_keeps_each_key_apart() {
+    let path = secrets_file("keys");
+    let store = FileStore::new(path.clone());
+    store.set("a", "one").unwrap();
+    store.set("b", "two").unwrap();
+    store.set("a", "three").unwrap();
+    store.delete("b").unwrap();
+    assert_eq!(
+        (store.get("a").unwrap(), store.get("b").unwrap()),
+        (Some("three".into()), None)
+    );
+    // A broken file is an error, never secrets lost in silence, and the error doesn't show it.
+    std::fs::write(&path, "{\"a\":\"leaked-secret").unwrap();
+    let said = store.get("a").unwrap_err();
+    assert!(!said.contains("leaked-secret"), "{said}");
+    assert!(store.set("c", "four").is_err());
+    let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+}
+
+#[test]
+fn the_file_takes_over_where_no_keychain_answers() {
+    // HORIZON_NO_KEYCHAIN: memory, whatever is there.
+    assert_eq!(kept(true, true, || true), Kept::Memory);
+    // The keychain first, and the file only when it doesn't answer.
+    assert_eq!(kept(false, false, || true), Kept::Keychain);
+    assert_eq!(kept(false, false, || false), Kept::File);
+    // A file from an earlier start stays in use, without asking the keychain.
+    assert_eq!(
+        kept(false, true, || panic!("the keychain isn't asked")),
+        Kept::File
+    );
+}

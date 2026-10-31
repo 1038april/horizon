@@ -83,7 +83,9 @@ possible; the launcher just doesn't offer it on its own.
   the device code on the same screen. It comes back whenever Play is refused; Not now closes it,
   and Home keeps a Sign in row (`launcher/src/owner_page.rs`).
 - **The answer lives with the tokens.** Each account's keychain item keeps the last answer
-  (`owns`), so no plain file can say yes. With no network (or a sign-in that can't be renewed) the
+  (`owns`), so accounts.json can't say yes. Where there is no keychain the answer sits in the
+  secrets file with the tokens; a player can edit that file, as they can write keychain items with
+  `secret-tool` or Keychain Access. With no network (or a sign-in that can't be renewed) the
   last answer stands: being offline never blocks a player who passed before, and the game starts
   without a session, offline. An answer of "doesn't own" (or no profile) blocks at once.
 - **Offline names play behind an owner.** They can be added and played only while an owning
@@ -134,9 +136,14 @@ one is selected. "Sign out" deletes the account's secrets from the keychain.
   other apps' items.
 - `accounts.json` in the launcher's data folder keeps only public data: UUID, name, skin URL, which
   account is selected. Never a token.
-- No keychain available (a Linux box without a Secret Service, a locked keychain): sign-in still
-  works for the session but nothing is saved, and the launcher says "No keychain available: you will
-  have to sign in again next time" (it never falls back to a plain file).
+- No keychain available (a Linux box without a Secret Service, a locked keychain, #5095): the
+  secrets go to `account-secrets.json` in the launcher's data folder instead, readable and writable
+  by the player only (0600 on Unix) and replaced whole on every write, as most launchers keep them.
+  Once that file exists the launcher keeps using it, without asking the keychain, so sign-ins don't
+  come and go with a keychain that answers only some of the time; signing the last account out
+  removes it, and the keychain is asked again from the next start. `HORIZON_NO_KEYCHAIN` keeps
+  secrets in memory for the run instead (the launcher's own tests), and the launcher then says "No
+  keychain available: you are signed in until the launcher closes".
 - Tokens never appear in logs, errors, `horizon-launcher` CLI output, MCP results or crash reports.
   Requests are logged by endpoint name only.
 

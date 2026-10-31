@@ -1,7 +1,8 @@
 //! Microsoft account sign-in (docs/microsoft-account.md): the OAuth device-code flow, then Xbox
 //! Live, XSTS and the Minecraft services, the game ownership check and the profile. Secrets (the
 //! Microsoft refresh token, the Minecraft access token, the last ownership answer) live in the OS
-//! keychain; accounts.json keeps only names and UUIDs. The game gets the session in a file it
+//! keychain, or in a file only the player can read where there is none; accounts.json keeps only
+//! names and UUIDs. The game gets the session in a file it
 //! reads once (`--session-file`), never on its command line. Tokens never reach logs, errors or
 //! output.
 //!
@@ -557,7 +558,8 @@ fn check(ep: &Endpoints, client_id: Option<&str>, account: &Account, secrets: Se
 
 // ----- The keychain --------------------------------------------------------------------------------
 
-/// Where secrets are kept: the OS keychain, or memory in tests and when there is none.
+/// Where secrets are kept: the OS keychain, a file of the launcher's own when there is none, or
+/// memory in tests.
 pub trait SecretStore: Send + Sync {
     fn get(&self, key: &str) -> Result<Option<String>, String>;
     fn set(&self, key: &str, secret: &str) -> Result<(), String>;
@@ -582,6 +584,98 @@ impl SecretStore for MemoryStore {
     }
     fn persistent(&self) -> bool {
         false
+    }
+}
+
+/// The secrets file in the launcher's data folder, when no keychain answers (#5095): many Linux
+/// systems run no Secret Service, and sign-ins would otherwise last one run. One JSON object, key
+/// to secret, readable and writable by the player only (0600 on Unix), replaced whole on every
+/// write. Gone once the last account signs out, and the keychain is used again from the next start.
+pub struct FileStore {
+    path: PathBuf,
+    /// Writes are read-modify-write: one at a time.
+    lock: Mutex<()>,
+}
+
+/// The secrets file's name in the launcher's data folder.
+pub const SECRETS_FILE: &str = "account-secrets.json";
+
+impl FileStore {
+    pub fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            lock: Mutex::new(()),
+        }
+    }
+
+    /// The launcher's own: [`SECRETS_FILE`] in its data folder.
+    pub fn launcher() -> Self {
+        Self::new(crate::backend::data_dir().join(SECRETS_FILE))
+    }
+
+    fn read(&self) -> Result<std::collections::BTreeMap<String, String>, String> {
+        match std::fs::read(&self.path) {
+            // The error says where the file breaks, never what it holds.
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|e| format!("{} can't be read: {e}", self.path.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
+            Err(e) => Err(format!("{}: {e}", self.path.display())),
+        }
+    }
+
+    /// Replaces the file with `secrets` through a temporary file beside it, so a crash leaves the
+    /// old file or the new one; removes it when there are none left.
+    fn write(&self, secrets: &std::collections::BTreeMap<String, String>) -> Result<(), String> {
+        let shown = |e: std::io::Error| format!("{}: {e}", self.path.display());
+        if secrets.is_empty() {
+            return match std::fs::remove_file(&self.path) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(shown(e)),
+                _ => Ok(()),
+            };
+        }
+        if let Some(dir) = self.path.parent() {
+            std::fs::create_dir_all(dir).map_err(shown)?;
+        }
+        let json = serde_json::to_vec(secrets).map_err(|e| e.to_string())?;
+        let tmp = self.path.with_extension("json.tmp");
+        let _ = std::fs::remove_file(&tmp);
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let written = options.open(&tmp).and_then(|mut file| {
+            std::io::Write::write_all(&mut file, &json)?;
+            file.sync_all()
+        });
+        if let Err(e) = written.and_then(|()| std::fs::rename(&tmp, &self.path)) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(shown(e));
+        }
+        Ok(())
+    }
+}
+
+impl SecretStore for FileStore {
+    fn get(&self, key: &str) -> Result<Option<String>, String> {
+        let _held = self.lock.lock().unwrap();
+        Ok(self.read()?.remove(key))
+    }
+    fn set(&self, key: &str, secret: &str) -> Result<(), String> {
+        let _held = self.lock.lock().unwrap();
+        let mut secrets = self.read()?;
+        secrets.insert(key.into(), secret.into());
+        self.write(&secrets)
+    }
+    fn delete(&self, key: &str) -> Result<(), String> {
+        let _held = self.lock.lock().unwrap();
+        let mut secrets = self.read()?;
+        if secrets.remove(key).is_none() {
+            return Ok(());
+        }
+        self.write(&secrets)
+    }
+    fn persistent(&self) -> bool {
+        true
     }
 }
 
@@ -935,13 +1029,38 @@ pub fn no_keychain() -> Option<String> {
     })
 }
 
-/// The keychain if it answers, else memory for this run (said in the UI with [`no_keychain`]).
-/// Never a file of its own: secrets are kept by the system or not at all.
+/// Where [`store`] keeps secrets.
+#[derive(Debug, PartialEq, Eq)]
+enum Kept {
+    Keychain,
+    /// [`FileStore`]: the file is already there, or the keychain didn't answer.
+    File,
+    Memory,
+}
+
+/// `HORIZON_NO_KEYCHAIN` keeps secrets in memory (the launcher's own tests). A secrets file left by
+/// an earlier run stays in use, so sign-ins don't come and go with a keychain that answers only
+/// some of the time; signing every account out removes it. Otherwise the keychain if it answers
+/// `probe`, else the file.
+fn kept(no_keychain: bool, file_there: bool, probe: impl FnOnce() -> bool) -> Kept {
+    if no_keychain {
+        Kept::Memory
+    } else if file_there {
+        Kept::File
+    } else if probe() {
+        Kept::Keychain
+    } else {
+        Kept::File
+    }
+}
+
+/// The keychain if it answers, else [`FileStore`] (#5095); memory with `HORIZON_NO_KEYCHAIN` (said
+/// in the UI with [`no_keychain`]).
 pub fn store() -> &'static dyn SecretStore {
     static STORE: OnceLock<Box<dyn SecretStore>> = OnceLock::new();
     STORE
         .get_or_init(|| {
-            // Unit tests never reach the player's keychain.
+            // Unit tests never reach the player's keychain or data folder.
             #[cfg(all(
                 not(test),
                 any(
@@ -952,14 +1071,18 @@ pub fn store() -> &'static dyn SecretStore {
                 )
             ))]
             {
-                let why = match std::env::var_os("HORIZON_NO_KEYCHAIN") {
-                    Some(_) => "HORIZON_NO_KEYCHAIN is set.".to_string(),
-                    None => match SystemStore.get("probe") {
-                        Ok(_) => return Box::new(SystemStore),
-                        Err(e) => e,
-                    },
-                };
-                let _ = NO_KEYCHAIN_WHY.set(why);
+                let file = FileStore::launcher();
+                match kept(
+                    std::env::var_os("HORIZON_NO_KEYCHAIN").is_some(),
+                    file.path.exists(),
+                    || SystemStore.get("probe").is_ok(),
+                ) {
+                    Kept::Keychain => return Box::new(SystemStore),
+                    Kept::File => return Box::new(file),
+                    Kept::Memory => {
+                        let _ = NO_KEYCHAIN_WHY.set("HORIZON_NO_KEYCHAIN is set.".into());
+                    }
+                }
             }
             Box::<MemoryStore>::default()
         })
