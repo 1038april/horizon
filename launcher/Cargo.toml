@@ -25,6 +25,7 @@ dirs = "5"
 # The system's preferred languages, for the window's language (i18n.rs).
 sys-locale = "0.3"
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 horizon-theme = { path = "../crates/horizon-theme" }
 horizon-core = { path = "../crates/horizon-core" }
 horizon-prepare = { path = "../crates/horizon-prepare" }
