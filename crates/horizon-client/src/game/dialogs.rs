@@ -156,6 +156,11 @@ impl Game<'_> {
             });
             dialog.set_list(&entries.unwrap_or_default());
         }
+        self.open_dialog(dialog);
+    }
+
+    /// The parsed dialog's screen, its inputs at their initial values.
+    fn open_dialog(&mut self, dialog: Dialog) {
         let values = dialog.inputs.iter().map(|i| i.control.initial()).collect();
         let font = &self.gui.atlas.font;
         let fields = dialog
@@ -212,6 +217,7 @@ impl Game<'_> {
         });
         self.dialogs.waiting = None;
         self.keys.clear();
+        self.physical_keys.clear();
         self.left = false;
         self.right = false;
         self.capture(false);
