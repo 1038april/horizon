@@ -317,6 +317,12 @@ pub struct Frame<'a> {
     pub yaw: f32,
     pub pitch: f32,
     pub fov_degrees: f32,
+    /// The camera entity's eye and view rotation (yaw, pitch): the camera's own except in a
+    /// third-person view.
+    pub eye: DVec3,
+    pub eye_rotation: [f32; 2],
+    /// The camera is the entity's eye: no third-person view.
+    pub first_person: bool,
     /// The `GameRenderer.bobHurt`/`bobView` pose multiplied into the
     /// projection (`crate::camera::bob_matrix`).
     pub bob: Mat4,
@@ -3925,6 +3931,7 @@ impl Renderer {
             pack_post::PackPost::new(
                 &self.device,
                 &self.queue,
+                &self.adapter,
                 post,
                 self.config.format.remove_srgb_suffix(),
                 world,
@@ -3980,8 +3987,24 @@ impl Renderer {
     /// What a shader pack's gbuffers programs read from Horizon's geometry: the sky's, and
     /// terrain's in the pack's block atlas (made here when missing; none when it does not fit).
     pub fn pack_inputs(&mut self) -> horizon_shaders::GameInputs {
+        let terrain = self.pack_terrain_inputs();
+        // A geometry stage reads flat draws' vertices itself, through their index buffer.
+        let terrain_geometry = terrain
+            .clone()
+            .filter(|_| self.pack_terrain_flat)
+            .map(|mut inputs| {
+                inputs.declarations.push_str(
+                    "layout(set = 5, binding = 0) readonly buffer HzIndices { uint hz_indices[]; };\n",
+                );
+                horizon_shaders::GeometryInputs {
+                    inputs,
+                    pull: pack_atlas::PULL.to_owned(),
+                    index: "hz_indices[@]".to_owned(),
+                }
+            });
         horizon_shaders::GameInputs {
-            terrain: self.pack_terrain_inputs(),
+            terrain,
+            terrain_geometry,
             sky: Some(pack_sky::inputs()),
             celestial: Some(pack_sky::celestial_inputs()),
             entities: Some(pack_entities::inputs()),
@@ -4609,14 +4632,27 @@ impl Renderer {
                 planes: frustum(v.cull),
             };
             crate::spans::time("shadow visibility", || {
-                self.sections.visible(
-                    camera,
-                    radius,
-                    &light,
-                    |_| true,
-                    |_, _| false,
-                    &mut shadow_visible,
-                )
+                // Within the unculled distance every section, then those in the light's box.
+                if let Some(d) = v.unculled {
+                    let all = Frustum {
+                        planes: [glam::Vec4::W; 6],
+                    };
+                    let near = radius.min((d / 16.0).ceil() as i32);
+                    self.sections.visible(
+                        camera,
+                        near,
+                        &all,
+                        |_| true,
+                        |_, _| false,
+                        &mut shadow_visible,
+                    );
+                }
+                let mut boxed = Vec::new();
+                self.sections
+                    .visible(camera, radius, &light, |_| true, |_, _| false, &mut boxed);
+                let seen: std::collections::HashSet<_> =
+                    shadow_visible.iter().map(|s| s.key).collect();
+                shadow_visible.extend(boxed.into_iter().filter(|s| !seen.contains(&s.key)));
             });
             // Nearest the light first, so the depth test rejects what lies under it.
             let light = v.light;
@@ -4966,7 +5002,13 @@ impl Renderer {
                     }
                 }
                 let before = self.draws.len();
-                facing_runs(&s.sides, Some(toward), v.origin, |first, quads| {
+                // Every face of a section within the unculled distance.
+                let unculled = view.unculled.is_some_and(|d| {
+                    let o = glam::Vec3::from(v.origin) + 8.0;
+                    o.x.abs().max(o.z.abs()) <= d + 8.0
+                });
+                let toward = (!unculled).then_some(toward);
+                facing_runs(&s.sides, toward, v.origin, |first, quads| {
                     let start = s.start as u32 + first * 4;
                     self.draws.push([quads * 6, 1, 0, start, instance]);
                     self.draw_pages.push((s.page, None));
@@ -6298,7 +6340,8 @@ impl Renderer {
             let mut terrain =
                 |rp: &mut wgpu::RenderPass<'_>,
                  list: pack_post::TerrainList,
-                 page: &dyn Fn(&mut wgpu::RenderPass<'_>, u32)| {
+                 page: &dyn Fn(&mut wgpu::RenderPass<'_>, u32),
+                 geometry: Option<(u32, &wgpu::BindGroupLayout)>| {
                     use pack_post::TerrainList as L;
                     let shadow = matches!(list, L::ShadowSolid | L::ShadowTranslucent);
                     if !(if shadow {
@@ -6317,8 +6360,26 @@ impl Renderer {
                                 L::ShadowSolid => &flat.calls[shadow..shadow_translucent],
                                 L::ShadowTranslucent => &flat.calls[shadow_translucent..],
                             };
-                            flat.draw_with(rp, calls, |p| self.arena.buffer(p), page);
+                            match geometry {
+                                Some((instances, layout)) => {
+                                    let indices =
+                                        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                            label: Some("Shader pack geometry indices"),
+                                            layout,
+                                            entries: &[wgpu::BindGroupEntry {
+                                                binding: 0,
+                                                resource: flat.indices.as_entire_binding(),
+                                            }],
+                                        });
+                                    rp.set_bind_group(5, &indices, &[]);
+                                    let vertices = |p| self.arena.buffer(p);
+                                    flat.draw_geometry(rp, calls, vertices, page, instances);
+                                }
+                                None => flat.draw_with(rp, calls, |p| self.arena.buffer(p), page),
+                            }
                         }
+                        // A geometry stage reads flat draws' indices; without them it draws nothing.
+                        None if geometry.is_some() => {}
                         None => {
                             rp.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                             rp.set_vertex_buffer(1, self.instances.slice(..));
