@@ -86,8 +86,8 @@ fn horizon_material_color(in: HorizonMaterialOut, translucent: bool) -> vec4<f32
     let normal = horizon_material_normal(in.position);
     let tangent = horizon_material_tangent(in.position, in.uv, normal);
     return material(MaterialInput(albedo, in.tint, in.light, in.lightmap, in.position, in.uv,
-        translucent, in.clip.xy / frame.resolution, in.face, fluid, in.emission, normal,
-        tangent)).color;
+        translucent, horizon_sprite_tags(in.layer & 0x7fffu), in.clip.xy / frame.resolution,
+        in.face, fluid, in.emission, normal, tangent)).color;
 }
 @fragment fn horizon_material_fs_solid(in: HorizonMaterialOut) -> @location(0) vec4<f32> {
     let color = horizon_material_color(in, false);
@@ -112,6 +112,9 @@ pub struct TerrainShape<'a> {
     pub sprites: [f64; 2],
     /// The world target's colour format.
     pub format: wgpu::TextureFormat,
+    /// The pack's tags of each tagged sprite layer, as `(layer, bits)`
+    /// (`Manifest::sprite_tags`).
+    pub sprite_tags: &'a [(u32, u32)],
 }
 
 /// The pack's terrain pipelines: solid (with the cutout test) and translucent, for the
@@ -131,17 +134,34 @@ fn vanilla_terrain() -> String {
     )
 }
 
-/// The terrain shader for the pack's material stage `source`.
-fn shader_source(source: &str) -> String {
+/// `horizon_sprite_tags(layer)`: the bits of `MaterialInput.tags` of each sprite layer.
+fn sprite_tags(tags: &[(u32, u32)]) -> String {
+    let mut out = String::from("fn horizon_sprite_tags(layer: u32) -> u32 {\n    switch layer {\n");
+    let mut tags = tags.to_vec();
+    tags.sort_unstable_by_key(|&(layer, bits)| (bits, layer));
+    for group in tags.chunk_by(|a, b| a.1 == b.1) {
+        let layers: Vec<String> = group.iter().map(|(layer, _)| format!("{layer}u")).collect();
+        out += &format!(
+            "        case {}: {{ return {}u; }}\n",
+            layers.join(", "),
+            group[0].1
+        );
+    }
+    out + "        default: { return 0u; }\n    }\n}\n"
+}
+
+/// The terrain shader for the pack's material stage `source`, with its sprite `tags`.
+fn shader_source(source: &str, tags: &[(u32, u32)]) -> String {
     format!(
-        "{source}\n// Horizon's terrain (terrain.wgsl)\n{}{ENTRIES}",
-        vanilla_terrain()
+        "{source}\n// Horizon's terrain (terrain.wgsl)\n{}{}{ENTRIES}",
+        vanilla_terrain(),
+        sprite_tags(tags)
     )
 }
 
 /// The material's naga module, its errors in the stage's file.
-fn module(stage: &CheckedStage) -> Result<naga::Module, String> {
-    let text = shader_source(&stage.source);
+fn module(stage: &CheckedStage, tags: &[(u32, u32)]) -> Result<naga::Module, String> {
+    let text = shader_source(&stage.source, tags);
     naga::front::wgsl::parse_str(&text)
         .map_err(|e| format!("{}: {}", stage.file, e.emit_to_string(&text)))
 }
@@ -155,7 +175,7 @@ impl NativeMaterial {
         stage: &CheckedStage,
         constants: &[(String, f64)],
     ) -> Result<Self, String> {
-        let module = module(stage)?;
+        let module = module(stage, shape.sprite_tags)?;
         let mut constants = present_constants(&module, constants);
         let sprite_names = [
             "horizon_terrain_SPRITE_ARRAYS",
@@ -324,13 +344,15 @@ mod tests {
                 let frame_of = vec4(cross(input.normal, input.tangent.xyz) * input.tangent.w, kind);\n    \
                 return Surface(apply_fog(sprite(lit)) + (behind + frame_of) * 0.0);\n}\n";
         let stage = stage(own);
-        let module = module(&stage).unwrap();
+        let tags = [(7, 1), (3, 1), (9, 2)];
+        assert!(sprite_tags(&tags).contains("case 3u, 7u: { return 1u; }"));
+        let module = module(&stage, &tags).unwrap();
         let info = naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::all(),
         )
         .validate(&module)
-        .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&shader_source(&stage.source))));
+        .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&shader_source(&stage.source, &tags))));
         let entries: Vec<&str> = module
             .entry_points
             .iter()
