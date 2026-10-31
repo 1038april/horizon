@@ -143,6 +143,14 @@ uniform! {
         frame_index: u32,
         /// 1 while F1 hides the HUD, else 0.
         hide_gui: u32,
+        /// What falls in the biome at the camera while it rains: 0 nothing, 1 rain, 2 snow.
+        precipitation: u32,
+        /// The biome at the camera's temperature (vanilla's, -0.7..2.0; it snows below 0.15).
+        temperature: f32,
+        /// The biome at the camera's downfall, 0..1.
+        downfall: f32,
+        /// `rain`, smoothed: rises over about 30 seconds and dries over about 10, 0..1.
+        wetness: f32,
         /// Last frame's camera-relative world to clip space (its `projection * view`); a point
         /// at camera-relative `p` now was at `p + camera_motion` relative to last frame's camera.
         /// This frame's on the first frame and after a gap of over half a second (a pause, a
@@ -200,6 +208,7 @@ pub const MATERIAL_INPUT: Struct = Struct {
         position: "vec3<f32>" = "The point, camera-relative, in blocks.",
         uv: "vec2<f32>" = "The texture coordinate inside the block atlas.",
         translucent: "bool" = "Drawn in the translucent pass (water, stained glass, ice).",
+        tags: "u32" = "The pack's sprite tags this surface's sprite has: bit i for the manifest's i-th `[[tags]]`.",
         screen: "vec2<f32>" = "Where the point is on the screen, 0..1 from the top left (`opaque_depth` and `opaque_color` at `screen * frame.resolution`).",
         face: "u32" = "For a fluid, which face of the block the point is on, `Direction` order: 0 down, 1 up, 2 north, 3 south, 4 west, 5 east. 0 elsewhere.",
         fluid: "u32" = "0 not a fluid, 1 water, 2 lava.",
@@ -237,9 +246,9 @@ mod tests {
     #[test]
     fn frame_fields_carry_their_docs() {
         let wgsl = Frame::WGSL;
-        assert_eq!(wgsl.fields.len(), 37);
+        assert_eq!(wgsl.fields.len(), 41);
         assert!(wgsl.fields.iter().all(|f| !f.doc.trim().is_empty()));
-        assert_eq!(std::mem::size_of::<Frame>(), 5 * 64 + 12 * 16);
+        assert_eq!(std::mem::size_of::<Frame>(), 5 * 64 + 13 * 16);
         assert!(
             wgsl.wgsl()
                 .contains("    camera_position: vec3<f32>,\n    time: f32,\n")
