@@ -231,6 +231,24 @@ impl Game<'_> {
                 active,
                 hover,
             );
+            // PauseScreen adds the icon row after Statistics: the icons'
+            // messages (their tooltips too), the friends button's own.
+            widgets::last_narratable_at(3 + i, |n| {
+                let t = |key: &str| Text::translate(key, &[]).plain();
+                let key = [
+                    "menu.reportBugs",
+                    "menu.sendFeedback",
+                    "",
+                    "menu.playerReporting",
+                ][i];
+                *n = if i == FRIENDS_ICON {
+                    widgets::Narratable::named(t("gui.friends.open.narration"), n.rect, active)
+                        .hint(t("gui.friends.open.tooltip"))
+                } else {
+                    widgets::Narratable::button(t(key), n.rect, active).hint(t(key))
+                }
+                .hovered(hover);
+            });
             // SpriteIconButton.CenteredIcon: the 15x15 sprite at
             // x + width / 2 - 15 / 2 in integer pixels, untinted even
             // when the button is inactive.

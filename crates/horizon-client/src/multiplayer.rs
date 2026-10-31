@@ -839,6 +839,111 @@ impl Screen {
             focused,
             focused_at,
         );
+        // The box's message is its label.
+        crate::widgets::name_last_edit_box(|| label.to_owned());
+    }
+    /// The screen as the narrator reads it: its id and `getNarrationMessage`.
+    fn narration(&self) -> crate::widgets::ScreenInfo {
+        use crate::widgets::{ScreenInfo, join_for_narration as join};
+        let get = crate::lang::get_or;
+        match self {
+            Self::List { .. } => {
+                ScreenInfo::new("multiplayer", get("multiplayer.title", "Play Multiplayer"))
+            }
+            Self::Edit { index, .. } => ScreenInfo::new(
+                "multiplayer/edit",
+                if index.is_some() {
+                    get("manageServer.edit.title", "Edit Server Info")
+                } else {
+                    get("manageServer.add.title", "Add Server")
+                },
+            ),
+            Self::Direct { .. } => ScreenInfo::new(
+                "multiplayer/direct",
+                get("selectServer.direct", "Direct Connection"),
+            ),
+            // ConfirmScreen: its title and its message.
+            Self::ConfirmDelete { name, .. } => {
+                let warning = format_translation(
+                    &get(
+                        "selectServer.deleteWarning",
+                        "'%s' will be lost forever! (A long time!)",
+                    ),
+                    &[Text::literal(name.clone())],
+                );
+                ScreenInfo::new(
+                    "multiplayer/delete",
+                    join(&[
+                        &get(
+                            "selectServer.deleteQuestion",
+                            "Are you sure you want to remove this server?",
+                        ),
+                        &warning.plain(),
+                    ]),
+                )
+            }
+            Self::Friend { .. } => ScreenInfo::new(
+                "multiplayer/friend",
+                get("horizon.multiplayer.join_friend", "Join a Friend"),
+            ),
+            // DisconnectedScreen: its title and the reason.
+            Self::Disconnected { reason, .. } => ScreenInfo::new(
+                "multiplayer/disconnected",
+                join(&[&get("disconnect.lost", "Connection Lost"), reason]),
+            ),
+        }
+    }
+    /// What button `id` narrates: Server Resource Packs is a CycleButton,
+    /// the others say their label.
+    pub fn button_narration(
+        &self,
+        id: u8,
+        rect: [f32; 4],
+        label: &str,
+        enabled: bool,
+    ) -> crate::widgets::Narratable {
+        use crate::widgets::Narratable;
+        match self {
+            Self::Edit { packs, .. } if id == 60 => {
+                let (key, fallback) = match packs {
+                    Some(true) => ("manageServer.resourcePack.disabled", "Disabled"),
+                    Some(false) => ("manageServer.resourcePack.prompt", "Prompt"),
+                    None => ("manageServer.resourcePack.enabled", "Enabled"),
+                };
+                Narratable::cycle(label, crate::lang::get_or(key, fallback), rect, enabled)
+            }
+            _ => Narratable::button(label, rect, enabled),
+        }
+    }
+    /// `OnlineServerEntry.getNarration`: the name, then its status.
+    fn server_narration(server: &ServerEntry, ping: Option<&Ping>) -> String {
+        let t = |key: &str, args: &[&str]| crate::screen_narrator::translate(key, args);
+        let mut parts = vec![t("narrator.select", &[&server.name])];
+        match ping {
+            Some(Ping::Ok {
+                motd,
+                players,
+                player_list,
+                ms,
+                ..
+            }) => {
+                parts.push(t("multiplayer.status.online", &[]));
+                parts.push(t("multiplayer.status.ping.narration", &[&ms.to_string()]));
+                parts.push(t("multiplayer.status.motd.narration", &[&motd.plain()]));
+                if let Some((online, max)) = players {
+                    parts.push(t(
+                        "multiplayer.status.player_count.narration",
+                        &[&online.to_string(), &max.to_string()],
+                    ));
+                    let names: Vec<String> = player_list.iter().map(Text::plain).collect();
+                    parts.push(names.join(", "));
+                }
+            }
+            Some(Ping::Failed(_)) => parts.push(t("multiplayer.status.no_connection", &[])),
+            _ => parts.push(t("multiplayer.status.pinging", &[])),
+        }
+        let parts: Vec<&str> = parts.iter().map(String::as_str).collect();
+        crate::widgets::join_for_narration(&parts)
     }
     pub fn draw(
         &self,
@@ -850,6 +955,7 @@ impl Screen {
     ) {
         let (w, h) = (batch.width, batch.height);
         let max = self.max_length();
+        crate::widgets::begin_screen(|| self.narration());
         crate::ui::menu_background(batch, atlas, 0.0, 0.0, w, h, false);
         // GuiGraphicsExtractor.centeredText at width / 2: x - width(text) / 2.
         let centered = |batch: &mut HudBatch, text: &str, y: f32, color: u32| {
@@ -891,6 +997,46 @@ impl Screen {
                 let icons = icons.lock().unwrap();
                 // The row under the pointer (`isHovered`).
                 let hovered = row_at(servers.len(), games.len(), cursor, (w, h), scroll.amount);
+                // ServerSelectionList: the saved servers, the LAN header, the
+                // LAN games; the row under the mouse, else the selected one.
+                crate::widgets::narratable(|| {
+                    use crate::widgets::{ListKind, Narratable, Row as Narrated};
+                    let all: Vec<Row> = rows(servers.len(), games.len()).collect();
+                    let narrate = |i: usize| {
+                        let text = match all[i] {
+                            Row::Server(k) => {
+                                Self::server_narration(&servers[k], pings.get(&servers[k].ip))
+                            }
+                            Row::LanHeader => crate::lang::get_or(
+                                "lanServer.scanning",
+                                "Scanning for games on your local network",
+                            ),
+                            Row::Lan(k) => crate::screen_narrator::translate(
+                                "narrator.select",
+                                &[&lan_narration(&games[k].motd).plain()],
+                            ),
+                        };
+                        Narrated::new(i, text)
+                    };
+                    let selected = selected.and_then(|s| {
+                        let row = if s < servers.len() {
+                            Row::Server(s)
+                        } else {
+                            Row::Lan(s - servers.len())
+                        };
+                        all.iter().position(|r| *r == row)
+                    });
+                    Narratable::list(
+                        ListKind::Object,
+                        all.len(),
+                        hovered
+                            .and_then(|h| all.iter().position(|r| *r == h))
+                            .map(narrate),
+                        selected.map(narrate),
+                        [0.0, top, w, bottom - top],
+                    )
+                    .key(crate::widgets::key_of(&"multiplayer/servers"))
+                });
                 let millis = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |d| d.as_millis());
