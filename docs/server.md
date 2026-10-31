@@ -324,6 +324,7 @@ horizon-server run                       supervisor + engine in the foreground; 
 horizon-server start | stop | restart    in the background (detached `run`); each waits for the game
 horizon-server status [--json]           up?, uptime, TPS, MSPT, players, RAM, CPU, crashes
 horizon-server cmd <command…>            one console command, with its output
+horizon-server console                   attach: the live log, and send commands (Ctrl-D detaches)
 horizon-server logs [-f] [-n N]
 horizon-server op|deop <player>
 horizon-server whitelist on|off|list|add|remove [player]
@@ -336,18 +337,18 @@ horizon-server service install|uninstall|print [--system]
 horizon-server panel                     the panel's address and a one-time login link
 horizon-server update [--check] [--version vX.Y.Z] [--timeout S]     rollback [--timeout S]
 horizon-server update --archive FILE --version NAME     an archive you have (your own build)
+horizon-server mcp                       MCP server on stdio (section 8)
 
 Planned:
-horizon-server console                   attach: the live log, and send commands (Ctrl-D detaches)
 horizon-server import-resources <dir>      prepare --server-jar PATH
-horizon-server mcp                       MCP server on stdio (section 8)
 ```
 
 - Every command takes `--dir` (the server folder; default: the current folder).
 - While the server runs, management commands go through the control API, so the engine applies them as
   vanilla's console would and its lists stay right. While it's stopped, they edit the vanilla files directly
   with the same code the engine uses (`horizon_server_files::user_lists`).
-- **The TUI** is `horizon-server console`: the log, a one-line header (TPS, MSPT, players, RAM) that updates
+- **The TUI** is `horizon-server console` (built, `console.rs`): the recent log and then the live one (the
+  control API's event stream), a one-line header (TPS, MSPT, players, RAM) that updates
   every second, and a command line. It uses plain ANSI with no TUI framework, and falls back to plain lines
   when stdout isn't a terminal.
 
@@ -461,10 +462,12 @@ runtime or new dependency. Server-sent events can replace the polling later if a
   `Host` header must name the address it listens on (as the panel's). `[api] bind` and `[api] token` fix the
   address and the token for a program that runs elsewhere (a moderation bot); `bind` takes loopback or a
   tailnet address unless `allow_public = true`, which drops the Host check and warns at every start.
-- **MCP.** `horizon-server mcp` is an MCP server on stdio, for Claude Code or any MCP client run as the same OS
-  user. It reads the token itself, and its tools map one to one onto the API: `status`, `players`,
-  `run_command`, `logs`, `backup`, `list_backups`, `restore` (needs `confirm: true`), `start`, `stop`,
-  `restart`, `get_config` and `set_config`. It's the same idea as the game's `horizon-ctl`
+- **MCP** (built, `mcp.rs`). `horizon-server mcp` is an MCP server on stdio, for Claude Code or any MCP client
+  run as the same OS user. It reads the token itself, and its tools map one to one onto the API: `status`,
+  `players`, `run_command`, `logs`, `events`, `kick`, `ban`, `pardon`, `ban_ip`, `pardon_ip`, `op`, `deop`,
+  `whitelist`, `list_backups`, `backup`, `delete_backup` and `restore` (both need `confirm: true`), `get_config`,
+  `set_config`, `start`, `restart` and `stop` (needs `confirm: true`). Tools that send someone away or can't be
+  undone carry MCP's `destructiveHint`. It's the same idea as the game's `horizon-ctl`
   (docs/agent-control.md): an AI can run and diagnose a server, and every action it takes shows in the log.
 - **Vanilla's own management protocol.** Vanilla 26.3 has a server management protocol: JSON-RPC over a
   WebSocket, set up by the `management-server-*` keys in server.properties. Horizon's engine already parses

@@ -28,6 +28,10 @@ Usage: horizon-server [--dir DIR] <command>
               entities, chunks, network, memory; saved in reports/ (JSON and text, no player data)
   logs [-f] [-n N]
               The last N lines of the log (default 50); -f follows it
+  console     Attach to the running server: its log as it happens, TPS, MSPT, players and RAM at the
+              top, and a command line for console commands; Ctrl-D detaches
+  mcp         An MCP server on stdin and stdout, for an AI agent to run and moderate the server
+              (players, kick, ban, whitelist, logs, events, backups, settings, restart...)
   backup [NAME]
               Zip the world and the settings into backups/ (a running server saves first and stays up)
   backups [--json]
