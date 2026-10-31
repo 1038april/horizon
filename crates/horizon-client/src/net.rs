@@ -818,6 +818,7 @@ fn configure(
     resources: &Path,
 ) -> Result<Dynamic, Reason> {
     let mut registries = Dynamic::default();
+    let mut content_verified = false;
     let reply = |p: cfg::Serverbound| -> Result<(), Reason> {
         match writer.lock().unwrap().as_mut() {
             Some(w) => w
@@ -837,6 +838,7 @@ fn configure(
             cfg::Clientbound::CustomPayload(p) if p.channel == crate::content_identity::CHANNEL => {
                 let hash = crate::content_identity::identity(resources)
                     .map_err(|_| Reason::plain(crate::content_identity::MISMATCH.to_string()))?;
+                content_verified = p.data == hash;
                 reply(cfg::Serverbound::CustomPayload(cfg::CustomPayload {
                     channel: crate::content_identity::CHANNEL.into(),
                     data: hash.to_vec(),
@@ -891,6 +893,7 @@ fn configure(
             }
             cfg::Clientbound::Disconnect(d) => return Err(Reason::tag(&d.reason, lang)),
             cfg::Clientbound::FinishConfiguration(_) => {
+                registries.custom_components = content_verified;
                 let mut w = writer.lock().unwrap_or_else(|e| e.into_inner());
                 let w = w.as_mut().ok_or_else(|| Reason::plain("Disconnected"))?;
                 w.send(&cfg::Serverbound::FinishConfiguration(Empty).encode())
@@ -1555,8 +1558,10 @@ mod tests {
             let port = listener.local_addr().unwrap().port();
             let worker = std::thread::spawn(move || {
                 let (stream, _) = listener.accept().unwrap();
+                // Generous: a debug build's key generation on a busy CI runner takes seconds. A pass
+                // never waits for these.
                 stream
-                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .set_read_timeout(Some(Duration::from_secs(60)))
                     .unwrap();
                 let mut server = Connection::from_stream(stream).unwrap();
                 server.recv().unwrap(); // intention
@@ -1619,7 +1624,7 @@ mod tests {
             let reason = loop {
                 if let Event::Disconnected { reason, .. } = session
                     .events
-                    .recv_timeout(Duration::from_secs(10))
+                    .recv_timeout(Duration::from_secs(60))
                     .unwrap()
                 {
                     break reason;
