@@ -878,6 +878,22 @@ impl Chat {
     }
 }
 
+/// `SuggestionsList.getNarrationMessage` for entry `index` of `count`.
+fn suggestion_narration(index: usize, count: usize, text: &str, tooltip: Option<&str>) -> Text {
+    let mut args = vec![
+        Text::literal((index + 1).to_string()),
+        Text::literal(count.to_string()),
+        Text::literal(text),
+    ];
+    match tooltip {
+        Some(tooltip) => {
+            args.push(Text::literal(tooltip));
+            Text::translate("narration.suggestion.tooltip", &args)
+        }
+        None => Text::translate("narration.suggestion", &args),
+    }
+}
+
 /// `CommandSuggestions.SuggestionsList`.
 #[derive(Clone, Debug)]
 struct SuggestionList {
@@ -889,8 +905,17 @@ struct SuggestionList {
     current: usize,
     last_mouse: (i32, i32),
     tab_cycles: bool,
+    /// `lastNarratedEntry`: the entry the narrator last said (-1: none yet).
+    last_narrated: isize,
 }
 impl SuggestionList {
+    /// `getNarrationMessage`: "Selected suggestion 2 out of 5: …", with its
+    /// tooltip when it has one. It marks the entry said.
+    fn narration_message(&mut self) -> Text {
+        self.last_narrated = self.current as isize;
+        let s = &self.list[self.current];
+        suggestion_narration(self.current, self.list.len(), &s.text, s.tooltip.as_deref())
+    }
     fn contains(&self, x: i32, y: i32) -> bool {
         let [rx, ry, w, h] = self.rect;
         x >= rx && x <= rx + w && y >= ry && y <= ry + h
@@ -1012,6 +1037,53 @@ fn last_word_index(s: &str) -> usize {
         prev_space = space;
     }
     if prev_space { s.len() } else { out }
+}
+/// `ChatScreen.normalizeChatMessage`: `String.trim`, then
+/// `StringUtils.normalizeSpace` (one space for every run of whitespace), then
+/// `StringUtil.trimChatMessage` (the first 256 UTF-16 code units, the length
+/// `ServerboundChatPacket`'s `stringUtf8(256)` decodes). The chat screen sends
+/// this, not what was typed: a line of spaces sends nothing, and a message the
+/// packet cannot hold is cut on the client, as vanilla's is, instead of by the
+/// server.
+pub fn normalize_chat_message(message: &str) -> String {
+    // String.trim: the code points up to U+0020, which is not `str::trim`'s
+    // Unicode whitespace (U+00A0 is not Java whitespace and stays).
+    let trimmed = message.trim_matches(|c: char| c <= ' ');
+    truncate_utf16(&normalize_space(trimmed), 256)
+}
+/// `StringUtils.normalizeSpace`: one space for every run of
+/// `Character.isWhitespace`, and none at either end.
+fn normalize_space(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut space = false;
+    for c in s.chars() {
+        if crate::ui::java_whitespace(c) {
+            space = !out.is_empty();
+        } else {
+            if space {
+                out.push(' ');
+                space = false;
+            }
+            out.push(c);
+        }
+    }
+    out
+}
+/// `StringUtil.truncateStringIfNecessary(s, 256, false)`: Java counts UTF-16
+/// code units (`String.length`), so 129 emoji are cut to 128 of them, where
+/// `chars().take(256)` would keep all 129 (258 units) for the server to
+/// reject. A cut between the halves of a surrogate pair keeps the character
+/// below it: vanilla's `substring` leaves half a pair, which a Java `String`
+/// may hold and a Rust `String` may not.
+fn truncate_utf16(s: &str, max_units: usize) -> String {
+    let mut units = 0;
+    for (byte, c) in s.char_indices() {
+        units += c.len_utf16();
+        if units > max_units {
+            return s[..byte].to_owned();
+        }
+    }
+    s.to_owned()
 }
 impl ChatScreen {
     /// `ChatScreen.init`: the input at the bottom, focused, holding `initial`.
@@ -1331,11 +1403,12 @@ impl ChatScreen {
         };
         self.suggestions = None;
         if self.allow_suggestions && self.auto_suggestions {
-            self.show_suggestions(m);
+            self.show_suggestions(m, false);
         }
     }
-    /// `CommandSuggestions.showSuggestions`.
-    fn show_suggestions(&mut self, m: &Measure) {
+    /// `CommandSuggestions.showSuggestions`: `immediate` (Tab asked for
+    /// them) has the narrator say the first one at once.
+    fn show_suggestions(&mut self, m: &Measure, immediate: bool) {
         let Some((start, list)) = self.pending.clone() else {
             return;
         };
@@ -1378,6 +1451,7 @@ impl ChatScreen {
             current: 0,
             last_mouse: (0, 0),
             tab_cycles: false,
+            last_narrated: if immediate { -1 } else { 0 },
         };
         self.select(&mut l, 0);
         self.suggestions = Some(l);
@@ -1397,6 +1471,9 @@ impl ChatScreen {
         self.input.suggestion = applied
             .strip_prefix(self.input.value.as_str())
             .map(str::to_owned);
+        if l.last_narrated != l.current as isize {
+            horizon_narrator::say_system_now(&l.narration_message().plain());
+        }
     }
     fn cycle(&mut self, l: &mut SuggestionList, dir: isize) {
         self.select(l, l.current as isize + dir);
@@ -1507,7 +1584,7 @@ impl ChatScreen {
             self.suggestions = Some(l);
             handled
         } else if key == K::Tab {
-            self.show_suggestions(m);
+            self.show_suggestions(m, true);
             true
         } else {
             false
