@@ -982,7 +982,58 @@ fn network_stack(
             horizon_protocol::item::Component::Text(name.clone()),
         ));
     }
+    // Arbitrary NBT other mods and item models read back client-side
+    // (`item_model.rs`'s `custom_data_at`), as vanilla's DataComponentPatch does.
+    if let Some(tag @ horizon_world::nbt::Tag::Compound(_)) =
+        s.data().and_then(|d| d.other("minecraft:custom_data"))
+    {
+        stack.added.push((
+            horizon_protocol::item::component::CUSTOM_DATA,
+            horizon_protocol::item::Component::Nbt(tag.clone()),
+        ));
+    }
+    // CustomModelData: the tints and model selectors item models read
+    // (`item_model.rs`'s `condition`/`select_value`).
+    if let Some(data) = s
+        .data()
+        .and_then(|d| d.other("minecraft:custom_model_data"))
+    {
+        stack.added.push((
+            horizon_protocol::item::component::CUSTOM_MODEL_DATA,
+            horizon_protocol::item::Component::CustomModelData {
+                floats: custom_model_data_list(data, "floats", |t| match t {
+                    horizon_world::nbt::Tag::Float(bits) => Some(f32::from_bits(*bits)),
+                    _ => None,
+                }),
+                flags: custom_model_data_list(data, "flags", |t| match t {
+                    horizon_world::nbt::Tag::Byte(b) => Some(*b != 0),
+                    _ => None,
+                }),
+                strings: custom_model_data_list(data, "strings", |t| match t {
+                    horizon_world::nbt::Tag::String(s) => Some(s.to_string_lossy()),
+                    _ => None,
+                }),
+                colors: custom_model_data_list(data, "colors", |t| match t {
+                    horizon_world::nbt::Tag::Int(i) => Some(*i),
+                    _ => None,
+                }),
+            },
+        ));
+    }
     Some(stack)
+}
+
+/// One of `CustomModelData`'s four lists: skip entries of the wrong type,
+/// as a missing list on the saved tag means empty, not an error.
+fn custom_model_data_list<T>(
+    data: &horizon_world::nbt::Tag,
+    key: &str,
+    f: impl Fn(&horizon_world::nbt::Tag) -> Option<T>,
+) -> Vec<T> {
+    let Some(horizon_world::nbt::Tag::List(list)) = data.get(key) else {
+        return Vec::new();
+    };
+    list.iter().filter_map(f).collect()
 }
 
 /// `Player.isWithinBlockInteractionRange`: `eye` closer than `range` to the
