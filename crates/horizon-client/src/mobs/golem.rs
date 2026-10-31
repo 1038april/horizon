@@ -20,8 +20,8 @@ use horizon_core::{geometry::Vec3, random::RandomSource};
 fn golem_prey(s: &super::Seen) -> bool {
     s.hostile && s.species != Species::Creeper
 }
-/// `IronGolem.registerGoals`, without `ResetUniversalAngerTargetGoal`
-/// (nothing reads the `universal_anger` rule yet).
+/// `IronGolem.registerGoals`, without `ResetUniversalAngerTargetGoal` (that
+/// goal is not ported).
 pub fn register_iron(m: &mut Mob) {
     let g = &mut m.ai.goals;
     g.add(1, MeleeAttack::new(1.0, true));
