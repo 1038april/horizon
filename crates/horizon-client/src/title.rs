@@ -2619,35 +2619,46 @@ impl Title {
     /// World creates, a rename saves, Direct Connection joins, the selected
     /// world joins.
     pub fn confirm_key(&mut self) -> Action {
-        self.confirm_key_size((854.0, 480.0))
+        self.confirm_key_size((854.0, 480.0)).0
     }
     /// `confirm_key` with actual viewport size for button geometry lookup.
-    pub fn confirm_key_size(&mut self, size: (f32, f32)) -> Action {
+    /// Returns the triggered action and whether a UI button click sound should play.
+    pub fn confirm_key_size(&mut self, size: (f32, f32)) -> (Action, bool) {
         self.remember_direct_address();
         if self.rules.get_mut().is_some() {
-            return Action::None;
+            return (Action::None, false);
         }
         if matches!(self.mode, Mode::Edit { .. }) && self.focused_button.is_none() {
             self.confirm_edit();
-            return Action::None;
+            return (Action::None, true);
         }
         if self.list_focused() && self.focused_button.is_none() {
-            return self.join_selected();
+            let action = self.join_selected();
+            let sound = matches!(action, Action::Play { .. });
+            return (action, sound);
         }
         if let Some(id) = self.focused_button {
             let (w, h) = size;
             let buttons = self.buttons(w, h);
             if let Some(b) = buttons.into_iter().find(|b| b.id == id && b.enabled) {
-                return self.click_action(b.x, b.y, (w, h), Some(id));
+                let action = self.click_action(b.x, b.y, (w, h), Some(id));
+                return (action, true);
             }
+            return (Action::None, false);
         }
         match &self.mode {
-            Mode::Create { .. } => self.create_action(),
+            Mode::Create { .. } => {
+                let action = self.create_action();
+                let sound = matches!(action, Action::Create { .. });
+                (action, sound)
+            }
             Mode::Multiplayer(screen) => match screen.confirm() {
-                crate::multiplayer::Outcome::Connect(address) => Action::Connect { address },
-                _ => Action::None,
+                crate::multiplayer::Outcome::Connect(address) => {
+                    (Action::Connect { address }, true)
+                }
+                _ => (Action::None, false),
             },
-            _ => Action::None,
+            _ => (Action::None, false),
         }
     }
     /// The world list has the keyboard: no search box focus.

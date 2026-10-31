@@ -180,12 +180,12 @@ impl StartupMenu {
                 title.tab_dir(self.modifiers.shift_key(), viewport);
             }
             PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
-                return title.confirm_key_size(viewport);
+                return title.confirm_key_size(viewport).0;
             }
             PhysicalKey::Code(KeyCode::Space)
                 if title.list_focused() || title.focused_button.is_some() =>
             {
-                return title.confirm_key_size(viewport);
+                return title.confirm_key_size(viewport).0;
             }
             PhysicalKey::Code(
                 key @ (KeyCode::Backspace

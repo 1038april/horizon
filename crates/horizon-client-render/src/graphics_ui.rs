@@ -1054,6 +1054,10 @@ impl GraphicsUi {
 
     /// Mouse wheel over a control cycles it (cycle button). Sliders and disabled
     /// rows fall through to scroll the page, matching Vanilla list behavior.
+    /// **Horizon improvement (diverges from Vanilla 26.3):** when a slider or
+    /// cycle item is keyboard-focused (`self.focus`), the wheel steps/cycles it
+    /// regardless of cursor position.  Vanilla 26.3 does not intercept the
+    /// wheel for sliders at all.
     pub fn wheel(
         &mut self,
         level: Level,
@@ -1063,6 +1067,21 @@ impl GraphicsUi {
         framebuffer: [i32; 2],
         amount: f32,
     ) -> Vec<Action> {
+        // Horizon improvement: focused slider/cycle intercepts wheel first.
+        if amount != 0.0
+            && self.can_change_value
+            && let Some(Target::Item(item)) = self.focus
+            && item.available()
+            && item.blocked(s).is_none()
+        {
+            if item.slider(s).is_some() {
+                item.step_slider(s, amount > 0.0, w);
+                return vec![Action::SliderDrag, Action::Changed];
+            } else if !matches!(item, Item::Horizon(H::HdrSettings)) {
+                item.cycle(s, amount > 0.0, framebuffer);
+                return vec![Action::ButtonClick, Action::Changed];
+            }
+        }
         let (widgets, _, _) = self.layout(level, s, w, h);
         let (top, bottom) = Self::bounds(h);
         let hovered = widgets.iter().find(|wd| {

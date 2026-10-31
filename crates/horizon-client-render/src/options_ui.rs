@@ -3292,6 +3292,12 @@ impl OptionsUi {
     /// The mouse wheel at the cursor. Over a cycle button it takes the step
     /// (`CycleButton.mouseScrolled`: up goes back) and the list stays put;
     /// over a slider it nudges the slider up or down.
+    ///
+    /// **Horizon improvement (diverges from Vanilla 26.3):** when a slider or
+    /// cycle button is keyboard-focused (highlighted), the wheel steps or
+    /// cycles that widget regardless of where the cursor is. Vanilla 26.3
+    /// does not intercept the wheel for sliders at all; this makes keyboard
+    /// navigation far more usable.
     pub fn wheel(
         &mut self,
         s: &mut Settings,
@@ -3335,6 +3341,28 @@ impl OptionsUi {
         if !plain {
             self.scroll_at(s, size, cursor, amount);
             return Vec::new();
+        }
+        // Horizon improvement: a keyboard-focused slider or cycle button
+        // intercepts the wheel before hover detection (see doc-comment above).
+        if amount != 0.0 {
+            let (widgets, _, _, _) = self.layout(s, size.0, size.1);
+            match &self.focus {
+                Some(FocusId::Slider(opt)) => {
+                    let opt = *opt;
+                    let width = widgets
+                        .iter()
+                        .find(|wd| matches!(&wd.kind, WKind::Slider { opt: o, .. } if *o == opt))
+                        .map_or(150.0, |wd| wd.w);
+                    return self.step_slider_option(s, opt, amount > 0.0, width);
+                }
+                Some(FocusId::Cycle(opt)) => {
+                    let opt = *opt;
+                    let mut events = vec![Event::ButtonClick];
+                    events.extend(self.cycle_option(s, opt, amount > 0.0, framebuffer));
+                    return events;
+                }
+                _ => {}
+            }
         }
         enum HoveredControl {
             Cycle(Opt),
@@ -3888,7 +3916,9 @@ impl OptionsUi {
                     return Vec::new();
                 }
                 Some(FocusId::Cycle(opt)) => {
-                    return self.cycle_option(s, *opt, shift, self.framebuffer);
+                    let mut events = vec![Event::ButtonClick];
+                    events.extend(self.cycle_option(s, *opt, shift, self.framebuffer));
+                    return events;
                 }
                 Some(FocusId::Act(act)) => {
                     let mut events = vec![Event::ButtonClick];
@@ -5962,5 +5992,44 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn options_keyboard_space_enter_emits_button_click_for_cycle_and_default_buttons() {
+        use winit::keyboard::KeyCode;
+        let mut ui = OptionsUi::default();
+        let mut s = Settings::default();
+        let atlas = atlas();
+
+        // 1. Focus a cycle button (e.g. Opt::ViewBobbing)
+        ui.focus = Some(FocusId::Cycle(Opt::ViewBobbing));
+        let events = ui.key(&mut s, &atlas, KeyCode::Space, None);
+        assert!(
+            events.contains(&Event::ButtonClick),
+            "Space on FocusId::Cycle must emit Event::ButtonClick"
+        );
+        assert!(events.contains(&Event::Changed));
+
+        let events = ui.key(&mut s, &atlas, KeyCode::Enter, None);
+        assert!(
+            events.contains(&Event::ButtonClick),
+            "Enter on FocusId::Cycle must emit Event::ButtonClick"
+        );
+        assert!(events.contains(&Event::Changed));
+
+        // 2. Focus a default/action button (e.g. Act::Done)
+        ui.focus = Some(FocusId::Act(Act::Done));
+        let events = ui.key(&mut s, &atlas, KeyCode::Space, None);
+        assert!(
+            events.contains(&Event::ButtonClick),
+            "Space on FocusId::Act must emit Event::ButtonClick"
+        );
+
+        ui.focus = Some(FocusId::Act(Act::Done));
+        let events = ui.key(&mut s, &atlas, KeyCode::Enter, None);
+        assert!(
+            events.contains(&Event::ButtonClick),
+            "Enter on FocusId::Act must emit Event::ButtonClick"
+        );
     }
 }

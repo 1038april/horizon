@@ -1272,14 +1272,42 @@ fn title_screen_keyboard_navigation_and_activation() {
     f.title.tab_dir(true, size);
     assert_eq!(f.title.focused_button, Some(1));
 
-    // Enter confirms focused button (Singleplayer opens world select)
-    let action = f.title.confirm_key_size(size);
+    // Enter confirms focused button (Singleplayer opens world select) and triggers sound
+    let (action, sound) = f.title.confirm_key_size(size);
     assert_eq!(action, Action::None);
+    assert!(sound);
     assert!(matches!(f.title.mode, Mode::Select { .. }));
 
-    // Arrow navigation on the select screen
-    f.title.tab_dir(false, size);
-    assert!(f.title.focused_button.is_some());
+    // Navigate to Create New World button (id 11) on the select screen
+    f.title.focused_button = Some(11);
+    let (action, sound) = f.title.confirm_key_size(size);
+    assert_eq!(action, Action::None);
+    assert!(sound);
+    assert!(matches!(f.title.mode, Mode::Create { .. }));
+
+    // Focus and toggle Game Mode cycle button (id 20) from Survival to Hardcore
+    f.title.focused_button = Some(20);
+    let (action, sound) = f.title.confirm_key_size(size);
+    assert_eq!(action, Action::None);
+    assert!(sound);
+
+    // In Hardcore, Difficulty button (id 23) is disabled, so confirming it does not sound
+    f.title.focused_button = Some(23);
+    let (action, sound) = f.title.confirm_key_size(size);
+    assert_eq!(action, Action::None);
+    assert!(!sound);
+
+    // Toggle Game Mode cycle button again (Hardcore to Creative)
+    f.title.focused_button = Some(20);
+    let (action, sound) = f.title.confirm_key_size(size);
+    assert_eq!(action, Action::None);
+    assert!(sound);
+
+    // Now Difficulty button (id 23) is enabled in Creative, so confirming it sounds
+    f.title.focused_button = Some(23);
+    let (action, sound) = f.title.confirm_key_size(size);
+    assert_eq!(action, Action::None);
+    assert!(sound);
 }
 
 /// Rewrites a test world's `WorldGenSettings` (in level.dat, where `world_gen_settings` falls back).
