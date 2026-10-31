@@ -164,10 +164,37 @@ impl Game<'_> {
                     }
                 }
                 "tps" => self.debug_tps_line(d),
+                // DebugEntryChunkGeneration, where the world is generated
+                // here: the window's server thread publishes its generators;
+                // the deprecated in-frame path is not extended.
+                "chunk_generation_stats" => {
+                    if let Some(p) = self.player.as_ref() {
+                        let terrain = self
+                            .integrated
+                            .as_ref()
+                            .and_then(|server| server.terrain(self.dim.id()));
+                        // `DebugEntryChunkGeneration.display`: the feet block
+                        // decides whether the line is sampled again; otherwise
+                        // the last result is drawn.
+                        let feet = [
+                            p.position.x.floor() as i32,
+                            p.position.y.floor() as i32,
+                            p.position.z.floor() as i32,
+                        ];
+                        let dim = self.dim.id();
+                        let mut cache = self.debug_density.borrow_mut();
+                        let line = cache.line(
+                            dim,
+                            feet,
+                            terrain.map(|t| move || t.density_debug_line(feet)),
+                        );
+                        if let Some(line) = line {
+                            d.group("chunk_generation", [line.to_owned()]);
+                        }
+                    }
+                }
                 // detailed_memory: the JVM's memory pools, which Horizon
-                // has none of. chunk_generation_stats: the noise router's
-                // debug functions and the biome builder, not ported. The
-                // rest are renderers (debug_renderers.rs).
+                // has none of. The rest are renderers (debug_renderers.rs).
                 _ => {}
             }
         }
