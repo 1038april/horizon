@@ -2655,7 +2655,6 @@ fn config_dir(options: &Path) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// `v` within `lo..=hi`; `lo` when it is not a number.
 /// Whether `native_play_local_sound` takes these values: a namespaced event,
 /// a finite position, a volume and pitch at or above 0, and a delay of a
 /// minute at most.
@@ -2671,6 +2670,7 @@ fn local_sound_ok(sound: &str, at: [f64; 3], volume: f32, pitch: f32, delay: i32
         && (0..=1200).contains(&delay)
 }
 
+/// `v` within `lo..=hi`; `lo` when it is not a number.
 fn finite(v: f32, lo: f32, hi: f32) -> f32 {
     if v.is_finite() { v.clamp(lo, hi) } else { lo }
 }
