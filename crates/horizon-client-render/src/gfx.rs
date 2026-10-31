@@ -40,9 +40,9 @@ mod entity_outline;
 mod weather;
 use entity_batch::EntityBatch;
 pub use entity_batch::{
-    ENERGY_SWIRL_OVERLAY, SHADOW_OVERLAY, TEXT_POLYGON_OFFSET_OVERLAY,
+    ENERGY_SWIRL_OVERLAY, OIT_ENTITY, SHADOW_OVERLAY, TEXT_POLYGON_OFFSET_OVERLAY,
     TRANSLUCENT_GLINT_ITEM_OVERLAY, TRANSLUCENT_ITEM_OVERLAY, TRANSLUCENT_PARTICLE_OVERLAY,
-    WATER_MASK_OVERLAY,
+    WATER_MASK_OVERLAY, mark_oit,
 };
 pub use view::{View, ViewSet};
 
@@ -3219,7 +3219,7 @@ impl Renderer {
             section.is_some() || (mesh.solid.is_empty() && mesh.translucent.is_empty()),
         );
         if let Some(section) = section {
-            self.sections.insert(key, section);
+            self.sections.insert_with_bounds(key, section, mesh.bounds);
         }
     }
     fn upload_mesh(&mut self, mesh: &SectionMesh) -> Option<SectionGpu> {
@@ -3644,7 +3644,8 @@ impl Renderer {
             // Only HDR output asks the system about the display, so with HDR off the
             // game never waits on the compositor for it.
             self.display = if output.is_some() {
-                let (watch, now) = DisplayWatch::new(&self.window);
+                let (watch, now) =
+                    DisplayWatch::new(&self.window, self.surface.as_ref(), &self.adapter);
                 crate::graphics::report(now);
                 self.display_fresh = true;
                 watch
@@ -3684,7 +3685,7 @@ impl Renderer {
         if std::mem::take(&mut self.display_fresh) {
             return true;
         }
-        let Some(now) = self.display.changed() else {
+        let Some(now) = self.display.changed(self.surface.as_ref(), &self.adapter) else {
             return false;
         };
         crate::graphics::report(now);
@@ -4796,6 +4797,13 @@ impl Renderer {
             );
             entities = &self.pack_entity_rest;
         }
+        // GameRenderer.useImprovedTransparency. A shader pack keeps its own
+        // path.
+        let oit_on = self.improved_transparency
+            && !frame.title
+            && self.pack_post.as_ref().is_none_or(|p| p.1.is_none())
+            && self.native.is_none()
+            && oit::supported(&self.device);
         let [
             entity_quads,
             text_quads,
@@ -4806,9 +4814,14 @@ impl Renderer {
             shadow_quads,
             translucent_particle_quads,
             translucent_item_quads,
-        ] = self
-            .entity_batch
-            .update(entities, frame.additive, frame.hand, frame.see_through);
+            oit_entity_quads,
+        ] = self.entity_batch.update(
+            entities,
+            frame.additive,
+            frame.hand,
+            frame.see_through,
+            oit_on,
+        );
         let weather_quads = frame.weather.len() as u32 / 4;
         let world_quads = entity_quads
             + text_quads
@@ -4818,7 +4831,11 @@ impl Renderer {
             + swirl_quads
             + shadow_quads
             + translucent_particle_quads
-            + translucent_item_quads;
+            + translucent_item_quads
+            + oit_entity_quads;
+        // Where the tail of materials the classic and the improved passes
+        // both draw ends: the shadows, particles and items count back from it.
+        let base_quads = world_quads - oit_entity_quads;
         let cloud_quads = if let Some(input) = &frame.clouds {
             let (rebuilt, uniform) =
                 crate::spans::time("clouds", || self.cloud_mesh.prepare(input));
@@ -4859,7 +4876,7 @@ impl Renderer {
         );
         let all_entities = &self.entity_batch.combined;
         let hand_quads = (frame.hand.len() / 4) as u32;
-        let additive_quads = (frame.additive.len() / 4) as u32;
+        let additive_quads = (frame.additive.len() / 4) as u32 - self.entity_batch.moved_additive;
         let see_through_quads = (frame.see_through.len() / 4) as u32;
         let entity_vertices = all_entities.len() as u64;
         if entity_vertices > self.entity_capacity {
@@ -4984,13 +5001,6 @@ impl Renderer {
                 &self.globals,
             );
         }
-        // GameRenderer.useImprovedTransparency. A shader pack keeps its own
-        // path.
-        let oit_on = self.improved_transparency
-            && !frame.title
-            && self.pack_post.as_ref().is_none_or(|p| p.1.is_none())
-            && self.native.is_none()
-            && oit::supported(&self.device);
         let flat_frame = match &mut self.flat {
             Some(flat)
                 if self.flat_on
@@ -5418,7 +5428,7 @@ impl Renderer {
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
                 pass.draw_indexed(
                     0..translucent_item_quads * 6,
-                    ((world_quads - translucent_item_quads) * 4) as i32,
+                    ((base_quads - translucent_item_quads) * 4) as i32,
                     0..1,
                 );
                 pass.set_bind_group(0, &self.group, &[]);
@@ -5444,7 +5454,7 @@ impl Renderer {
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
                 pass.draw_indexed(
                     0..shadow_quads * 6,
-                    ((world_quads
+                    ((base_quads
                         - translucent_item_quads
                         - translucent_particle_quads
                         - shadow_quads)
@@ -5467,7 +5477,7 @@ impl Renderer {
                 );
                 pass.set_bind_group(0, &self.group, &[]);
             }
-            if !frame.lightning.bolts.is_empty() {
+            if !frame.lightning.bolts.is_empty() && !oit_on {
                 pass.set_pipeline(&self.lightning_pipeline);
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 self.lightning.draw(&mut pass, &frame.lightning);
@@ -5489,7 +5499,7 @@ impl Renderer {
                 );
                 pass.set_bind_group(0, &self.group, &[]);
             }
-            if additive_quads > 0 {
+            if additive_quads > 0 && !oit_on {
                 pass.set_pipeline(&self.additive_pipeline);
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
@@ -5589,7 +5599,7 @@ impl Renderer {
                             pass,
                             &f.shadow[s],
                             shadow_quads,
-                            world_quads
+                            base_quads
                                 - translucent_item_quads
                                 - translucent_particle_quads
                                 - shadow_quads,
@@ -5598,14 +5608,24 @@ impl Renderer {
                             pass,
                             &f.entity[s],
                             translucent_particle_quads,
-                            world_quads - translucent_item_quads - translucent_particle_quads,
+                            base_quads - translucent_item_quads - translucent_particle_quads,
                         );
                         quads(
                             pass,
                             &f.entity[s],
                             translucent_item_quads,
-                            world_quads - translucent_item_quads,
+                            base_quads - translucent_item_quads,
                         );
+                        // Translucent, emissive, eyes and breeze wind models:
+                        // the same fragment, their light and shading are in
+                        // the vertices.
+                        quads(pass, &f.entity[s], oit_entity_quads, base_quads);
+                        if !frame.lightning.bolts.is_empty() {
+                            pass.set_pipeline(&f.lightning[s]);
+                            self.lightning.draw(pass, &frame.lightning);
+                            pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
+                        }
+                        quads(pass, &f.additive[s], additive_quads, world_quads);
                         self.weather
                             .draw_with(pass, &f.weather[s], &self.entity_group);
                         if let Some(b) = frame.border.as_ref().filter(|_| !frame.title) {
@@ -5654,6 +5674,15 @@ impl Renderer {
                     pass = world_pass_after_culling(&mut encoder, world_view, world_depth, true);
                     pass.set_bind_group(0, &self.group, &[]);
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    // HDR output's mark on the eyes drawn in the stages, as the
+                    // classic pass marks them after the entities.
+                    if oit_entity_quads > 0 && self.hdr.is_some() {
+                        pass.set_pipeline(&self.hdr_mark_pipeline);
+                        pass.set_bind_group(0, &self.entity_group, &[]);
+                        pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
+                        pass.draw_indexed(0..oit_entity_quads * 6, (base_quads * 4) as i32, 0..1);
+                        pass.set_bind_group(0, &self.group, &[]);
+                    }
                 }
                 Some(flat) => {
                     pass.set_pipeline(pack_flat.map_or(&flat.translucent, |p| &p.1));
@@ -5687,8 +5716,7 @@ impl Renderer {
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
                 pass.draw_indexed(
                     0..translucent_particle_quads * 6,
-                    ((world_quads - translucent_item_quads - translucent_particle_quads) * 4)
-                        as i32,
+                    ((base_quads - translucent_item_quads - translucent_particle_quads) * 4) as i32,
                     0..1,
                 );
                 pass.set_bind_group(0, &self.group, &[]);
@@ -6441,6 +6469,46 @@ mod tests {
         assert!(!drawable_size(984, 65496, 32768));
         assert!(!drawable_size(984, u32::MAX, 32768));
     }
+
+    #[test]
+    fn os_luminances_become_auto_values() {
+        use super::os_reported;
+        use crate::graphics::Reported;
+        let info = |max, white| wgpu::DisplayHdrInfo {
+            luminance: Some(wgpu::DisplayLuminance {
+                max_nits: max,
+                sdr_white_nits: white,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        // Windows' SDR content brightness slider runs 80..480 nits.
+        assert_eq!(
+            os_reported(&info(Some(998.4), Some(240.0))),
+            Some(Reported {
+                paper_white: 240,
+                peak: 998
+            })
+        );
+        assert_eq!(
+            os_reported(&info(Some(120.0), Some(1000.0))),
+            Some(Reported {
+                paper_white: 480,
+                peak: 480
+            })
+        );
+        // White above the calibrated peak (a Samsung QD-OLED's 380, the slider at 456).
+        assert_eq!(
+            os_reported(&info(Some(380.0), Some(456.0))),
+            Some(Reported {
+                paper_white: 456,
+                peak: 456
+            })
+        );
+        assert_eq!(os_reported(&info(Some(1000.0), None)), None);
+        assert_eq!(os_reported(&info(Some(f32::NAN), Some(80.0))), None);
+        assert_eq!(os_reported(&wgpu::DisplayHdrInfo::default()), None);
+    }
     #[test]
     fn surface_is_8_bit_and_not_srgb() {
         use super::surface_format;
@@ -6513,9 +6581,9 @@ mod tests {
         .flat_map(|(layer, id)| quad(layer, id))
         .collect();
         let mut batch = super::EntityBatch::default();
-        let counts = batch.update(&entities, &quad(3, 5), &quad(0, 6), &quad(0, 8));
+        let counts = batch.update(&entities, &quad(3, 5), &quad(0, 6), &quad(0, 8), false);
         let vertices = &batch.combined;
-        assert_eq!(counts, [4, 1, 1, 1, 0, 0, 1, 1, 0]);
+        assert_eq!(counts, [4, 1, 1, 1, 0, 0, 1, 1, 0, 0]);
         assert_eq!(
             vertices
                 .as_chunks::<4>()
@@ -6970,32 +7038,65 @@ mod sprite_upload_tests {
 }
 
 /// What the system says about the window's display, kept up to date: on Wayland, the
-/// compositor's preferred image description of the surface.
+/// compositor's preferred image description of the surface; elsewhere what wgpu reads
+/// from the OS (on Windows, DXGI's luminances and the SDR white level).
 #[derive(Default)]
 struct DisplayWatch {
     #[cfg(target_os = "linux")]
     wayland: Option<horizon_hdr::wayland::Watch>,
+    /// Without Wayland's event, what wgpu last read and when to read it again: the OS
+    /// sends no event for a moved window or a changed SDR brightness slider.
+    polled: Option<(Option<crate::graphics::Reported>, std::time::Instant)>,
 }
+/// How often [`DisplayWatch`] reads the OS's values again where no event says they changed.
+const DISPLAY_POLL: std::time::Duration = std::time::Duration::from_secs(2);
 impl DisplayWatch {
     /// Starts watching, with what the system reports now.
-    fn new(window: &Window) -> (Self, Option<crate::graphics::Reported>) {
+    fn new(
+        window: &Window,
+        surface: Option<&wgpu::Surface>,
+        adapter: &wgpu::Adapter,
+    ) -> (Self, Option<crate::graphics::Reported>) {
         #[cfg(target_os = "linux")]
         if let Some((wayland, now)) = horizon_hdr::wayland::Watch::new(window) {
             let watch = Self {
                 wayland: Some(wayland),
+                polled: None,
             };
             return (watch, now.map(reported));
         }
         let _ = window;
-        (Self::default(), None)
+        let now = surface.and_then(|surface| os_reported(&surface.display_hdr_info(adapter)));
+        log_os_reported(now);
+        let watch = Self {
+            #[cfg(target_os = "linux")]
+            wayland: None,
+            polled: Some((now, std::time::Instant::now() + DISPLAY_POLL)),
+        };
+        (watch, now)
     }
     /// What the system reports, if that changed since the last call.
-    fn changed(&mut self) -> Option<Option<crate::graphics::Reported>> {
+    fn changed(
+        &mut self,
+        surface: Option<&wgpu::Surface>,
+        adapter: &wgpu::Adapter,
+    ) -> Option<Option<crate::graphics::Reported>> {
         #[cfg(target_os = "linux")]
         if let Some(wayland) = &mut self.wayland {
             return wayland.changed().map(|now| now.map(reported));
         }
-        None
+        let (last, next) = self.polled.as_mut()?;
+        let time = std::time::Instant::now();
+        if time < *next {
+            return None;
+        }
+        *next = time + DISPLAY_POLL;
+        let now = surface.and_then(|surface| os_reported(&surface.display_hdr_info(adapter)));
+        (now != *last).then(|| {
+            log_os_reported(now);
+            *last = now;
+            now
+        })
     }
 }
 
@@ -7015,8 +7116,6 @@ static DISPLAY_LOG: std::sync::Mutex<DisplayLog> = std::sync::Mutex::new(Display
     pending: None,
 });
 const DISPLAY_LOG_QUIET: std::time::Duration = std::time::Duration::from_secs(1);
-// Only Wayland's HDR reports call it so far.
-#[cfg(target_os = "linux")]
 fn log_display(line: String) {
     let now = std::time::Instant::now();
     let mut log = DISPLAY_LOG
@@ -7045,6 +7144,33 @@ fn flush_display_log() {
         log::info!("{line}");
         (log.last, log.at) = (line, Some(now));
     }
+}
+fn log_os_reported(reported: Option<crate::graphics::Reported>) {
+    log_display(match reported {
+        Some(r) => format!(
+            "Horizon renderer: the system reports SDR white at {} nits and a peak of {} nits",
+            r.paper_white, r.peak
+        ),
+        None => "Horizon renderer: the system doesn't report the display's luminance".into(),
+    });
+}
+/// What the OS reports in absolute nits (Windows: DXGI's `MaxLuminance` and the SDR
+/// white level the brightness slider sets), which is HDR output's scale there: SDR
+/// white is Paper White, the display's peak is Peak Brightness. Both are kept within
+/// the settings' ranges. The OS's figures often come from the display's EDID and may
+/// run optimistic; the player's own value always wins.
+fn os_reported(info: &wgpu::DisplayHdrInfo) -> Option<crate::graphics::Reported> {
+    let luminance = info.luminance?;
+    let usable = |n: f32| n.is_finite() && n > 0.0;
+    let peak = luminance.max_nits.filter(|&n| usable(n))?;
+    let white = luminance.sdr_white_nits.filter(|&n| usable(n))?;
+    let paper_white = (white.round() as u32).clamp(80, 480);
+    Some(crate::graphics::Reported {
+        paper_white,
+        // Windows' SDR brightness slider can set white above the reported peak (480 against
+        // a calibrated 380): the highlights then stay at white instead of dropping below it.
+        peak: (peak.round() as u32).clamp(200, 10_000).max(paper_white),
+    })
 }
 
 /// What a compositor's luminances mean in HDR output's scale.

@@ -45,6 +45,7 @@ mod agent;
 mod agent_settings;
 mod allays;
 mod armor_stands;
+mod atlas_slots;
 mod banners;
 mod beacon;
 mod beds;
@@ -796,6 +797,7 @@ struct GameLevel<'w> {
     client_side: bool,
     /// Only the integrated or dedicated server dispatches native observations.
     native_authoritative: bool,
+    native_sounds: &'w mut Vec<creatures::NativeSound>,
     native_particles: &'w mut Vec<lan_particles::QueuedParticle>,
 }
 struct PlayerCollision {
@@ -3224,19 +3226,11 @@ impl Game<'_> {
             }
             let alive = item.tick(
                 &self.world,
+                self.pack.assets.registry,
                 self.res.facts(),
                 self.collision,
                 no_physics,
                 &self.res.motion().fluids,
-            );
-            // Entity.applyEffectsFromBlocks: bubble columns lift or drag the item.
-            horizon_client::motion::bubble_column_push(
-                &self.world,
-                self.pack.assets.registry,
-                self.res.facts(),
-                self.collision,
-                item.bounds(),
-                &mut item.velocity,
             );
             cells.moved(i, item.previous, item.position);
             // ItemEntity.tick: merge every 2 ticks while moving between
@@ -3511,12 +3505,14 @@ impl Game<'_> {
             lid_openers: &self.lid_openers,
             client_side: self.remote.is_some(),
             native_authoritative: self.serving.is_some() || self.options.dedicated.is_some(),
+            native_sounds: &mut self.creatures.lan_sounds,
             native_particles: &mut self.creatures.lan_particles,
         };
         let result = f(self.res.behaviours(), &mut level, &mut self.block_ticks);
         self.flush_spill();
         if self.lan.is_some() {
             self.flush_lan_particles();
+            self.flush_native_sounds();
         }
         result
     }
@@ -9499,7 +9495,8 @@ impl Game<'_> {
                         normal: [0; 4],
                         pos: v.to_array(),
                         uv,
-                        layer: 0,
+                        // ExperienceOrbRenderer: `RenderTypes.entityTranslucent`.
+                        layer: horizon_client::gfx::OIT_ENTITY,
                         color,
                         light: packed,
 
@@ -10241,6 +10238,11 @@ impl Game<'_> {
             Action::Sounds => self.open_options_at(true, horizon_client::options_ui::Page::Sound),
             Action::Credits => {
                 self.open_options_at(true, horizon_client::options_ui::Page::Credits)
+            }
+            Action::OpenUri(uri) => packs::open_uri(&uri),
+            Action::CopyText(text) => {
+                use horizon_client::clipboard::Clipboard;
+                self.clipboard.set(&text);
             }
             Action::Play { folder } => self.open_world(&folder, None, None, false, None)?,
             Action::Create {
@@ -11488,10 +11490,28 @@ impl Game<'_> {
             if !emptied {
                 return Ok(UseResult::Fail);
             }
+            // `BucketItem.emptyContents` uses `playSound(player, …)`: the
+            // actor's client already played the empty / evaporate sound from
+            // its DryLevel prediction (#4684).
+            if self.lan_acting.is_some()
+                && let Some(capture) = self.audio.capture.as_mut()
+            {
+                let want = sound.trim_start_matches("minecraft:");
+                let mut keep = Vec::with_capacity(capture.len());
+                for entry in capture.drain(..) {
+                    let name = entry.0.trim_start_matches("minecraft:");
+                    if name == want || name == "block.fire.extinguish" {
+                        self.guest_player_sounds.push(entry);
+                    } else {
+                        keep.push(entry);
+                    }
+                }
+                *capture = keep;
+            }
             if let Some(kind) = mob {
                 if let Some(id) = self.spawn_mob_at(kind, (target[0], target[1], target[2]), true) {
                     if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
-                        horizon_client::entity_nbt::load_bucket_data(m, stack);
+                        horizon_client::entity_nbt::apply_item_components(m, stack);
                     }
                     self.mob_placed(id)?;
                 }
@@ -12176,6 +12196,12 @@ impl Game<'_> {
                 horizon_client::block_entity_render::vertex_light(light),
                 &mut out,
             );
+        }
+        // The hand has its own submit storage, which never uses improved
+        // transparency (`LevelRenderer` alone calls `setUseImprovedTransparency`):
+        // a held player head stays classic.
+        for vertex in &mut out {
+            vertex.layer &= !horizon_client::gfx::OIT_ENTITY;
         }
         out
     }
@@ -13033,7 +13059,11 @@ impl Game<'_> {
         self.save_warden_tracker();
         self.sync_level();
         self.store_owner();
-        self.level.write(&self.world_root)?;
+        if self.options.dedicated.is_some() {
+            self.level.write_without_player(&self.world_root)?;
+        } else {
+            self.level.write(&self.world_root)?;
+        }
         self.save_world_state();
         self.message = Some(("Saved the game".into(), Instant::now()));
         Ok(())
@@ -13189,11 +13219,12 @@ impl Game<'_> {
         if let Some(reload) = &self.pack_reload {
             if let Some(renderer) = &mut self.renderer {
                 let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
-                horizon_client::level_loading::draw_progress(
+                horizon_client::level_loading::draw_loading_overlay(
                     &mut hud,
                     &self.gui.atlas,
                     reload.progress.line(),
                     reload.progress.fraction(),
+                    self.settings.file.bool("darkMojangStudiosBackground"),
                 );
                 return renderer.render(&loading_frame(&hud));
             }

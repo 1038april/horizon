@@ -40,6 +40,16 @@ fn arrow_damage(arrow: &mut Projectile, fallback: &mut impl RandomSource) -> f32
     damage
 }
 
+/// A sound a native mod queued, sent when the host is free.
+pub(super) struct NativeSound {
+    pub dimension: &'static str,
+    pub sound: String,
+    pub at: [f64; 3],
+    pub source: i32,
+    pub volume: f32,
+    pub pitch: f32,
+}
+
 /// Mob-system state owned by the game.
 #[derive(Default)]
 pub(super) struct Creatures {
@@ -68,6 +78,8 @@ pub(super) struct Creatures {
     pub shoulder_time: std::collections::HashMap<[i32; 4], i64>,
     /// The cat spawner's countdown (`CatSpawner.nextTick`).
     pub cat_tick: i32,
+    /// Native sounds waiting for the server host to be available.
+    pub lan_sounds: Vec<NativeSound>,
     /// Particles from a guest's turn, waiting for it to end.
     pub lan_particles: Vec<super::lan_particles::QueuedParticle>,
 }
@@ -1050,7 +1062,7 @@ impl Game<'_> {
             None => source.clone(),
         };
         horizon_client::advancements::DamageView {
-            kind: damage_type(d.kind, matches!(d.attacker, Some(Who::Player))).to_owned(),
+            kind: source_damage_type(d).to_owned(),
             // DamageSource.isDirect: the causing entity is the direct one.
             is_direct: projectile.is_none(),
             direct,
@@ -1142,9 +1154,8 @@ impl Game<'_> {
                 }),
                 _ => source.clone(),
             };
-            let player_source = matches!(d.attacker, Some(Who::Player));
             LootDamage {
-                kind: damage_type(d.kind, player_source).into(),
+                kind: source_damage_type(d).into(),
                 source,
                 direct,
             }
@@ -2104,6 +2115,11 @@ impl Game<'_> {
                 MobEvent::CureZombieVillager { mob } => self.cure_zombie_villager(mob),
                 MobEvent::Reinforcements { mob, target } => self.call_reinforcements(mob, target),
                 MobEvent::VillagerMeet { mob, other } => self.villager_meet(mob, other),
+                MobEvent::VillagerOffers { mob } => {
+                    if let Some(i) = self.mobs.iter().position(|m| m.id == mob) {
+                        self.ensure_offers(i);
+                    }
+                }
                 MobEvent::VillagerBirth {
                     parent,
                     partner,
@@ -3500,6 +3516,7 @@ impl Game<'_> {
                     amount,
                     by_player,
                     horizon_client::mobs::DamageKind::Arrow,
+                    Some(&p.kind),
                 ) {
                     super::dragon::Hurt::Landed { .. } => EntityHit::Hurt,
                     super::dragon::Hurt::Refused => EntityHit::Refused,
@@ -3514,7 +3531,8 @@ impl Game<'_> {
                 return Ok(());
             }
             let amount = match p.kind {
-                ProjectileKind::SmallFireball | ProjectileKind::LargeFireball { .. } => 6.0,
+                ProjectileKind::SmallFireball => 5.0,
+                ProjectileKind::LargeFireball { .. } => 6.0,
                 _ => 0.0,
             };
             let kind = match p.kind {
@@ -3523,13 +3541,19 @@ impl Game<'_> {
                 }
                 _ => horizon_client::mobs::DamageKind::Thrown,
             };
-            self.hit_special(id, amount, by_player, kind);
+            self.hit_special(id, amount, by_player, kind, Some(&p.kind));
             // ThrowableProjectile.onHit goes on after onHitEntity: a pearl
             // still takes its owner to where it broke (into the crystal's
-            // blast), an egg still hatches, a snowball still breaks.
+            // blast), an egg still hatches, a snowball still breaks. A large
+            // fireball still explodes (LargeFireball.onHit), whatever the
+            // part or crystal made of its hit (both refuse fire), and the
+            // blast takes the crystal.
             if !matches!(
                 p.kind,
-                ProjectileKind::EnderPearl | ProjectileKind::Egg | ProjectileKind::Snowball
+                ProjectileKind::EnderPearl
+                    | ProjectileKind::Egg
+                    | ProjectileKind::Snowball
+                    | ProjectileKind::LargeFireball { .. }
             ) {
                 return Ok(());
             }
@@ -3933,7 +3957,11 @@ impl Game<'_> {
                     self.note_attacker("minecraft:explosion", owner);
                 }
                 self.combat.explosion_owner = self.combat.projectile_owner;
+                // The blast's source names the owner, so a dragon it kills
+                // remembers the player who shot it.
+                self.set_blast_by_player(p.owner == Some(Who::Player));
                 let result = self.explode(atp, *power as f32);
+                self.set_blast_by_player(false);
                 self.combat.explosion_owner = None;
                 result?;
             }
@@ -4271,7 +4299,7 @@ impl Game<'_> {
             self.swing_arm();
             return Ok(true);
         }
-        if self.interact_allay(index, &item) {
+        if self.interact_allay(index, held.as_ref()) {
             self.swing_arm();
             return Ok(true);
         }
@@ -5081,14 +5109,13 @@ impl Game<'_> {
             f64::from(p[1]),
             f64::from(p[2]) + 0.5,
         ];
-        let Some(mob_id) = self.spawn_mob_spawned(&kind, at) else {
+        let Some(id) = self.spawn_mob_spawned(&kind, at) else {
             return Ok(false);
         };
-        // Entity.applyImplicitComponents: a name from an anvil names the mob.
-        if let Some(name) = stack.custom_name()
-            && let Some(m) = self.mobs.iter_mut().find(|m| m.id == mob_id)
-        {
-            m.custom_name = Some(name.to_owned());
+        // SpawnEggItem.spawnMob: `EntityType.create` finalizes the mob, then
+        // `PostSpawnProcessor` puts the egg's components on it.
+        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+            horizon_client::entity_nbt::apply_item_components(m, stack);
         }
         self.swing_arm();
         if !self.creative
@@ -5496,7 +5523,9 @@ impl Game<'_> {
                         0,
                         out,
                     );
-                    // The translucent shell blends over the opaque core.
+                    // The translucent shell blends over the opaque core
+                    // (`RenderTypes.entityTranslucent`).
+                    let shell = out.len();
                     horizon_client::mobs::render::draw(
                         model,
                         base * glam::Mat4::from_scale(glam::Vec3::splat(1.5)),
@@ -5507,6 +5536,7 @@ impl Game<'_> {
                         0,
                         out,
                     );
+                    horizon_client::gfx::mark_oit(&mut out[shell..]);
                 }
                 continue;
             }
@@ -5643,9 +5673,15 @@ fn bucketable(species: Species) -> Option<(&'static str, &'static str)> {
         _ => return None,
     })
 }
-/// Mob.getBaseExperienceReward
-/// The damage type id of a Horizon damage kind.
-pub(super) fn damage_type(kind: horizon_client::mobs::DamageKind, player: bool) -> &'static str {
+/// The damage type id of a mob's damage source (`DamageSources.explosion`: a
+/// blast with a causing entity is `player_explosion` whoever it is, an
+/// exploding creeper too).
+pub(super) fn source_damage_type(d: Damage) -> &'static str {
+    damage_type(d.kind, d.attacker.is_some())
+}
+/// The damage type id of a Horizon damage kind. `caused`: the source has a
+/// causing entity (only a blast asks).
+pub(super) fn damage_type(kind: horizon_client::mobs::DamageKind, caused: bool) -> &'static str {
     use horizon_client::mobs::DamageKind as K;
     match kind {
         K::PlayerAttack => "minecraft:player_attack",
@@ -5655,7 +5691,7 @@ pub(super) fn damage_type(kind: horizon_client::mobs::DamageKind, player: bool) 
         K::Arrow => "minecraft:arrow",
         K::Thrown => "minecraft:thrown",
         K::Fireball => "minecraft:fireball",
-        K::Explosion if player => "minecraft:player_explosion",
+        K::Explosion if caused => "minecraft:player_explosion",
         K::Explosion => "minecraft:explosion",
         K::Fall => "minecraft:fall",
         K::FallingBlock => "minecraft:falling_block",
@@ -5899,6 +5935,32 @@ mod breeding_tests {
         assert_eq!(breeding_credit(&mut love, 1, 2), Some(None));
         // Neither was fed by a player (a bred pair loaded from a save).
         assert_eq!(breeding_credit(&mut love, 1, 2), None);
+    }
+}
+
+#[cfg(test)]
+mod damage_type_tests {
+    use super::*;
+
+    /// `DamageSources.explosion`: a blast with a causing entity is
+    /// `player_explosion` whoever caused it, so an exploding creeper's too.
+    #[test]
+    fn a_creeper_blast_is_a_player_explosion() {
+        let blast = |attacker| Damage {
+            kind: DamageKind::Explosion,
+            attacker,
+            from: Some([0.0; 3]),
+        };
+        let creeper = blast(Some(Who::Mob(7)));
+        assert_eq!(source_damage_type(creeper), "minecraft:player_explosion");
+        // No causing entity.
+        assert_eq!(source_damage_type(blast(None)), "minecraft:explosion");
+        // The other kinds do not ask.
+        let bite = Damage {
+            kind: DamageKind::MobAttack,
+            ..creeper
+        };
+        assert_eq!(source_damage_type(bite), "minecraft:mob_attack");
     }
 }
 
