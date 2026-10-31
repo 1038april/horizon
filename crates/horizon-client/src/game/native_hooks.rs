@@ -227,6 +227,7 @@ use horizon_client::{
     chat::ChatSource,
     containers::{BlockEntity, MOD_MENUS, ModBlockEntity, ModContainer, ModFluidTanks},
     crafting::{CustomRecipe, Ingredient, recipe_result},
+    creative::Creative,
     extras::Corner,
     extras_hud::Corners,
     fast_hash::FxHashMap,
@@ -532,6 +533,29 @@ pub struct NativeScreen {
     /// The mod draws the title and the "Inventory" label itself
     /// (`native_screen_draw`); Horizon leaves them out.
     pub own_labels: bool,
+}
+
+/// The open screen, for `native_screen_render_post` (`ScreenEvent.Render.Post`):
+/// what it is, its title, where its container panel is and how many slots its
+/// menu has.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug)]
+pub struct NativeScreenView<'a> {
+    /// One id per `Screen` (`Screen::id`, from `Game::screen_id`): `inventory`,
+    /// `creative`, `paused`, `stats`, `options`, `win`… Stable across releases,
+    /// so a mod can match on it.
+    pub id: &'static str,
+    /// The title the server gave the open menu, if it has one: the component
+    /// itself, not a copy (`.plain()` it to draw, `chars()` for the styles).
+    /// None on a screen the client opened, and while playing.
+    pub title: Option<&'a Text>,
+    /// The screen's container panel in GUI pixels, `[x, y, width, height]`;
+    /// the whole window for a screen with none.
+    pub rect: [f32; 4],
+    /// The slots the open menu has, as `Game::slots` counts them: the player
+    /// inventory's 36, then the container's or the crafting grid's (a screen
+    /// with no menu of its own still counts the inventory menu's).
+    pub slots: usize,
 }
 
 /// The mod screen open on this client: the block it is for, the key its
@@ -1050,6 +1074,44 @@ impl Game<'_> {
         origin: [f32; 2],
     ) {
         let _ = (block, data, batch, origin);
+    }
+    /// The open screen has drawn itself and its tooltips (`Screen.render`,
+    /// the point of `ScreenEvent.Render.Post`): draw over it with
+    /// `native_fill`, `native_sprite` and `native_text`, `screen.rect` being
+    /// its container panel (or the whole window) and `screen.id` the screen
+    /// it is. Once a frame on the window, while a screen is open and never
+    /// while playing with no screen; `&self`, so it reads and draws only.
+    /// API @API:screen_render_post@.
+    pub(super) fn native_screen_render_post(
+        &self,
+        batch: &mut HudBatch,
+        screen: &NativeScreenView<'_>,
+    ) {
+        let _ = (batch, screen);
+    }
+    /// The open screen as a native mod sees it (`NativeScreenView`): its id,
+    /// the open menu's title and slot count, and its panel's rectangle.
+    /// Borrowed: nothing is copied per frame.
+    pub(super) fn screen_view(&self, batch: &HudBatch) -> NativeScreenView<'_> {
+        NativeScreenView {
+            id: self.screen_id(),
+            title: self.remote.as_ref().and_then(|r| r.menu_title.as_ref()),
+            rect: self.screen_rect(batch),
+            slots: self.slots().len(),
+        }
+    }
+    /// The open screen's container panel in GUI pixels, or the whole window
+    /// for a screen with none (`NativeScreenView.rect`).
+    pub(super) fn screen_rect(&self, batch: &HudBatch) -> [f32; 4] {
+        if self.screen != Screen::Inventory && self.screen != Screen::Creative {
+            return [0.0, 0.0, batch.width, batch.height];
+        }
+        let (x, y) = self.inventory_origin(batch);
+        if self.screen == Screen::Creative {
+            return [x, y, Creative::WIDTH, Creative::HEIGHT];
+        }
+        let width = self.native_screen_width().unwrap_or(176.0);
+        [x, y, width, self.screen_height()]
     }
     /// A left or right (`right`) press at `at` (GUI pixels from the screen's
     /// top left, so outside it too) on block `block`'s screen, a mod's, over

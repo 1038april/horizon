@@ -735,6 +735,34 @@ enum Screen {
     /// DebugOptionsScreen, F3+F6 (game/debug_options.rs).
     DebugOptions,
 }
+impl Screen {
+    /// The id native mods see for this screen (`NativeScreenView.id`, from
+    /// `Game::screen_id`): one per variant, and a hook's contract, so it
+    /// stays the same from release to release. A new variant must add one.
+    fn id(self) -> &'static str {
+        match self {
+            Screen::Playing => "playing",
+            Screen::GameModeSwitcher => "game_mode_switcher",
+            Screen::Paused => "paused",
+            Screen::Options => "options",
+            Screen::Chat => "chat",
+            Screen::Creative => "creative",
+            Screen::Inventory => "inventory",
+            Screen::Dead => "dead",
+            Screen::Stats => "stats",
+            Screen::Advancements => "advancements",
+            Screen::WorldOptions => "world_options",
+            Screen::Friends => "friends",
+            Screen::CommandBlock => "command_block",
+            Screen::BlockEditor => "block_editor",
+            Screen::ServerLinks => "server_links",
+            Screen::ConfirmLink => "confirm_link",
+            Screen::DialogWarning => "dialog_warning",
+            Screen::Win => "win",
+            Screen::DebugOptions => "debug_options",
+        }
+    }
+}
 struct Mining {
     pos: [i32; 3],
     progress: f32,
@@ -7189,6 +7217,12 @@ impl Game<'_> {
             || self.link_prompt.is_some()
             || self.server_packs.prompt.is_some()
     }
+    /// The id native mods see for the open screen (`NativeScreenView.id`,
+    /// the `screen_render_post` hook): `inventory`, `paused` and so on, one
+    /// per `Screen` variant, from `Screen::id`.
+    fn screen_id(&self) -> &'static str {
+        self.screen.id()
+    }
     /// `Minecraft.pauseIfInactive`: a window without focus for more than 500 ms
     /// pauses the game. An open screen (books, signs, the pack prompt, a server
     /// dialog) stays instead of pausing (`Gui.setPauseScreen`).
@@ -7552,6 +7586,9 @@ impl Game<'_> {
         }
         if self.screen == Screen::Win {
             self.draw_win_screen(&mut batch);
+            // The early return skips the match below: the hook still sees the
+            // screen, after its own drawing.
+            self.fire_screen_render_post(&mut batch, Screen::Win);
             return batch;
         }
         if self.screen == Screen::Options {
@@ -7560,6 +7597,7 @@ impl Game<'_> {
                 self.update_remote_skins();
             }
             self.draw_options(&mut batch);
+            self.fire_screen_render_post(&mut batch, Screen::Options);
             return batch;
         }
         if let Some(title) = &mut self.title {
@@ -7873,6 +7911,10 @@ impl Game<'_> {
             Screen::Chat => self.draw_chat_screen(&mut batch),
             Screen::Playing | Screen::Options | Screen::Win => {}
         }
+        // ScreenEvent.Render.Post: the open screen (never `Playing`: a pack
+        // prompt reports `Playing` and draws nothing) has drawn itself and its
+        // tooltips, so a native mod draws over it here.
+        self.fire_screen_render_post(&mut batch, screen);
         self.draw_saving_indicator(&mut batch);
         // ToastManager.extractRenderState: F1 hides the toasts too.
         self.draw_toasts(&mut batch, !show_hud);
@@ -7885,6 +7927,17 @@ impl Game<'_> {
             self.draw_book(&mut batch);
         }
         batch
+    }
+    /// `native_screen_render_post` (`ScreenEvent.Render.Post`) for the open
+    /// screen, once a frame: `screen` is what `hud_layers` draws (the Win and
+    /// Options screens call this on their own path). Not while playing with
+    /// no screen. Client only, read-only: what a mod draws is its own.
+    fn fire_screen_render_post(&self, batch: &mut HudBatch, screen: Screen) {
+        if screen == Screen::Playing {
+            return;
+        }
+        let view = self.screen_view(batch);
+        self.native_screen_render_post(batch, &view);
     }
     /// `CreativeModeInventoryScreen.hasPermissions` (`canUseGameMasterBlocks`
     /// and the Operator Items Tab option) given to `tryRefreshInvalidatedTabs`,
@@ -19287,6 +19340,50 @@ pub(crate) fn closest_space_nudge(
 mod tests {
     use super::*;
     use horizon_client::container_screen::{Button, Clicks, Release, Target};
+
+    /// `NativeScreenView.id` (the `screen_render_post` hook) is a mod's
+    /// contract: every `Screen` has its own id, and it does not change.
+    /// `Screen::id`'s match makes a new variant give itself one; this list
+    /// makes the test cover it too.
+    #[test]
+    fn screen_ids_are_distinct_and_stable() {
+        use std::collections::BTreeSet;
+        let all = [
+            Screen::Playing,
+            Screen::GameModeSwitcher,
+            Screen::Paused,
+            Screen::Options,
+            Screen::Chat,
+            Screen::Creative,
+            Screen::Inventory,
+            Screen::Dead,
+            Screen::Stats,
+            Screen::Advancements,
+            Screen::WorldOptions,
+            Screen::Friends,
+            Screen::CommandBlock,
+            Screen::BlockEditor,
+            Screen::ServerLinks,
+            Screen::ConfirmLink,
+            Screen::DialogWarning,
+            Screen::Win,
+            Screen::DebugOptions,
+        ];
+        let ids: Vec<&'static str> = all.iter().map(|screen| screen.id()).collect();
+        let unique: BTreeSet<&'static str> = ids.iter().copied().collect();
+        assert_eq!(unique.len(), all.len(), "two screens share an id");
+        for id in &ids {
+            assert!(!id.is_empty(), "an empty screen id");
+            assert!(
+                id.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
+                "{id} is not a snake_case id"
+            );
+        }
+        // The ones a mod can match on in the hook's docs.
+        assert_eq!(Screen::Playing.id(), "playing");
+        assert_eq!(Screen::Inventory.id(), "inventory");
+        assert_eq!(Screen::Win.id(), "win");
+    }
 
     /// Snuffing a candle or a candle cake draws one smoke per
     /// `getParticleOffsets`: by `candles` for a candle, a block up for a cake.
