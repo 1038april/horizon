@@ -3023,7 +3023,7 @@ impl Hub {
         }
         // The anticheat's `ground`: a claim of the ground with nothing to
         // stand on is dropped (no-fall, walking on water).
-        let mut flags = flags;
+        let (mut flags, mut corrected) = (flags, false);
         if flags & 1 != 0 && self.anticheat.is_some() {
             match self.anticheat_ground(i, to, stands, ctx, events) {
                 Some(true) => {
@@ -3031,15 +3031,16 @@ impl Hub {
                     (g.yaw, g.pitch) = (yaw, pitch);
                     return;
                 }
-                Some(false) => flags &= !1,
+                Some(false) => (flags, corrected) = (flags & !1, true),
                 None => {}
             }
         }
         // clientIsFloating, from the move that is accepted: no upward-or-level
         // step onto something, nothing but air around the body, and nothing
         // that lets the player hover (the server's allow-flight, mayfly,
-        // levitation, gliding, riptide).
-        let floating = ctx.collision.is_some() && {
+        // levitation, gliding, riptide). A move whose ground claim the anticheat dropped never counts:
+        // a false claim ends in the anticheat's own kick, logged and told to the operators, or not at all.
+        let floating = !corrected && ctx.collision.is_some() && {
             let g = &self.guests[i];
             to[1] - g.position[1] >= -0.03125
                 && !stands
