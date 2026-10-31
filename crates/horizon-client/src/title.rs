@@ -821,9 +821,6 @@ impl Title {
     pub fn preparing(&self) -> bool {
         self.preparing
     }
-    /// The read finished: the flag goes, and the create screen opens — a
-    /// fresh one entering from the world list, the one the player already
-    /// filled in after the data packs changed (`openCreateWorldScreen`).
     /// The Create screen's chosen packs: the temp folder and the selected
     /// ids, for the worldgen data the preparing read loads.
     pub fn creation_packs(&self) -> Option<(Option<std::path::PathBuf>, Vec<String>)> {
@@ -834,14 +831,15 @@ impl Title {
             _ => None,
         }
     }
+    /// The read finished: the flag goes, and the create screen opens — a
+    /// fresh one entering from the world list, the one the player already
+    /// filled in after the data packs changed (`openCreateWorldScreen`).
     pub fn finish_preparing(&mut self) {
         self.preparing = false;
         if !matches!(self.mode, Mode::Create { .. }) {
             self.mode = Self::new_world();
         }
     }
-    /// The Data Packs screen's Done (`applyNewPackConfig`): its selection for
-    /// the new world.
     /// `PackSelectionScreen.onFilesDrop`: a pack dropped on the window joins
     /// the Create New World screen's data packs (the screen's watcher lists
     /// it within a second).
@@ -3228,6 +3226,10 @@ impl Title {
     }
     /// EditBox.charTyped / insertText at the cursor.
     pub fn type_text(&mut self, text: &str) {
+        // `GenericMessageScreen`: no field takes input during the read.
+        if self.preparing {
+            return;
+        }
         self.edit_field(|edit| edit.insert_text(text));
     }
     pub fn backspace(&mut self) {

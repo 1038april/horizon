@@ -691,6 +691,10 @@ fn preparing_takes_no_input() {
     f.title.escape();
     assert!(f.title.preparing());
     assert!(f.title.creation_packs().is_some());
+    // Typed text doesn't reach the focused field either.
+    let before = format!("{:?}", f.title.mode);
+    f.title.type_text("typed during the read");
+    assert_eq!(format!("{:?}", f.title.mode), before);
     f.title.finish_preparing();
     assert!(!f.title.preparing());
 }

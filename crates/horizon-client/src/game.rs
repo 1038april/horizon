@@ -10556,7 +10556,6 @@ impl Game<'_> {
             (sky.star_brightness > 0.0).then(|| (frame(sky.star_angle), sky.star_brightness));
         (out, stars)
     }
-    /// What the title screen asked for, from a click or Enter.
     /// `onAbort`: the confirm screen's Back or Escape reopens the Data
     /// Packs screen with the selection it had.
     fn reopen_data_packs(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
@@ -10569,6 +10568,7 @@ impl Game<'_> {
         }
         Ok(())
     }
+    /// What the title screen asked for, from a click or Enter.
     fn title_action(&mut self, event_loop: &ActiveEventLoop, action: Action) -> Result<()> {
         match action {
             Action::Quit => event_loop.exit(),
@@ -16759,6 +16759,10 @@ impl Game<'_> {
                         .and_then(|r| r.err())
                         .unwrap_or_else(|| "the read never ran".to_owned());
                     log::warn!("Horizon: preparing world creation failed: {e}");
+                    // Clear the flag first: `failed` sets the error screen
+                    // with Create as its back target, which
+                    // `finish_preparing` would replace with a fresh world.
+                    title.finish_preparing();
                     title.failed(format!(
                         "{}: {e}",
                         horizon_client::lang::get_or(
@@ -16766,7 +16770,6 @@ impl Game<'_> {
                             "Preparing for world creation..."
                         )
                     ));
-                    title.finish_preparing();
                 }
             }
         }
