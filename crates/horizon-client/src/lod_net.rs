@@ -12,6 +12,9 @@
 //! them again, with the tile's distance from the player, and samples on one
 //! background thread for every player in turn (`server`), so far terrain
 //! never takes more than that thread's time from the ticks.
+//!
+//! It is off unless the owner sets the key: far tiles show the generator's
+//! terrain far beyond view distance, which helps crack a world's seed.
 use crate::lod::{Column, Span, Surface};
 use horizon_protocol::{
     Error, Result,
@@ -25,8 +28,11 @@ pub const CHANNEL: &str = "horizon:lod";
 /// The server.properties key (Horizon's own): the farthest a player's far
 /// terrain may reach, in chunks; 0 turns serving it off.
 pub const PROPERTY: &str = "horizon-lod-distance";
-/// [`PROPERTY`] when the file doesn't set it.
-pub const DEFAULT_DISTANCE: u32 = 64;
+/// [`PROPERTY`] when the file doesn't set it: off.
+pub const DEFAULT_DISTANCE: u32 = 0;
+/// The protocol's version, first in an [`Offer`]: a client serves itself
+/// from a server that speaks its own only. Requests and replies follow it.
+pub const VERSION: u32 = 1;
 /// The most [`PROPERTY`] may be (the client's own LOD Distance cap).
 pub const MAX_DISTANCE: u32 = 1024;
 /// Requests a player may have waiting at the server at once.
@@ -40,8 +46,16 @@ pub const SIDE: usize = 16;
 const SLACK: u32 = 8;
 /// Biomes one tile may name at most.
 const MAX_BIOMES: usize = 256;
-/// Spans one column may hold at most.
-const MAX_SPANS: usize = 4096;
+/// A biome name's length at most.
+const MAX_BIOME_NAME: usize = 256;
+/// Spans one tile may hold at most, all its columns together (a mean of 64
+/// a column): a bigger tile is refused, so what the client decodes and
+/// meshes stays small.
+pub const MAX_SPANS: usize = 16 * 1024;
+/// A reply's size at most, in bytes.
+pub const MAX_REPLY: usize = 512 * 1024;
+/// The lowest and highest a span or surface may reach (a dimension's limits).
+const HEIGHTS: std::ops::RangeInclusive<i32> = -2048..=4096;
 
 /// [`PROPERTY`]'s value: [`DEFAULT_DISTANCE`] when absent or unreadable,
 /// at most [`MAX_DISTANCE`].
@@ -72,15 +86,19 @@ impl Offer {
     }
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer::new();
+        w.varint(VERSION as i32);
         w.varint(self.distance as i32);
         w.varint(self.in_flight as i32);
         w.varint(self.per_second as i32);
         w.data
     }
-    /// An offer, None when it serves nothing.
+    /// An offer, None when it serves nothing or speaks another version.
     pub fn decode(data: &[u8]) -> Option<Self> {
         let mut r = Reader::new(data);
         let mut next = || r.varint().ok().and_then(|v| u32::try_from(v).ok());
+        if next()? != VERSION {
+            return None;
+        }
         let offer = Self {
             distance: next()?.min(MAX_DISTANCE),
             in_flight: next()?.min(64),
@@ -154,11 +172,13 @@ impl Request {
 }
 
 /// A tile's columns as the server sends them: the request's id, then 0 and
-/// the columns' biome names and columns, or 1 for a refusal.
+/// the columns' biome names and columns, or 1 for a refusal. A tile the
+/// client would refuse (past [`MAX_SPANS`] or [`MAX_REPLY`]) is refused.
 pub fn encode_reply(id: u32, columns: Option<&[Column]>, biome_names: &[String]) -> Vec<u8> {
     let mut w = Writer::new();
     w.varint(id as i32);
-    let Some(columns) = columns else {
+    let spans: usize = columns.map_or(0, |c| c.iter().map(|c| c.spans.len()).sum());
+    let Some(columns) = columns.filter(|_| spans <= MAX_SPANS) else {
         w.u8(1);
         return w.data;
     };
@@ -205,10 +225,14 @@ pub fn encode_reply(id: u32, columns: Option<&[Column]>, biome_names: &[String])
         w.string(
             biome_names
                 .get(usize::from(biome))
+                .filter(|name| name.len() <= MAX_BIOME_NAME)
                 .map_or("minecraft:plains", String::as_str),
         );
     }
     w.bytes(&body.data);
+    if w.data.len() > MAX_REPLY {
+        return refusal(id);
+    }
     w.data
 }
 
@@ -223,12 +247,17 @@ pub fn reply_id(data: &[u8]) -> Option<u32> {
 }
 
 /// A reply's columns (None: refused), biomes by this client's indices
-/// (unknown ones as the first), block states below `states`.
+/// (unknown ones as the first), block states below `states`. A reply a
+/// Horizon server doesn't send is an error before it costs memory: too big,
+/// too many spans, spans out of order or overlapping, heights out of range.
 pub fn decode_reply(
     data: &[u8],
     biomes: &HashMap<String, u16>,
     states: u32,
 ) -> Result<Option<Vec<Column>>> {
+    if data.len() > MAX_REPLY {
+        return Err(Error::new("far terrain: reply too big"));
+    }
     let mut r = Reader::new(data);
     r.varint()?;
     if r.u8()? != 0 {
@@ -239,7 +268,7 @@ pub fn decode_reply(
         return Err(Error::new("far terrain: too many biomes"));
     }
     let palette: Vec<u16> = (0..count)
-        .map(|_| Ok(biomes.get(&r.string(32767)?).copied().unwrap_or(0)))
+        .map(|_| Ok(biomes.get(&r.string(MAX_BIOME_NAME)?).copied().unwrap_or(0)))
         .collect::<Result<_>>()?;
     let biome = |r: &mut Reader| -> Result<u16> {
         palette
@@ -258,18 +287,26 @@ pub fn decode_reply(
     if columns != (SIDE * SIDE) as i32 {
         return Err(Error::new("far terrain: not a whole tile"));
     }
+    let height = |r: &mut Reader| -> Result<i32> {
+        let y = r.i32()?;
+        if !HEIGHTS.contains(&y) {
+            return Err(Error::new("far terrain: height out of range"));
+        }
+        Ok(y)
+    };
     let mut out = Vec::with_capacity(SIDE * SIDE);
+    let mut total = 0;
     for _ in 0..columns {
         let surface = if r.bool()? {
-            let height = r.i32()?;
+            let height_ = height(&mut r)?;
             let top = state(&mut r)?;
             let water = if r.bool()? {
-                Some((r.i32()?, state(&mut r)?))
+                Some((height(&mut r)?, state(&mut r)?))
             } else {
                 None
             };
             Some(Surface {
-                height,
+                height: height_,
                 state: top,
                 water,
                 biome: biome(&mut r)?,
@@ -277,21 +314,30 @@ pub fn decode_reply(
         } else {
             None
         };
-        let spans = r.varint()?;
-        if !(0..=MAX_SPANS as i32).contains(&spans) {
+        let count =
+            usize::try_from(r.varint()?).map_err(|_| Error::new("far terrain: too many spans"))?;
+        total += count;
+        if total > MAX_SPANS {
             return Err(Error::new("far terrain: too many spans"));
         }
-        let spans = (0..spans)
-            .map(|_| {
-                Ok(Span {
-                    min: r.i16()?,
-                    max: r.i16()?,
-                    state: state(&mut r)?,
-                    biome: biome(&mut r)?,
-                    light: r.u16()?,
-                })
-            })
-            .collect::<Result<_>>()?;
+        let mut spans: Vec<Span> = Vec::with_capacity(count);
+        for _ in 0..count {
+            let span = Span {
+                min: r.i16()?,
+                max: r.i16()?,
+                state: state(&mut r)?,
+                biome: biome(&mut r)?,
+                light: r.u16()?,
+            };
+            let floor = spans.last().map_or(*HEIGHTS.start(), |s| i32::from(s.max));
+            if i32::from(span.min) < floor
+                || span.min >= span.max
+                || !HEIGHTS.contains(&i32::from(span.max))
+            {
+                return Err(Error::new("far terrain: spans out of order"));
+            }
+            spans.push(span);
+        }
         out.push(Column { surface, spans });
     }
     Ok(Some(out))
@@ -382,6 +428,71 @@ mod tests {
     }
 
     #[test]
+    fn hostile_replies_are_refused_before_they_cost_memory() {
+        let names: Vec<String> = ["a"].map(String::from).into();
+        let client: HashMap<String, u16> = [("a".to_owned(), 0)].into();
+        let span = |min, max| Span {
+            min,
+            max,
+            state: BlockStateId(1),
+            biome: 0,
+            light: 0,
+        };
+        let with = |spans: Vec<Span>| {
+            let mut tile = vec![Column::default(); SIDE * SIDE];
+            tile[0].spans = spans;
+            encode_reply(1, Some(&tile), &names)
+        };
+        assert!(decode_reply(&with(vec![span(0, 4), span(4, 9)]), &client, 9).is_ok());
+        // Overlapping, out of order, empty or inverted spans.
+        for spans in [
+            vec![span(0, 4), span(2, 9)],
+            vec![span(4, 9), span(0, 4)],
+            vec![span(3, 3)],
+            vec![span(-4000, 0)],
+        ] {
+            assert!(decode_reply(&with(spans), &client, 9).is_err());
+        }
+        // A tile past the span cap is refused by the server and by the client.
+        let many: Vec<Span> = (0..=MAX_SPANS as i16 / 4)
+            .map(|i| span(i * 2, i * 2 + 1))
+            .collect();
+        let mut tile = vec![Column::default(); SIDE * SIDE];
+        for column in &mut tile[..4] {
+            column.spans = many.clone();
+        }
+        assert_eq!(
+            decode_reply(&with(Vec::new()), &client, 9)
+                .unwrap()
+                .unwrap()
+                .len(),
+            256
+        );
+        assert_eq!(
+            decode_reply(&encode_reply(2, Some(&tile), &names), &client, 9).unwrap(),
+            None
+        );
+        let mut forged = Writer::new();
+        forged.varint(2);
+        forged.u8(0);
+        forged.varint(0);
+        forged.varint(256);
+        for i in 0..256 {
+            forged.bool(false);
+            forged.varint(if i < 4 { many.len() as i32 } else { 0 });
+            for s in many.iter().take(if i < 4 { many.len() } else { 0 }) {
+                forged.i16(s.min);
+                forged.i16(s.max);
+                forged.varint(1);
+                forged.varint(0);
+                forged.u16(0);
+            }
+        }
+        assert!(decode_reply(&forged.data, &client, 9).is_err());
+        assert!(decode_reply(&vec![0; MAX_REPLY + 1], &client, 9).is_err());
+    }
+
+    #[test]
     fn requests_and_offers_round_trip() {
         let r = Request {
             id: 300,
@@ -394,10 +505,15 @@ mod tests {
         let offer = Offer::new(96);
         assert_eq!(Offer::decode(&offer.encode()), Some(offer));
         assert_eq!(Offer::decode(&Offer::new(0).encode()), None);
-        assert_eq!(distance_property(None), 64);
-        assert_eq!(distance_property(Some(" 0 ")), 0);
+        // Another version's offer is ignored.
+        let mut other = offer.encode();
+        other[0] = VERSION as u8 + 1;
+        assert_eq!(Offer::decode(&other), None);
+        // Off unless the owner sets it.
+        assert_eq!(distance_property(None), 0);
+        assert_eq!(distance_property(Some(" 64 ")), 64);
         assert_eq!(distance_property(Some("5000")), MAX_DISTANCE);
-        assert_eq!(distance_property(Some("far")), 64);
+        assert_eq!(distance_property(Some("far")), 0);
     }
 
     #[test]
