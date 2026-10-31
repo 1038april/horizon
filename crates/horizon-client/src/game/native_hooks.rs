@@ -3384,17 +3384,19 @@ mod tests {
                     .next()
             })
             .collect();
-        // The renderer's hook points (`horizon_client_render::gfx::native_render`).
-        let render_hooks: BTreeSet<_> =
-            include_str!("../../../horizon-client-render/src/gfx/native_render.rs")
+        // Hook points that are free functions in other crates.
+        let free_hooks = |source: &'static str| -> BTreeSet<&'static str> {
+            source
                 .lines()
                 .filter_map(|line| line.strip_prefix("pub fn native_")?.split('(').next())
-                .collect();
+                .collect()
+        };
+        // The renderer's (`horizon_client_render::gfx::native_render`).
+        let render_hooks = free_hooks(include_str!(
+            "../../../horizon-client-render/src/gfx/native_render.rs"
+        ));
         // Items' default components (`horizon_world::item_defaults`).
-        let item_hooks: BTreeSet<_> = include_str!("../../../horizon-world/src/item_defaults.rs")
-            .lines()
-            .filter_map(|line| line.strip_prefix("pub fn native_")?.split('(').next())
-            .collect();
+        let item_hooks = free_hooks(include_str!("../../../horizon-world/src/item_defaults.rs"));
         let declared: BTreeSet<_> = section
             .lines()
             .chain(level_section.lines())

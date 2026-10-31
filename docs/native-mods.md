@@ -26,8 +26,10 @@ the commit of the installed version the build starts from.
 
 ### Mods on the hook points
 
-A mod that hooks only Horizon's native hook points (`crates/horizon-client/src/game/native_hooks.rs`: empty
-functions the game calls at fixed places, plus helpers, kept stable across releases) can name the version it
+A mod that hooks only Horizon's native hook points (`crates/horizon-client/src/game/native_hooks.rs`, with a few
+free functions in other crates: [render hook points](#render-hook-points), [items' default
+components](#items-default-components); empty functions the game calls at fixed places, plus helpers, kept stable
+across releases) can name the version it
 needs instead of pinning: `"hooks": 1` in its `.hnmod`'s `horizon-native.json`, the `NATIVE_HOOKS_API` of that
 file when it was made. Hook points are only ever added: each addition raises `NATIVE_HOOKS_API`, and a mod builds
 on any Horizon whose version is the one it needs or a later one. Its `horizon` is then only the commit it was tested on. The launcher builds it on the commit the other mods
@@ -941,3 +943,20 @@ render thread with the frame's wgpu objects; what a mod draws there shows in tha
   shader pack (each run's id is stable from frame to frame: a hash of the entity type's name, a block entity's state),
   and `world_depth` to keep the world pass's depth when nothing else needs it. Set what you need and leave the rest:
   several mods can ask. It's asked as each frame is built, so keep it cheap.
+
+### Items' default components
+
+`crates/horizon-world/src/item_defaults.rs`: `native_modify_default_components(item, components)`, a free function a
+bundle targets as `horizon_world::item_defaults::native_modify_default_components` (NeoForge's
+`ModifyDefaultComponentsEvent`). `components` is the item's entry in `items.json`, vanilla's default-component report:
+insert or replace a key to set a component (`"minecraft:max_stack_size": 16`), remove it to take the component away.
+Any item can be changed, vanilla's included.
+
+- Every table that reads items' defaults reads them through it: the item table, loot, enchanting, item models,
+  banners, pot sherds. Stacks are saved and sent as their difference from the changed defaults, as from vanilla's.
+- It's asked for every item each time the defaults are read, from loader threads, several times as resources load
+  and again when a world's data packs load. Answer the same each time, from the item alone.
+- Client and server each apply their own mods, so both need the mod. A client without it (a vanilla Java client, or
+  Horizon without the mod) fills in vanilla's defaults for the same stacks: a stone stack the server caps at 16 still
+  looks like it stacks to 64 there.
+- The creative search tab matches vanilla's exported tooltip text, so a changed `item_name` is not searchable yet.
