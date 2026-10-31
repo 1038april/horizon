@@ -1424,6 +1424,8 @@ pub enum MobEvent {
         mob: u32,
         charged: bool,
         name: crate::text::Text,
+        /// `Entity.isInWater` of the source: `BlockAttached.ignoreExplosion`.
+        in_water: bool,
     },
     /// The centre, the radius and the kind of the mob blowing up (it may be
     /// gone from the list by the time the blast is handled).
