@@ -15,6 +15,7 @@ mod lists;
 mod management;
 mod management_methods;
 mod management_schema;
+mod management_tls;
 mod mcp;
 mod panel;
 mod process;
