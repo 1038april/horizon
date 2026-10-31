@@ -453,13 +453,6 @@ impl<'p> Stage<'p> {
             let decl = format!("{interpolation}{ty} @{array};");
             match storage {
                 "uniform" if is_sampler_type(&ty) => self.samplers.push((name, ty.clone())),
-                // The game binds images for compute programs only, so far.
-                "uniform" if ty.contains("image") && self.kind != ShaderStage::Compute => {
-                    self.errors.push(self.error(
-                        ty_at,
-                        &format!("`{name}`: images outside compute programs are not supported yet"),
-                    ))
-                }
                 "uniform" if ty.contains("image") => match format {
                     Some(format) => self.images.push(ImageDecl {
                         name,
