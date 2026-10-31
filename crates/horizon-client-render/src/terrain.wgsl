@@ -151,6 +151,8 @@ struct TerrainOut {
     @location(7) local: vec3<f32>,
     // terrain.vsh's chunkVisibility: the section's fade-in, from 16 blocks out.
     @location(8) visibility: f32,
+    // The camera-relative height, for the water mirror's cut at the plane.
+    @location(9) height: f32,
 }
 // Whether a fading tile or section leaves this pixel out (gfx/lod.rs's
 // `fade_code`, `fade_out_code`). It fades in, or out, chunk by chunk: each
@@ -285,6 +287,7 @@ fn terrain_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<f3
     let block = max(f32(light.y), dynamic_block_light(pos));
     out.color = vec4(color.rgb, 1.0) * sample_lightmap(f32(light.x) / 16.0, block / 16.0);
     out.emission = 15u - (u32(round(color.a * 255.0)) & 15u);
+    out.height = pos.y;
     out.spherical = length(pos);
     out.cylindrical = max(length(pos.xz), abs(pos.y));
     out.fade = fade_code(w);
@@ -304,6 +307,15 @@ fn apply_fog(color: vec4<f32>, spherical: f32, cylindrical: f32) -> vec4<f32> {
     return vec4(mix(color.rgb, globals.fog_color.rgb, f * globals.fog_color.a), color.a);
 }
 @fragment fn fs_solid(in: TerrainOut) -> @location(0) vec4<f32> {
+    return solid_color(in);
+}
+// The water mirror (gfx.rs's reflection pass): what lies below the water plane
+// (`fog_ends.w`, camera-relative) would show above it in the mirror, so it is cut away.
+@fragment fn fs_solid_mirror(in: TerrainOut) -> @location(0) vec4<f32> {
+    if in.height < globals.fog_ends.w { discard; }
+    return solid_color(in);
+}
+fn solid_color(in: TerrainOut) -> vec4<f32> {
     let dx = dpdx(in.local);
     let dy = dpdy(in.local);
     if faded(in.fade, in.local, dx, dy) { discard; }

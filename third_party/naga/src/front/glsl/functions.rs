@@ -905,11 +905,10 @@ impl Frontend {
             // indirection through a local variable is needed to align the address
             // spaces of the call argument and the overload parameter.
             TypeInner::Pointer { base, space } if space != AddressSpace::Function => Some(base),
-            TypeInner::ValuePointer {
-                size,
-                scalar,
-                space,
-            } if space != AddressSpace::Function => {
+            // A pointer into a vector or a matrix: MSL and WGSL can't pass a vector element
+            // by reference, so it is spilled whatever its address space (GLSL copies `out`
+            // and `inout` arguments in and out anyway).
+            TypeInner::ValuePointer { size, scalar, .. } => {
                 let inner = match size {
                     Some(size) => TypeInner::Vector { size, scalar },
                     None => TypeInner::Scalar(scalar),
