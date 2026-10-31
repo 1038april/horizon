@@ -1566,6 +1566,7 @@ dependencies = [
 name = "horizon-server"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "base64",
  "chrono",
  "horizon-anticheat",
@@ -1576,6 +1577,7 @@ dependencies = [
  "horizon-server-files",
  "libc",
  "p12-keystore",
+ "png",
  "rcgen",
  "rustls",
  "serde",
