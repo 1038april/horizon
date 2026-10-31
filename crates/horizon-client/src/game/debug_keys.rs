@@ -341,10 +341,12 @@ impl Game<'_> {
             }
             d.group("position", [section]);
             // chunk_generation: DebugEntryChunkGeneration, where the world is generated here.
-            let terrain = match self.integrated.as_ref() {
-                Some(server) => server.terrain(self.dim.id()),
-                None => self.end.locator(),
-            };
+            // The window's server thread publishes its generators; the deprecated in-frame path
+            // (`end.locator`) is not extended.
+            let terrain = self
+                .integrated
+                .as_ref()
+                .and_then(|server| server.terrain(self.dim.id()));
             // `DebugEntryChunkGeneration.display`: the feet block decides whether the line is
             // sampled again; otherwise the last result is drawn.
             let feet = [
