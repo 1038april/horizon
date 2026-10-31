@@ -1507,6 +1507,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-optifine"
+version = "0.1.0"
+dependencies = [
+ "regex",
+]
+
+[[package]]
 name = "horizon-port-pack"
 version = "0.1.0"
 dependencies = [
