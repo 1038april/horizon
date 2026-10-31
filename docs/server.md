@@ -482,6 +482,17 @@ runtime or new dependency. Server-sent events can replace the polling later if a
   - planned: `players`, `players/kick`, `server/{status,save,stop,system_message}`, the lists' getters (next);
     changing the lists (through the game, so the source, expiry and kicks are vanilla's),
     `serversettings/*` and `gamerules`, the notifications and heartbeat (from the event stream), TLS.
+- **RCON.** `enable-rcon`, `rcon.port` and `rcon.password` turn on vanilla's remote console, for the hosting panels,
+  Discord bridges and scripts written for it. The supervisor serves it (`rcon.rs`, std only like `http.rs`), so it
+  answers while the game restarts (a command then says the game isn't running), and it reads its settings as
+  `RconThread.create` does: no password or a port outside 1 to 65535 leaves it off with vanilla's warning. The
+  packets are `RconClient`'s: login (3), command (2), the output in packets of 4096 characters, `-1` for a refused
+  login, `Unknown request <hex>` for another type, `Error executing: <command> (<reason>)` for a command that failed.
+  A command goes to the game as `horizon-server cmd` sends it (`console <line>` on the control endpoint), so the
+  output is what the console prints, its messages joined as `RconConsoleSource` joins them. Differences, each one
+  named in `rcon.rs`: the packets are read from the stream, the password is compared in constant time, a
+  connection that hasn't logged in within 30 seconds is closed and at most 16 are open. Not yet: the sender
+  `Rcon` and `broadcast-rcon-to-ops` (a command shows as the console's).
 
 ## 9. Benchmark plan (bots against vanilla and Paper)
 

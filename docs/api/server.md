@@ -37,6 +37,8 @@ address), op and deop, the whitelist, and metrics as Prometheus text.
 7. A tool written for vanilla: turn on vanilla's management protocol (`management-server-enabled = true` in
    `[properties]`, [hosting.md](../hosting.md#tools-written-for-vanillas-management-protocol)); it answers as vanilla
    26.3's does, and `rpc.discover` describes it.
+8. A tool that speaks RCON (a hosting panel, a Discord bridge): turn on `enable-rcon` with a password in
+   `[properties]` ([hosting.md](../hosting.md#tools-that-speak-rcon)); a command runs as one typed in the console.
 
 ## Reference
 
@@ -88,3 +90,4 @@ addition; a change to one starts `/api/v2`, served beside `/api/v1`.
   `whitelist/{add,remove}`, `metrics/prometheus`, `GET`/`PATCH config`, `DELETE backups`, `GET backups/download`;
   `server.toml` gets `[api]` (`bind`, `token`, `allow_public`); `GET events` (server-sent events, or JSON).
 - Vanilla's management protocol (`management-server-*`): the WebSocket, its authentication, `rpc.discover`.
+- RCON (`enable-rcon`, `rcon.port`, `rcon.password`): vanilla's remote console, served by the supervisor.
