@@ -2873,6 +2873,7 @@ impl Title {
                             &level,
                             world.commands,
                             &self.saves.join(&world.folder),
+                            &self.resources,
                         );
                         self.mode = Mode::Create {
                             name: level.name,
