@@ -310,8 +310,12 @@ pub(super) fn tesselate(
     } else {
         &mut out.solid
     };
+    let mut sprite_layers = Vec::new();
     let mut quad =
         |v: [([f32; 3], [f32; 2]); 4], layer: u16, color: u32, light: u16, back: bool| {
+            if tables.is_animated(layer) && !sprite_layers.contains(&layer) {
+                sprite_layers.push(layer);
+            }
             let vertex = |(pos, uv)| TerrainVertex::new(pos, uv, layer, color, light);
             target.extend(v.map(vertex));
             if back {
@@ -437,6 +441,7 @@ pub(super) fn tesselate(
             !is_overlay,
         );
     }
+    out.sprite_layers.extend(sprite_layers);
 }
 
 #[cfg(test)]

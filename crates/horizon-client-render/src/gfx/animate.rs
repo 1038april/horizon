@@ -267,6 +267,11 @@ impl SpriteAnimator {
             .unwrap_or(false)
     }
 
+    /// Number of words needed to mark the animated layers visible this frame.
+    pub fn active_layer_words(&self) -> usize {
+        self.is_animated.len().div_ceil(u64::BITS as usize)
+    }
+
     /// Whether the jobs can run on the GPU: compute shaders writing a
     /// storage texture and reading two storage buffers (not OpenGL before
     /// 4.3).
@@ -293,7 +298,7 @@ impl SpriteAnimator {
         encoder: &mut wgpu::CommandEncoder,
         uploads: &mut Uploads,
         tick: u64,
-        active: Option<&[u16]>,
+        active: Option<&[u64]>,
     ) {
         if self.collect(tick, active) == 0 {
             return;
@@ -355,14 +360,17 @@ impl SpriteAnimator {
 
     /// Queue a job for every sprite whose blend at `tick` differs from what
     /// its layer shows; the number of jobs.
-    fn collect(&mut self, tick: u64, active: Option<&[u16]>) -> usize {
+    fn collect(&mut self, tick: u64, active: Option<&[u64]>) -> usize {
         let mut count = 0;
         self.changed.clear();
         for sprite in &mut self.sprites {
-            if let Some(active) = active
-                && !active.contains(&(sprite.animation.layer as u16))
-            {
-                continue;
+            if let Some(active) = active {
+                let layer = sprite.animation.layer as usize;
+                let word = layer / u64::BITS as usize;
+                let bit = 1_u64 << (layer % u64::BITS as usize);
+                if active.get(word).is_none_or(|active| active & bit == 0) {
+                    continue;
+                }
             }
             let blend = sprite.animation.blend(tick);
             if sprite.shown == Some(blend) {
@@ -919,17 +927,19 @@ mod tests {
         assert!(animator.is_animated(5));
 
         // When active layer is [1], only sprite 1 is collected
-        let count = animator.collect(1, Some(&[1]));
+        let active = [1_u64 << 1];
+        let count = animator.collect(1, Some(&active));
         assert_eq!(count, 1);
         assert_eq!(animator.changed, vec![1]);
 
         // When active is empty, 0 are collected
-        let count = animator.collect(2, Some(&[]));
+        let count = animator.collect(2, Some(&[0]));
         assert_eq!(count, 0);
         assert!(animator.changed.is_empty());
 
         // When active is [3, 5], both 3 and 5 are collected
-        let count = animator.collect(3, Some(&[3, 5]));
+        let active = [1_u64 << 3 | 1_u64 << 5];
+        let count = animator.collect(3, Some(&active));
         assert_eq!(count, 2);
         assert_eq!(animator.changed, vec![3, 5]);
 

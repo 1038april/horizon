@@ -248,22 +248,17 @@ struct SectionGpu {
     /// Animated sprite layers present in this section.
     animated_layers: Box<[u16]>,
 }
-/// Extracts distinct animated sprite layers present in a section mesh,
-/// masking out `OPAQUE_LAYER` (bit 15) which is attached to opaque quads.
+/// Extracts the animated sprite layers present in a section mesh. Meshing
+/// records the distinct layers, so uploading does not rescan every vertex.
 pub(crate) fn collect_animated_layers(
     mesh: &SectionMesh,
     is_animated: impl Fn(u16) -> bool,
 ) -> Box<[u16]> {
-    let mut animated: Vec<u16> = Vec::new();
-    for part in [&mesh.solid, &mesh.translucent] {
-        for quad in part.as_chunks::<4>().0 {
-            let layer = quad[0].layer & !crate::mesher::OPAQUE_LAYER;
-            if is_animated(layer) && !animated.contains(&layer) {
-                animated.push(layer);
-            }
-        }
-    }
-    animated.into_boxed_slice()
+    mesh.sprite_layers
+        .iter()
+        .copied()
+        .filter(|&layer| is_animated(layer))
+        .collect()
 }
 
 impl SectionGpu {
@@ -563,7 +558,7 @@ pub struct Renderer {
     lightmap_view: wgpu::TextureView,
     lightmap_sampler: wgpu::Sampler,
     animations: animate::SpriteAnimator,
-    active_animated_layers: Vec<u16>,
+    active_animated_layers: Vec<u64>,
     uploads: upload::Uploads,
     /// Section meshes are staged through their own belt into
     /// `section_copies`, which the next frame records its commands after:
@@ -1698,6 +1693,7 @@ impl Renderer {
             split,
             animate::SpriteAnimator::compute(&adapter, &device),
         );
+        let active_layer_words = animations.active_layer_words();
         let sprite_unused = device
             .create_texture(&wgpu::TextureDescriptor {
                 label: Some("Block sprites (unused)"),
@@ -2860,7 +2856,7 @@ impl Renderer {
             lightmap_view,
             lightmap_sampler,
             animations,
-            active_animated_layers: Vec::new(),
+            active_animated_layers: vec![0; active_layer_words],
             uploads,
             section_uploads,
             section_copies: None,
@@ -4292,37 +4288,40 @@ impl Renderer {
             });
         }
         if self.animated_textures {
-            self.active_animated_layers.clear();
+            self.active_animated_layers.fill(0);
             for v in &visible {
                 let s = self.sections.get(v.slot);
                 for &layer in &*s.animated_layers {
-                    if !self.active_animated_layers.contains(&layer) {
-                        self.active_animated_layers.push(layer);
-                    }
+                    let layer = layer as usize;
+                    self.active_animated_layers[layer / u64::BITS as usize] |=
+                        1_u64 << (layer % u64::BITS as usize);
                 }
             }
             for v in &visible_lods {
                 if let Some(tile) = self.lods.get(&v.key) {
                     for &layer in &*tile.drawn().animated_layers {
-                        if !self.active_animated_layers.contains(&layer) {
-                            self.active_animated_layers.push(layer);
-                        }
+                        let layer = layer as usize;
+                        self.active_animated_layers[layer / u64::BITS as usize] |=
+                            1_u64 << (layer % u64::BITS as usize);
                     }
                     for &layer in &*tile.mesh.animated_layers {
-                        if !self.active_animated_layers.contains(&layer) {
-                            self.active_animated_layers.push(layer);
-                        }
+                        let layer = layer as usize;
+                        self.active_animated_layers[layer / u64::BITS as usize] |=
+                            1_u64 << (layer % u64::BITS as usize);
                     }
                 }
             }
             for v in &shadow_visible {
                 let s = self.sections.get(v.slot);
                 for &layer in &*s.animated_layers {
-                    if !self.active_animated_layers.contains(&layer) {
-                        self.active_animated_layers.push(layer);
-                    }
+                    let layer = layer as usize;
+                    self.active_animated_layers[layer / u64::BITS as usize] |=
+                        1_u64 << (layer % u64::BITS as usize);
                 }
             }
+            // Visibility is collected before terrain draw commands are recorded,
+            // so upload the current mask here and keep animation updates ahead
+            // of every draw in this command buffer.
             self.animate(&mut encoder, frame.ticks, !frame.title);
         }
         self.drawn_sections = visible.len() + visible_lods.len();
@@ -6674,11 +6673,14 @@ mod sprite_upload_tests {
         let opaque_vertex =
             TerrainVertex::new([0.0, 0.0, 0.0], [0.0, 0.0], 7 | mesher::OPAQUE_LAYER, 0, 0);
         let translucent_vertex = TerrainVertex::new([0.0, 0.0, 0.0], [0.0, 0.0], 12, 0, 0);
-        let mesh = SectionMesh {
+        let mut mesh = SectionMesh {
             solid: vec![opaque_vertex; 4],
             translucent: vec![translucent_vertex; 4],
             ..Default::default()
         };
+        mesh.note_sprite_layer(7 | mesher::OPAQUE_LAYER);
+        mesh.note_sprite_layer(12);
+        mesh.finish_sprite_layers();
 
         let animated = super::collect_animated_layers(&mesh, |layer| layer == 7 || layer == 12);
         assert_eq!(&*animated, &[7, 12]);

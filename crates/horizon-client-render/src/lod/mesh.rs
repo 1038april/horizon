@@ -588,6 +588,7 @@ fn mesh_columns_with_edges(
             emit(&mut mesh, key, rect)
         }
     }
+    mesh.finish_sprite_layers();
     mesh
 }
 
@@ -952,6 +953,7 @@ fn emit(mesh: &mut SectionMesh, key: FaceKey, rect: Rect) {
     }
 }
 fn emit_quad(mesh: &mut SectionMesh, key: FaceKey, rect: Rect) {
+    mesh.note_sprite_layer(key.layer);
     let Rect { u0, v0, u1, v1 } = rect;
     let p = f32::from_bits(key.plane);
     let mut points = match key.direction {
