@@ -1013,6 +1013,53 @@ fn last_word_index(s: &str) -> usize {
     }
     if prev_space { s.len() } else { out }
 }
+/// `ChatScreen.normalizeChatMessage`: `String.trim`, then
+/// `StringUtils.normalizeSpace` (one space for every run of whitespace), then
+/// `StringUtil.trimChatMessage` (the first 256 UTF-16 code units, the length
+/// `ServerboundChatPacket`'s `stringUtf8(256)` decodes). The chat screen sends
+/// this, not what was typed: a line of spaces sends nothing, and a message the
+/// packet cannot hold is cut on the client, as vanilla's is, instead of by the
+/// server.
+pub fn normalize_chat_message(message: &str) -> String {
+    // String.trim: the code points up to U+0020, which is not `str::trim`'s
+    // Unicode whitespace (U+00A0 is not Java whitespace and stays).
+    let trimmed = message.trim_matches(|c: char| c <= ' ');
+    truncate_utf16(&normalize_space(trimmed), 256)
+}
+/// `StringUtils.normalizeSpace`: one space for every run of
+/// `Character.isWhitespace`, and none at either end.
+fn normalize_space(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut space = false;
+    for c in s.chars() {
+        if crate::ui::java_whitespace(c) {
+            space = !out.is_empty();
+        } else {
+            if space {
+                out.push(' ');
+                space = false;
+            }
+            out.push(c);
+        }
+    }
+    out
+}
+/// `StringUtil.truncateStringIfNecessary(s, 256, false)`: Java counts UTF-16
+/// code units (`String.length`), so 129 emoji are cut to 128 of them, where
+/// `chars().take(256)` would keep all 129 (258 units) for the server to
+/// reject. A cut between the halves of a surrogate pair keeps the character
+/// below it: vanilla's `substring` leaves half a pair, which a Java `String`
+/// may hold and a Rust `String` may not.
+fn truncate_utf16(s: &str, max_units: usize) -> String {
+    let mut units = 0;
+    for (byte, c) in s.char_indices() {
+        units += c.len_utf16();
+        if units > max_units {
+            return s[..byte].to_owned();
+        }
+    }
+    s.to_owned()
+}
 impl ChatScreen {
     /// `ChatScreen.init`: the input at the bottom, focused, holding `initial`.
     pub fn new(

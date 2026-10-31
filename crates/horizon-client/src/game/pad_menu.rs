@@ -409,20 +409,23 @@ impl Game<'_> {
             // Y in an inventory: a shift-click (quick move).
             Button::North if matches!(self.screen, Screen::Inventory | Screen::Creative) => {
                 self.pad_take_pointer(event_loop);
-                let held = (
-                    self.keys.contains(&KeyCode::ShiftLeft),
-                    self.physical_keys.contains(&KeyCode::ShiftLeft),
-                );
+                let in_keys = self.keys.contains(&KeyCode::ShiftLeft);
                 self.keys.insert(KeyCode::ShiftLeft);
-                self.physical_keys.insert(KeyCode::ShiftLeft);
+                let held = horizon_client_input::modifiers::hold(
+                    &mut self.modifiers,
+                    &mut self.physical_keys,
+                    KeyCode::ShiftLeft,
+                );
                 self.pad_pointer_button(event_loop, false, true);
                 self.pad_pointer_button(event_loop, false, false);
-                if !held.0 {
+                if !in_keys {
                     self.keys.remove(&KeyCode::ShiftLeft);
                 }
-                if !held.1 {
-                    self.physical_keys.remove(&KeyCode::ShiftLeft);
-                }
+                horizon_client_input::modifiers::restore(
+                    &mut self.modifiers,
+                    &mut self.physical_keys,
+                    held,
+                );
             }
             // View / left stick in an inventory: throw one / the stack from
             // the slot under focus (Q / Ctrl+Q).
