@@ -97,9 +97,9 @@ pub fn check(jar_path: &Path, out: &Path) -> Result<Check, String> {
     let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("{}: {e}", jar_path.display()))?;
     let names: Vec<String> = zip
         .file_names()
-        .filter_map(Result::ok)
-        .map(|name| name.into_owned())
-        .collect();
+        .map(|name| name.map(|name| name.into_owned()))
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("{}: {e}", jar_path.display()))?;
     let mut bytes = Vec::new();
     for n in names.iter().filter(|n| n.ends_with(".class")) {
         let mut b = Vec::new();

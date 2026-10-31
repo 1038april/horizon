@@ -87,11 +87,11 @@ pub fn what(file: &Path) -> Result<Dropped, String> {
     }
     let zip = open(file)?;
     let has = |n: &str| zip.index_for_name(n).is_some();
-    let under = |p: &str| {
-        zip.file_names()
-            .filter_map(Result::ok)
-            .any(|n| n.starts_with(p))
-    };
+    let names: Vec<_> = zip
+        .file_names()
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
+    let under = |p: &str| names.iter().any(|n| n.starts_with(p));
     if has("manifest.json") && !has("pack.mcmeta") {
         return Ok(Dropped::Modpack);
     }

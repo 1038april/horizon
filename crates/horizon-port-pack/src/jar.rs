@@ -58,9 +58,9 @@ pub fn read(path: &Path) -> Result<JarInfo, String> {
     }
     let names: Vec<String> = zip
         .file_names()
-        .filter_map(Result::ok)
-        .map(|name| name.into_owned())
-        .collect();
+        .map(|name| name.map(|name| name.into_owned()))
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
     info.census = census(&names);
     if info.mod_id.is_empty() {
         info.mod_id = path

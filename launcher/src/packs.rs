@@ -290,7 +290,9 @@ pub fn kind_of(file: &Path) -> Result<Kind, String> {
         Ok(Kind::Resource)
     } else if zip
         .file_names()
-        .filter_map(Result::ok)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("{name} has an entry whose name can't be read: {e}"))?
+        .iter()
         .any(|n| n.starts_with("shaders/"))
     {
         Ok(Kind::Shader)
