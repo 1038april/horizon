@@ -381,7 +381,7 @@ pub fn shared_tables(
             .find(|(k, _)| *k == key)
             .and_then(|(_, tables)| tables.upgrade())
     };
-    if let Some(tables) = held(&mut *LOADED.lock().unwrap_or_else(|e| e.into_inner())) {
+    if let Some(tables) = held(&mut LOADED.lock().unwrap_or_else(|e| e.into_inner())) {
         return Ok(tables);
     }
     let mut tables = HashMap::new();
@@ -395,7 +395,7 @@ pub fn shared_tables(
     }
     let mut loaded = LOADED.lock().unwrap_or_else(|e| e.into_inner());
     // Another thread may have loaded the same tables meanwhile: keep one.
-    if let Some(tables) = held(&mut *loaded) {
+    if let Some(tables) = held(&mut loaded) {
         return Ok(tables);
     }
     let tables = Arc::new(tables);
