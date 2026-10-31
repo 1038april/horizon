@@ -145,11 +145,12 @@ uniform! {
         hide_gui: u32,
         /// Last frame's camera-relative world to clip space (its `projection * view`); a point
         /// at camera-relative `p` now was at `p + camera_motion` relative to last frame's camera.
-        /// This frame's on the first frame.
+        /// This frame's on the first frame and after a gap of over half a second (a pause, a
+        /// world load), when last frame's camera says nothing about this one.
         previous_view_projection: [[f32; 4]; 4],
-        /// How far the camera moved since last frame, in blocks.
+        /// How far the camera moved since last frame, in blocks (0 after such a gap).
         camera_motion: [f32; 3],
-        /// Seconds since last frame (0 on the first).
+        /// Seconds since last frame (0 on the first and after such a gap).
         delta_time: f32,
         /// `eye_light` eased with a half-life of 2 seconds: it follows the light levels' steps
         /// without stepping itself (for exposure and indoor fog).
@@ -203,7 +204,7 @@ pub const MATERIAL_INPUT: Struct = Struct {
         face: "u32" = "For a fluid, which face of the block the point is on, `Direction` order: 0 down, 1 up, 2 north, 3 south, 4 west, 5 east. 0 elsewhere.",
         fluid: "u32" = "0 not a fluid, 1 water, 2 lava.",
         emission: "f32" = "How strongly the block itself shines, 0..1, by its kind of light: a redstone torch or a candle 7/15, a torch or lava 14/15, glowstone 1; 0 for most blocks.",
-        normal: "vec3<f32>" = "The surface's geometric normal, a unit vector in world axes, facing the camera (block faces are flat, so it is exact per face).",
+        normal: "vec3<f32>" = "The surface's geometric normal, a unit vector in world axes, facing the camera. A normal within about 3.6 degrees of an axis is that axis exactly, so distant block faces do not shimmer; flowing water's slopes are steeper and keep theirs.",
         tangent: "vec4<f32>" = "The surface's tangent: xyz the unit direction in world axes along which `uv.x` grows, w the sign (1 or -1) that makes `cross(normal, tangent.xyz) * tangent.w` the direction `uv.y` grows along (down the texture). With `normal` it turns a normal map's normals into world axes.",
     },
 };
