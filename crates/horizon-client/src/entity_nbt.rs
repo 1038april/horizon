@@ -272,6 +272,16 @@ fn profile_from_nbt(tag: &Tag) -> Option<horizon_protocol::entity_data::Profile>
         slim: text("model").map(|model| model == "slim"),
     })
 }
+/// `ConversionTracker.addAdditionalSaveData`: vanilla's conversion time, -1
+/// while the mob is not converting. `counter2` is that time plus one while it
+/// converts and 0 when it does not (see `mobs/undead.rs`).
+fn conversion_time(m: &Mob) -> i32 {
+    if m.extra.counter2 > 0 {
+        m.extra.counter2 - 1
+    } else {
+        -1
+    }
+}
 pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
     let base = Base {
         id: &m.kind.id,
@@ -849,7 +859,28 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
                 )])
             });
         }
-        "minecraft:zombie" | "minecraft:husk" | "minecraft:drowned" => {
+        // Zombie and Skeleton.addAdditionalSaveData (a husk keeps Zombie's):
+        // `ConversionTracker`'s conversion and affliction times, -1 when it is
+        // not converting or not afflicted.
+        "minecraft:zombie" | "minecraft:husk" => {
+            for (key, value) in [
+                ("DrownedConversionTime", conversion_time(m)),
+                ("InWaterTime", m.extra.counter),
+            ] {
+                map.entry(key.into()).or_insert(Tag::Int(value));
+            }
+        }
+        "minecraft:skeleton" => {
+            for (key, value) in [
+                ("StrayConversionTime", conversion_time(m)),
+                ("FreezingTime", m.extra.counter),
+            ] {
+                map.entry(key.into()).or_insert(Tag::Int(value));
+            }
+        }
+        // Drowned.convertsInWater is false, so its tracker never ticks: vanilla
+        // saves -1 for both.
+        "minecraft:drowned" => {
             for (key, value) in [
                 ("DrownedConversionTime", Tag::Int(-1)),
                 ("InWaterTime", Tag::Int(-1)),
@@ -1689,6 +1720,23 @@ pub fn mob_from_nbt(tag: &Tag, types: &HashMap<String, Arc<MobType>>, id: u32) -
     // Zombie.readAdditionalSaveData: setCanBreakDoors.
     if crate::mobs::doors::is_zombie(m.species()) {
         crate::mobs::doors::set_can_break_doors(&mut m, flag(tag, "CanBreakDoors"));
+    }
+    // Zombie and Skeleton.readAdditionalSaveData: `ConversionTracker` reads its
+    // affliction time (0 when absent) and starts a conversion from a saved time
+    // other than -1, -1 stopping one (`setConverting(false)`).
+    let tracker = match m.species() {
+        crate::mobs::Species::Zombie | crate::mobs::Species::Husk => {
+            Some(("InWaterTime", "DrownedConversionTime"))
+        }
+        crate::mobs::Species::Skeleton => Some(("FreezingTime", "StrayConversionTime")),
+        _ => None,
+    };
+    if let Some((affliction, conversion)) = tracker {
+        m.extra.counter = number(tag.get(affliction)).unwrap_or(0) as i32;
+        let time = number(tag.get(conversion)).unwrap_or(-1) as i32;
+        // Any other time starts a conversion (`startConversion`), a negative
+        // one spent on the next tick.
+        m.extra.counter2 = if time == -1 { 0 } else { time.max(0) + 1 };
     }
     crate::mobs::raider::read_nbt(&mut m, tag);
     crate::mobs::riders::read_nbt(&mut m, tag);
@@ -3417,7 +3465,7 @@ mod sheep_nbt_tests {
     }
 
     #[test]
-    fn foxes_mooshrooms_rabbits_and_goats_keep_their_kind() {
+    fn variants_and_conversion_times_round_trip() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../.local/horizon-client")
             .join(horizon_core::VANILLA_VERSION);
@@ -3474,6 +3522,52 @@ mod sheep_nbt_tests {
             mob_from_nbt(&bare, &types, 3).unwrap().extra.lost_horns,
             [false; 2]
         );
+        // Zombie and Skeleton.addAdditionalSaveData: the `ConversionTracker`
+        // tags, -1 for a counter that is not running, and both come back into
+        // the counters the tick uses.
+        let mut zombie = new("minecraft:zombie");
+        zombie.extra.counter = 300;
+        let (back, tag) = round_trip(&zombie);
+        assert_eq!(number(tag.get("InWaterTime")), Some(300));
+        assert_eq!(number(tag.get("DrownedConversionTime")), Some(-1));
+        assert_eq!((back.extra.counter, back.extra.counter2), (300, 0));
+        (zombie.extra.counter, zombie.extra.counter2) = (600, 300);
+        let (back, tag) = round_trip(&zombie);
+        assert_eq!(number(tag.get("InWaterTime")), Some(600));
+        assert_eq!(number(tag.get("DrownedConversionTime")), Some(299));
+        assert_eq!((back.extra.counter, back.extra.counter2), (600, 300));
+        let mut skeleton = new("minecraft:skeleton");
+        skeleton.extra.counter = 70;
+        let (back, tag) = round_trip(&skeleton);
+        assert_eq!(number(tag.get("FreezingTime")), Some(70));
+        assert_eq!(number(tag.get("StrayConversionTime")), Some(-1));
+        assert_eq!((back.extra.counter, back.extra.counter2), (70, 0));
+        (skeleton.extra.counter, skeleton.extra.counter2) = (140, 301);
+        let (back, tag) = round_trip(&skeleton);
+        assert_eq!(number(tag.get("FreezingTime")), Some(140));
+        assert_eq!(number(tag.get("StrayConversionTime")), Some(300));
+        assert_eq!((back.extra.counter, back.extra.counter2), (140, 301));
+        // Not converting: -1 in both tags, and nothing starts on load.
+        for (kind, affliction, conversion) in [
+            ("minecraft:zombie", "InWaterTime", "DrownedConversionTime"),
+            ("minecraft:skeleton", "FreezingTime", "StrayConversionTime"),
+        ] {
+            let mut m = new(kind);
+            (m.extra.counter, m.extra.counter2) = (-1, 0);
+            let (back, tag) = round_trip(&m);
+            assert_eq!(number(tag.get(affliction)), Some(-1));
+            assert_eq!(number(tag.get(conversion)), Some(-1));
+            assert_eq!((back.extra.counter, back.extra.counter2), (-1, 0));
+        }
+        // A saved conversion time starts one: `startConversion`.
+        let saved = Tag::compound([
+            ("id", string("minecraft:zombie")),
+            ("Pos", doubles(&[0.5, 64.0, 0.5])),
+            ("InWaterTime", Tag::Int(600)),
+            ("DrownedConversionTime", Tag::Int(300)),
+        ]);
+        let back = mob_from_nbt(&saved, &types, 4).unwrap();
+        assert_eq!((back.extra.counter, back.extra.counter2), (600, 301));
     }
 }
 
