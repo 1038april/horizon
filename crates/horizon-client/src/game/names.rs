@@ -118,7 +118,7 @@ impl Game<'_> {
             // The tag's 64 block distance is measured to the entity: copy the
             // name only for a mob the frame can show it on.
             let at = glam::DVec3::new(m.position.x, m.position.y, m.position.z);
-            (at.distance_squared(camera) < 64.0 * 64.0).then(|| (m, name, false))
+            (at.distance_squared(camera) < 64.0 * 64.0).then_some((m, name, false))
         });
         let players = players
             .into_iter()
