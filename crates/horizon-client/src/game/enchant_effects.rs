@@ -490,14 +490,7 @@ impl Game<'_> {
                     .is_some_and(|i| s.damage >= i.max_damage)
                 {
                     self.armor[slot] = None;
-                    if let Some(eye) = self.eye_position() {
-                        self.audio.play(
-                            "minecraft:entity.item.break",
-                            Some(eye),
-                            0.8,
-                            0.8 + self.world.random.next_float() * 0.4,
-                        );
-                    }
+                    self.player_equipment_broke(super::armor_slot(slot), &stack);
                     self.apply_equipment();
                 }
             }
@@ -762,16 +755,11 @@ impl Game<'_> {
         boots.damage += loss;
         if boots.damage >= max {
             self.armor[3] = None;
-            if let Some(eye) = self.eye_position() {
-                self.audio.play(
-                    "minecraft:entity.item.break",
-                    Some(eye),
-                    0.8,
-                    0.8 + self.world.random.next_float() * 0.4,
-                );
-            }
-            // LivingEntity.breakItem: the broken boots' five crumbs.
-            self.eat_particles(&stack, 5);
+            // LivingEntity.onEquippedItemBroken: the broken boots.
+            self.player_equipment_broke(
+                horizon_world::player_inventory::EquipmentSlot::Feet,
+                &stack,
+            );
             self.apply_equipment();
         }
     }

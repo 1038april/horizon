@@ -10,8 +10,14 @@ use crate::{
     items::ItemStack,
     world::World,
 };
-use horizon_core::geometry::{Aabb, Direction, Vec3};
-use horizon_world::block_collision::BlockCollisionRegistry;
+use horizon_core::{
+    geometry::{Aabb, Direction, Vec3, VoxelShape},
+    position::BlockPos,
+};
+use horizon_world::{
+    block_collision::BlockCollisionRegistry,
+    level::portal_travel::{BorderBounds, find_free_position},
+};
 
 /// Gravity applied each tick when the item is not in a fluid (`ItemEntity.tick`).
 const ITEM_GRAVITY: f64 = 0.04;
@@ -549,16 +555,54 @@ impl ExperienceOrb {
         self.health = (self.health as f32 - damage) as i32;
         self.health <= 0
     }
-    pub fn bounds(&self) -> Aabb {
+    /// The box of an orb whose `position` (the bottom of the box) is `at`.
+    pub fn box_at(at: Vec3) -> Aabb {
         let h = 0.25;
         Aabb::new(
-            Vec3::new(self.position.x - h, self.position.y, self.position.z - h),
-            Vec3::new(
-                self.position.x + h,
-                self.position.y + 0.5,
-                self.position.z + h,
-            ),
+            Vec3::new(at.x - h, at.y, at.z - h),
+            Vec3::new(at.x + h, at.y + 0.5, at.z + h),
         )
+    }
+    pub fn bounds(&self) -> Aabb {
+        Self::box_at(self.position)
+    }
+    /// `Entity.unstuckIfPossible`, which `ExperienceOrb`'s constructor runs as
+    /// `if (!level.noCollision(box)) unstuckIfPossible(box.getSize())`: the free
+    /// spot nearest the box's centre, searched in a cube of the box's size
+    /// around it. `None` when the box is already free (the orb then keeps its
+    /// exact position) or when nothing free is that close. `shape(p)` is the
+    /// block's collision shape at `p`, in world coordinates.
+    pub fn unstuck(
+        at: Vec3,
+        border: &BorderBounds,
+        mut shape: impl FnMut(BlockPos) -> Option<VoxelShape>,
+    ) -> Option<Vec3> {
+        let bounds = Self::box_at(at);
+        let size = bounds.average_size();
+        let lo = bounds.min_position();
+        let cells = |v: f64| (v - 1.0e-7).floor() as i32 - 1..=(v + 1.0e-7).floor() as i32 + 1;
+        // noCollision(box): a block shape reaching into it leaves the orb stuck.
+        let mut stuck = false;
+        'cells: for x in cells(lo.x) {
+            for y in cells(lo.y) {
+                for z in cells(lo.z) {
+                    if shape(BlockPos::new(x, y, z))
+                        .is_some_and(|s| s.boxes().iter().any(|b| b.intersects(bounds)))
+                    {
+                        stuck = true;
+                        break 'cells;
+                    }
+                }
+            }
+        }
+        if !stuck {
+            return None;
+        }
+        // `AABB.ofSize(center, size, size, size)`: where the box's centre may
+        // go, a cube of the box's mean size around its centre.
+        let allowed = Aabb::of_size(bounds.center(), Vec3::new(size, size, size));
+        find_free_position(allowed, bounds.center(), bounds.size(), border, shape)
+            .map(|p| p.subtract(Vec3::new(0.0, bounds.size().y / 2.0, 0.0)))
     }
     /// `ExperienceOrb.canMerge(orb, id, value)` for an orb that is not removed:
     /// the same value and ids a multiple of 40 apart.
@@ -1749,5 +1793,56 @@ mod slime_bounce_tests {
         falling.needs_sync = false;
         falling.tick(&world, assets.registry, &facts, &collision, false, &fluids);
         assert!(!falling.needs_sync);
+    }
+}
+
+#[cfg(test)]
+mod unstuck_tests {
+    use super::*;
+
+    const BORDER: BorderBounds = BorderBounds {
+        min_x: -1.0e6,
+        min_z: -1.0e6,
+        max_x: 1.0e6,
+        max_z: 1.0e6,
+    };
+
+    /// A level of full blocks at `solid`; every other cell is air.
+    fn shapes(solid: &[(i32, i32, i32)]) -> impl FnMut(BlockPos) -> Option<VoxelShape> + '_ {
+        move |p| {
+            if solid.contains(&(p.x, p.y, p.z)) {
+                VoxelShape::from_box(Aabb::block(p)).ok()
+            } else {
+                None
+            }
+        }
+    }
+
+    /// `level.noCollision(box)` over the same cells the search reads.
+    fn free(solid: &[(i32, i32, i32)], b: Aabb) -> bool {
+        !solid
+            .iter()
+            .any(|&(x, y, z)| Aabb::block(BlockPos::new(x, y, z)).intersects(b))
+    }
+
+    #[test]
+    fn an_orb_spawned_in_a_block_moves_to_a_free_box() {
+        // One block at y 0..1 and an orb standing in its upper half, as a mob
+        // killed inside one leaves it: its box overlaps the block by 0.1.
+        let solid = [(0, 0, 0)];
+        let at = Vec3::new(0.5, 0.9, 0.5);
+        let moved = ExperienceOrb::unstuck(at, &BORDER, shapes(&solid)).expect("the orb moves");
+        // The nearest free box sits on the block's top face.
+        assert_eq!(moved, Vec3::new(0.5, 1.0, 0.5));
+        assert!(!ExperienceOrb::box_at(moved).intersects(Aabb::block(BlockPos::new(0, 0, 0))));
+    }
+
+    #[test]
+    fn an_orb_in_open_air_keeps_its_position() {
+        let solid = [(0, 0, 0)];
+        let at = Vec3::new(0.5, 2.0, 0.5);
+        assert!(free(&solid, ExperienceOrb::box_at(at)));
+        // Nothing to move for: the spawn sites keep the position as given.
+        assert_eq!(ExperienceOrb::unstuck(at, &BORDER, shapes(&solid)), None);
     }
 }

@@ -4,7 +4,7 @@
 //! `MinecartItem` placement, `VehicleEntity` breaking, the chest, hopper,
 //! furnace and TNT variants, saving, and `AbstractMinecartRenderer`'s old
 //! rail-following render with the display block.
-use super::{Game, Hit, Keys};
+use super::{Game, Hit, InteractTarget, Keys};
 use horizon_client::{
     blocks::Fluid,
     collisions::SceneCollisions,
@@ -969,7 +969,9 @@ impl Game<'_> {
         // MinecartTNT.isPrimed (fuse > -1): a cart that ran into a wall or
         // fell unprimed blows rails up like any blast.
         self.combat.rail_proof_blast = c.fuse >= 0;
+        self.combat.explosion_in_water = self.bounds_in_water(c.bounds());
         let _ = self.with_hive_emptying_blast(|g| g.server_explode(at, power, interaction, false));
+        self.combat.explosion_in_water = false;
         self.combat.rail_proof_blast = false;
     }
     /// `AbstractMinecart.push` from each player walking into a cart
@@ -1462,12 +1464,17 @@ impl Game<'_> {
             self.trigger_loot_table(&loot.table);
         }
     }
-    /// `interact`: ride, open, fuel or ignite the cart under the crosshair.
-    pub(super) fn interact_cart(&mut self) -> bool {
-        let Some((i, d)) = self.cart_hit() else {
+    /// `interact`: ride, open, fuel or ignite the cart under the crosshair, or
+    /// the one a guest's interact packet named.
+    pub(super) fn interact_cart(&mut self, target: Option<InteractTarget>) -> bool {
+        let Some((i, d)) = (match target {
+            Some(t) => Self::named_entity(&self.carts, t.id, |c| c.id).map(|i| (i, 0.0)),
+            None => self.cart_hit(),
+        }) else {
             return false;
         };
-        if !self.before_block(d) {
+        // Only a client's own pick is stopped by a block: the range check passed.
+        if target.is_none() && !self.before_block(d) {
             return false;
         }
         let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft);
