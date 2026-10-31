@@ -54,7 +54,7 @@ Axolotl.mobInteract	port	crates/horizon-client/src/game/creatures.rs::Game::inte
 Axolotl.loadFromBucketTag	port	crates/horizon-client/src/entity_nbt.rs::load_bucket_data	age, age lock and hunting cooldown
 Axolotl.applySupportingEffects	inline	crates/horizon-client/src/game/creatures.rs::Game::handle_mob_events	the AxolotlSupportPlayer event: regeneration and no mining fatigue, host player only
 Axolotl.usePlayerItem	port	crates/horizon-client/src/game/creatures.rs::Game::interact_mob	a fed tropical fish bucket leaves a water bucket in its place (creative keeps the fish bucket and adds the bucket)
-Axolotl.Variant.getSpawnVariant	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	gap: the common pick for spawn groups only; the rare (blue) pick is never drawn
+Axolotl.Variant.getSpawnVariant	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	the common pick for a spawn group; the 1-in-1200 blue draw is the breeding path's (crates/horizon-client/src/game/creatures.rs::Game::breed)
 AxolotlAi.initPlayDeadActivity	port	crates/horizon-client/src/mobs/animal_brain.rs::axolotl_package	
 AxolotlAi.initFightActivity	port	crates/horizon-client/src/mobs/animal_brain.rs::axolotl_package	
 AxolotlAi.initCoreActivity	port	crates/horizon-client/src/mobs/animal_brain.rs::axolotl_package	

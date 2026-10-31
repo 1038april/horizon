@@ -113,7 +113,7 @@ Ocelot.reassessTrustingGoals	port	crates/horizon-client/src/mobs/tame.rs::regist
 Ocelot.checkSpawnObstruction	port	crates/horizon-client/src/mobs/spawn_selection.rs::spawn_obstruction	unobstructed, no liquid, at or above sea level on grass or leaves
 Ocelot.finalizeSpawn	port	crates/horizon-client/src/mobs/finalize.rs::Ctx::finalize	baby chance 1.0 for a group
 Ocelot.getLeashOffset	missing		minor: the lead ties at full eye height instead of half of it (leash::leash_offset only special-cases llamas)
-Ocelot.OcelotAvoidEntityGoal.canUse	missing		player: see reassessTrustingGoals, no avoidance goal exists
+Ocelot.OcelotAvoidEntityGoal.canUse	port	crates/horizon-client/src/mobs/tame.rs::OcelotAvoid::can_use	registered last for a wild ocelot with 16 blocks, 0.8 and 1.33; trust is still not modelled, so every ocelot flees
 Ocelot.OcelotAvoidEntityGoal.canContinueToUse	missing		minor: see reassessTrustingGoals, no avoidance goal exists
 Ocelot.OcelotTemptGoal.canScare	missing		minor: see registerGoals, an ocelot has no tempt goal
 AbstractFish.registerGoals	port	crates/horizon-client/src/mobs/aquatic.rs::register	panic, player avoidance and random swimming; gap: player: creative players do not scare fish (the avoid goal skips them, vanilla only skips spectators)
