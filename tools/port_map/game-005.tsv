@@ -10,7 +10,7 @@ Entity.commonTick	inline	crates/horizon-client/src/mobs/ai.rs::tick	previous pos
 Entity.computeSpeed	missing		minor: lastKnownSpeed is not tracked; only FollowPlayerRiddenEntityGoal reads it and Horizon has no such goal
 Entity.setSharedFlagOnFire	inline	crates/horizon-client/src/game/lan.rs::mob_meta	gap: minor: flag 0x01 is fire_ticks > 0, packed only when a mob goes to LAN guests; HasVisualFire is not read
 Entity.isSupportedBy	inline	crates/horizon-client/src/game/piston_push.rs::Game::push_body	supporting block equal to the piston's block decides whether the body rides it
-Entity.getBlockBounciness	port	crates/horizon-world/src/movement_restitution.rs::restitute_movement	gap: player: only the player uses block restitution; mobs ignore it (Mob::do_move says so), so a mob falling on a slime block or bed does not bounce
+Entity.getBlockBounciness	port	crates/horizon-world/src/movement_restitution.rs::restitute_movement	mobs bind it too through crates/horizon-client/src/mobs/living.rs::MobRestitution::block_bounce_restitution, so a mob landing on a slime block or bed bounces
 Entity.addMovementThisTick	port	crates/horizon-world/src/entity_move.rs::MovementHistory::add	the 100 record cap merges the first two (MovementHistory); only the player keeps a history, mobs and arrows sweep from the start to the end of their move
 Entity.hasMovedHorizontallyRecently	port	crates/horizon-client/src/mobs/dolphin.rs::FollowPlayerRidden::rider	FollowPlayerRiddenEntityGoal follows a ridden boat or nautilus
 Entity.isStateClimbable	port	crates/horizon-world/src/movement_emission.rs::climbable	climbable tag or powder snow
