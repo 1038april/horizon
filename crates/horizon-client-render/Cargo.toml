@@ -42,6 +42,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["raw_value"] }
 sha1 = "0.10"
 sha2 = "0.10.9"
+smallvec = { version = "1", features = ["const_new"] }
 symphonia = { version = "0.5", default-features = false, features = ["ogg", "vorbis"] }
 unicode-bidi = "0.3.18"
 ureq = { version = "2", default-features = false, features = ["tls"] }
