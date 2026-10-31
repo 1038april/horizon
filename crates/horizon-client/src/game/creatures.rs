@@ -1442,7 +1442,7 @@ impl Game<'_> {
         let context = super::native_hooks::NativeLootDrops {
             table: table.as_deref().unwrap_or_default(),
             dimension: self.dim.id(),
-            origin: pos,
+            origin: [m.position.x, m.position.y, m.position.z],
             block: None,
             entity: Some((m.id, &kind)),
             player: player_uuid,

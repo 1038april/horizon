@@ -484,7 +484,7 @@ pub(crate) struct NativeLootDrops<'a> {
     pub(crate) table: &'a str,
     /// The level they drop in (`minecraft:overworld`).
     pub(crate) dimension: &'a str,
-    /// Where the items drop (`LootContextParams.ORIGIN`).
+    /// `LootContextParams.ORIGIN`: a broken block's centre, a mob's position.
     pub(crate) origin: [f64; 3],
     /// The block broken: its position and state.
     pub(crate) block: Option<([i32; 3], BlockStateId)>,
