@@ -1110,6 +1110,14 @@ impl Game<'_> {
     pub(super) fn native_tooltip(&self, stack: &ItemStack, lines: &mut Vec<(Text, u32)>) {
         let _ = (stack, lines);
     }
+    /// The small bar `GuiGraphicsExtractor.itemDecorations` draws under an
+    /// item, wherever the game shows one: `bar` arrives holding vanilla's value
+    /// (the damage bar, or a bundle's fullness already applied) and may be
+    /// replaced (width `0..=13`, colour `rgb`) or set to `None` to hide it.
+    /// Asked each frame a stack is drawn. Client-side. @API:item_bar@.
+    pub(super) fn native_item_bar(&self, stack: &ItemStack, bar: &mut Option<(i32, u32)>) {
+        let _ = (stack, bar);
+    }
     /// A player uses `stack` (right click) with `self.hand` on the block at
     /// `pos`, `face` the face clicked (`[0, 1, 0]` is the top), once the
     /// block itself let the click through (a chest still opens): where
