@@ -170,6 +170,7 @@ impl<G: ChunkGenerator> Saves for G {
 #[derive(Clone, Copy)]
 struct MeshSettings {
     nether: bool,
+    shader_pack_lighting: bool,
     zoom: BiomeZoom,
     blend_radius: i32,
     smooth_lighting: bool,
@@ -375,6 +376,9 @@ pub struct Streaming {
     /// Dimension flags: sky light, Nether face shading.
     pub sky_light: bool,
     pub nether_shading: bool,
+    /// A shader pack lights the faces: sections mesh without face shading
+    /// (`Mesher::shader_pack_lighting`).
+    pub shader_pack_lighting: bool,
     /// `BiomeManager`'s zoom seed (the hashed world seed) and `biomeBlendRadius`.
     pub biome_zoom: BiomeZoom,
     pub biome_blend: i32,
@@ -687,6 +691,7 @@ impl Streaming {
                                     };
                                     let mut mesher = Mesher {
                                         nether_shading: settings.nether,
+                                        shader_pack_lighting: settings.shader_pack_lighting,
                                         zoom: settings.zoom,
                                         blend_radius: settings.blend_radius,
                                         smooth_lighting: settings.smooth_lighting,
@@ -762,6 +767,7 @@ impl Streaming {
             loading: false,
             sky_light: true,
             nether_shading: false,
+            shader_pack_lighting: false,
             biome_zoom: BiomeZoom::new(0),
             biome_blend: 2,
             smooth_lighting: true,
@@ -1559,6 +1565,7 @@ impl Streaming {
                         self.sequence,
                         MeshSettings {
                             nether: self.nether_shading,
+                            shader_pack_lighting: self.shader_pack_lighting,
                             zoom: self.biome_zoom,
                             blend_radius: self.biome_blend,
                             smooth_lighting: self.smooth_lighting,
