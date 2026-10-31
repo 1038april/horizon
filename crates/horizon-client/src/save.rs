@@ -50,6 +50,8 @@ use std::{
 
 pub const VERSION_NAME: &str = horizon_core::VANILLA_VERSION;
 
+mod gateway;
+
 /// Snapshot live block entities and custom names for a save batch without
 /// mutating the world. Each map is visited once, retaining its iteration order
 /// within each chunk (including repeated chunk coordinates in the input).

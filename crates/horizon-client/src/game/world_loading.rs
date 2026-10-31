@@ -491,6 +491,10 @@ pub(super) fn make_streaming(
         horizon_client::save::dimension_dir(world_root, dim.id()),
         shape,
     ));
+    if dim == Dim::End {
+        // Migrate before any chunk reader can cache the old block entities.
+        save.migrate_end_gateway_exits()?;
+    }
     let mut locator = None;
     let flat = (dim == Dim::Overworld)
         .then(|| horizon_client::save::world_gen_settings(world_root))
