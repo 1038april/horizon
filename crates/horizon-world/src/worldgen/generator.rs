@@ -925,10 +925,9 @@ struct Pipeline<R: RandomSource> {
 struct FlatLayers {
     min_y: i32,
     states: Vec<BlockStateId>,
-    /// `layers.get(i) == null`: counts as opaque in `getBaseHeight` and `getBaseColumn`.
+    /// `layers.get(i) == null`: `getBaseHeight` skips it, `getBaseColumn` reads it as air, and
+    /// `buildTerrain` leaves it for the `FillLayerFeature` that runs after the structures.
     null: Vec<bool>,
-    /// The block a null layer stands for in the noise column queries (any opaque one).
-    stand_in: BlockStateId,
 }
 /// A superflat world's generator settings (`FlatLevelGeneratorSettings`).
 #[derive(Clone, Debug)]
@@ -1215,6 +1214,15 @@ where
         Ok(pipeline)
     }
     fn generation(&self) -> WorldGenerationContext {
+        // `new WorldGenerationContext(generator, level)`: the larger minimum Y and the smaller
+        // height of the generator and the level (`FlatLevelSource`: 0 and 384).
+        if self.flat.is_some() {
+            return WorldGenerationContext::new(
+                self.settings.level_min_y.max(0),
+                self.settings.level_height.min(384),
+                self.settings.sea_level,
+            );
+        }
         WorldGenerationContext::new(
             self.settings.noise_min_y,
             self.settings.noise_height,
@@ -1504,7 +1512,7 @@ where
                 if y >= self.settings.level_min_y + self.settings.level_height {
                     break;
                 }
-                if data.states.get(state).is_air() {
+                if flat.null[i] || data.states.get(state).is_air() {
                     continue;
                 }
                 for z in 0..16 {
@@ -1781,9 +1789,8 @@ where
             for y in (self.settings.level_min_y..top).rev() {
                 let i = (y - flat.min_y) as usize;
                 let state = match flat.states.get(i) {
-                    Some(_) if flat.null[i] => flat.stand_in,
-                    Some(&state) => state,
-                    None => match air {
+                    Some(&state) if !flat.null[i] => state,
+                    _ => match air {
                         Some(air) => air,
                         None => return,
                     },
@@ -3237,22 +3244,36 @@ impl OverworldGenerator {
         }
         states.truncate(level_height.max(0) as usize);
         null.truncate(states.len());
+        // `FlatLevelSource.getSeaLevel`; its minimum Y and depth are in `generation`.
+        pipeline.settings.sea_level = -63;
+        let top_layers: Vec<(i32, BlockStateId)> = null
+            .iter()
+            .zip(&states)
+            .enumerate()
+            .filter(|(_, (hole, _))| **hole)
+            .map(|(i, (_, &state))| (level_min_y + i as i32, state))
+            .collect();
         pipeline.flat = Some(FlatLayers {
             min_y: level_min_y,
             states,
             null,
-            stand_in: registry
-                .default_state("minecraft:stone")
-                .ok_or_else(|| resource("missing block minecraft:stone"))?,
         });
         // No placed features here (the layers are the whole terrain), but the structure
         // steps run: the plan keeps the steps and leaves their feature lists empty.
         pipeline.decoration =
-            super::generator_decoration::Decoration::new_with(&data, &pipeline.source, false)?
-                .map(Arc::new);
+            super::generator_decoration::Decoration::new_with(&data, &pipeline.source, false)?.map(
+                |mut decoration| {
+                    decoration.top_layers = top_layers;
+                    Arc::new(decoration)
+                },
+            );
         if let (Some(state), Some(only)) = (pipeline.structures.as_mut(), &flat.structure_overrides)
         {
             state.restrict_to(only);
+        }
+        // `ChunkGeneratorStructureState.createForFlat`: the stronghold rings use seed 0.
+        if let Some(state) = pipeline.structures.as_mut() {
+            state.ring_seed = Some(0);
         }
         Ok(Self {
             pipeline: Arc::new(pipeline),

@@ -39,6 +39,8 @@ pub(super) struct StructureState {
     rings: Arc<OnceLock<Rings>>,
     /// Their biome searches while they are computed.
     ring_work: OnceLock<RingWork>,
+    /// The seed the rings are searched with when it is not the world's (a superflat world's 0).
+    pub(super) ring_seed: Option<i64>,
     /// `StructureRegistry::zone_reach`.
     zone_reach: i32,
 }
@@ -222,6 +224,7 @@ impl StructureState {
             start_work: ChunkWork::new(),
             rings,
             ring_work: OnceLock::new(),
+            ring_seed: None,
         }))
     }
     /// `FlatLevelGeneratorSettings.structureOverrides`: only the structure sets named
@@ -249,10 +252,10 @@ impl StructureState {
     }
     fn ring_work(&self, context: &impl StartContext) -> &RingWork {
         self.ring_work.get_or_init(|| {
-            RingWork::new(
-                self.registry
-                    .ring_searches(&self.possible_sets, context.seed()),
-            )
+            RingWork::new(self.registry.ring_searches(
+                &self.possible_sets,
+                self.ring_seed.unwrap_or_else(|| context.seed()),
+            ))
         })
     }
     /// The concentric ring positions, computing them with the threads that

@@ -1180,6 +1180,65 @@ fn a_superflat_world_runs_its_structure_sets_on_flat_ground() {
     );
 }
 
+/// `createForFlat` searches the stronghold rings with seed 0, so a superflat world's
+/// strongholds are in the same place on every seed; a layer that is not opaque to
+/// `MOTION_BLOCKING` is `null`, left out of `buildTerrain` for the fill after the structures.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn a_superflat_world_keeps_its_strongholds_on_every_seed_and_leaves_null_layers_for_the_fill() {
+    use crate::streaming::ChunkGenerator;
+    let Some(base) = prepared() else {
+        return;
+    };
+    let assets = Assets::load(&base).unwrap();
+    let biomes = crate::biome::Biomes::load(&base).unwrap();
+    let flat = horizon_world::worldgen::generator::FlatSettings {
+        layers: vec![
+            ("minecraft:bedrock".into(), 1),
+            ("minecraft:dirt".into(), 2),
+            ("minecraft:snow".into(), 1),
+        ],
+        biome: "minecraft:plains".into(),
+        structure_overrides: Some(vec!["minecraft:strongholds".into()]),
+    };
+    let make = |seed| {
+        crate::vanillagen::VanillaTerrain::for_flat(
+            &base.join("worldgen"),
+            &Default::default(),
+            assets.registry,
+            &biomes,
+            seed,
+            &flat,
+            true,
+        )
+        .unwrap()
+    };
+    let stronghold = |seed| {
+        make(seed)
+            .locate(&["minecraft:stronghold".to_owned()], [0, 64, 0], 100)
+            .expect("a stronghold")
+    };
+    assert_eq!(stronghold(1234), stronghold(-987654321));
+    let terrain = make(1234);
+    let mut worker = terrain.worker();
+    let chunk = terrain.finish(terrain.proto(&mut worker, 3, 3));
+    let name = |y| {
+        let id = chunk.block(3 * 16 + 5, y, 3 * 16 + 7);
+        assets.registry.state(id).unwrap().name.clone()
+    };
+    // The snow layer (index 3, y -61) is filled later, not by the terrain.
+    assert_eq!(
+        [-64, -63, -62, -61].map(name),
+        [
+            "minecraft:bedrock",
+            "minecraft:dirt",
+            "minecraft:dirt",
+            "minecraft:air"
+        ]
+        .map(String::from)
+    );
+}
+
 /// A mod's mob effect gets the network id after vanilla's last, on the game
 /// and its server alike, and joins the ids `/effect` and its suggestions
 /// check.
