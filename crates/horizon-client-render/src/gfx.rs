@@ -475,6 +475,9 @@ pub struct ScreenshotRequest {
     /// `GameRenderer.takeAutoScreenshot`: centre-crop the frame to a square
     /// and average it down to this size. `None` saves the frame as drawn.
     pub size: Option<[u32; 2]>,
+    /// F2's: drawn at the game's resolution (Resolution Scale above 100%) times
+    /// `Renderer::screenshot_quality`, not the window's.
+    pub scaled: bool,
 }
 pub struct Renderer {
     instance: wgpu::Instance,
@@ -739,6 +742,9 @@ pub struct Renderer {
     pub screenshot: Option<ScreenshotRequest>,
     /// Outcome of the last screenshot: frame size, or the error.
     pub screenshot_result: Option<std::result::Result<[u32; 2], String>>,
+    /// Screenshot Quality (Horizon setting): a `scaled` screenshot's frame is this many
+    /// times the game's resolution (1, 2, 4 or 8).
+    pub screenshot_quality: u32,
     /// Brightness option (lightmap gamma), 0..1.
     pub gamma: f32,
     /// Optional full-light lightmap (Horizon Extras).
@@ -3145,6 +3151,7 @@ impl Renderer {
             started: Instant::now(),
             screenshot: None,
             screenshot_result: None,
+            screenshot_quality: 1,
             gamma: 0.5,
             improved_transparency: false,
             oit: None,
@@ -4280,7 +4287,11 @@ impl Renderer {
         }
     }
     pub fn render(&mut self, frame: &Frame) -> Result<bool> {
-        let rendered = self.draw_frame(frame);
+        let scaled = self.screenshot_size();
+        let rendered = match scaled {
+            Some(size) => self.draw_scaled_frame(frame, size),
+            None => self.draw_frame(frame),
+        };
         // A frame that was not drawn still submits the section copies and
         // atlas patches (glyphs, skins, maps), which the caller already took.
         if !matches!(rendered, Ok(true)) && !frame.hud.patches.is_empty() {
@@ -4303,7 +4314,69 @@ impl Renderer {
         } else if let Some(copies) = self.take_section_copies() {
             self.queue.submit([copies]);
         }
-        rendered
+        // A scaled screenshot's frame never reached the window.
+        rendered.map(|drawn| drawn && scaled.is_none())
+    }
+    /// The frame size of the pending `scaled` screenshot when it is larger than the
+    /// window: the window's times the Resolution Scale (when above 100%) and
+    /// `screenshot_quality`, cut down to what one texture and one readback buffer hold.
+    fn screenshot_size(&self) -> Option<[u32; 2]> {
+        let request = self.screenshot.as_ref()?;
+        if !request.scaled || request.size.is_some() || self.suspended {
+            return None;
+        }
+        let window = [self.config.width, self.config.height];
+        let limits = self.device.limits();
+        let factor = scaled_screenshot_factor(
+            window,
+            self.world_post.scale,
+            self.screenshot_quality,
+            limits.max_texture_dimension_2d,
+            limits.max_buffer_size,
+        );
+        (factor > 1.0).then(|| window.map(|side| (side as f32 * factor) as u32))
+    }
+    /// Draws one frame at `size` into a texture of its own, for the pending screenshot:
+    /// every pass sizes itself by `config`, which says `size` for this frame, the HUD
+    /// keeps its layout at a larger scale, and the world is drawn at `size` (a Resolution
+    /// Scale below 100% stays as low). The window keeps its last frame.
+    fn draw_scaled_frame(&mut self, frame: &Frame, size: [u32; 2]) -> Result<bool> {
+        let window = [self.config.width, self.config.height];
+        let mut config = self.config.clone();
+        [config.width, config.height] = size;
+        config.usage |= wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC;
+        // Out of video memory: the window's own frame instead.
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let target = Self::offscreen_target(&self.device, &config);
+        let depth = Self::depth(&self.device, &config);
+        if let Some(e) = pollster::block_on(scope.pop()) {
+            log::warn!(
+                "Horizon renderer: no memory for a {}x{} screenshot ({e}); taking it at {}x{}",
+                size[0],
+                size[1],
+                window[0],
+                window[1]
+            );
+            return self.draw_frame(frame);
+        }
+        let scale = self.world_post.scale;
+        self.world_post.scale = scale / scale.max(1.0);
+        self.hud.zoom = size[0] as f32 / window[0] as f32;
+        [self.config.width, self.config.height] = size;
+        let surface = self.surface.take();
+        // HDR presents to the swapchain; this frame goes to a file.
+        let hdr = self.hdr.take();
+        let offscreen = self.offscreen.replace(target);
+        let window_depth = std::mem::replace(&mut self.depth, depth);
+        let drawn = self.draw_frame(frame);
+        self.depth = window_depth;
+        self.offscreen = offscreen;
+        self.hdr = hdr;
+        self.surface = surface;
+        [self.config.width, self.config.height] = window;
+        self.hud.zoom = 1.0;
+        self.world_post.scale = scale;
+        drawn
     }
     fn draw_frame(&mut self, frame: &Frame) -> Result<bool> {
         self.arena.trim();
@@ -6777,6 +6850,24 @@ impl Renderer {
         Ok(true)
     }
 }
+/// How many times the window's size a scaled screenshot is: the Resolution Scale
+/// `world_scale` when above 1, times `quality`, as far as a side fits in
+/// `max_side` pixels and the readback in `max_buffer` bytes.
+fn scaled_screenshot_factor(
+    [width, height]: [u32; 2],
+    world_scale: f32,
+    quality: u32,
+    max_side: u32,
+    max_buffer: u64,
+) -> f32 {
+    let wanted = world_scale.max(1.0) * quality.max(1) as f32;
+    let (w, h) = (f64::from(width.max(1)), f64::from(height.max(1)));
+    let side = f64::from(max_side) / w.max(h);
+    // padded_row(w * f) * h * f <= (4 * w * f + 256) * h * f <= max_buffer.
+    let (a, b) = (4.0 * w * h, 256.0 * h);
+    let buffer = ((b * b + 4.0 * a * max_buffer as f64).sqrt() - b) / (2.0 * a);
+    wanted.min(side.min(buffer) as f32)
+}
 /// Bytes per row of a `width`-pixel frame read back at 4 bytes a pixel.
 fn padded_row(width: u32) -> u32 {
     (width * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
@@ -7183,6 +7274,30 @@ mod tests {
             (eye.truncate() - Vec3::new(0.0, -6.5, 0.0)).length() < 1e-5,
             "{eye}"
         );
+    }
+    #[test]
+    fn scaled_screenshots_follow_resolution_scale_and_quality_within_limits() {
+        use super::scaled_screenshot_factor as factor;
+        let big = u64::MAX / 2;
+        // The window's size at 100% and 1x; Resolution Scale below 100% stays the window's.
+        assert_eq!(factor([1920, 1080], 1.0, 1, 16384, big), 1.0);
+        assert_eq!(factor([1920, 1080], 0.5, 1, 16384, big), 1.0);
+        // The game's resolution, times the quality.
+        assert_eq!(factor([1920, 1080], 2.0, 1, 16384, big), 2.0);
+        assert_eq!(factor([1920, 1080], 1.5, 4, 16384, big), 6.0);
+        assert_eq!(factor([1920, 1080], 0.5, 8, 16384, big), 8.0);
+        // Cut to the largest texture side: 3840 * 4.266 = 16384.
+        let f = factor([3840, 2160], 1.0, 8, 16384, big);
+        assert!(
+            (3840.0 * f) as u32 <= 16384 && (3840.0 * f) as u32 > 16300,
+            "{f}"
+        );
+        // Cut to the largest buffer: 256 MiB holds about 3.8x of 1080p's readback.
+        let max = 256 << 20;
+        let f = factor([1920, 1080], 1.0, 8, 16384, max);
+        let [w, h] = [1920, 1080].map(|s| (s as f32 * f) as u32);
+        assert!(u64::from(super::padded_row(w)) * u64::from(h) <= max, "{f}");
+        assert!(f > 3.7, "{f}");
     }
     #[test]
     fn drawable_size_skips_minimized_and_oversized_windows() {
