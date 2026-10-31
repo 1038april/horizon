@@ -2865,6 +2865,7 @@ impl Game<'_> {
                 }),
         };
         // The causing entity for the death message.
+        let marks = self.pending_marks();
         let owner = self.combat.projectile_owner.take();
         if let Some(a) = attacker.or(owner) {
             self.note_attacker(damage_type, a);
@@ -2879,6 +2880,11 @@ impl Game<'_> {
         // DamageSource.scalesWithDifficulty: a mob (or its projectile's
         // owner) caused the hit, not a player.
         let living_cause = attacker.or(owner).is_some();
+        // The native damage hook's causing entity: the one given, or the
+        // owner of the projectile that hit (`projectile_owner` outlives a
+        // projectile's other hits), not the guessed melee attacker.
+        let owner = owner.filter(|_| projectile);
+        let causing = known.flatten().or(owner).map_or(0, |id| id as i32);
         let mut outcome = horizon_client::health::BlockOutcome::default();
         if let Some(player) = self.player.as_mut()
             && let Some(id) = self.motion.health.damage.id(damage_type)
@@ -2889,6 +2895,7 @@ impl Game<'_> {
                 amount,
                 blocking,
                 living_cause,
+                causing,
             )
             && {
                 outcome = o;
@@ -2920,6 +2927,10 @@ impl Game<'_> {
         }
         // LivingEntity.hurtServer: ENTITY_HURT_PLAYER, unless it returned
         // early (invulnerable, or inside the hurt cooldown).
+        // A hit a native mod canceled records no damage (hurtServer never ran).
+        if outcome.canceled {
+            self.drop_pending_since(marks);
+        }
         if outcome.hurt || outcome.sound {
             let source = attacker
                 .or(owner)
@@ -5960,6 +5971,22 @@ fn bucketable(species: Species) -> Option<(&'static str, &'static str)> {
 /// exploding creeper too).
 pub(super) fn source_damage_type(d: Damage) -> &'static str {
     damage_type(d.kind, d.attacker.is_some())
+}
+/// Whether the causing entity deals `kind` itself, so it is the source's
+/// direct entity too: a melee hit (`DamageSources.mobAttack`, `playerAttack`,
+/// a mace's or a spear's), a sting, a sonic boom, thorns.
+pub(super) fn melee(kind: horizon_client::mobs::DamageKind) -> bool {
+    use horizon_client::mobs::DamageKind as K;
+    matches!(
+        kind,
+        K::PlayerAttack
+            | K::MaceSmash
+            | K::Spear
+            | K::MobAttack
+            | K::Sting
+            | K::SonicBoom
+            | K::Thorns
+    )
 }
 /// The damage type id of a Horizon damage kind. `caused`: the source has a
 /// causing entity (only a blast asks).

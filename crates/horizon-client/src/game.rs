@@ -6349,6 +6349,12 @@ impl Game<'_> {
             None => 0.0,
         };
         self.ticks += 1;
+        // An in-frame LAN host's player has the entity id its guests see it by.
+        if !self.serving()
+            && let (Some(host), Some(p)) = (&self.lan, self.player.as_mut())
+        {
+            p.entity_id = host.host_entity;
+        }
         self.track_experience_display();
         self.tick_enchanting_book();
         // `/tick freeze` stops the world but not the player.
@@ -18312,6 +18318,7 @@ pub fn run() -> Result<()> {
     {
         return Ok(());
     }
+    let _ = horizon_client::health::HURT_SERVER.set(native_hooks::hurt_server);
     // Before any worker starts: on Linux they go behind the server thread
     // and the render thread.
     horizon_threads::put_helpers_behind();
