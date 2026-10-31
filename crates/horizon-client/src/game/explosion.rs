@@ -508,6 +508,7 @@ impl Game<'_> {
         }
         self.mobs = mobs;
         // Dropped items: 5 health, destroyed by the explosion damage (nether stars resist).
+        let before = self.dropped_ids();
         let mut items = std::mem::take(&mut self.dropped);
         items.retain_mut(|item| {
             let feet = [item.position.x, item.position.y, item.position.z];
@@ -534,6 +535,7 @@ impl Game<'_> {
             true
         });
         self.dropped = items;
+        self.native_items_left_since(&before);
         // Primed TNT: knockback only, from its position (not its eyes).
         let mut tnts = std::mem::take(&mut self.tnts);
         for t in &mut tnts {

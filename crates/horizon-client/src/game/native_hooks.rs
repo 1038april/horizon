@@ -6,6 +6,9 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 41 adds entities leaving a level (`native_entity_leave_level`), for
+//! item entities and experience orbs so far.
+//!
 //! API 40 adds mod messages between a mod's server and client halves
 //! (`native_net_from_client`, `native_net_from_server`, and
 //! `native_net_send_to_player`, `native_net_send_to_server` in
@@ -191,7 +194,7 @@ pub(super) use horizon_world::level::flags;
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 40;
+pub(crate) const NATIVE_HOOKS_API: u32 = 41;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -1091,6 +1094,18 @@ impl Game<'_> {
     ) {
         let _ = (dimension, kind, pos, natural);
     }
+    /// An entity leaves the server level `dimension` (NeoForge's
+    /// `EntityLeaveLevelEvent`): vanilla's `onTrackingEnd`, when it is removed
+    /// for any reason (picked up, merged, despawned, burnt, blown up, killed,
+    /// taken by a hopper or a mob, gone through a portal) or its chunk unloads,
+    /// a level closing with nobody in it included. Not for the entities still
+    /// loaded when the server stops, as in vanilla. `entity` is its ID and
+    /// `kind` its type (`minecraft:item`); it is no longer in the level's lists.
+    /// It only hears. API 41 tells item entities and experience orbs; later
+    /// APIs add other kinds, so check `kind`. Server-side.
+    pub(super) fn native_entity_leave_level(&mut self, dimension: &str, entity: u32, kind: &str) {
+        let _ = (dimension, entity, kind);
+    }
     /// `player`'s melee blow killed the mob `entity` of `kind` (other deaths
     /// aren't told yet). It only hears, after the blow landed. Server-side.
     /// API 40.
@@ -1826,6 +1841,52 @@ impl Game<'_> {
             let (kind, pos) = (mob_kind(m), [m.position.x, m.position.y, m.position.z]);
             self.native_mob_spawned(self.dim.id(), &kind, pos, natural);
         }
+    }
+    /// `native_entity_leave_level` for each of `entities`, of `kind`, gone
+    /// from the level in place. A client of a server tells nothing.
+    pub(super) fn native_entities_left(&mut self, kind: &str, entities: &[u32]) {
+        if self.remote.is_some() {
+            return;
+        }
+        let dimension = self.dim.id();
+        for &entity in entities {
+            self.native_entity_leave_level(dimension, entity, kind);
+        }
+    }
+    /// The IDs of the level's item entities, for `native_items_left_since`
+    /// (none on a client of a server, which tells nothing).
+    pub(super) fn dropped_ids(&self) -> Vec<u32> {
+        if self.remote.is_some() {
+            return Vec::new();
+        }
+        self.dropped.iter().map(|e| e.id).collect()
+    }
+    /// The IDs of the level's experience orbs, for `native_orbs_left_since`.
+    pub(super) fn orb_ids(&self) -> Vec<u32> {
+        if self.remote.is_some() {
+            return Vec::new();
+        }
+        self.orbs.iter().map(|o| o.id).collect()
+    }
+    /// The item entities of `before` gone since have left the level.
+    pub(super) fn native_items_left_since(&mut self, before: &[u32]) {
+        let now: std::collections::HashSet<u32> = self.dropped.iter().map(|e| e.id).collect();
+        let gone: Vec<u32> = before
+            .iter()
+            .copied()
+            .filter(|id| !now.contains(id))
+            .collect();
+        self.native_entities_left("minecraft:item", &gone);
+    }
+    /// The experience orbs of `before` gone since have left the level.
+    pub(super) fn native_orbs_left_since(&mut self, before: &[u32]) {
+        let now: std::collections::HashSet<u32> = self.orbs.iter().map(|o| o.id).collect();
+        let gone: Vec<u32> = before
+            .iter()
+            .copied()
+            .filter(|id| !now.contains(id))
+            .collect();
+        self.native_entities_left("minecraft:experience_orb", &gone);
     }
     /// The acting player's blow killed mob `index`.
     pub(super) fn native_kill_event(&mut self, index: usize) {

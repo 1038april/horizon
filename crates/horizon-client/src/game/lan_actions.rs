@@ -3602,7 +3602,7 @@ impl Game<'_> {
             let rest = self.as_guest(host, conn, |g| g.give(stack)).flatten();
             match rest {
                 None => {
-                    let item = self.dropped.remove(i);
+                    let item = self.remove_dropped(i);
                     if let Some(thrower) = thrower {
                         self.as_guest(host, conn, |g| {
                             g.trigger_thrown_picked_up_by_player(&item.stack, thrower);
@@ -3747,7 +3747,7 @@ impl Game<'_> {
         // A merged orb gives its value once per count and goes at zero.
         let orb = self.orbs[touching[pick]].clone();
         if orb.count <= 1 {
-            self.orbs.remove(touching[pick]);
+            self.remove_orb(touching[pick]);
         } else {
             self.orbs[touching[pick]].count -= 1;
         }

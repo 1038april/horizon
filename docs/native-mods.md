@@ -223,6 +223,13 @@ server for every player: `native_player_died`, `native_mob_spawned`, `native_mob
 `native_item_dropped` (a throw; not the items scattered when a player dies) and `native_item_picked_up` (`canceled` leaves the stack on the ground). They name a player by UUID. Bundles that use them
 need `"hooks": 40`.
 
+API 41 adds `native_entity_leave_level(dimension, entity, kind)`, an entity leaving a server level (NeoForge's
+`EntityLeaveLevelEvent`, vanilla's `onTrackingEnd`): removed for any reason (picked up, merged, despawned, burnt,
+blown up, killed, taken by a hopper or a mob, gone through a portal) or unloaded with its chunk, a level closing
+with nobody in it included. As in vanilla, the entities still loaded when the server stops aren't told. It only
+hears. API 41 tells item entities and experience orbs; later APIs add other kinds, so check `kind`. Bundles that
+use it need `"hooks": 41`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads

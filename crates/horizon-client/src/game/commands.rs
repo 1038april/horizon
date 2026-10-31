@@ -1924,7 +1924,11 @@ impl Game<'_> {
                     }
                 }
             }
-            Target::Item(id) => self.dropped.retain(|i| i.id != id),
+            Target::Item(id) => {
+                if let Some(i) = self.dropped.iter().position(|i| i.id == id) {
+                    self.remove_dropped(i);
+                }
+            }
             Target::Orb(id) => {
                 if let Some(o) = self.orbs.iter_mut().find(|o| o.id == id) {
                     o.age = u32::MAX / 2;
@@ -1949,7 +1953,9 @@ impl Game<'_> {
             Target::Dragon(id) => self.kill_dragon(id),
         }
         // The orbs marked for removal are gone (Entity.kill removes them).
+        let before = self.orb_ids();
         self.orbs.retain(|o| o.age < u32::MAX / 2);
+        self.native_orbs_left_since(&before);
     }
     fn cmd_kill(&mut self, ctx: &Context) -> R<i32> {
         let targets = if ctx.get("targets").is_some() {

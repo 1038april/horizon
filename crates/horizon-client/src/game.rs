@@ -3130,6 +3130,18 @@ impl Game<'_> {
             self.spawn_item(stack, at, v, 40);
         }
     }
+    /// Item entity `i` leaves the level (`Entity.discard`); mods hear it.
+    pub(super) fn remove_dropped(&mut self, i: usize) -> ItemEntity {
+        let e = self.dropped.remove(i);
+        self.native_entities_left("minecraft:item", &[e.id]);
+        e
+    }
+    /// Experience orb `i` leaves the level (`Entity.discard`); mods hear it.
+    pub(super) fn remove_orb(&mut self, i: usize) -> ExperienceOrb {
+        let o = self.orbs.remove(i);
+        self.native_entities_left("minecraft:experience_orb", &[o.id]);
+        o
+    }
     fn spawn_item(
         &mut self,
         stack: ItemStack,
@@ -6617,7 +6629,10 @@ impl Game<'_> {
                 self.handle_entity_portals();
                 self.handle_end_gateway_portals();
             });
+            let before = self.dropped_ids();
             horizon_client::spans::time("tick_items", || self.tick_items());
+            // Merged, burnt, despawned or picked up.
+            self.native_items_left_since(&before);
             horizon_client::spans::time("touch_arrows", || self.touch_arrows());
         }
         horizon_client::spans::time("spawn_loaded_entities", || self.spawn_loaded_entities());
@@ -6626,7 +6641,10 @@ impl Game<'_> {
         if running {
             horizon_client::spans::time("tick_mobs", || self.tick_mobs())?;
             horizon_client::spans::time("recheck_golem_openers", || self.recheck_golem_openers());
+            let before = self.orb_ids();
             horizon_client::spans::time("tick_experience", || self.tick_experience());
+            // Merged, despawned or picked up.
+            self.native_orbs_left_since(&before);
             horizon_client::spans::time("entity_portals", || {
                 self.find_entity_portals();
                 self.resolve_arrivals();

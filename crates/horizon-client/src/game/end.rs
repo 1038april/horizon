@@ -1592,7 +1592,7 @@ impl Game<'_> {
                 uuid,
                 self.persist_raw(id),
             );
-            self.dropped.remove(i);
+            self.remove_dropped(i);
             self.forget_entity(id);
             tag
         } else if let Some(i) = self.mobs.iter().position(|m| m.id == id) {

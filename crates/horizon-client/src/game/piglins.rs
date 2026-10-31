@@ -255,7 +255,7 @@ impl Game<'_> {
                 });
             }
             let stack = if &*item == "minecraft:gold_nugget" {
-                self.dropped.remove(j).stack
+                self.remove_dropped(j).stack
             } else {
                 let e = &mut self.dropped[j];
                 e.stack.count -= 1;
@@ -264,7 +264,7 @@ impl Game<'_> {
                     ..e.stack.clone()
                 };
                 if e.stack.count == 0 {
-                    self.dropped.remove(j);
+                    self.remove_dropped(j);
                 }
                 one
             };
