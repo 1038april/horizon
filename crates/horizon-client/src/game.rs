@@ -1966,6 +1966,8 @@ struct Game<'a> {
     modifiers: winit::keyboard::ModifiersState,
     /// The window's fullscreen request and reported state.
     fullscreen: horizon_client::window::FullscreenState,
+    /// The monitor whose video modes `settings.video_modes` holds.
+    video_modes: horizon_client::window::VideoModeList,
     /// MouseHandler's accumulated look and wheel state.
     mouse: MouseLook,
     /// An agent moved the mouse (`mouse-move`) since the pointer was last
@@ -5490,6 +5492,12 @@ impl Game<'_> {
             return Ok(true);
         }
         if block_hit.is_some() && (self.use_bone_meal(&stack)? || self.ignite_tnt(&stack)?) {
+            return Ok(true);
+        }
+        // ShearsItem.useOn: shears crop a growing plant's head to its top age.
+        if let Some(hit) = block_hit
+            && self.shears_crop(hit.pos, &stack)?
+        {
             return Ok(true);
         }
         // A guest's UseItemOn stops at ItemStack.useOn: what Item.use does
@@ -9815,8 +9823,10 @@ impl Game<'_> {
                         normal: [0; 4],
                         pos: v.to_array(),
                         uv,
-                        // ExperienceOrbRenderer: `RenderTypes.entityTranslucent`.
-                        layer: horizon_client::gfx::OIT_ENTITY,
+                        // ExperienceOrbRenderer: `RenderTypes.entityTranslucent`; in HDR
+                        // output the orbs shine (entity.wgsl fs_hdr_mark).
+                        layer: horizon_client::gfx::OIT_ENTITY
+                            | u32::from(horizon_client::mesher::VERY_BRIGHT) << 16,
                         color,
                         light: packed,
 
@@ -16105,6 +16115,7 @@ impl<'a> Game<'a> {
             focus_lost: None,
             modifiers: winit::keyboard::ModifiersState::empty(),
             fullscreen: horizon_client::window::FullscreenState::new(false),
+            video_modes: Default::default(),
             mouse: MouseLook::default(),
             agent_pointer: false,
             smooth_camera: false,
@@ -17772,6 +17783,7 @@ struct Loading {
     gui: Option<UiResources>,
     settings: Settings,
     fullscreen: horizon_client::window::FullscreenState,
+    video_modes: horizon_client::window::VideoModeList,
     options: Option<Options>,
     vanilla_root: PathBuf,
     pack_error: Option<String>,
@@ -18165,6 +18177,7 @@ fn run_loading(
         gui: None,
         settings,
         fullscreen: horizon_client::window::FullscreenState::new(false),
+        video_modes: Default::default(),
         options: Some(options),
         vanilla_root,
         pack_error,
