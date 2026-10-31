@@ -203,8 +203,9 @@ address. The script then checks, from both sides, what a guest's game used to ge
              (shift + right click, then the inventory key while riding), put on a saddle, armour
              or a carpet and fill the chest by shift-clicking.
 - mount_other_level: with a Nether chunk force-loaded (a second level ticking), the host's and the
-             guest's horse inventories stay open, opened by shift + right click and by the inventory
-             key while riding (#5331).
+             guest's horse, camel, llama, trader llama, nautilus, donkey and mule inventories stay open (also
+             with a chunk force-loaded in the End), opened by shift + right click, by the inventory
+             key while riding and again after getting off (#5331).
 - riding:    the host and the guest each saddle and ride a horse (walk, jump), a pig and a strider
              (with their sticks), a camel and a donkey, sit on a llama and fly a happy ghast, and
              get off by sneaking; the other side sees the animal move.
@@ -10475,61 +10476,111 @@ CHECKS += ['arrow_pickup']
 CHECK_FNS['arrow_pickup'] = check_arrow_pickup
 
 
+# Mounts for mount_other_level: (kind, summon NBT, blocks in front of the player). A camel is
+# tame by its type (Camel.isTamed), the equines need Tame:1b and a nautilus an Owner (OWNER is the
+# player's offline UUID; a nautilus is tame once it has one), a donkey, mule and llama a chest for their extra slots; a camel is 1.7 wide and long, so it stands a little further off.
+OTHER_LEVEL_MOUNTS = [
+    ('horse', '{Tame:1b,NoAI:1b}', 2.5),
+    ('camel', '{NoAI:1b}', 3.0),
+    ('llama', '{Tame:1b,NoAI:1b,ChestedHorse:1b,Strength:3}', 2.5),
+    ('trader_llama', '{Tame:1b,NoAI:1b,ChestedHorse:1b,Strength:3}', 2.5),
+    ('nautilus', '{Owner:[I;OWNER],NoAI:1b}', 2.5),
+    ('donkey', '{Tame:1b,NoAI:1b,ChestedHorse:1b}', 2.5),
+    ('mule', '{Tame:1b,NoAI:1b,ChestedHorse:1b}', 2.5),
+]
+HEIGHTS.update({'nautilus': 0.95, 'mule': 1.6, 'trader_llama': 1.87})
+# The second level the server ticks: a chunk force-loaded there.
+OTHER_LEVELS = ['minecraft:the_nether', 'minecraft:the_end']
+
+
 def check_mount_other_level(host, guest, out):
     """#5331: ServerPlayer.tick checks the open menu's stillValid in the player's own level. With a
-    Nether chunk force-loaded, the server ticks a second level that has none of the Overworld's
-    mobs; a tamed horse's inventory, opened with shift + right click or with the inventory key while
-    riding, must stay open through those ticks instead of closing at once."""
+    chunk force-loaded in the Nether, or in the End, the server ticks a second level that has none of
+    the Overworld's mobs; the inventory of a tamed horse, camel, llama, trader llama, nautilus,
+    donkey and mule, opened with shift + right click or with the inventory key while riding, and
+    again by shift + right click after getting off, must stay open through those ticks instead of
+    closing at once. Each level and mount is reported (LAN_E2E_MOUNTS=camel,llama picks some,
+    LAN_E2E_LEVELS=the_end one level)."""
     spots = apart(host, guest)
-    host('command', command='execute in minecraft:the_nether run forceload add 0 0')
-    host.wait(10)
     result = {}
-    try:
-        for label, player in (('host', host), ('guest', guest)):
-            x, y, z = spots[label]
-            player('command', command='gamemode survival')
-            player('command', command='clear @s')
-            player('command', command=f'summon minecraft:horse {x + 0.5} {y} {z + 2.5} {{Tame:1b,NoAI:1b}}')
-            player.wait(5)
-            mob = next(m for m in player.raw('mobs', 16).get('near', [])
-                       if m['kind'] == 'minecraft:horse' and m['health'] > 0)
-            p = mob['pos']
-            aim = (f'{p[0]:.2f}', f'{p[1] + HEIGHTS["horse"] / 2:.2f}', f'{p[2]:.2f}')
-            opened = {}
-            try:
-                player.raw('look-at', *aim)
-                player.raw('key', 'shift', 'down')
-                player.wait(3)
-                player.raw('mouse', 'right', 'click')
-                player.wait(2)
-                player.raw('key', 'shift', 'up')
-                assert mount_screen(player) is not None, f"the {label}'s shift + right click opened no horse inventory"
-                player.wait(20)
-                opened['use'] = mount_screen(player, ticks=2) is not None
-                assert opened['use'], f"the {label}'s horse inventory (shift + right click) closed by itself"
-                player.raw('key', 'esc', 'tap')
-                player.wait(5)
-                player.raw('look-at', *aim)
-                player.raw('mouse', 'right', 'click')
-                player.wait(8)
-                riding = player('status').get('riding')
-                assert riding == mob['id'], f'the {label} right-clicked its horse: riding {riding}'
-                player.raw('key', 'e', 'tap')
-                assert mount_screen(player) is not None, f"the inventory key on the {label}'s horse opened no inventory"
-                player.wait(20)
-                opened['key'] = mount_screen(player, ticks=2) is not None
-                assert opened['key'], f"the {label}'s horse inventory (inventory key) closed by itself"
-                player.raw('key', 'esc', 'tap')
-                player.wait(3)
-                hold(player, 'shift', 10)
-                result[label] = opened
-            finally:
-                back_to_game(player)
-                player('command', command=f'kill @e[type=minecraft:horse,x={x},y={y},z={z},distance=..16]')
-                player('command', command=f'tp @s {x + 0.5} {y} {z + 0.5} 0 0')
-                player.wait(5)
-    finally:
-        host('command', command='execute in minecraft:the_nether run forceload remove 0 0')
+    failures = []
+    only = [k for k in os.environ.get('LAN_E2E_MOUNTS', '').split(',') if k]
+    levels = [lv for lv in OTHER_LEVELS if lv.endswith(os.environ.get('LAN_E2E_LEVELS') or lv)]
+    for level in levels:
+        host('command', command=f'execute in {level} run forceload add 0 0')
+        host.wait(10)
+        result[level] = {}
+        try:
+            for label, player in (('host', host), ('guest', guest)):
+                x, y, z = spots[label]
+                result[level][label] = {}
+                for kind, nbt, ahead in (m for m in OTHER_LEVEL_MOUNTS if not only or m[0] in only):
+                    opened = {}
+                    try:
+                        player('command', command='gamemode survival')
+                        player('command', command='clear @s')
+                        owner = offline_uuid_ints(host.player if label == 'host' else GUEST_NAME)
+                        player('command', command=f'summon minecraft:{kind} {x + 0.5} {y} {z + ahead} '
+                                                 f'{nbt.replace("OWNER", owner)}')
+                        player.wait(5)
+                        mob = next((m for m in player.raw('mobs', 16).get('near', [])
+                                    if m['kind'] == f'minecraft:{kind}' and m['health'] > 0), None)
+                        assert mob, f'the {label} sees no {kind}'
+                        p = mob['pos']
+                        aim = (f'{p[0]:.2f}', f'{p[1] + HEIGHTS[kind] / 2:.2f}', f'{p[2]:.2f}')
+                        who = f'{level} {label} {kind}'
+
+                        def shift_click():
+                            player.raw('look-at', *aim)
+                            player.raw('key', 'shift', 'down')
+                            player.wait(3)
+                            player.raw('mouse', 'right', 'click')
+                            player.wait(2)
+                            player.raw('key', 'shift', 'up')
+
+                        def stays_open(how, what):
+                            # The screen opens and is still open 20 ticks later; each way is
+                            # reported on its own, so one that fails doesn't hide the others.
+                            if mount_screen(player) is None:
+                                opened[how] = False
+                                failures.append(f'{who}: {what} opened no {kind} inventory')
+                                return
+                            player.wait(20)
+                            opened[how] = mount_screen(player, ticks=2) is not None
+                            if not opened[how]:
+                                failures.append(f'{who}: the {kind} inventory ({what}) closed by itself')
+                            back_to_game(player)
+                            player.wait(5)
+
+                        shift_click()
+                        stays_open('use', 'shift + right click')
+                        player.raw('look-at', *aim)
+                        player.raw('mouse', 'right', 'click')
+                        player.wait(8)
+                        riding = player('status').get('riding')
+                        if riding == mob['id']:
+                            player.raw('key', 'e', 'tap')
+                            stays_open('key', 'the inventory key')
+                            hold(player, 'shift', 10)
+                            player.wait(10)
+                            if player('status').get('riding') is not None:
+                                failures.append(f'{who}: did not get off the {kind}')
+                        else:
+                            failures.append(f'{who}: right-clicked the {kind}: riding {riding}')
+                        # Off the mount and open again.
+                        shift_click()
+                        stays_open('reopen', 'shift + right click after getting off')
+                    except AssertionError as error:
+                        failures.append(f'{level} {label} {kind}: {error}')
+                    finally:
+                        result[level][label][kind] = opened
+                        back_to_game(player)
+                        player('command', command=f'kill @e[type=minecraft:{kind},x={x},y={y},z={z},distance=..16]')
+                        player('command', command=f'tp @s {x + 0.5} {y} {z + 0.5} 0 0')
+                        player.wait(5)
+        finally:
+            host('command', command=f'execute in {level} run forceload remove 0 0')
+    assert not failures, f'{failures}: {result}'
     return result
 
 
