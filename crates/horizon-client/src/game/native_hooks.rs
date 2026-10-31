@@ -1203,20 +1203,20 @@ impl Game<'_> {
     /// book, a sign editor, a server dialog or a prompt drawn over gameplay)
     /// and no connect or world load is in progress. The one gate they all ask
     /// before they fire.
-    pub(super) fn native_screen_open(&self) -> bool {
+    pub(super) fn screen_hooks_open(&self) -> bool {
         self.renderer.is_some()
             && self.screen != Screen::Playing
             && !self.screen_over_playing()
             && !self.remote_loading()
     }
     /// The open screen as an input hook sees it (`NativeScreenView`), or None
-    /// when `native_screen_open` says no screen is. `screen.mouse` is the
+    /// when `screen_hooks_open` says no screen is. `screen.mouse` is the
     /// pointer the hook's event is at, so a hook takes no position, and
     /// `partial_tick` is the clock's fraction at this event, not a frame's.
     /// The `HudBatch` built here is only what `screen.rect` needs: the
     /// window's GUI scale, no allocation.
     pub(super) fn screen_view_now(&self) -> Option<NativeScreenView<'_>> {
-        if !self.native_screen_open() {
+        if !self.screen_hooks_open() {
             return None;
         }
         let renderer = self.renderer.as_ref()?;
