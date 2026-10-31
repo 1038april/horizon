@@ -53,8 +53,8 @@ Windows (x64), in PowerShell:
 irm https://raw.githubusercontent.com/horizon-rust/horizon/main/packaging/server/install.ps1 | iex
 ```
 
-The script downloads the latest Horizon release for your computer from GitHub, checks it against the SHA-256
-GitHub publishes, and never asks for sudo or administrator rights. It installs:
+The script downloads the current Horizon Nightly for your computer from GitHub (the only build Horizon ships;
+`--version` picks another), checks it against the SHA-256 GitHub publishes, and never asks for sudo or administrator rights. It installs:
 
 - the release in `~/.local/share/horizon/releases/<version>` (Windows: `%LOCALAPPDATA%\Horizon`), with
   `current` pointing at the one in use;
@@ -200,6 +200,7 @@ horizon-server start | stop | restart    in the background (its output goes to l
 horizon-server status [--json]           up or not, TPS, MSPT, players, chunks, RAM, CPU
 horizon-server cmd COMMAND...            one console command, and what it answers
 horizon-server logs [-f] [-n N]          the log; -f follows it
+horizon-server report [SECONDS]          record a performance report (below)
 horizon-server op|deop NAME
 horizon-server whitelist on|off|list
 horizon-server whitelist add|remove NAME
@@ -221,6 +222,18 @@ console commands do. While it's stopped, they edit vanilla's files directly. Any
 To generate the world around spawn ahead of the players, Horizon has its own `pregen` command, off until
 `server.toml` has `horizon-pregen = true` under `[properties]`: `horizon-server cmd pregen start 2500`
 ([pregeneration](pregeneration.md)).
+To let only the Horizon client join, set `horizon-clients-only = true` under `[properties]` (off by default).
+Other clients are turned away while they connect with "This server is for the Horizon client:
+playhorizon.dev", and the console says which client it was. The check reads the brand a client names itself
+by (`minecraft:brand`), which any client can fake: it keeps out players who didn't install Horizon, not
+cheaters. The server's own checks (reach, movement) are what protect it.
+
+`horizon-server report` records the running server for 60 seconds (`report 300` for five minutes, up to 600),
+then prints a short summary and saves it in `reports/`: `perf-<time>.txt` and `perf-<time>.json`. They say where
+the ticks' time went, phase by phase (mobs, block ticks, block entities, the network and the chunks it
+sends, saving...), the slowest ticks, how many entities of each type, chunks, players, memory, CPU, and the
+settings that matter (view and simulation distance, max players). They hold no names, UUIDs or addresses, so you
+can attach them to an issue as they are. On the console it is `horizon-report [SECONDS]`.
 
 `config set` changes `server.toml` without opening it: `horizon-server config set world.difficulty=hard
 server.max_players=10`. Each key is a section and a name from the file (`properties.spawn-protection=0` for any
@@ -236,7 +249,7 @@ minutes. It keeps the crash report and gives up after 5 crashes in 10 minutes, a
 after it starts and every 6 hours after, and says so in its log, in `status` and in the panel; it never
 updates by itself. `horizon-server update --check` asks once. `horizon-server update`:
 
-1. downloads the newest release and checks it against the SHA-256 GitHub publishes for it;
+1. downloads the current Nightly and checks it against its signed SHA-256;
 2. stops the game, backs up the world (`backups/<time>-before-<release>.zip`) and switches to the new
    release;
 3. starts the game on it and waits up to 5 minutes (`--timeout SECONDS`) for it to come up.
