@@ -4,7 +4,7 @@
 //! block-inside effects and audiovisual event consumers remain separate work.
 use crate::{Result, assets::Assets, collisions::SceneCollisions, world::World};
 use horizon_core::{
-    geometry::{Aabb, Axis, Direction, Vec3, VoxelShape, traverse_blocks},
+    geometry::{Aabb, Axis, Direction, Vec3, VoxelShape, traverse_blocks, trig},
     position::BlockPos,
     random::RandomSource,
 };
@@ -1856,17 +1856,14 @@ impl MotionWorld<'_, '_, '_> {
     /// LivingEntity.travelFallFlying with updateFallFlyingMovement.
     fn travel_fall_flying(&mut self) -> Result<()> {
         let v = self.player.velocity;
-        let (yaw, pitch) = (self.player.yaw.to_radians(), self.player.pitch.to_radians());
-        let look = Vec3::new(
-            f64::from(-yaw.sin() * pitch.cos()),
-            f64::from(-pitch.sin()),
-            f64::from(yaw.cos() * pitch.cos()),
-        );
-        let lean = pitch;
+        // getLookAngle and the lean use Mth's sine table and float degrees,
+        // the lift Math.cos of the widened lean.
+        let look = horizon_world::view_direction::view_vector(self.player.pitch, self.player.yaw);
+        let lean = self.player.pitch * trig::DEG_TO_RAD;
         let look_h = (look.x * look.x + look.z * look.z).sqrt();
         let move_h = (v.x * v.x + v.z * v.z).sqrt();
         let gravity = living_motion::effective_gravity(self)?;
-        let lift = f64::from(lean.cos()).powi(2);
+        let lift = horizon_core::jmath::cos(f64::from(lean)).powi(2);
         let mut m = Vec3::new(v.x, v.y + gravity * (-1.0 + lift * 0.75), v.z);
         if m.y < 0.0 && look_h > 0.0 {
             let convert = m.y * -0.1 * lift;
@@ -1877,7 +1874,7 @@ impl MotionWorld<'_, '_, '_> {
             );
         }
         if lean < 0.0 && look_h > 0.0 {
-            let convert = move_h * f64::from(-lean.sin()) * 0.04;
+            let convert = move_h * f64::from(-trig::sin(f64::from(lean))) * 0.04;
             m = Vec3::new(
                 m.x - look.x * convert / look_h,
                 m.y + convert * 3.2,
@@ -1891,7 +1888,12 @@ impl MotionWorld<'_, '_, '_> {
                 m.z + (look.z / look_h * move_h - m.z) * 0.1,
             );
         }
-        self.player.velocity = Vec3::new(m.x * 0.99, m.y * 0.98, m.z * 0.99);
+        // multiply(0.99F, 0.98F, 0.99F): the float factors widened.
+        self.player.velocity = Vec3::new(
+            m.x * f64::from(0.99_f32),
+            m.y * f64::from(0.98_f32),
+            m.z * f64::from(0.99_f32),
+        );
         let movement = self.player.velocity;
         self.move_self(movement)?;
         // LivingEntity.handleFallFlyingCollisions: only the server hurts.
@@ -3618,6 +3620,66 @@ mod tests {
             starving.health.hurt_animation_time, 10,
             "starvation must still animate hurt"
         );
+    }
+
+    #[test]
+    fn a_glide_tick_matches_vanilla_to_the_bit() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let binding = crate::collisions::load(&root, assets.registry).unwrap();
+        let resources = MotionResources::load(&root, &assets).unwrap();
+        // LivingEntity.updateFallFlyingMovement run on the 26.3 JVM from
+        // (0.4, -0.3, 1.1): a climb (Mth.sin in the pull-up) and a dive.
+        let cases = [
+            (
+                -25.3,
+                37.7,
+                [
+                    0x3fd2_0750_bb9c_308e,
+                    0xbfce_177a_a476_8fa8,
+                    0x3ff1_3a5d_8654_8dc8,
+                ],
+            ),
+            (
+                12.9,
+                -118.62,
+                [
+                    0x3fde_db16_996e_3d53,
+                    0xbfd2_5548_1a43_d31f,
+                    0x3fed_2aff_c5b0_6151,
+                ],
+            ),
+        ];
+        for (pitch, yaw, want) in cases {
+            let mut scene = World::test_scene(&assets, &render, 2).unwrap();
+            let mut player = PlayerMotion::new(&resources, Vec3::new(20.5, 40.0, 20.5)).unwrap();
+            player.glider = true;
+            player.fall_flying = true;
+            player.pitch = pitch;
+            player.yaw = yaw;
+            player.velocity = Vec3::new(0.4, -0.3, 1.1);
+            let mut w = MotionWorld {
+                entities: &[],
+                player: &mut player,
+                scene: &mut scene,
+                assets: &assets,
+                collision_binding: &binding,
+                resources: &resources,
+            };
+            w.travel_fall_flying().unwrap();
+            let v = w.player.velocity;
+            assert_eq!(
+                [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()],
+                want,
+                "{pitch} {yaw}: {v:?}"
+            );
+        }
     }
 
     #[test]
