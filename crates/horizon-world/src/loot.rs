@@ -386,9 +386,29 @@ pub fn shared_tables(
     let mut tables = HashMap::new();
     load_kind(&root.join("data"), "loot_table", &mut tables)?;
     overlay_map(overlay, "loot_table", &mut tables);
+    let mut ids: Vec<String> = tables.keys().cloned().collect();
+    ids.sort();
+    for id in ids {
+        if let Some(table) = tables.get_mut(&id) {
+            native_loot_table_load(&id, table);
+        }
+    }
     let tables = Arc::new(tables);
     loaded.push((key, Arc::downgrade(&tables)));
     Ok(tables)
+}
+
+/// A native mod's hook point (docs/native-mods.md), listed in `native-hooks.json` with the game's:
+/// the loot table `id` (`minecraft:chests/simple_dungeon`, `minecraft:blocks/stone`,
+/// `minecraft:entities/zombie`) as it loads, its JSON after the data packs', before anything
+/// rolls it (NeoForge's `LootTableLoadEvent`, Fabric's `LootTableEvents.MODIFY`). Add pools to
+/// `table["pools"]` or entries to a pool's `entries`, change or replace it (no pools: it drops
+/// nothing). Called once per table, in id order, wherever the tables load: the server,
+/// and a client too, so make the same change each time. Tables load again on `/reload` and
+/// when a world opens with other packs. API @API:loot_tables@.
+#[inline(never)]
+pub fn native_loot_table_load(id: &str, table: &mut Value) {
+    let _ = (id, table);
 }
 
 fn load_kind(data: &Path, kind: &str, out: &mut HashMap<String, Value>) -> io::Result<()> {

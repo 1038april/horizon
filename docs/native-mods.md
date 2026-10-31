@@ -859,6 +859,20 @@ place; `native_server_tick` does not define one, so name the dimension and expec
 - While the game ticks its mobs they are out of the level: from a hook inside that tick, a spawned mob joins after the tick, and the others
   read as gone.
 
+### Loot tables
+
+Changing loot a mod didn't make, as NeoForge's `LootTableLoadEvent` and global loot modifiers and Fabric's
+`LootTableEvents.MODIFY` and `MODIFY_DROPS` do. A mod's own loot function and condition kinds are #5451.
+
+- **`horizon_world::loot::native_loot_table_load(id, table)`** (in `crates/horizon-world/src/loot.rs`): each table's JSON as it
+  loads, after the data packs'. Push a pool onto `table["pools"]` or an entry onto a pool's `entries`; chests, block and mob drops,
+  fishing and the rest then roll the changed table. It runs wherever tables load, a client too, and again on `/reload`, so make the
+  same change each time.
+- **`native_loot_drops(context, drops)`:** the items a broken block or a dead mob is about to drop, after its table rolled (a mob's
+  worn and carried items too). Add, change or take out stacks. `LootDrops` says what dropped them: the table, the dimension, the
+  origin, the block's position and state or the mob's id and type, the player who broke or killed it, the tool and an explosion's
+  radius. It hears blocks that a player, an explosion or a mob breaks, not one that breaks as a neighbour changes.
+
 ### A block's items
 
 Helpers for a server mod, by the rules hoppers follow: a furnace's sides, a double chest's two halves, a mod's `ModContainer` with its `faces`, `inputs` and `outputs`. `face` is the side of the block being reached, so a pipe above a chest uses `Direction::Up`. Those that read or take name the level in place by its `dimension`, and another one is refused. A client's copy of the world is refused.

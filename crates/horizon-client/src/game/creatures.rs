@@ -1201,7 +1201,8 @@ impl Game<'_> {
         self.villager_murdered(m, slain_by_player, killer.flatten());
         let pos = [m.position.x, m.position.y + 0.5, m.position.z];
         let killer_entity = self.killer_loot_entity(killer.flatten());
-        self.drop_death_loot(&mut dying, by_player, killer_entity, consumed, pos);
+        let player = killer.map(|conn| self.killer_uuid(conn));
+        self.drop_death_loot(&mut dying, player, by_player, killer_entity, consumed, pos);
         self.create_wither_rose(m);
         if m.species() == Species::CopperGolem {
             // CopperGolem.dropEquipment: the preserved equipment too.
@@ -1318,9 +1319,22 @@ impl Game<'_> {
         }
         own(self)
     }
+    /// The UUID of the player `last_hurt_by_player` keeps: the guest on
+    /// connection `conn`, else the player in place.
+    fn killer_uuid(&mut self, conn: Option<u32>) -> u128 {
+        let guest = conn.and_then(|conn| {
+            self.lan
+                .iter()
+                .flat_map(|h| h.hub.guests.iter())
+                .find(|g| g.conn == conn)
+                .map(|g| g.uuid)
+        });
+        guest.unwrap_or_else(|| self.native_acting_id())
+    }
     fn drop_death_loot(
         &mut self,
         m: &mut Mob,
+        player_uuid: Option<u128>,
         by_player: bool,
         killer: horizon_world::loot::LootEntity,
         consumed: bool,
@@ -1403,22 +1417,50 @@ impl Game<'_> {
             }
         }
         let raider = horizon_client::mobs::raider::is_raider(m.species());
-        for d in items {
-            match d {
-                drops::Drop::Item(stack) => {
-                    let item = if raider && stack.item == horizon_client::mobs::raider::BANNER {
-                        horizon_client::mobs::raider::ominous_banner()
-                    } else {
-                        from_loot(&stack)
-                    };
-                    // Every death drop is its own ItemEntity, and the drop
-                    // entity's own random (not the level's) gives it the
-                    // constructor's horizontal push (its motion otherwise
-                    // stays [0, 0.2, 0] and the drops land stacked at the
-                    // mob's centre, without disturbing the level random that
-                    // the orbs' merge ids and block ticks read next).
-                    self.spawn_item(item, pos, dispenser::new_item_motion(), 10);
+        // The item drops come before the carried block and the orbs, so the
+        // mods get them all at once and they still spawn in that order.
+        let (stacks, rest): (Vec<_>, Vec<_>) = items
+            .into_iter()
+            .partition(|d| matches!(d, drops::Drop::Item(_)));
+        let mut stacks: Vec<ItemStack> = stacks
+            .into_iter()
+            .filter_map(|d| match d {
+                drops::Drop::Item(stack) => Some(stack),
+                _ => None,
+            })
+            .map(|stack| {
+                if raider && stack.item == horizon_client::mobs::raider::BANNER {
+                    horizon_client::mobs::raider::ominous_banner()
+                } else {
+                    from_loot(&stack)
                 }
+            })
+            .collect();
+        let kind = super::native_hooks::mob_kind(m);
+        let table = kind.replacen(':', ":entities/", 1);
+        let context = super::native_hooks::LootDrops {
+            table: if loot.has_table(&table) { &table } else { "" },
+            dimension: self.dim.id(),
+            origin: pos,
+            block: None,
+            entity: Some((m.id, &kind)),
+            player: player_uuid.filter(|_| by_player),
+            tool: None,
+            explosion: None,
+        };
+        self.native_loot_drops(&context, &mut stacks);
+        for item in stacks {
+            // Every death drop is its own ItemEntity, and the drop entity's
+            // own random (not the level's) gives it the constructor's
+            // horizontal push (its motion otherwise stays [0, 0.2, 0] and
+            // the drops land stacked at the mob's centre, without disturbing
+            // the level random that the orbs' merge ids and block ticks read
+            // next).
+            self.spawn_item(item, pos, dispenser::new_item_motion(), 10);
+        }
+        for d in rest {
+            match d {
+                drops::Drop::Item(_) => {}
                 drops::Drop::CarriedBlock(state) => {
                     // Enderman.dropCustomDeathLoot: spawnAtLocation for each
                     // of the carried block's silk-touch drops.
@@ -2218,13 +2260,14 @@ impl Game<'_> {
                         self.destroy_particles(pos, old);
                     }
                     if drop {
-                        let drops = world_items!(self).block_drops_in(
+                        let mut drops = world_items!(self).block_drops_in(
                             self.pack.assets.registry,
                             old,
                             None,
                             &mut self.world.random,
                             Some((&mut self.rand_sequences, self.level.seed)),
                         );
+                        self.native_block_drops(pos, old, None, None, None, &mut drops);
                         for d in drops {
                             self.pop_resource(pos, d);
                         }

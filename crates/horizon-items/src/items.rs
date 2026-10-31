@@ -1009,6 +1009,16 @@ impl Items {
         registry: &BlockRegistry,
         state: BlockStateId,
     ) -> Option<String> {
+        self.loot_sequence(&self.block_loot_table(registry, state)?)
+    }
+    /// The id of the block's loot table (`minecraft:blocks/stone`), when it
+    /// has one. `Blocks.wallVariant`: wall signs, banners, heads, fans and
+    /// torches use the standing block's table.
+    pub fn block_loot_table(
+        &self,
+        registry: &BlockRegistry,
+        state: BlockStateId,
+    ) -> Option<String> {
         let block = registry.state(state)?;
         let (namespace, name) = block
             .name
@@ -1017,8 +1027,12 @@ impl Items {
         let standing = name.replacen("_wall_", "_", 1);
         let standing = standing.strip_prefix("wall_").unwrap_or(&standing);
         let standing = standing.replacen("wall_", "", 1);
-        self.loot_sequence(&format!("{namespace}:blocks/{name}"))
-            .or_else(|| self.loot_sequence(&format!("{namespace}:blocks/{standing}")))
+        [
+            format!("{namespace}:blocks/{name}"),
+            format!("{namespace}:blocks/{standing}"),
+        ]
+        .into_iter()
+        .find(|id| self.loot.contains_key(id))
     }
     /// Evaluate the block's loot table for a player break without explosions.
     pub fn block_drops<R: RandomSource>(
@@ -1126,20 +1140,8 @@ impl Items {
         let Some(block) = registry.state(state) else {
             return vec![];
         };
-        let (namespace, name) = block
-            .name
-            .split_once(':')
-            .unwrap_or(("minecraft", &block.name));
-        // `Blocks.wallVariant`: wall signs, banners, heads, fans and torches
-        // reuse the standing block's loot table.
-        let standing = name.replacen("_wall_", "_", 1);
-        let standing = standing.strip_prefix("wall_").unwrap_or(&standing);
-        let standing = standing.replacen("wall_", "", 1);
-        let table = self
-            .loot
-            .get(&format!("{namespace}:blocks/{name}"))
-            .or_else(|| self.loot.get(&format!("{namespace}:blocks/{standing}")));
-        let Some(table) = table else {
+        let table = self.block_loot_table(registry, state);
+        let Some(table) = table.and_then(|id| self.loot.get(&id)) else {
             return vec![];
         };
         // LootTable.getRandomItems draws from the table's random sequence.
