@@ -33,6 +33,7 @@ pub mod doors;
 pub mod drops;
 pub mod enderman;
 pub mod equine;
+pub mod equip;
 pub mod farm;
 pub mod finalize;
 pub mod fox;
