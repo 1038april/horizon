@@ -160,6 +160,18 @@ pub struct Brewing {
 }
 impl Brewing {
     pub fn load(root: &Path, items: &Items, overlay: &PackOverlay) -> Self {
+        // NeoForge's load conditions: a file whose don't hold is silently
+        // absent. Vanilla's brewing recipes carry none; a pack's can.
+        let mods: Vec<String> = {
+            let mut mods = horizon_items::content_namespaces::namespaces(root);
+            if !mods.iter().any(|m| m == "minecraft") {
+                mods.push("minecraft".to_owned());
+            }
+            mods
+        };
+        let conditions_hold = |v: &Value| {
+            horizon_world::conditions::conditions_hold(v, &|id: &str| mods.iter().any(|m| m == id))
+        };
         let mut sources: Vec<(String, Value)> =
             fs::read_dir(root.join("data/minecraft/recipe/brewing"))
                 .into_iter()
@@ -168,6 +180,9 @@ impl Brewing {
                 .filter_map(|e| {
                     let bytes = fs::read(e.path()).ok()?;
                     let v = serde_json::from_slice::<Value>(&bytes).ok()?;
+                    if !conditions_hold(&v) {
+                        return None;
+                    }
                     Some((
                         format!(
                             "minecraft:brewing/{}",
@@ -186,6 +201,9 @@ impl Brewing {
             let Ok(v) = serde_json::from_slice::<Value>(PackOverlay::top(files)) else {
                 continue;
             };
+            if !conditions_hold(&v) {
+                continue;
+            }
             match sources.iter_mut().find(|(n, _)| n == id) {
                 Some(slot) => slot.1 = v,
                 None => sources.push((id.to_owned(), v)),

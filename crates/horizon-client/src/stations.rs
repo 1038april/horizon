@@ -489,6 +489,12 @@ impl StationRecipes {
         let mut files = Vec::new();
         let namespaces =
             std::iter::once("minecraft".to_owned()).chain(crate::mod_content::namespaces(root));
+        // NeoForge's load conditions: a file whose don't hold is silently
+        // absent (`mod_loaded` asks which mods' data is in this root).
+        let mods: Vec<String> = namespaces.clone().collect();
+        let conditions_hold = |v: &Value| {
+            horizon_world::conditions::conditions_hold(v, &|id: &str| mods.iter().any(|m| m == id))
+        };
         for namespace in namespaces {
             let dir = root.join(format!("data/{namespace}/recipe"));
             let more = crate::crafting::recipe_files(&dir).unwrap_or_default();
@@ -502,6 +508,9 @@ impl StationRecipes {
             .filter_map(|(namespace, name, p)| {
                 let bytes = fs::read(p).ok()?;
                 let v = serde_json::from_slice::<Value>(&bytes).ok()?;
+                if !conditions_hold(&v) {
+                    return None;
+                }
                 Some((format!("{namespace}:{name}"), v))
             })
             .collect();
@@ -511,6 +520,9 @@ impl StationRecipes {
             let Ok(v) = serde_json::from_slice::<Value>(PackOverlay::top(files)) else {
                 continue;
             };
+            if !conditions_hold(&v) {
+                continue;
+            }
             match sources.iter_mut().find(|(n, _)| n == id) {
                 Some(slot) => slot.1 = v,
                 None => sources.push((id.to_owned(), v)),

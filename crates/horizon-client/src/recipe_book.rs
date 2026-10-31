@@ -699,6 +699,18 @@ impl RecipeIndex {
             );
         };
         let dir = root.join("data/minecraft/recipe");
+        // NeoForge's load conditions: the book lists only what loaded; a
+        // recipe gated on an absent mod isn't in the manager either.
+        let mods: Vec<String> = {
+            let mut mods = crate::mod_content::namespaces(root);
+            if !mods.iter().any(|m| m == "minecraft") {
+                mods.push("minecraft".to_owned());
+            }
+            mods
+        };
+        let conditions_hold = |v: &serde_json::Value| {
+            horizon_world::conditions::conditions_hold(v, &|id: &str| mods.iter().any(|m| m == id))
+        };
         // The whole folder, `brewing/` under it too, in id order
         // (`SimpleJsonResourceReloadListener` walks it recursively): a
         // subfolder's recipe keeps it in its id, `minecraft:brewing/<name>`.
@@ -709,13 +721,20 @@ impl RecipeIndex {
             else {
                 continue;
             };
+            if !conditions_hold(&v) {
+                continue;
+            }
             insert(format!("minecraft:{name}"), &v);
         }
         // The world's packs' recipes over the game's own: the top pack's
         // file for each id replaces it (`SimpleJsonResourceReloadListener`).
         for (id, files) in overlay.kind("recipe") {
             match serde_json::from_slice::<serde_json::Value>(PackOverlay::top(files)) {
-                Ok(v) => insert(id.to_owned(), &v),
+                Ok(v) => {
+                    if conditions_hold(&v) {
+                        insert(id.to_owned(), &v)
+                    }
+                }
                 Err(e) => log::warn!("Horizon: pack recipe {id} not shown in the book: {e}"),
             }
         }
