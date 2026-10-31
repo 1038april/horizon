@@ -45,12 +45,20 @@ pub const NEVER: &str = "Never sent: your account name or UUID, world names, ser
 pub const PING_NAME: &str = "\"I'm playing\" ping";
 pub const PING: &str = "While you play, the game sends an anonymous \"I'm playing\" ping once a minute, so the launcher can show how many people play Horizon right now. It holds: a random number made when the game starts and forgotten when it closes, the Horizon version, your OS (Linux, macOS or Windows), and whether you have a world open to LAN or friends. It doesn't hold: your account, your install ID, world or server names, or anything you do in the game, and the server doesn't keep your IP address. It is sent whatever the switches say.";
 
-/// How many play Horizon now (rounded), if the server says.
+/// How many play Horizon now (exact), if the server says.
 pub fn playing_now() -> Option<u64> {
     let endpoint = horizon_telemetry::endpoint()?;
     horizon_telemetry::live::fetch(&endpoint)
         .ok()
         .map(|count| count.playing)
+}
+
+/// The page with the count over time and its peaks, on the website `links.json` names; None when
+/// it names none.
+pub fn stats_url(website: &str) -> Option<String> {
+    let site = website.trim().trim_end_matches('/');
+    site.starts_with("https://")
+        .then(|| format!("{site}/stats"))
 }
 
 /// Sends [`playing_now`] to the window as `Msg::Playing` now and every minute, on its own
@@ -348,6 +356,20 @@ pub fn set(kinds: &[Kind], on: bool) -> Result<Consent, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_stats_page_is_on_the_website() {
+        assert_eq!(
+            stats_url("https://playhorizon.dev").as_deref(),
+            Some("https://playhorizon.dev/stats")
+        );
+        assert_eq!(
+            stats_url("https://example.org/horizon/").as_deref(),
+            Some("https://example.org/horizon/stats")
+        );
+        assert_eq!(stats_url(""), None);
+        assert_eq!(stats_url("javascript:alert(1)"), None);
+    }
 
     #[test]
     fn kinds_are_named_in_plain_words_or_short() {
