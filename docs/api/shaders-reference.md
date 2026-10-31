@@ -71,7 +71,7 @@ Resources (bind group 3):
 | Binding | Declaration | Meaning |
 | --- | --- | --- |
 | 0 | `var<uniform> frame: Frame` | The frame (`Frame`). |
-| 1 | `var reflection: texture_2d<f32>` | The water mirror: the world as a camera mirrored about the horizontal water plane around the camera (`frame.water_plane`) sees it, at half resolution, mapped like the world's picture, so water samples it at `input.screen`. Sky and solid terrain, cut away below the plane. Drawn only for a pack whose material reads it, while `frame.has_reflection` is 1; else a 1×1 blank. |
+| 1 | `var reflection: texture_2d<f32>` | The water mirror: the world as a camera mirrored about the horizontal water plane around the camera (`frame.water_plane`) sees it, at half resolution, mapped like the world's picture, so water samples it at `input.screen`. Solid terrain, cut away below the plane, over the vanilla sky gradient: not the pack's `sky` stage, nor the sun, moon and stars. Drawn only for a pack whose material reads it, while `frame.has_reflection` is 1; else a 1×1 blank. |
 | 2 | `var reflection_sampler: sampler` | Bilinear filtering, clamped to the edges. |
 | 6 | `var opaque_depth: texture_depth_2d` | The world's depth before translucent terrain (reversed, like `scene_depth`), for the translucent pass: `textureLoad(opaque_depth, vec2<i32>(input.screen * frame.resolution), 0)` is what lies behind water or glass. Stale while solid terrain draws. |
 | 11 | `var opaque_color: texture_2d<f32>` | The world's picture before translucent terrain (sky, solid terrain, entities), the size of `opaque_depth`, for the translucent pass: what a surface refracts. Read it with `textureLoad`. Stale while solid terrain draws; black when the world draws straight to the window (a pack without `[[post]]` passes, at full resolution). |
@@ -101,7 +101,7 @@ Resources (bind group 3):
 | 3 | `var previous: texture_2d<f32>` | The previous pass's output (`scene_color` for the first pass). |
 | 4 | `var linear_sampler: sampler` | Bilinear filtering, clamped to the edges. |
 | 5 | `var nearest_sampler: sampler` | Nearest texel, clamped to the edges. |
-| 8 | `var history: texture_2d<f32>` | Last frame's input to the last pass (what the pass before it wrote), for temporal passes (TAA, denoising): put such a pass second to last and it reads its own previous output; reproject with `frame.previous_view_projection`. Black on the first frame and with a single pass. |
+| 8 | `var history: texture_2d<f32>` | Last frame's input to the last pass (what the pass before it wrote), for temporal passes (TAA, denoising): put such a pass second to last and it reads its own previous output; reproject with `frame.previous_view_projection`. Black on the first frame, after a gap of over half a second, and with a single pass. |
 
 Helpers:
 

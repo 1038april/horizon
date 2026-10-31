@@ -70,7 +70,7 @@ const POST_RESOURCES: [Resource; 7] = [
         binding: 8,
         name: "history",
         ty: "var history: texture_2d<f32>",
-        doc: "Last frame's input to the last pass (what the pass before it wrote), for temporal passes (TAA, denoising): put such a pass second to last and it reads its own previous output; reproject with `frame.previous_view_projection`. Black on the first frame and with a single pass.",
+        doc: "Last frame's input to the last pass (what the pass before it wrote), for temporal passes (TAA, denoising): put such a pass second to last and it reads its own previous output; reproject with `frame.previous_view_projection`. Black on the first frame, after a gap of over half a second, and with a single pass.",
     },
 ];
 
@@ -82,7 +82,7 @@ const MATERIAL_RESOURCES: [Resource; 5] = [
         binding: 1,
         name: "reflection",
         ty: "var reflection: texture_2d<f32>",
-        doc: "The water mirror: the world as a camera mirrored about the horizontal water plane around the camera (`frame.water_plane`) sees it, at half resolution, mapped like the world's picture, so water samples it at `input.screen`. Sky and solid terrain, cut away below the plane. Drawn only for a pack whose material reads it, while `frame.has_reflection` is 1; else a 1×1 blank.",
+        doc: "The water mirror: the world as a camera mirrored about the horizontal water plane around the camera (`frame.water_plane`) sees it, at half resolution, mapped like the world's picture, so water samples it at `input.screen`. Solid terrain, cut away below the plane, over the vanilla sky gradient: not the pack's `sky` stage, nor the sun, moon and stars. Drawn only for a pack whose material reads it, while `frame.has_reflection` is 1; else a 1×1 blank.",
     },
     Resource {
         binding: 2,

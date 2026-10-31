@@ -155,6 +155,28 @@ mod vertex_tests {
         // Another face replaces the first.
         assert_eq!(super::fluid_face(super::fluid_face(lit, 5), 1), 0x9D56_3412);
     }
+    /// What `gfx/native_material.rs` reads back from the colour's alpha byte: the face of a
+    /// fluid quad, and the HDR tier.
+    fn decoded(color: u32) -> (Option<u32>, u32) {
+        let flags = color >> 24;
+        let high = flags >> 4;
+        let fluid = high >= 8 && (high & 7) < 6;
+        (fluid.then_some(high & 7), 15 - (flags & 15))
+    }
+    #[test]
+    fn the_material_stage_reads_back_what_the_mesher_encodes() {
+        let rgb = super::pack_rgb([0x12, 0x34, 0x56]);
+        for tier in 0..=super::VERY_BRIGHT {
+            let lit = super::emitting(rgb, tier);
+            assert_eq!(decoded(lit), (None, u32::from(tier)));
+            for face in 0..6 {
+                assert_eq!(
+                    decoded(super::fluid_face(lit, face)),
+                    (Some(face as u32), u32::from(tier))
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
