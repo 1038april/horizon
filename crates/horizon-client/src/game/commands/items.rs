@@ -14,6 +14,9 @@ use horizon_world::nbt::Tag;
 pub(in crate::game) enum Slot {
     /// `inventory[0..36]`: hotbar then the main rows.
     Inv(usize),
+    /// The selected hotbar slot as `weapon.mainhand` names it: the equipment's
+    /// `setItemSlot`, where `hotbar.N` is the inventory's `setItem`.
+    MainHand,
     /// `armor[0..4]` (head, chest, legs, feet).
     Armor(usize),
     Offhand,
@@ -24,6 +27,8 @@ pub(in crate::game) enum Slot {
     Stand(u32, usize),
     Frame(u32),
     Block([i32; 3], usize),
+    /// A slot of another player (`for_player`): reached with their state in place.
+    Guest(u32, Box<Slot>),
 }
 /// Whose slots a command addresses.
 #[derive(Clone, Debug, PartialEq)]
@@ -73,6 +78,16 @@ impl Game<'_> {
     }
     /// The slots a name (or wildcard group) addresses on an owner.
     pub(in crate::game) fn slots_named(&mut self, owner: &Owner, name: &str) -> Vec<Slot> {
+        if let Owner::Entity(Target::Guest(conn)) = *owner {
+            let slots = self.for_player(Target::Guest(conn), |g| {
+                g.slots_named(&Owner::Entity(Target::Player), name)
+            });
+            return slots
+                .unwrap_or_default()
+                .into_iter()
+                .map(|s| Slot::Guest(conn, Box::new(s)))
+                .collect();
+        }
         let mut out = Vec::new();
         let mut add = |s: Slot| out.push(s);
         match owner {
@@ -102,7 +117,7 @@ impl Game<'_> {
                     }
                 }
                 if matches_name(name, "weapon") || matches_name(name, "weapon.mainhand") {
-                    add(Slot::Inv(self.selected));
+                    add(Slot::MainHand);
                 }
                 if matches_name(name, "weapon.offhand") {
                     add(Slot::Offhand);
@@ -157,9 +172,13 @@ impl Game<'_> {
         }
         out
     }
-    pub(in crate::game) fn slot_get(&self, s: &Slot) -> Option<ItemStack> {
+    pub(in crate::game) fn slot_get(&mut self, s: &Slot) -> Option<ItemStack> {
         match s {
+            Slot::Guest(conn, slot) => self
+                .for_player(Target::Guest(*conn), |g| g.slot_get(slot))
+                .flatten(),
             Slot::Inv(i) => self.inventory.get(*i).cloned().flatten(),
+            Slot::MainHand => self.inventory.get(self.selected).cloned().flatten(),
             Slot::Armor(i) => self.armor.get(*i).cloned().flatten(),
             Slot::Offhand => self.offhand.clone(),
             Slot::Ender(i) => self.ender_items.get(*i).cloned().flatten(),
@@ -201,6 +220,9 @@ impl Game<'_> {
     /// Put a stack (or nothing) in a slot; false when the slot cannot take it.
     pub(in crate::game) fn slot_set(&mut self, s: &Slot, stack: Option<ItemStack>) -> bool {
         match s {
+            Slot::Guest(conn, slot) => self
+                .for_player(Target::Guest(*conn), |g| g.slot_set(slot, stack))
+                .unwrap_or(false),
             Slot::Inv(i) => match self.inventory.get_mut(*i) {
                 Some(slot) => {
                     *slot = stack;
@@ -209,6 +231,14 @@ impl Game<'_> {
                 None => false,
             },
             // LivingEntity's equipment SlotAccess: setItemSlot, so onEquipItem.
+            Slot::MainHand => match self.inventory.get_mut(self.selected) {
+                Some(slot) => {
+                    let old = std::mem::replace(slot, stack.clone());
+                    self.player_on_equip("mainhand", old.as_ref(), stack.as_ref());
+                    true
+                }
+                None => false,
+            },
             Slot::Armor(i) => match self.armor.get_mut(*i) {
                 Some(slot) => {
                     let old = std::mem::replace(slot, stack.clone());

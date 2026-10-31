@@ -424,6 +424,7 @@ impl Game<'_> {
             Screen::CommandBlock => "command-block",
             Screen::BlockEditor => "block-editor",
             Screen::Win => "win",
+            Screen::DebugOptions => "debug-options",
         }
     }
     pub(super) fn inventory_counts(&self) -> BTreeMap<String, i64> {
@@ -638,6 +639,7 @@ impl Game<'_> {
                 json!({ "mode": "multiplayer-warning", "check": check })
             }
             Mode::Onboarding(_) => json!({ "mode": "accessibility-onboarding" }),
+            Mode::BanNotice(_) => json!({ "mode": "ban-notice" }),
         }
     }
 

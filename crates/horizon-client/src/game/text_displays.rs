@@ -91,6 +91,11 @@ impl RemoteTextDisplay {
             vehicle: None,
         }
     }
+    /// Where a passenger of this display sits, this tick and the last
+    /// (`Display`'s box is 0 by 0, so its passenger attachment is its feet).
+    pub(super) fn seat(&self) -> (glam::DVec3, glam::DVec3) {
+        (self.position, self.previous)
+    }
     /// `Entity.positionRider` through `setPos`: where its vehicle seats it this
     /// tick. The previous position stays the last tick's, so it moves smoothly
     /// with the vehicle; a teleport's interpolation no longer applies.
@@ -108,6 +113,17 @@ impl RemoteTextDisplay {
         } else {
             (((self.age - self.start) as f32 + partial) / self.duration as f32).clamp(0.0, 1.0)
         }
+    }
+    /// The casters this display adds to the shadow pass: its interpolated
+    /// shadow radius and strength (`DisplayRenderer.getShadowRadius` and
+    /// `DisplayRenderer.getShadowStrength`), if it has any.
+    pub(super) fn shadow(&self, partial: f64) -> Option<(glam::DVec3, f32, f32)> {
+        horizon_client::shadows::display_caster(
+            self.previous.lerp(self.position, partial),
+            &self.from,
+            &self.shown,
+            self.progress(partial as f32),
+        )
     }
     /// The entries after `Display`'s: a block state, or an item with its
     /// display context (the stack comes converted by the caller).
