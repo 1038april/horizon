@@ -26,6 +26,7 @@ dirs = "5"
 sys-locale = "0.3"
 self-replace = "1"
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 horizon-theme = { path = "../crates/horizon-theme" }
 horizon-core = { path = "../crates/horizon-core" }
 horizon-prepare = { path = "../crates/horizon-prepare" }
