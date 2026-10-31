@@ -43,6 +43,8 @@ pub enum Event {
     Brand(String),
     /// The server runs mods' quiet commands (`horizon_protocol::quiet`).
     QuietCommands,
+    /// The server carries mod messages (`horizon_protocol::mod_net`).
+    ModNet,
     /// Configuration finished: the play state begins with these registries.
     Joined {
         registries: Arc<Dynamic>,
@@ -52,6 +54,9 @@ pub enum Event {
     Packet(Box<play::Clientbound>),
     /// A packet that failed to decode (skipped, like vanilla's skippable packets).
     DecodeError(String),
+    /// The server sent us back to configuration (`ClientboundStartConfigurationPacket`):
+    /// the game shows `ServerReconfigScreen` until the server logs it in again.
+    Reconfiguring,
     /// The server sent us back to configuration and finished it again.
     Reconfigured(Arc<Dynamic>),
     /// ClientboundResourcePackPushPacket, in configuration or in play.
@@ -627,6 +632,7 @@ fn receive_play(
                 let _ = send.send(Event::PackPop(p.id));
             }
             play::Clientbound::StartConfiguration(_) => {
+                let _ = send.send(Event::Reconfiguring);
                 if let Some(w) = shared_writer.lock().unwrap().as_mut() {
                     let _ = w.send(&play::Serverbound::ConfigurationAcknowledged(Empty).encode());
                     configuring.store(true, Ordering::Relaxed);
@@ -777,6 +783,8 @@ fn receive_brand(payload: &cfg::CustomPayload, send: &Sender<Event>) {
         let _ = send.send(Event::Brand(brand));
     } else if payload.channel == horizon_protocol::quiet::CHANNEL {
         let _ = send.send(Event::QuietCommands);
+    } else if payload.channel == horizon_protocol::mod_net::CHANNEL {
+        let _ = send.send(Event::ModNet);
     }
 }
 
@@ -1060,7 +1068,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(
             root.join("facts.json"),
-            br#"{"states":[[0,0,0,0,"minecraft:stone"]]}"#,
+            br#"{"states":[["minecraft:stone",false,false,"Block{minecraft:stone}",{"id":"minecraft:stone"}]]}"#,
         )
         .unwrap();
         let expected = crate::content_identity::identity(&root).unwrap();
