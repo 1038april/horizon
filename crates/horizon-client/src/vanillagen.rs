@@ -31,6 +31,9 @@ mod structure_mobs;
 use lod::VanillaLodSampler;
 use structure_mobs::StructureMobFinalizer;
 
+/// The references a saved chunk keeps for its structure start: `(structure, chunk x, chunk z)`.
+pub type SavedReferences = std::sync::Arc<dyn Fn(&str, i32, i32) -> i32 + Send + Sync>;
+
 pub struct VanillaTerrain {
     generator: OverworldGenerator,
     /// Generator biome index -> client biome table index.
@@ -51,6 +54,7 @@ pub struct VanillaTerrain {
     /// The starts (structure name, chunk) an exploration map pointed at.
     referenced: std::sync::Mutex<std::collections::HashSet<(String, i32, i32)>>,
     reference_file: std::sync::Mutex<Option<std::path::PathBuf>>,
+    saved_references: std::sync::Mutex<Option<SavedReferences>>,
     /// The world preset the terrain was generated with (`minecraft:normal`
     /// unless a saved world says otherwise); far decoration uses it too.
     preset: String,
@@ -247,6 +251,7 @@ impl VanillaTerrain {
             seed,
             referenced: Default::default(),
             reference_file: Default::default(),
+            saved_references: Default::default(),
             preset: preset.to_owned(),
             dimension: dimension.to_owned(),
             last_proto: std::sync::atomic::AtomicU64::new(0),
@@ -403,12 +408,20 @@ impl VanillaTerrain {
         if !skip_known {
             return self.locate(names, from, radius);
         }
+        let saved = self
+            .saved_references
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         let mut referenced = self.referenced.lock().unwrap_or_else(|e| e.into_inner());
         let found =
             self.generator
                 .worker()
                 .locate_skipping(names, from, radius, &|name, chunk| {
                     referenced.contains(&(name.to_owned(), chunk.x, chunk.z))
+                        || saved
+                            .as_ref()
+                            .is_some_and(|f| f(name, chunk.x, chunk.z) > 0)
                 })?;
         referenced.insert((found.0.clone(), found.1[0] >> 4, found.1[2] >> 4));
         self.save_references(&referenced);
@@ -429,6 +442,15 @@ impl VanillaTerrain {
             .reference_file
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(path);
+    }
+    /// StructureCheck's `onStructureLoad` and `tryLoadFromStorage`: the
+    /// references a chunk saved for its starts (a world saved by vanilla, or
+    /// by an older run) count as known, besides the ones kept here.
+    pub fn set_saved_references(&self, saved: SavedReferences) {
+        *self
+            .saved_references
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(saved);
     }
     fn save_references(&self, referenced: &std::collections::HashSet<(String, i32, i32)>) {
         let guard = self

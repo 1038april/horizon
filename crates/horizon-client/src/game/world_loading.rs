@@ -474,6 +474,12 @@ pub(super) fn make_streaming(
             "horizon_structure_references_{}.json",
             dim.id().replace(':', "_")
         )));
+        {
+            let save = save.clone();
+            inner.set_saved_references(Arc::new(move |name, x, z| {
+                save.start_references(x, z, name)
+            }));
+        }
         locator = Some(inner.clone());
         Streaming::new(
             Arc::new(Persistent {
