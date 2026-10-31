@@ -72,12 +72,41 @@ pub(super) fn content_root(
                     out.display()
                 );
             }
+            register_mob_effects(&mods);
             out
         }
         Err(e) => {
             log::warn!("Horizon: content mods not loaded: {e}");
+            register_mob_effects(&[]);
             root.to_owned()
         }
+    }
+}
+
+/// The mods' mob effects join vanilla's (`brewing::effect`), once the root
+/// holding their network ids is built. The startup root's effects, none
+/// included, stay until restart: a pack reload after a Mods switch builds a
+/// root with others.
+fn register_mob_effects(mods: &[horizon_client::mod_content::ContentMod]) {
+    use horizon_client::brewing::{self, Category};
+    use horizon_mods::content::EffectCategory;
+    let effects = horizon_client::mod_content::mob_effects(mods);
+    let ids: Vec<String> = effects.iter().map(|e| e.id.clone()).collect();
+    let set = brewing::register_mod_effects(effects.into_iter().map(|e| {
+        let category = match e.category {
+            EffectCategory::Beneficial => Category::Beneficial,
+            EffectCategory::Harmful => Category::Harmful,
+            EffectCategory::Neutral => Category::Neutral,
+        };
+        (e.id.clone(), e.color, category)
+    }));
+    if !set
+        && brewing::mod_effects()
+            .iter()
+            .map(|e| e.id)
+            .ne(ids.iter().map(String::as_str))
+    {
+        log::warn!("Horizon: the mods' mob effects changed; restart the game to use them");
     }
 }
 
@@ -198,6 +227,12 @@ impl Game<'_> {
         )));
         let _ = std::fs::write(&seen, "");
     }
+}
+
+/// A mod gave `block` block entity `id`, but the block's template has none,
+/// so breaking it would never remove it: the block gets none.
+pub(super) fn warn_no_block_entity(block: &str, id: &str) {
+    log::warn!("{block}: no block entity {id}, its template has none (copy a chest or furnace)");
 }
 
 #[cfg(test)]

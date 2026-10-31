@@ -1,6 +1,10 @@
 //! Scheduling hints for the game's threads and its allocator: the few OS calls
 //! that the other crates, which forbid unsafe code, can't make themselves.
 
+/// The game window's boot screen, before wgpu's first frame paints over it.
+#[cfg(target_os = "windows")]
+pub mod boot_paint;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Ask the OS to run the calling thread ahead of the process's other
@@ -435,6 +439,6 @@ mod junction_tests {
         let name = vec![b'a' as u16; 32_764];
         assert!(super::mount_point_buffer(&name).is_err());
         assert!(super::mount_point_buffer(&vec![0; 32_768]).is_err());
-        assert!(super::mount_point_buffer(&vec![0; 100]).is_ok());
+        assert!(super::mount_point_buffer(&[0; 100]).is_ok());
     }
 }

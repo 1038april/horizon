@@ -212,8 +212,8 @@ impl adv::World for View<'_, '_> {
     fn in_tag(&self, registry: &str, tag: &str, id: &str) -> bool {
         let items = &self.0.res.items();
         match registry {
-            "item" => items.item_tags.get(tag).is_some_and(|t| t.contains(id)),
-            "block" => items.block_tags.get(tag).is_some_and(|t| t.contains(id)),
+            "item" => items.item_in_tag(tag, id),
+            "block" => items.block_in_tag(tag, id),
             "entity_type" => self.0.res.mob_data().entity_has(tag, id),
             "worldgen/biome" => self.0.res.mob_data().biome_has(tag, id),
             "damage_type" => self
@@ -370,6 +370,27 @@ impl Game<'_> {
                 .find(|m| m.id == id)
                 .map(|m| self.mob_entity(m))
                 .unwrap_or_default(),
+            // A server's player: what its last `ServerboundPlayerInputPacket`
+            // held (shift 32) and its game mode.
+            Target::Guest(conn) if self.command_guest(conn).is_some() => {
+                let g = self.command_guest(conn).expect("checked");
+                EntityView {
+                    kind: self.target_type(t),
+                    position: g.position,
+                    sneaking: g.sneaking,
+                    input_sneak: g.input & 32 != 0,
+                    gamemode: Some(
+                        match g.game_mode {
+                            1 => "creative",
+                            2 => "adventure",
+                            3 => "spectator",
+                            _ => "survival",
+                        }
+                        .to_owned(),
+                    ),
+                    ..EntityView::default()
+                }
+            }
             other => EntityView {
                 kind: self.target_type(other),
                 position: self.target_position(other).unwrap_or_default(),
@@ -421,6 +442,8 @@ impl Game<'_> {
             kind: "minecraft:player".into(),
             position: [p.position.x, p.position.y, p.position.z],
             sneaking: p.pose == horizon_client::pose::Pose::Crouching,
+            // Input.shift: the held key, as `BlockItem.place`'s sneaking reads it.
+            input_sneak: self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft),
             sprinting: p.sprinting,
             swimming: p.pose == horizon_client::pose::Pose::Swimming,
             flying: p.flying,
@@ -432,7 +455,10 @@ impl Game<'_> {
                 .effects
                 .list
                 .iter()
-                .map(|e| (format!("minecraft:{}", e.id), e.amplifier, e.duration))
+                .map(|e| {
+                    let id = horizon_client::brewing::namespaced(e.id);
+                    (id.to_owned(), e.amplifier, e.duration)
+                })
                 .collect(),
             gamemode: Some(self.mode.name().to_owned()),
             ..Default::default()
@@ -592,6 +618,39 @@ impl Game<'_> {
             self.trigger_criteria(&tree, &list, |c, _| {
                 c["recipes"].as_str() == Some(r.as_str())
             });
+        }
+    }
+    /// `KnowledgeBookItem.use`: the recipes the book names become known and it
+    /// is used up. A book naming a recipe this server does not have is
+    /// vanilla's `Invalid recipe: {}` and knows nothing. Whether the click
+    /// ends here: `InteractionResult.SUCCESS` does and swings, `FAIL` leaves
+    /// the other hand its turn (`Minecraft.startUseItem`).
+    pub(super) fn use_knowledge_book(&mut self, stack: &ItemStack) -> bool {
+        if &*stack.item != "minecraft:knowledge_book" {
+            return false;
+        }
+        let slot = self.held_slot();
+        let mut hand = self.stack_in(slot).cloned();
+        let infinite = self.creative;
+        let index = &world_stations!(self).recipe_index;
+        let result = self
+            .level
+            .recipe_book
+            .use_knowledge_book(index, &mut hand, infinite);
+        *self.stack_in_mut(slot) = hand;
+        match result {
+            Ok(unlocked) => {
+                self.recipe_unlocked(&unlocked);
+                self.stats.add("used", &stack.item, 1);
+                self.swing_arm();
+                true
+            }
+            Err(invalid) => {
+                if let Some(id) = invalid {
+                    log::error!("Invalid recipe: {id}");
+                }
+                false
+            }
         }
     }
     /// `PlayerAdvancements.award` once done: rewards, toast, announcement.
@@ -1386,6 +1445,38 @@ impl Game<'_> {
                 block_pos: Some(pos),
             };
             adv::conditions(&c["location"], &ctx, w)
+        });
+    }
+    /// `DefaultBlockInteractionTrigger` (default_block_use): the player, and
+    /// the block's `BLOCK_USE` context at its centre, with no tool.
+    pub(super) fn trigger_default_block_use(&mut self, pos: [i32; 3]) {
+        self.trigger_block_use("minecraft:default_block_use", pos, None);
+    }
+    /// `AnyBlockInteractionTrigger` (any_block_use): the player, and the
+    /// block's `ADVANCEMENT_LOCATION` context at its centre with the stack in
+    /// hand as the use left it.
+    pub(super) fn trigger_any_block_use(&mut self, pos: [i32; 3], stack: &ItemStack) {
+        self.trigger_block_use("minecraft:any_block_use", pos, Some(stack));
+    }
+    fn trigger_block_use(&mut self, name: &str, pos: [i32; 3], stack: Option<&ItemStack>) {
+        let me = self.player_entity();
+        let it = stack.map(item_view);
+        let centre = pos.map(|c| f64::from(c) + 0.5);
+        self.trigger(name, move |c, w| {
+            let player = adv::Entities {
+                this: Some(&me),
+                origin: me.position,
+                tool: None,
+                block_pos: None,
+            };
+            let location = adv::Entities {
+                origin: centre,
+                tool: it.as_ref(),
+                block_pos: Some(pos),
+                ..player
+            };
+            adv::conditions(&c["player"], &player, w)
+                && adv::conditions(&c["location"], &location, w)
         });
     }
     /// `LightningStrikeTrigger`: the bolt, and the mobs around it that it did
