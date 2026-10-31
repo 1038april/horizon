@@ -705,6 +705,7 @@ impl Game<'_> {
         let ticking = self.entity_ticking_area();
         for (i, a) in self.armor_stands.iter_mut().enumerate() {
             a.previous = a.position;
+            a.previous_yaw = a.yaw;
             if !ticking(a.position.x.floor() as i32, a.position.z.floor() as i32) {
                 continue;
             }
@@ -791,7 +792,9 @@ impl Game<'_> {
                 0.0
             };
             let base = glam::Mat4::from_translation(p.as_vec3())
-                * glam::Mat4::from_rotation_y((180.0 - a.yaw + wobble).to_radians())
+                * glam::Mat4::from_rotation_y(
+                    (180.0 - a.render_yaw(alpha as f32) + wobble).to_radians(),
+                )
                 * glam::Mat4::from_scale(glam::Vec3::new(-1.0, -1.0, 1.0))
                 * glam::Mat4::from_translation(glam::Vec3::new(0.0, -1.501, 0.0));
             let light = self.world.light(
