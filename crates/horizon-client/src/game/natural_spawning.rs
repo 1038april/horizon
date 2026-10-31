@@ -164,7 +164,7 @@ impl GameLevel<'_, '_> {
     }
     fn biome(&self, x: i32, y: i32, z: i32) -> Option<&BiomeInfo> {
         let chunk = self.game.world.chunks.get(&(x >> 4, z >> 4))?;
-        Some(self.game.res.biomes().get(chunk.biome(x, y, z)))
+        Some(world_biomes!(self.game).get(chunk.biome(x, y, z)))
     }
     /// The block whose noise cell `BiomeManager.getBiome` reads.
     fn zoomed(&self, x: i32, y: i32, z: i32) -> [i32; 3] {
@@ -535,6 +535,7 @@ impl<'a> Game<'a> {
         let spawn_enemies = self.ui.rules.bool("spawn_monsters");
         let mut random = std::mem::replace(&mut self.world.random, LegacyRandom::new(0));
         let mut pending = Vec::new();
+        let last_state;
         {
             let level = self.natural_level();
             let counted: Vec<Counted> = self
@@ -563,6 +564,7 @@ impl<'a> Game<'a> {
             let mut state = SpawnState::new(&level, spawnable, players, &counted, |cx, cz| {
                 self.world.chunks.contains_key(&(cx, cz))
             });
+            last_state = state.counts();
             let categories = if spawn_mobs {
                 state.filtered_categories(spawn_enemies, self.world.game_time % 400 == 0)
             } else {
@@ -595,6 +597,8 @@ impl<'a> Game<'a> {
             }
         }
         self.world.random = random;
+        // ServerChunkCache.lastSpawnState, for the debug overlay.
+        self.spawn_counts.insert(self.dim, last_state);
         self.add_spawned(pending, false);
         self.spawn_scratch = scratch;
     }
