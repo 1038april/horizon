@@ -635,18 +635,6 @@ fn run(
                             return Err(reason);
                         }
                         log::warn!("Authentication failed: {}", reason.text);
-                                        &translatable("disconnect.loginFailedInfo", &[&reason]),
-                                        lang,
-                                    ),
-                                    key,
-                                }
-                            })
-                        });
-                    if let Err(reason) = authenticated {
-                        if !continues_after_failed_join(lan, signed_in) {
-                            return Err(reason);
-                        }
-                        log::warn!("Authentication failed: {}", reason.text);
                     }
                 }
                 status(send, &tr(lang, "connect.encrypting"));
@@ -1612,12 +1600,20 @@ mod tests {
             } else {
                 Session::connect
             };
+            // The session's language carries Horizon's bundled strings
+            // (`load_language`), so the keyed refusal resolves.
+            let lang: Language = [(
+                "horizon.multiplayer.not_signed_in".to_owned(),
+                NOT_SIGNED_IN.to_owned(),
+            )]
+            .into_iter()
+            .collect();
             let session = connect(
                 &address,
                 "Tester",
                 None,
                 cfg::ClientInformation::new(8),
-                Arc::new(Language::new()),
+                Arc::new(lang),
                 PathBuf::new(),
             );
             let reason = loop {
