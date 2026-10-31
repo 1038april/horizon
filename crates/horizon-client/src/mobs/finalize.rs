@@ -628,6 +628,29 @@ pub fn add_modifier(m: &mut Mob, a: Attr, id: &'static str, amount: f64, op: Op)
     }
     refresh(m, a);
 }
+/// `AttributeInstance.removeModifier`.
+pub fn remove_modifier(m: &mut Mob, a: Attr, id: &str) {
+    if let Some(s) = m.extra.attributes.as_mut() {
+        s.modifiers.retain(|x| x.attr != a || x.id != id);
+    }
+    refresh(m, a);
+}
+/// `Mob.finalizeSpawn`, which every mob's own `finalizeSpawn` reaches
+/// through `super`: the `random_spawn_bonus` follow range modifier (once)
+/// and `setLeftHanded(nextFloat() < 0.05F)`.
+pub fn mob_spawn(m: &mut Mob, random: &mut impl RandomSource) {
+    if !has_modifier(m, Attr::FollowRange, "minecraft:random_spawn_bonus") {
+        let bonus = random.triangle(0.0, 0.114_850_000_000_000_01);
+        add_modifier(
+            m,
+            Attr::FollowRange,
+            "minecraft:random_spawn_bonus",
+            bonus,
+            Op::AddMultipliedBase,
+        );
+    }
+    m.extra.left_handed = random.next_float() < 0.05;
+}
 /// `Zombie.handleAttributes`, from the zombie's own random.
 pub fn zombie_attributes(m: &mut Mob, special: f32, reason: Reason) {
     let r = &mut m.random;
@@ -867,6 +890,10 @@ pub fn spawn_egg_offspring(child: &mut Mob, species: Species, variant: u8, color
     if species == Species::Sheep {
         child.extra.color = color;
     }
+    // `SulfurCube.getBreedOffspring`: `setSize(1, true)`.
+    if species == Species::SulfurCube {
+        sulfur_size(child, 1);
+    }
 }
 /// `setBaby`: AgeableMob through its age, zombies, piglins and zoglins.
 pub fn set_baby(m: &mut Mob, baby: bool) {
@@ -999,6 +1026,35 @@ pub fn stored_drop_chance(m: &Mob, slot: usize) -> f32 {
         .map_or(super::drops::DEFAULT_DROP_CHANCE, |c| c[slot])
 }
 
+/// `SpecialDates.isHalloween`: October 31.
+pub fn halloween_date(month: u32, day: u32) -> bool {
+    (month, day) == (10, 31)
+}
+
+/// `SpecialDates.isHalloween` from the local calendar.
+pub fn is_halloween() -> bool {
+    use chrono::Datelike;
+    let today = chrono::Local::now();
+    halloween_date(today.month(), today.day())
+}
+
+/// `Zombie` / `AbstractSkeleton` halloween pumpkin: 25% of empty heads, 10%
+/// of those a jack o'lantern, drop chance 0.
+pub fn halloween_head(m: &mut Mob, random: &mut impl RandomSource, halloween: bool) {
+    if !(zombie(m.species()) || skeleton(m.species())) {
+        return;
+    }
+    if m.extra.head.is_none() && halloween && random.next_float() < 0.25 {
+        let head = if random.next_float() < 0.1 {
+            "minecraft:jack_o_lantern"
+        } else {
+            "minecraft:carved_pumpkin"
+        };
+        set_item(m, HEAD, head);
+        set_drop_chance(m, HEAD, 0.0);
+    }
+}
+
 impl<L: FinalizeLevel + ?Sized, R: RandomSource> Ctx<'_, L, R> {
     fn float(&mut self) -> f32 {
         self.random.next_float()
@@ -1020,17 +1076,7 @@ impl<L: FinalizeLevel + ?Sized, R: RandomSource> Ctx<'_, L, R> {
 
     /// `Mob.finalizeSpawn`: the follow range spawn bonus and left-handedness.
     fn mob(&mut self, m: &mut Mob, g: Option<Group>) -> Option<Group> {
-        if !has_modifier(m, Attr::FollowRange, "minecraft:random_spawn_bonus") {
-            let bonus = self.random.triangle(0.0, 0.114_850_000_000_000_01);
-            add_modifier(
-                m,
-                Attr::FollowRange,
-                "minecraft:random_spawn_bonus",
-                bonus,
-                Op::AddMultipliedBase,
-            );
-        }
-        m.extra.left_handed = self.float() < 0.05;
+        mob_spawn(m, self.random);
         g
     }
     /// `AgeableMob.finalizeSpawn`.
@@ -1219,15 +1265,7 @@ impl<L: FinalizeLevel + ?Sized, R: RandomSource> Ctx<'_, L, R> {
         }
     }
     fn halloween(&mut self, m: &mut Mob) {
-        if m.extra.head.is_none() && self.level.halloween() && self.float() < 0.25 {
-            let head = if self.float() < 0.1 {
-                "minecraft:jack_o_lantern"
-            } else {
-                "minecraft:carved_pumpkin"
-            };
-            set_item(m, HEAD, head);
-            set_drop_chance(m, HEAD, 0.0);
-        }
+        halloween_head(m, self.random, self.level.halloween());
     }
 
     // ---- jockeys ------------------------------------------------------
@@ -2074,6 +2112,8 @@ pub fn variant_index(s: Species, name: &str) -> u8 {
         Species::Cat => super::tame::CAT_VARIANTS.iter().position(|v| *v == name),
         Species::Wolf => super::tame::WOLF_VARIANTS.iter().position(|v| v.0 == name),
         Species::ZombieNautilus => super::nautilus::VARIANTS.iter().position(|v| *v == name),
+        // MushroomCow.Variant: red is the codec's default, brown the other.
+        Species::Mooshroom => ["red", "brown"].iter().position(|v| *v == name),
         _ => ["temperate", "warm", "cold"]
             .iter()
             .position(|v| *v == name),
@@ -2093,6 +2133,7 @@ pub fn species_variant_component(s: Species, variant: u8) -> Option<(&'static st
         Species::Frog => "minecraft:frog/variant",
         Species::Pig => "minecraft:pig/variant",
         Species::Cow => "minecraft:cow/variant",
+        Species::Mooshroom => "minecraft:mooshroom/variant",
         Species::Chicken => "minecraft:chicken/variant",
         Species::ZombieNautilus => "minecraft:zombie_nautilus/variant",
         _ => return None,
@@ -2160,6 +2201,7 @@ pub fn variant_name(s: Species, index: u8) -> &'static str {
             .get(i)
             .copied()
             .unwrap_or("temperate"),
+        Species::Mooshroom => ["red", "brown"].get(i).copied().unwrap_or("red"),
         _ => ["temperate", "warm", "cold"]
             .get(i)
             .copied()
@@ -2201,6 +2243,25 @@ mod tests {
         assert_eq!(panda_variant(4, 0), 0);
         assert_eq!(panda_variant(4, 4), 4);
         assert_eq!(panda_variant(6, 0), 6);
+    }
+    /// `MushroomCow.get(DataComponentGetter)`: a mooshroom reports its colour
+    /// as the variant component, and the name maps back to the index.
+    #[test]
+    fn a_mooshroom_reports_its_variant_component() {
+        for (index, name) in [(0, "minecraft:red"), (1, "minecraft:brown")] {
+            assert_eq!(
+                species_variant_component(Species::Mooshroom, index),
+                Some(("minecraft:mooshroom/variant", name.to_owned()))
+            );
+            assert_eq!(variant_index(Species::Mooshroom, name), index);
+            assert_eq!(
+                format!("minecraft:{}", variant_name(Species::Mooshroom, index)),
+                name
+            );
+        }
+        // Variant.DEFAULT is red: an unknown name, or an index past brown.
+        assert_eq!(variant_index(Species::Mooshroom, "minecraft:temperate"), 0);
+        assert_eq!(variant_name(Species::Mooshroom, 2), "red");
     }
     /// #2269: the offspring of a spawn egg used on a mob is a baby of that
     /// kind (`SpawnEggItem.spawnOffspringFromSpawnEgg`), and only the mob's
@@ -2281,5 +2342,12 @@ mod tests {
         assert_eq!(villager_type("minecraft:badlands"), 1);
         assert_eq!(villager_type("minecraft:grove"), 4);
         assert_eq!(villager_type("minecraft:plains"), 0);
+    }
+    #[test]
+    fn october_31_is_halloween() {
+        assert!(halloween_date(10, 31));
+        assert!(!halloween_date(10, 30));
+        assert!(!halloween_date(11, 1));
+        assert!(!halloween_date(1, 1));
     }
 }

@@ -2,6 +2,7 @@
 //! network order, with their data for clients that do not know the vanilla
 //! pack) and the tags of every registry, loaded from the prepared resources
 //! (`data/minecraft/...`) and the registries report.
+use crate::chunk::LevelShapes;
 use horizon_protocol::{
     packets::configuration::{RegistryData, RegistryEntry, RegistryTags, TagEntry, UpdateTags},
     registry::{Builtin, Dynamic},
@@ -51,10 +52,19 @@ pub const SYNCHRONIZED: &[&str] = &[
 /// KnownPack.vanilla("core") for this version.
 pub const CORE_PACK: (&str, &str, &str) = ("minecraft", "core", horizon_protocol::GAME_VERSION);
 
+/// Synchronized registries a world's data packs add entries to (or replace
+/// them in). The others stay the game's own: Horizon's gameplay reads them
+/// from the prepared resources only.
+const PACK_REGISTRIES: &[&str] = &["minecraft:dialog"];
+
 /// A data-driven registry: entry names in network order and their JSON.
+#[derive(Clone)]
 struct Entries {
     names: Vec<String>,
     json: Vec<Value>,
+    /// The entry comes from a world's data pack, which no client knows, so
+    /// its data is always sent.
+    from_pack: Vec<bool>,
 }
 
 pub struct SyncData {
@@ -91,6 +101,45 @@ fn walk(dir: &Path, prefix: &str, out: &mut BTreeMap<String, Value>) {
     }
 }
 
+/// A synchronized registry's entries from the world's data packs (`<dir>/`
+/// files, the top pack's for each id) over the game's own. Each entry is
+/// ((namespace, path), JSON, from a pack); `file_order` sorts them.
+fn pack_entries(
+    dir: &str,
+    overlay: &horizon_world::loot::PackOverlay,
+    entries: &mut Vec<((String, String), Value, bool)>,
+) {
+    for (id, files) in overlay.kind(dir) {
+        let Some((ns, path)) = id.split_once(':') else {
+            continue;
+        };
+        let top = horizon_world::loot::PackOverlay::top(files);
+        let value = match serde_json::from_slice::<Value>(top) {
+            Ok(value) => value,
+            Err(e) => {
+                log::warn!("Horizon: data pack {dir} {id} is not read: {e}");
+                continue;
+            }
+        };
+        let key = (ns.to_owned(), path.to_owned());
+        match entries.iter_mut().find(|(k, ..)| *k == key) {
+            Some(entry) => {
+                entry.1 = value;
+                entry.2 = true;
+            }
+            None => entries.push((key, value, true)),
+        }
+    }
+}
+
+/// ResourceManagerRegistryLoadTask.load: the entries register sorted by the
+/// file `Identifier` FileToIdConverter.listMatchingResources keys them by
+/// (`<dir>/<path>.json`), path first, then namespace (Identifier.compareTo).
+/// The `.json` counts: `x-y` comes before `x`, as `-` sorts before `.`.
+fn file_order<T>(entries: &mut [((String, String), T, bool)]) {
+    entries.sort_by_cached_key(|((ns, path), ..)| (format!("{path}.json"), ns.clone()));
+}
+
 /// A JSON value as the NBT that vanilla's NbtOps would produce from the codec
 /// (integers are ints, other numbers doubles, booleans bytes).
 pub fn json_to_nbt(v: &Value) -> Tag {
@@ -124,6 +173,26 @@ pub fn component_nbt(v: &Value) -> Tag {
 }
 
 impl SyncData {
+    /// No registries, tags or recipes: enough for tests of the login phase.
+    #[cfg(test)]
+    pub(crate) fn empty() -> Self {
+        Self {
+            builtin: Builtin::default(),
+            dynamic: Dynamic::default(),
+            registries: Vec::new(),
+            tags: UpdateTags {
+                registries: Vec::new(),
+            },
+            features: Vec::new(),
+            commands: None,
+            recipes: Vec::new(),
+            advancements: super::advancements::ServerAdvancements::load(
+                Path::new(""),
+                &horizon_world::loot::PackOverlay::NONE,
+            ),
+            content_identity: None,
+        }
+    }
     pub fn load(
         resources: &Path,
         overlay: &horizon_world::loot::PackOverlay,
@@ -138,19 +207,33 @@ impl SyncData {
             let path = key.trim_start_matches("minecraft:");
             let mut found = BTreeMap::new();
             walk(&root.join(path), "", &mut found);
-            let (names, json): (Vec<_>, Vec<_>) = found
+            let mut entries: Vec<_> = found
                 .into_iter()
-                .map(|(n, v)| (format!("minecraft:{n}"), v))
-                .unzip();
+                .map(|(p, v)| (("minecraft".to_owned(), p), v, false))
+                .collect();
+            if PACK_REGISTRIES.contains(key) {
+                pack_entries(path, overlay, &mut entries);
+            }
+            file_order(&mut entries);
+            let mut e = Entries {
+                names: Vec::new(),
+                json: Vec::new(),
+                from_pack: Vec::new(),
+            };
+            for ((ns, p), v, from_pack) in entries {
+                e.names.push(format!("{ns}:{p}"));
+                e.json.push(v);
+                e.from_pack.push(from_pack);
+            }
             dynamic.registries.insert(
                 (*key).to_owned(),
-                names.iter().map(|n| (n.clone(), None)).collect(),
+                e.names.iter().map(|n| (n.clone(), None)).collect(),
             );
-            registries.push(((*key).to_owned(), Entries { names, json }));
+            registries.push(((*key).to_owned(), e));
         }
         let tags = Self::load_tags(&root, &builtin, &dynamic);
         let content_identity = if resources.join(crate::content_identity::MARKER).exists() {
-            Some(crate::content_identity::identity(resources)?)
+            Some(crate::content_identity::identity(resources).map_err(|error| error.to_string())?)
         } else {
             None
         };
@@ -169,6 +252,27 @@ impl SyncData {
         Ok(sync)
     }
 
+    /// MinecraftServer.reloadResources: `/reload` keeps the synchronized
+    /// registries the server started with (`kept`'s, its
+    /// LayeredRegistryAccess) and reads the tags against them
+    /// (TagLoader.loadTagsForExistingRegistries); the rest stays reloaded.
+    pub fn keep_registries(&mut self, resources: &Path, kept: &SyncData) {
+        self.dynamic = kept.dynamic.clone();
+        self.registries = kept.registries.clone();
+        self.tags = Self::load_tags(
+            &resources.join("data/minecraft"),
+            &self.builtin,
+            &self.dynamic,
+        );
+    }
+
+    /// Whether a synchronized registry holds an entry from a world's pack.
+    pub fn has_pack_entries(&self) -> bool {
+        self.registries
+            .iter()
+            .any(|(_, e)| e.from_pack.contains(&true))
+    }
+
     /// The id of a name in a built-in or synchronized registry.
     pub fn id(&self, registry: &str, name: &str) -> Option<i32> {
         if let Some(ids) = self.builtin.get(registry) {
@@ -184,7 +288,10 @@ impl SyncData {
 
     /// ClientboundRegistryDataPacket per registry. With `known_pack` the
     /// client rebuilds the entries from its own data, so none is sent.
-    pub fn registry_packets(&self, known_pack: bool) -> Vec<RegistryData> {
+    /// The registries for a client, with the data of a dimension type the
+    /// world's data packs changed (`levels`) even when it knows the vanilla
+    /// pack.
+    pub fn registry_packets(&self, known_pack: bool, levels: &LevelShapes) -> Vec<RegistryData> {
         self.registries
             .iter()
             .map(|(key, e)| RegistryData {
@@ -193,13 +300,19 @@ impl SyncData {
                     .names
                     .iter()
                     .zip(&e.json)
-                    .map(|(name, json)| RegistryEntry {
-                        id: name.clone(),
-                        data: if known_pack {
-                            None
-                        } else {
-                            Some(json_to_nbt(json))
-                        },
+                    .zip(&e.from_pack)
+                    .map(|((name, json), &from_pack)| {
+                        let changed = (key == "minecraft:dimension_type")
+                            .then(|| changed_dimension_type(name, json, levels))
+                            .flatten();
+                        RegistryEntry {
+                            id: name.clone(),
+                            data: match changed {
+                                Some(json) => Some(json_to_nbt(&json)),
+                                None if known_pack && !from_pack => None,
+                                None => Some(json_to_nbt(json)),
+                            },
+                        }
                     })
                     .collect(),
             })
@@ -300,9 +413,85 @@ impl SyncData {
     }
 }
 
+/// The vanilla dimension type `name` (its JSON `json`) with the shape the
+/// world gives the level of that name, if its data packs changed it.
+fn changed_dimension_type(name: &str, json: &Value, levels: &LevelShapes) -> Option<Value> {
+    if !matches!(
+        name,
+        "minecraft:overworld" | "minecraft:the_nether" | "minecraft:the_end"
+    ) {
+        return None;
+    }
+    let shape = levels.get(name);
+    if shape == LevelShapes::VANILLA.get(name) {
+        return None;
+    }
+    let mut json = json.clone();
+    json["min_y"] = shape.min_y.into();
+    json["height"] = shape.height.into();
+    json["logical_height"] = shape.logical_height.into();
+    json["has_skylight"] = shape.sky_light.into();
+    Some(json)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pack_dialogs_join_the_registry_in_identifier_order() {
+        let vanilla = |p: &str| (("minecraft".to_owned(), p.to_owned()), Value::Null, false);
+        let mut entries = vec![
+            vanilla("custom_options"),
+            vanilla("quick_actions"),
+            vanilla("x"),
+        ];
+        let files = [
+            (
+                "dialog/blazeandcave:config/change_points_task".to_owned(),
+                vec![br#"{"type":"minecraft:notice"}"#.to_vec()],
+            ),
+            // A lower pack's file, then the top one's: the top one is read.
+            (
+                "dialog/minecraft:quick_actions".to_owned(),
+                vec![
+                    b"{}".to_vec(),
+                    br#"{"type":"minecraft:multi_action"}"#.to_vec(),
+                ],
+            ),
+            ("dialog/broken:bad".to_owned(), vec![b"{".to_vec()]),
+            ("dialog/minecraft:x-y".to_owned(), vec![b"{}".to_vec()]),
+            ("recipe/blazeandcave:other".to_owned(), vec![b"{}".to_vec()]),
+        ];
+        let overlay = horizon_world::loot::PackOverlay { files: &files };
+        pack_entries("dialog", &overlay, &mut entries);
+        file_order(&mut entries);
+        let got: Vec<_> = entries
+            .iter()
+            .map(|((ns, p), v, from_pack)| (format!("{ns}:{p}"), v["type"].clone(), *from_pack))
+            .collect();
+        // Identifier.compareTo: "config/..." sorts before "custom_options"
+        // by path, though "blazeandcave" is not "minecraft"; "x-y.json"
+        // sorts before "x.json".
+        assert_eq!(
+            got,
+            [
+                (
+                    "blazeandcave:config/change_points_task".to_owned(),
+                    Value::from("minecraft:notice"),
+                    true
+                ),
+                ("minecraft:custom_options".to_owned(), Value::Null, false),
+                (
+                    "minecraft:quick_actions".to_owned(),
+                    Value::from("minecraft:multi_action"),
+                    true
+                ),
+                ("minecraft:x-y".to_owned(), Value::Null, true),
+                ("minecraft:x".to_owned(), Value::Null, false),
+            ]
+        );
+    }
 
     #[test]
     fn json_becomes_nbt() {
@@ -311,6 +500,33 @@ mod tests {
         assert!(matches!(t.get("a"), Some(Tag::Int(1))));
         assert!(matches!(t.get("c"), Some(Tag::String(_))));
         assert!(matches!(t.get("b"), Some(Tag::List(l)) if l.len() == 2));
+    }
+
+    #[test]
+    fn a_changed_dimension_type_is_sent_with_its_shape() {
+        let vanilla: Value =
+            serde_json::from_str(r#"{"min_y":-64,"height":384,"logical_height":384,"has_skylight":true,"ultrawarm":false}"#)
+                .unwrap();
+        let mut levels = LevelShapes::VANILLA;
+        assert_eq!(
+            changed_dimension_type("minecraft:overworld", &vanilla, &levels),
+            None
+        );
+        levels.overworld = crate::chunk::LevelShape::new(-64, 2096, 2096, true).unwrap();
+        let sent = changed_dimension_type("minecraft:overworld", &vanilla, &levels).unwrap();
+        assert_eq!(
+            (sent["min_y"].as_i64(), sent["height"].as_i64()),
+            (Some(-64), Some(2096))
+        );
+        assert_eq!(sent["ultrawarm"], false, "the rest of the type is kept");
+        assert_eq!(
+            changed_dimension_type("minecraft:the_nether", &vanilla, &levels),
+            None
+        );
+        assert_eq!(
+            changed_dimension_type("minecraft:overworld_caves", &vanilla, &levels),
+            None
+        );
     }
 }
 

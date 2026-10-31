@@ -661,16 +661,19 @@ impl SecretStore for SystemStore {
 }
 
 /// Keychain on macOS, Credential Manager on Windows (the keyring crate). Credential Manager takes at
-/// most 2560 bytes of UTF-16 per item and a sign-in's secrets are longer, so a secret is kept in
-/// pieces: the first under the account's key, the rest under `key.1`, `key.2`...
+/// most 2560 bytes of UTF-16 per item and a sign-in's secrets are longer, so on Windows a secret is
+/// kept in pieces: the first under the account's key, the rest under `key.1`, `key.2`... The
+/// Keychain has no such limit, and every item is a consent prompt for a launcher signature it
+/// doesn't know yet — pieces meant several prompts after every self-update (#4912) — so on macOS a
+/// secret is one item, and pieces an older launcher left fold into it as they are read.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub struct SystemStore;
 
 /// Bytes of UTF-8 per keychain item: at most twice as many in UTF-16, well under 2560.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "windows", test))]
 const PIECE: usize = 1000;
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 fn piece_key(key: &str, n: usize) -> String {
     if n == 0 {
         key.to_string()
@@ -680,7 +683,7 @@ fn piece_key(key: &str, n: usize) -> String {
 }
 
 /// `secret` cut into pieces of at most `PIECE` bytes, on character boundaries.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "windows", test))]
 fn split_secret(mut secret: &str) -> Vec<&str> {
     let mut pieces = Vec::new();
     while secret.len() > PIECE {
@@ -696,66 +699,219 @@ fn split_secret(mut secret: &str) -> Vec<&str> {
     pieces
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-fn read_item(key: &str) -> Result<Option<String>, String> {
-    match keyring::Entry::new(SERVICE, key).and_then(|e| e.get_password()) {
-        Ok(secret) => Ok(Some(secret)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(e.to_string()),
+/// One keychain item per key: what a secret's pieces are kept in.
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+trait Items {
+    fn read(&self, key: &str) -> Result<Option<String>, String>;
+    fn write(&self, key: &str, piece: &str) -> Result<(), String>;
+    /// Removes one item; false when there was none.
+    fn remove(&self, key: &str) -> Result<bool, String>;
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn get_pieces(items: &dyn Items, key: &str) -> Result<Option<String>, String> {
+    let Some(mut secret) = items.read(key)? else {
+        return Ok(None);
+    };
+    for n in 1.. {
+        match items.read(&piece_key(key, n))? {
+            Some(piece) => secret.push_str(&piece),
+            None => break,
+        }
     }
+    Ok(Some(secret))
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-fn write_item(key: &str, secret: &str) -> Result<(), String> {
-    keyring::Entry::new(SERVICE, key)
-        .and_then(|e| e.set_password(secret))
-        .map_err(|e| e.to_string())
+#[cfg(any(target_os = "windows", test))]
+fn set_pieces(items: &dyn Items, key: &str, secret: &str) -> Result<(), String> {
+    let before = get_pieces(items, key).ok().flatten();
+    let pieces = split_secret(secret);
+    for (n, piece) in pieces.iter().enumerate() {
+        if let Err(e) = items.write(&piece_key(key, n), piece) {
+            // New pieces before old ones read back as no secret at all (the account would be
+            // signed out at the next start): the old secret goes back, which fit before.
+            if n > 0 {
+                let _ = delete_pieces(items, key);
+                if let Some(before) = &before {
+                    for (n, piece) in split_secret(before).iter().enumerate() {
+                        let _ = items.write(&piece_key(key, n), piece);
+                    }
+                }
+            }
+            return Err(e);
+        }
+    }
+    // Pieces left over from a longer secret would be read back as part of this one.
+    for n in pieces.len().. {
+        match items.remove(&piece_key(key, n)) {
+            Ok(true) => {}
+            Ok(false) => break,
+            Err(e) => {
+                // Some leftovers are already gone, some are still there: the old secret goes back
+                // whole, as on a refused write above.
+                let _ = delete_pieces(items, key);
+                if let Some(before) = &before {
+                    for (n, piece) in split_secret(before).iter().enumerate() {
+                        let _ = items.write(&piece_key(key, n), piece);
+                    }
+                }
+                return Err(e);
+            }
+        }
+    }
+    Ok(())
 }
 
-/// Removes one item; false when there was none.
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
+fn delete_pieces(items: &dyn Items, key: &str) -> Result<(), String> {
+    for n in 0.. {
+        if !items.remove(&piece_key(key, n))? {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// One item per key, the whole secret in it (macOS). A secret an older launcher split over `key.1`,
+/// `key.2`, ... reads whole and folds into the one item, so a read touches a single item — and asks
+/// once — from then on. A merged item also reads fine as "piece 0" to launchers that still split.
+#[cfg(any(target_os = "macos", test))]
+fn get_item(items: &dyn Items, key: &str) -> Result<Option<String>, String> {
+    let Some(mut secret) = items.read(key)? else {
+        return Ok(None);
+    };
+    let mut split = false;
+    for n in 1.. {
+        match items.read(&piece_key(key, n))? {
+            Some(piece) => {
+                secret.push_str(&piece);
+                split = true;
+            }
+            None => break,
+        }
+    }
+    if split {
+        let _ = set_item(items, key, &secret);
+    }
+    Ok(Some(secret))
+}
+
+/// Writes `secret` to `key` and removes `key.1`, `key.2`, ... pieces an older, split secret left:
+/// they would read back as part of this one. A removal the keychain refuses puts the old items
+/// back: the merged secret beside the pieces left would read as a longer, unparseable one, and
+/// pieces removed before the failure can't be had again except from here.
+#[cfg(any(target_os = "macos", test))]
+fn set_item(items: &dyn Items, key: &str, secret: &str) -> Result<(), String> {
+    let mut before = Vec::new();
+    if let Some(piece) = items.read(key)? {
+        before.push((key.to_string(), piece));
+        for n in 1.. {
+            match items.read(&piece_key(key, n))? {
+                Some(piece) => before.push((piece_key(key, n), piece)),
+                None => break,
+            }
+        }
+    }
+    items.write(key, secret)?;
+    for n in 1.. {
+        match items.remove(&piece_key(key, n)) {
+            Ok(true) => {}
+            Ok(false) => break,
+            Err(e) => {
+                if before.is_empty() {
+                    let _ = items.remove(key);
+                } else {
+                    for (key, piece) in &before {
+                        let _ = items.write(key, piece);
+                    }
+                }
+                return Err(e);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Credential Manager's error 8 (`ERROR_NOT_ENOUGH_MEMORY`) on a write: not the computer's memory,
+/// the player's credential store is full (an undocumented limit of its total size). The Xbox app
+/// and the Minecraft Launcher are known to leave hundreds of items there (#4313, #4366).
+#[cfg(any(target_os = "windows", test))]
+pub const CREDENTIAL_MANAGER_FULL: &str = "Windows Credential Manager is full, so Horizon can't \
+     keep your sign-in (Windows error 8; it isn't your computer's memory). Open Credential Manager \
+     from the Start menu, go to Windows Credentials and remove entries you no longer use, then sign \
+     in again. The Xbox app and the Minecraft Launcher often leave many XblGrts and Xbl| entries \
+     there; removing an entry can sign the app that made it out.";
+
+/// What the launcher says for a Windows error code Credential Manager gave when writing an item,
+/// when it says more than the code.
+#[cfg(any(target_os = "windows", test))]
+fn credential_manager_says(code: u32) -> Option<&'static str> {
+    const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
+    (code == ERROR_NOT_ENOUGH_MEMORY).then_some(CREDENTIAL_MANAGER_FULL)
+}
+
+/// The keyring crate's error as the player reads it.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-fn remove_item(key: &str) -> Result<bool, String> {
-    match keyring::Entry::new(SERVICE, key).and_then(|e| e.delete_credential()) {
-        Ok(()) => Ok(true),
-        Err(keyring::Error::NoEntry) => Ok(false),
-        Err(e) => Err(e.to_string()),
+fn write_error(e: keyring::Error) -> String {
+    #[cfg(target_os = "windows")]
+    if let keyring::Error::PlatformFailure(inner) = &e {
+        if let Some(said) = inner
+            .downcast_ref::<keyring::windows::Error>()
+            .and_then(|code| credential_manager_says(code.0))
+        {
+            return said.to_string();
+        }
+    }
+    e.to_string()
+}
+
+/// The OS keychain's items, under [`SERVICE`].
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+struct KeyringItems;
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+impl Items for KeyringItems {
+    fn read(&self, key: &str) -> Result<Option<String>, String> {
+        match keyring::Entry::new(SERVICE, key).and_then(|e| e.get_password()) {
+            Ok(secret) => Ok(Some(secret)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+    fn write(&self, key: &str, piece: &str) -> Result<(), String> {
+        keyring::Entry::new(SERVICE, key)
+            .and_then(|e| e.set_password(piece))
+            .map_err(write_error)
+    }
+    fn remove(&self, key: &str) -> Result<bool, String> {
+        match keyring::Entry::new(SERVICE, key).and_then(|e| e.delete_credential()) {
+            Ok(()) => Ok(true),
+            Err(keyring::Error::NoEntry) => Ok(false),
+            Err(e) => Err(e.to_string()),
+        }
     }
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 impl SecretStore for SystemStore {
+    #[cfg(target_os = "macos")]
     fn get(&self, key: &str) -> Result<Option<String>, String> {
-        let Some(mut secret) = read_item(key)? else {
-            return Ok(None);
-        };
-        for n in 1.. {
-            match read_item(&piece_key(key, n))? {
-                Some(piece) => secret.push_str(&piece),
-                None => break,
-            }
-        }
-        Ok(Some(secret))
+        get_item(&KeyringItems, key)
     }
+    #[cfg(target_os = "windows")]
+    fn get(&self, key: &str) -> Result<Option<String>, String> {
+        get_pieces(&KeyringItems, key)
+    }
+    #[cfg(target_os = "macos")]
     fn set(&self, key: &str, secret: &str) -> Result<(), String> {
-        let pieces = split_secret(secret);
-        for (n, piece) in pieces.iter().enumerate() {
-            write_item(&piece_key(key, n), piece)?;
-        }
-        // Pieces left over from a longer secret would be read back as part of this one.
-        for n in pieces.len().. {
-            if !remove_item(&piece_key(key, n))? {
-                break;
-            }
-        }
-        Ok(())
+        set_item(&KeyringItems, key, secret)
+    }
+    #[cfg(target_os = "windows")]
+    fn set(&self, key: &str, secret: &str) -> Result<(), String> {
+        set_pieces(&KeyringItems, key, secret)
     }
     fn delete(&self, key: &str) -> Result<(), String> {
-        for n in 0.. {
-            if !remove_item(&piece_key(key, n))? {
-                break;
-            }
-        }
-        Ok(())
+        delete_pieces(&KeyringItems, key)
     }
     fn persistent(&self) -> bool {
         true
@@ -909,8 +1065,11 @@ impl Accounts {
     /// Whether an account here owned the game at its last check (the keychain's answer, no
     /// request): what Play and offline names need.
     pub fn has_owner(&self, store: &dyn SecretStore) -> bool {
-        self.accounts
-            .iter()
+        // The selected account first: it owning the game ends the search after one account's
+        // item — every account's item read can ask for the keychain (macOS, #4912).
+        self.selected()
+            .into_iter()
+            .chain(self.accounts.iter().filter(|a| Some(*a) != self.selected()))
             .any(|a| secrets_in(store, &a.uuid).is_some_and(|s| s.owns))
     }
 

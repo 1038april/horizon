@@ -1,11 +1,11 @@
-Interaction.defineSynchedData	missing		minor: no interaction entity; /summon interaction (the invisible click hitbox map makers use) creates nothing
-Interaction.readAdditionalSaveData	missing		minor: no interaction entity; /summon interaction (the invisible click hitbox map makers use) creates nothing
-Interaction.addAdditionalSaveData	missing		minor: no interaction entity; /summon interaction (the invisible click hitbox map makers use) creates nothing
-Interaction.onSyncedDataUpdated	missing		minor: no interaction entity; /summon interaction (the invisible click hitbox map makers use) creates nothing
-Interaction.skipAttackInteraction	missing		minor: no interaction entity; /summon interaction (the invisible click hitbox map makers use) creates nothing
-Interaction.interact	missing		minor: no interaction entity; /summon interaction (the invisible click hitbox map makers use) creates nothing
-Interaction.getLastAttacker	missing		minor: no interaction entity; /summon interaction (the invisible click hitbox map makers use) creates nothing
-Interaction.getTarget	missing		minor: no interaction entity; /summon interaction (the invisible click hitbox map makers use) creates nothing
+Interaction.defineSynchedData	port	crates/horizon-client/src/game/interactions.rs::RemoteInteraction::new	width 1.0, height 1.0, response false
+Interaction.readAdditionalSaveData	missing		server side: Horizon's own server has no interaction entity, and a client never saves a remote one
+Interaction.addAdditionalSaveData	missing		server side: Horizon's own server has no interaction entity, and a client never saves a remote one
+Interaction.onSyncedDataUpdated	port	crates/horizon-client/src/game/interactions.rs::RemoteInteraction::metadata	DATA_WIDTH 8, DATA_HEIGHT 9, DATA_RESPONSE 10
+Interaction.skipAttackInteraction	inline	crates/horizon-client/src/game/remote_vehicles.rs::Game::remote_object_hit	false: an attack click picks the box like any entity, and the box ignores the hurt on the server
+Interaction.interact	port	crates/horizon-client/src/game/remote.rs::Game::remote_use_entity	SUCCESS when the response is set (the arm swings), CONSUME otherwise; both end the click and nothing behind the box is used
+Interaction.getLastAttacker	missing		client copy only: the server keeps the attack targets; a client's copy answers only the click
+Interaction.getTarget	missing		client copy only: the server keeps the attack targets; a client's copy answers only the click
 Leashable.isLeashed	inline	crates/horizon-client/src/mobs/leash.rs::tick	the mob's extra.leash being set
 Leashable.setDelayedLeashHolderId	inline	crates/horizon-client/src/game/remote.rs::Game::handle_packet	SetEntityLink arm: a holder id not known yet waits as Holder::Mob until the knot arrives (remote_objects.rs)
 Leashable.readLeashData	port	crates/horizon-client/src/mobs/leash.rs::pending_from_nbt	holder UUID or fence knot block; kept pending until the holder exists
@@ -31,7 +31,7 @@ LinearInterpolationHandler.startInterpolating	inline	crates/horizon-client/src/g
 LinearInterpolationHandler.doInterpolate	inline	crates/horizon-client/src/game/remote.rs::Game::tick_remote_entities	gap: minor: position eased by 1/steps; a boat's or minecart's yaw is set at once, not eased
 LivingEntity.<init>	port	crates/horizon-client/src/mobs.rs::Mob::new	box, health, random yaw
 LivingEntity.defineSynchedData	port	crates/horizon-client/src/game/lan.rs::mob_meta	gap: player: arrow count (12) and stinger count (13) are never kept or sent, so arrows and bee stingers do not stay stuck in a body
-LivingEntity.hasLandedInLiquid	missing		minor: the fall impulse context (mace, wind charge) is not cleared when a server player lands in a liquid
+LivingEntity.hasLandedInLiquid	port	crates/horizon-world/src/living_fall.rs::ImpulseContext::landed_in_liquid	water or lava with getDeltaMovement().y below 9.9999997E-6, from the guest move loop; the grace time still defers it
 LivingEntity.getScale	missing		minor: no scale attribute, so /attribute scale and datapack scaling do nothing; baby and slime sizes come from tables in Mob::dims
 LivingEntity.shouldDropLoot	inline	crates/horizon-client/src/mobs/drops.rs::die	mob_drops rule and not a baby (monsters excepted)
 LivingEntity.decreaseAirSupply	port	crates/horizon-client/src/motion/environment.rs::MotionWorld::tick_environment_damage	gap: minor: only the player reads oxygen_bonus (Respiration); a mob loses one air per tick in ai.rs::base_tick
