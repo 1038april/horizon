@@ -1410,6 +1410,7 @@ impl Game<'_> {
                 .parked_world_mut(dim)
                 .map(|world| &mut world.random)
         }
+    }
     /// The item entities of the server level `dimension` whose box meets
     /// the box `min`..`max`, in the level's order: vanilla's
     /// `Level.getEntitiesOfClass(ItemEntity.class, box, ENTITY_STILL_ALIVE)`, as a
