@@ -68,6 +68,7 @@ horizon-prepare --check --output PREPARED
   gap on stdout and the command that fills it, or an `error:` line on stderr when it can't check. It tests which
   files are there and the versions they were made for, not their contents: a launcher that suspects damage
   prepares again. A folder being prepared, or whose preparation stopped, is not current.
+  `--check` refuses `--progress` and `--complete` (exit 2): they apply to preparing.
 - `--complete`: after preparing, copies the sounds and fails unless `--check` would pass.
 - `--version-json`, `--client-jar`, `--libraries-dir` (Maven layout), `--assets-dir` (`indexes/` and `objects/`):
   for a launcher whose files aren't laid out like the official launcher's, each names what `--minecraft-dir`
