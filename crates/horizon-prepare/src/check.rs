@@ -4,7 +4,7 @@
 //! stamp out of the output's digest, so it never asks for a new `OUTPUT_VERSION`.
 
 use crate::pyjson::Value;
-use crate::{OUTPUT_VERSION, SCHEMA, artifacts::Lock, read_json, write_json};
+use crate::{artifacts::Lock, read_json, write_json, OUTPUT_VERSION, SCHEMA};
 use std::path::Path;
 
 /// The file beside `horizon-resources.json` naming the preparer's `OUTPUT_VERSION`.
