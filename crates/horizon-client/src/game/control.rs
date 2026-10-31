@@ -1,4 +1,5 @@
 //! Commands from the control socket (`horizon-ctl`), run on the game thread.
+use super::event_loop::EventLoopCtl;
 use super::{Game, Screen};
 use horizon_client::{Result, items::ItemStack};
 use horizon_core::geometry::Vec3;
@@ -7,7 +8,7 @@ use std::{
     sync::mpsc::Sender,
     time::{Duration, Instant},
 };
-use winit::{event::MouseButton, event_loop::ActiveEventLoop, keyboard::KeyCode};
+use winit::{event::MouseButton, keyboard::KeyCode};
 
 const HELP: &[&str] = &[
     "status                         game, player, streaming and renderer state",
@@ -107,7 +108,7 @@ impl Game<'_> {
             let _ = flight.reply.send(summary.to_string());
         }
     }
-    pub(super) fn poll_control(&mut self, event_loop: &ActiveEventLoop) {
+    pub(super) fn poll_control(&mut self, event_loop: &dyn EventLoopCtl) {
         if let Some((deadline, reply)) = self.pending_bench.take() {
             if Instant::now() >= deadline {
                 let _ = reply.send(self.frame_stats.summary().to_string());
@@ -137,7 +138,7 @@ impl Game<'_> {
         }
     }
 
-    fn answer(&mut self, request: horizon_client::control::Request, event_loop: &ActiveEventLoop) {
+    fn answer(&mut self, request: horizon_client::control::Request, event_loop: &dyn EventLoopCtl) {
         let reply = match self.control_command(&request.line, &request.reply, event_loop) {
             Ok(Some(value)) => value,
             // Deferred: the command keeps its own reply channel.
@@ -151,7 +152,7 @@ impl Game<'_> {
         &mut self,
         line: &str,
         reply: &Sender<String>,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn EventLoopCtl,
     ) -> Result<Option<Value>> {
         // A tap's or an up's release must run even when a dialog, the sign
         // editor or a screen consumes the key, there is no world, or a
@@ -168,7 +169,7 @@ impl Game<'_> {
         &mut self,
         line: &str,
         reply: &Sender<String>,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn EventLoopCtl,
     ) -> Result<Option<Value>> {
         let words: Vec<&str> = line.split_whitespace().collect();
         if self.pending_save.is_some() && words.first() != Some(&"quit") {

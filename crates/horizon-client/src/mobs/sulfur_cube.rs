@@ -10,6 +10,7 @@ use super::{
     goals::{Cx, Goal, JUMP, LOOK, MOVE, goal_clone},
 };
 use horizon_core::{geometry::Vec3, random::RandomSource};
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
@@ -488,12 +489,23 @@ pub fn sounds(m: &Mob) -> [&'static str; 3] {
         ["", "entity.sulfur_cube.hurt", "entity.sulfur_cube.death"]
     }
 }
-/// `primeTime`: light the fuse (short when an explosion did it).
+thread_local! {
+    /// The `tnt_explodes` game rule of the level this thread ticks, which
+    /// `primeTime` and `tickFuse` read (shared by the game each tick and on
+    /// a rule change).
+    static TNT_EXPLODES: Cell<bool> = const { Cell::new(true) };
+}
+/// Share the `tnt_explodes` rule with this thread's sulfur cubes.
+pub fn set_tnt_explodes(on: bool) {
+    TNT_EXPLODES.set(on);
+}
+/// `primeTime`: light the fuse (short when an explosion did it), only
+/// while `tnt_explodes` is on.
 pub fn prime(m: &mut Mob, imminent: bool) -> bool {
     let Some((fuse, _, _)) = archetype(m).and_then(|a| a.explosion) else {
         return false;
     };
-    if !m.alive() || primed(m) {
+    if !m.alive() || !TNT_EXPLODES.get() || primed(m) {
         return false;
     }
     let t = if imminent {
@@ -747,22 +759,25 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if fuse(m) == 0
         && let Some((_, power, _)) = archetype(m).and_then(|a| a.explosion)
     {
-        // `level.explode(this, ...)`: the cube is the blast's source and its
-        // causing entity, so its entity query leaves it out.
-        let name = match &m.custom_name {
-            Some(name) => crate::text::Text::literal(name.clone()),
-            None => crate::text::Text::translate("entity.minecraft.sulfur_cube", &[]),
-        };
-        events.push(MobEvent::ExplosionSource {
-            mob: m.id,
-            charged: false,
-            name,
-        });
-        events.push(MobEvent::Explode(
-            [m.position.x, m.position.y + 0.0625, m.position.z],
-            power,
-            m.species(),
-        ));
+        // With `tnt_explodes` off the cube still goes, without a blast.
+        if TNT_EXPLODES.get() {
+            // `level.explode(this, ...)`: the cube is the blast's source and its
+            // causing entity, so its entity query leaves it out.
+            let name = match &m.custom_name {
+                Some(name) => crate::text::Text::literal(name.clone()),
+                None => crate::text::Text::translate("entity.minecraft.sulfur_cube", &[]),
+            };
+            events.push(MobEvent::ExplosionSource {
+                mob: m.id,
+                charged: false,
+                name,
+            });
+            events.push(MobEvent::Explode(
+                [m.position.x, m.position.y + 0.0625, m.position.z],
+                power,
+                m.species(),
+            ));
+        }
         m.removed = true;
         return;
     }
@@ -1010,6 +1025,68 @@ pub fn from_nbt(m: &mut Mob, tag: &horizon_world::nbt::Tag) {
     m.extra.counter2 = int("fuse").unwrap_or(-1).max(-1) + 1;
     if primed(m) {
         m.invulnerable_flag = true;
+    }
+}
+
+#[cfg(test)]
+mod tnt_rule_tests {
+    use super::*;
+    use crate::mobs::{Damage, DamageKind, Mob, Species};
+    use horizon_core::geometry::Vec3;
+    use std::sync::Arc;
+
+    fn tnt_cube() -> Mob {
+        load_archetype_items(&HashMap::from([(
+            "minecraft:sulfur_cube_archetype/explosive".to_owned(),
+            HashSet::from(["minecraft:tnt".to_owned()]),
+        )]));
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.species = Species::SulfurCube;
+        let mut m = Mob::new(1, Arc::new(kind), Vec3::ZERO, 0.0);
+        m.extra.head = Some("minecraft:tnt".into());
+        m
+    }
+
+    #[test]
+    fn no_fuse_is_lit_while_tnt_does_not_explode() {
+        // primeTime checks the tnt_explodes rule: no fuse, no invulnerability,
+        // and no draw for the short fuse.
+        let mut m = tnt_cube();
+        let state = m.random.state();
+        set_tnt_explodes(false);
+        m.damage(5.0, Damage::of(DamageKind::Explosion));
+        let lit = prime(&mut m, true);
+        let (unprimed, vulnerable) = (!primed(&m), !m.invulnerable_flag);
+        set_tnt_explodes(true);
+        assert!(!lit && unprimed && vulnerable);
+        assert_eq!(m.random.state(), state);
+        assert!(prime(&mut m, false));
+        assert!(m.invulnerable_flag);
+    }
+
+    #[test]
+    fn a_fuse_running_out_while_tnt_does_not_explode_makes_no_blast() {
+        // tickFuse: the blast (and its source) only with tnt_explodes, the
+        // discard either way.
+        let mut events = Vec::new();
+        let ran = crate::mobs::world::with_test_world(&[], |w, _| {
+            let mut m = tnt_cube();
+            assert!(prime(&mut m, false));
+            m.extra.counter2 = 2; // fuse 1, 0 after this tick
+            set_tnt_explodes(false);
+            ai_step(&mut m, w, &mut events);
+            set_tnt_explodes(true);
+            assert!(m.removed);
+        });
+        if !ran {
+            return; // needs the prepared 26.3 data
+        }
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, MobEvent::Explode(..) | MobEvent::ExplosionSource { .. })),
+            "{events:?}"
+        );
     }
 }
 
