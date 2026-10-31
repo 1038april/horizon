@@ -87,6 +87,7 @@ Horizon server settings (docs/server.md). The server writes them into server.pro
 | `view_distance` | `10` | `view-distance` | chunks sent around each player |
 | `simulation_distance` | `10` | `simulation-distance` | chunks around each player where mobs, crops and redstone tick |
 | `max_view_distance` | `0` | `horizon-max-view-distance` | past view_distance, saved chunks only, up to this (never generated; 0: off) |
+| `admin_feedback_to_ops` | `true` | `horizon-admin-feedback-to-ops` | operators see each other's commands ([name: ...], vanilla); false: only the log |
 
 ### `[world]`
 
@@ -137,6 +138,16 @@ Any other server.properties key, spelled as vanilla spells it, for example: spaw
 | `bind` | `""` |  | the control API: "" a free port on 127.0.0.1; or a fixed one, like 127.0.0.1:8131 or a tailnet address |
 | `token` | `""` |  | its token (16 characters or more); "" a new random one at every start |
 | `allow_public` | `false` |  | true lets bind be any address; the token is then all that guards the server |
+
+### `[discord]`
+
+Post the chat, joins, leaves and deaths to a Discord channel, drawn like the in-game chat (docs/hosting.md)
+
+| Key | Default | In `server.properties` | What it does |
+| --- | --- | --- | --- |
+| `webhook` | `""` |  | the channel's webhook URL (a secret: anyone with it can post there); "" off |
+| `events` | `["chat", "join", "leave", "death"]` |  | what is posted; "kick" too if you like |
+| `enabled` | `true` |  | false pauses it and keeps the webhook |
 
 ## Control API (`/api/v1`)
 

@@ -420,16 +420,18 @@ entity (`causing`, vanilla's `DamageSource.getEntity`: a skeleton for its arrow)
 the sources listed below that Horizon doesn't track yet. A mod may change the amount, or set `canceled`: nothing of
 `hurtServer` itself happens then (no damage, hurt sound, knockback, invulnerable time, statistics or criteria), and
 the caller acts as on a refused hit, so a blast still pushes a mob whose hit was canceled, as vanilla pushes one that
-refused it. A ghast's canceled hit by a fireball it was sent back counts as landed (`Ghast.hurtServer`). A negative
-amount hurts by 0 and a NaN or infinite one by `Float.MAX_VALUE`, as vanilla clamps them. It fires for the players and
-mobs the game hurts; the ender dragon doesn't reach it yet. It has no `self`: the game is in the middle of the hit. It
-runs on the thread that ticks the world (the server thread; the window's on the deprecated in-frame path), so state a
-mod shares with its render thread hooks needs synchronising. On the in-frame path the window's player has id 0, or the
-host's id once the world is open to LAN. `/kill` and `native_kill_mob` don't reach it yet: they set the health to 0
-instead of hurting with `minecraft:generic_kill` as vanilla does.
+refused it. A canceled hit on the ender dragon still counts as landed, as vanilla's `EnderDragon.hurt` returns true
+whatever `reallyHurt` did: the arrow is spent and the melee effects run. A ghast's canceled hit by a fireball it was
+sent back counts as landed (`Ghast.hurtServer`). A negative amount hurts by 0 and a NaN or infinite one by
+`Float.MAX_VALUE`, as vanilla clamps them. It fires for the players, mobs and the ender dragon the game hurts. It has
+no `self`: the game is in the middle of the hit. It runs on the thread that ticks the world (the server thread; the
+window's on the deprecated in-frame path), so state a mod shares with its render thread hooks needs synchronising. On
+the in-frame path the window's player has id 0, or the host's id once the world is open to LAN. `/kill` and
+`native_kill_mob` don't reach it yet: they set the health to 0 instead of hurting with `minecraft:generic_kill` as
+vanilla does.
 
-A player's damage type is the source's own. A mob's comes from the kind of damage Horizon keeps for the hit, which
-doesn't tell every vanilla type apart yet:
+A player's damage type is the source's own. A mob's and the dragon's come from the kind of damage Horizon keeps for
+the hit, which doesn't tell every vanilla type apart yet:
 
 - A trident's hit on a mob is `minecraft:arrow`, not `minecraft:trident`
 - A wither skull's hit on a mob is `minecraft:magic`, not `minecraft:wither_skull`
@@ -438,6 +440,9 @@ doesn't tell every vanilla type apart yet:
 - A shulker bullet's hit has no `minecraft:mob_projectile`
 - A bed or respawn anchor blast on a mob is `minecraft:explosion`, not `minecraft:bad_respawn_point`
 - A blast from TNT a player lit is `minecraft:explosion` on a mob, not `minecraft:player_explosion`
+- A bed or respawn anchor blast on the dragon is `minecraft:explosion`, not `minecraft:bad_respawn_point`
+- A blast a mob caused (an end crystal a skeleton shot, a creeper's) is `minecraft:explosion` on the dragon, not
+  `minecraft:player_explosion`
 
 The causing and direct entities are 0 for now in these cases:
 
@@ -449,6 +454,8 @@ The causing and direct entities are 0 for now in these cases:
   lit)
 - A mob's direct entity when it isn't the causing one (a projectile, a blast, a potion)
 - A falling block on a mob, whose causing and direct entity is the block in vanilla
+- The dragon's direct entity for a projectile or a blast
+- The dragon's causing player when it isn't the acting one on a LAN guest's turn
 - `/damage` on a mob `by` an entity with a damage type that isn't melee: the direct entity is 0, not that entity
 
 And `/damage` on a mob `by` one entity `from` another with a melee damage type gives the `from` entity as the direct
@@ -496,6 +503,26 @@ never reach them. Bundles that use them need `"hooks": 56`.
 
 API 57 adds chunks and players coming and going, on the server: `native_chunk_load` (with whether the chunk is new), `native_chunk_unload`, and
 `native_player_logged_in` and `native_player_logged_out`, which come in pairs however a player leaves, the server stopping included. Bundles that use them need `"hooks": 57`.
+
+API 58 adds [the renderer's hook points](#render-hook-points): `native_world_drawn`, called once the world is drawn with its colour, depth, matrices and entity geometry, and
+`native_render_needs`, where a mod asks for the entity runs and the world's depth without a shader pack. Bundles that use them need `"hooks": 58`.
+
+API 59 adds [entities](#entities) for server mods: `native_summon(dimension, kind, pos, nbt)` spawns any entity from its compound
+as `/summon` does, and `native_move_entity`, `native_set_display` (a display's transformation, eased over ticks) and
+`native_remove_entity` move, pose and remove displays, markers and interactions: models that move, from a mod's own
+item models. Bundles that use them need `"hooks": 59`.
+
+API 60 adds `native_item_bar(stack, bar)`: the small bar `GuiGraphicsExtractor.itemDecorations` draws under an item,
+wherever the game shows one. `bar` arrives holding
+vanilla's choice (the damage bar, or a bundle's fullness, already applied); set it to a width `0..=13` and an
+`rgb` colour, or to `None` to hide it. Asked each frame a stack is drawn. Client-side (NeoForge has no event for
+this; vanilla's `Item.isBarVisible`/`getBarWidth`/`getBarColor`). Bundles that use it need `"hooks": 60`.
+
+API 61 adds mods' own sound events in `native_play_sound`: an event of another namespace than `minecraft` (`mymod:machine_hum`) is sent to players by
+name, as vanilla sends a sound that isn't in its registry, and they hear it when their resources define it (a content mod's `assets/mymod/sounds.json`
+and its `.ogg` files). `minecraft:` events must still be registered. Bundles that play their own sounds need `"hooks": 61`.
+
+API 62 adds nicknames for server mods: `native_set_nickname(uuid, Option<&str>)` shows a name in place of a player's in chat (their messages, `/me`, `/msg`) and the Tab list, the real name on hover and everywhere else; `native_text_allowed(text)` asks the server's chat filter. Both outside a player's hook. Bundles need "hooks": 62.
 
 ## What the launcher does
 
@@ -844,6 +871,25 @@ Helpers for a server mod, by the rules hoppers follow: a furnace's sides, a doub
 
 During a machine's own tick its block entity is out of the world, so these answer as if no container were there: it has its slots in hand, in the `items` it's given. A composter takes one item a call, and these don't empty it: a hopper does. Container entities (minecarts, chest boats) aren't reached yet.
 
+### Entities
+
+`crates/horizon-client/src/game/native_entities.rs`: helpers for server mods, for the level in place, on a server only. Each
+names the level it means by its `dimension` (`minecraft:overworld`), as `native_set_block` does.
+
+- `native_summon(dimension, kind, pos, nbt)` spawns an entity of `kind` from its compound, as `/summon <kind> <pos> <nbt>`
+  does (passengers included), and returns its id. None on a client, for another dimension, a position outside `/summon`'s
+  bounds, a chunk that isn't loaded, a kind Horizon can't load, or one a mod kept out with `native_entity_join_level`.
+- `native_move_entity(dimension, id, pos, yaw, pitch)` moves an entity Horizon keeps without simulating it (a display, a
+  marker, an interaction); a display eases there over its teleport duration. Mobs move with `native_teleport_mob`.
+- `native_set_display(dimension, id, &NativeDisplay)` sets a `block_display`, `item_display` or `text_display`'s
+  transformation (translation, left rotation, scale, right rotation; quaternions `[x, y, z, w]`), the ticks players see it
+  ease over (`interpolation`) and its teleport duration (`teleport`, 0 to 59). Each call restarts the ease on clients.
+- `native_remove_entity(dimension, id)` removes such an entity as `/kill` does. Mobs go with `native_remove_mob`.
+
+A model that moves (a turning gun barrel, a thrown projectile) is an `item_display` showing an item whose model comes from
+the mod's `.hmod` assets: summon it once, then move and pose it from a tick hook. Easing between ticks happens on each
+client, so a call a tick looks smooth.
+
 ### Mod messages
 
 API 40, `crates/horizon-client/src/game/native_net.rs`: bytes between a mod's server half and its client half, on the
@@ -879,3 +925,19 @@ stock client shows as a chest (`generic_9x1` to `generic_9x6`); nothing is insta
 
 The menu hooks run with no player's state swapped in; `native_player_stacks` and `native_exchange_items` refuse a
 player whose state is (inside `native_perform_command`): call them from a menu hook or `native_server_tick`.
+
+### Render hook points
+
+`crates/horizon-client-render/src/gfx/native_render.rs`: the renderer's own hook points, free functions rather than
+`Game` methods, which a bundle targets as `horizon_client_render::gfx::native_render::native_<name>`. They run on the
+render thread with the frame's wgpu objects; what a mod draws there shows in that frame.
+
+- `native_world_drawn(world)`: the world is drawn (sky, terrain, entities, particles, weather and the world post pass),
+  the first-person hand, the HUD and screens not yet. `WorldDrawn` holds the device, queue and encoder, the frame's
+  colour target (copy it out before sampling it), the world's reversed depth and its size, the camera's position and
+  its matrices with and without TAA's jitter, the frame's camera-relative entity quads with their runs by entity, the
+  entity atlas and the shared quad index buffer. Not called on the title screen's panorama.
+- `native_render_needs(needs)`: set `entity_spans` to have the entity geometry split into runs by entity without a
+  shader pack (each run's id is stable from frame to frame: a hash of the entity type's name, a block entity's state),
+  and `world_depth` to keep the world pass's depth when nothing else needs it. Set what you need and leave the rest:
+  several mods can ask. It's asked as each frame is built, so keep it cheap.

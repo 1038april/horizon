@@ -29,6 +29,7 @@ enforce_whitelist = false    # kick online players taken off the whitelist
 view_distance = 10           # chunks sent around each player
 simulation_distance = 10     # chunks around each player where mobs, crops and redstone tick
 max_view_distance = 0        # past view_distance, saved chunks only, up to this (never generated; 0: off)
+admin_feedback_to_ops = true # operators see each other's commands ([name: ...], vanilla); false: only the log
 
 [world]
 name = "world"               # the world folder
@@ -62,8 +63,15 @@ bind = ""                    # the control API: "" a free port on 127.0.0.1; or 
 token = ""                   # its token (16 characters or more); "" a new random one at every start
 allow_public = false         # true lets bind be any address; the token is then all that guards the server
 
-# Horizon's anticheat (docs/anticheat.md) is on: `combat` drops and kicks attacks no vanilla client sends;
-# timer, ground and prediction only write logs/anticheat.log until they're trusted. To change it:
+# Post the chat, joins, leaves and deaths to a Discord channel, drawn like the in-game chat (docs/hosting.md)
+[discord]
+webhook = ""                 # the channel's webhook URL (a secret: anyone with it can post there); "" off
+events = ["chat", "join", "leave", "death"]   # what is posted; "kick" too if you like
+enabled = true               # false pauses it and keeps the webhook
+
+# Horizon's anticheat (docs/anticheat.md) is on: `combat` drops attacks no vanilla client sends and
+# `ground` the false ground claims of a no-fall or a walk on water; both kick, and ban at the second kick.
+# timer and prediction only write logs/anticheat.log until they're trusted. To change it:
 # [anticheat]
 # enabled = true             # false: the server checks only what vanilla's checks
 # alerts = true              # tell online operators (alert_level = 2) in their chat; the console always is
@@ -74,6 +82,7 @@ allow_public = false         # true lets bind be any address; the token is then 
 # alert = 5
 # kick = 20
 # decay = 0.02               # violation level lost each second
+# ban_after = 0              # the kick (counting this check's earlier ones) that bans instead; 0: never
 
 # The chat filter (docs/chat-filter.md) is on: a message, sign, anvil name or book title with a hate slur reaches
 # nobody, the sender is told, and logs/chat-filter.log keeps it for operators. To change it:
@@ -85,7 +94,7 @@ allow_public = false         # true lets bind be any address; the token is then 
 "##;
 
 /// Each typed setting: its section, its name, and the vanilla key it writes.
-pub(crate) const TYPED: [(&str, &str, &str); 15] = [
+pub(crate) const TYPED: [(&str, &str, &str); 16] = [
     ("server", "motd", "motd"),
     ("server", "port", "server-port"),
     ("server", "bind", "server-ip"),
@@ -96,6 +105,11 @@ pub(crate) const TYPED: [(&str, &str, &str); 15] = [
     ("server", "view_distance", "view-distance"),
     ("server", "simulation_distance", "simulation-distance"),
     ("server", "max_view_distance", "horizon-max-view-distance"),
+    (
+        "server",
+        "admin_feedback_to_ops",
+        "horizon-admin-feedback-to-ops",
+    ),
     ("world", "name", "level-name"),
     ("world", "seed", "level-seed"),
     ("world", "game_mode", "gamemode"),
@@ -122,6 +136,9 @@ pub struct Config {
     pub panel: Panel,
     #[serde(default)]
     pub api: Api,
+    /// Chat and players posted to a Discord channel (discord.rs).
+    #[serde(default)]
+    pub discord: crate::discord::Settings,
     /// The game reads this section itself (docs/anticheat.md); written only when it isn't the default.
     #[serde(default, skip_serializing_if = "anticheat_default")]
     pub anticheat: horizon_anticheat::Config,
@@ -153,6 +170,9 @@ pub struct Server {
     pub simulation_distance: u32,
     /// Horizon's far ring (docs/hosting.md): saved chunks sent past `view_distance`, up to this; 0 is off.
     pub max_view_distance: u32,
+    /// Whether operators get each other's command feedback (`[name: ...]`, vanilla's broadcastToAdmins);
+    /// false leaves it to the console's log, so nobody in game sees an operator's commands.
+    pub admin_feedback_to_ops: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -298,6 +318,7 @@ impl Default for Server {
             view_distance: 10,
             simulation_distance: 10,
             max_view_distance: 0,
+            admin_feedback_to_ops: true,
         }
     }
 }
@@ -383,6 +404,7 @@ impl Config {
         crate::backup::interval(&self.backups.every)?;
         self.panel.address()?;
         self.api.check()?;
+        self.discord.check()?;
         self.anticheat.check()?;
         self.chat_filter.check()?;
         if self.server.port == 0 {
@@ -689,9 +711,15 @@ mod tests {
         let vanilla =
             ServerProperties::new(Properties::default(), &mut SystemEntropy::default()).unwrap();
         for (key, value) in Config::default().vanilla() {
-            // Horizon's own (off by default), which vanilla doesn't have.
+            // Horizon's own, which vanilla doesn't have: their defaults behave as vanilla does
+            // (the far ring off, operators told of each other's commands).
             if key.starts_with("horizon-") {
-                assert_eq!(value, "0", "{key}");
+                let vanilla_like = if key == "horizon-admin-feedback-to-ops" {
+                    "true"
+                } else {
+                    "0"
+                };
+                assert_eq!(value, vanilla_like, "{key}");
                 continue;
             }
             assert_eq!(vanilla.raw.get(&key), Some(value.as_str()), "{key}");
