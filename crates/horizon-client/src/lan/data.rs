@@ -266,6 +266,13 @@ impl SyncData {
         );
     }
 
+    /// Whether a synchronized registry holds an entry from a world's pack.
+    pub fn has_pack_entries(&self) -> bool {
+        self.registries
+            .iter()
+            .any(|(_, e)| e.from_pack.contains(&true))
+    }
+
     /// The id of a name in a built-in or synchronized registry.
     pub fn id(&self, registry: &str, name: &str) -> Option<i32> {
         if let Some(ids) = self.builtin.get(registry) {

@@ -74,7 +74,9 @@ pub(super) fn reload_sync_data(
     overlay: &horizon_world::loot::PackOverlay,
     kept: &SyncData,
 ) -> std::result::Result<Arc<SyncData>, String> {
-    let packs = !overlay.files.is_empty();
+    // Kept pack dialogs count as packs: a world opened without packs after
+    // a `/reload` that dropped them must read its own registries again.
+    let packs = !overlay.files.is_empty() || kept.has_pack_entries();
     let sync = SyncData::load(root, overlay).map(|mut sync| {
         sync.keep_registries(root, kept);
         Arc::new(sync)
