@@ -364,6 +364,7 @@ impl Sprites {
             item: name
                 .split_once(':')
                 .is_some_and(|(_, p)| p.starts_with("item/")),
+            dither_cutouts: crate::mipmap::dither_cutouts(),
         };
         let still = (animation.is_none() && frames.len() == 1).then(|| {
             (
