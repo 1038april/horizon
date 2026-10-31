@@ -147,7 +147,7 @@ impl Game<'_> {
     }
 
     /// ClientPacketListener.sendCommand: a command with message arguments
-    /// (SignableCommand.of over the server's tree) has each of them signed,
+    /// (SignableCommand.of over the chat's tree, the server's once it sent one) has each of them signed,
     /// all with the same time, salt and last seen (without a chat session the
     /// signature list is empty, as in vanilla); any other command goes as the
     /// unsigned packet.
@@ -155,12 +155,10 @@ impl Game<'_> {
         let Some(r) = self.remote.as_mut() else {
             return;
         };
-        let arguments = match &r.commands {
-            Some(tree) => tree
-                .parse(command, &self.ui.registries)
-                .signable_arguments(tree),
-            None => Vec::new(),
-        };
+        let arguments = r
+            .chat_tree
+            .parse(command, &self.ui.registries)
+            .signable_arguments(&r.chat_tree);
         if arguments.is_empty() {
             self.send(S::ChatCommand(play::ChatCommand {
                 command: command.to_owned(),

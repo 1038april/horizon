@@ -48,8 +48,12 @@ from test_dedicated_server_parity import Server  # noqa: E402
 
 PLAYER = 'Tester'
 PLAYER_ID = uuid.UUID(hashlib.md5(b'account:Tester').hexdigest())
-LINES = ['hello from a signed client', 'a second message, after the first was seen',
-         f'/msg {PLAYER} a whisper with a signed argument', '/list']
+HELD = 'held back by Chat Delay, then flushed'
+AFTER = 'signed after the flush, which the last seen must count'
+CHATS = ['hello from a signed client', 'a second message, after the first was seen', HELD, AFTER]
+# Setting Chat Delay to 0 flushes the held message. If the flush didn't count it as seen, the next
+# message's last-seen update would no longer match the server's and it would disconnect the client.
+LINES = [*CHATS[:2], '.delay 60', HELD, '.delay 0', AFTER, f'/msg {PLAYER} a whisper with a signed argument', '/list']
 PROPERTIES = {
     'white-list': 'false',
     'level-type': 'minecraft\\:flat',
@@ -230,7 +234,7 @@ def run(args, scenario, services, out):
     secure = scenario == 'online'
     if report.get('signed') != secure:
         problems.append(f'the client {"did not sign" if secure else "signed"} its chat')
-    for line in LINES[:2]:
+    for line in CHATS:
         logged = [l for l in log if f'<{PLAYER}> {line}' in l]
         if not logged:
             problems.append(f'the server did not log {line!r}')

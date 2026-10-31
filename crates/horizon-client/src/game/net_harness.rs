@@ -2,7 +2,7 @@
 //! with `--server` and `HORIZON_NET_REPORT` set, the client joins without a
 //! window, waits until it stands in the world with the chunks around it,
 //! sends a chat message and `/list` (or the lines of `HORIZON_NET_CHAT`,
-//! split by `;`, one at a time), collects the chat it is shown, leaves and
+//! split by `;`, one at a time; `.delay N` sets Chat Delay instead), collects the chat it is shown, leaves and
 //! writes a JSON report (position, chunks, chat lines, whether it signed its
 //! chat, whether the server kept it connected throughout). With `HORIZON_NET_QUIET` (lines
 //! split by `;`) it then sends them as one batch of a mod's quiet commands
@@ -51,6 +51,8 @@ impl Game<'_> {
             if Instant::now() >= next {
                 next += Duration::from_millis(50);
                 self.tick()?;
+                // Gui.tick: ChatListener.tick, which the frame runs in play.
+                self.tick_chat_queue();
             }
             let now = Instant::now();
             if let Some(p) = &self.player {
@@ -80,7 +82,10 @@ impl Game<'_> {
                     chat_at = shown;
                 }
                 2 if answered && sent < lines.len() => {
-                    self.send_chat(&lines[sent]);
+                    match lines[sent].strip_prefix(".delay ") {
+                        Some(delay) => self.settings.chat_delay = delay.parse().unwrap_or(0.0),
+                        None => self.send_chat(&lines[sent]),
+                    }
                     sent += 1;
                     step_at = now;
                     chat_at = shown;
