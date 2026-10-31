@@ -7064,6 +7064,11 @@ impl Game<'_> {
     fn hud_layers(&mut self, size: [u32; 2]) -> HudBatch {
         let mut batch = HudBatch::new(size);
         let (w, h) = (batch.width, batch.height);
+        // HDR calibration ends when its page does, whatever moved the screen
+        // off Options (a death screen opened by a server, say).
+        if self.screen != Screen::Options && self.ui.options.calibration_fullscreen.is_some() {
+            self.show_calibration(h);
+        }
         if self.screen == Screen::Win {
             self.draw_win_screen(&mut batch);
             return batch;
