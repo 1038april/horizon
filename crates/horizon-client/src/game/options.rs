@@ -218,6 +218,7 @@ impl Game<'_> {
             [r.config.width as i32, r.config.height as i32]
         });
         let mut ui = std::mem::take(&mut self.ui.options);
+        ui.shift = self.modifiers.shift_key();
         let events = ui.click(
             &mut self.settings,
             &self.gui.atlas,
@@ -373,6 +374,8 @@ impl Game<'_> {
                 }
                 // Saved; the next frame's `shader_pack_inputs` loads the pick.
                 Event::ShaderPack => self.settings.save(&Self::options_path()),
+                Event::OpenShaderOptions => self.open_shader_options(),
+                Event::ShaderOptions => self.save_shader_options(),
                 Event::OpenShaderPackFolder => {
                     let dir = Self::shader_packs_dir();
                     let _ = std::fs::create_dir_all(&dir);
