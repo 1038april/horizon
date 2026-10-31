@@ -2509,10 +2509,19 @@ impl MacroCall {
                     AtomicKind::CompSwap => (Some(args[2]), args[3]),
                     _ => (None, args[2]),
                 };
-                let scalar = match *ctx.resolve_type(value, meta)? {
-                    TypeInner::Scalar(s) => s,
-                    _ => Scalar::U32,
-                };
+                // Naga's image atomics give no result: the old value is the texel loaded just
+                // before (exact unless another invocation writes it in between).
+                let old = ctx.add_expression(
+                    Expression::ImageLoad {
+                        image: args[0],
+                        coordinate: comps.coordinate,
+                        array_index: comps.array_index,
+                        sample: None,
+                        level: None,
+                    },
+                    meta,
+                )?;
+                let old = ctx.add_expression(Expression::AccessIndex { base: old, index: 0 }, meta)?;
                 ctx.emit_restart();
                 ctx.body.push(
                     crate::Statement::ImageAtomic {
@@ -2524,9 +2533,7 @@ impl MacroCall {
                     },
                     meta,
                 );
-                // Naga's image atomics give no result: a use of the old value reads zero.
-                let zero = crate::Literal::zero(scalar).unwrap();
-                ctx.add_expression(Expression::Literal(zero), meta)?
+                old
             }
             MacroCall::SubgroupBallot => {
                 ctx.emit_end();

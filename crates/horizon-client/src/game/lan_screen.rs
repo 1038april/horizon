@@ -479,6 +479,7 @@ impl Game<'_> {
     pub(super) fn open_world_options(&mut self) {
         let hint = horizon_client::lan::available_port();
         let mut port = EditBox::new(0.0, 0.0, 150.0, 20.0);
+        port.message = super::screen_info::tr("lanServer.port", &[]);
         port.max_length = 5;
         // The world is the server thread's when there is one.
         let state = match &self.integrated {
@@ -617,6 +618,21 @@ impl Game<'_> {
     }
 
     fn draw_lock_question(&self, o: &WorldOptions, batch: &mut HudBatch) {
+        // PopupScreen over WorldOptionsScreen: its title and message.
+        horizon_client::widgets::begin_screen(|| {
+            let name = Text::translate(
+                &format!(
+                    "options.difficulty.{}",
+                    DIFFICULTIES[usize::from(o.difficulty) & 3]
+                ),
+                &[],
+            );
+            super::screen_info::popup(
+                "world_options/lock",
+                &Text::translate("difficulty.lock.title", &[]).plain(),
+                &[&Text::translate("difficulty.lock.question", &[name]).plain()],
+            )
+        });
         let atlas = &self.gui.atlas;
         let (w, h) = (batch.width, batch.height);
         // Screen.extractTransparentBackground.
@@ -660,6 +676,12 @@ impl Game<'_> {
     }
 
     fn draw_restrictions(&self, batch: &mut HudBatch) {
+        horizon_client::widgets::begin_screen(|| {
+            horizon_client::widgets::ScreenInfo::new(
+                "restrictions",
+                super::screen_info::tr("restrictions_screen.title", &[]),
+            )
+        });
         let atlas = &self.gui.atlas;
         let (w, h) = (batch.width, batch.height);
         ui::menu_background(batch, atlas, 0.0, 0.0, w, h, true);
@@ -695,6 +717,12 @@ impl Game<'_> {
     }
 
     fn draw_options_view(&self, o: &mut WorldOptions, batch: &mut HudBatch, cursor: (f32, f32)) {
+        horizon_client::widgets::begin_screen(|| {
+            horizon_client::widgets::ScreenInfo::new(
+                "world_options",
+                super::screen_info::tr("options.worldOptions.title", &[]),
+            )
+        });
         let atlas = &self.gui.atlas;
         let (w, h) = (batch.width, batch.height);
         o.scroll = o.scroll.clamp(0.0, o.scroll_limit(h));
@@ -1007,6 +1035,13 @@ impl Game<'_> {
         self.world_options = Some(o);
         self.apply_world_options(&before, &wanted);
         self.close_world_options();
+    }
+
+    /// `WorldOptionsScreen.sendPublishMessage`: a client system message the
+    /// narrator says.
+    fn send_publish_message(&mut self, message: Text) {
+        self.say_system_queued(&message);
+        self.system_message(message);
     }
 
     pub(super) fn world_options_key(&mut self, event: &KeyEvent) {
@@ -1382,19 +1417,15 @@ impl Game<'_> {
             let (b, w) = (*before, *wanted);
             server.call(move |g| g.apply_world_options(&b, &w));
             if w.lan != b.lan || (w.lan && w.port != b.port) {
-                match (w.lan, self.lan_port()) {
-                    (true, Some(port)) => self.system_message(Text::translate(
+                let message = match (w.lan, self.lan_port()) {
+                    (true, Some(port)) => Text::translate(
                         "menu.multiplayerOptions.publish.started.lan",
                         &[Text::literal(port.to_string())],
-                    )),
-                    (true, None) => {
-                        self.system_message(Text::translate("commands.publish.failed", &[]));
-                    }
-                    (false, _) => self.system_message(Text::translate(
-                        "menu.multiplayerOptions.publish.stopped",
-                        &[],
-                    )),
-                }
+                    ),
+                    (true, None) => Text::translate("commands.publish.failed", &[]),
+                    (false, _) => Text::translate("menu.multiplayerOptions.publish.stopped", &[]),
+                };
+                self.send_publish_message(message);
             }
             return;
         }
@@ -1431,7 +1462,7 @@ impl Game<'_> {
                     force_game_mode: wanted.force,
                 });
                 if opened.is_err() {
-                    self.system_message(Text::translate("commands.publish.failed", &[]));
+                    self.send_publish_message(Text::translate("commands.publish.failed", &[]));
                 }
             }
         } else if settings_changed {

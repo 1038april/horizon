@@ -118,6 +118,10 @@ pub(super) struct CombatTracker {
     /// blast leaves it out (`getEntities(source, box)`). A source guessed
     /// from the mobs near the centre is still hurt: it may be a bystander.
     pub(super) explosion_source_named: bool,
+    /// The blast's direct source is in water (`Explosion.getDirectSourceEntity`
+    /// `.isInWater`): paintings, item frames and cushions ignore it
+    /// (`BlockAttachedEntity.ignoreExplosion`).
+    pub(super) explosion_in_water: bool,
     /// The blast now going off comes from a primed TNT, creeper, wither
     /// skull, wither or TNT minecart, the sources that empty a hive they
     /// destroy (`BeehiveBlock.getDrops`).
