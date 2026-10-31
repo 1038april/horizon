@@ -1682,8 +1682,9 @@ impl Game<'_> {
                     // setPortalCooldown before the teleport.
                     c.insert("PortalCooldown".into(), Tag::Int(ENTITY_DELAY));
                 }
-                // ServerLevel.addDuringTeleport: a fresh add, not loaded from disk.
-                super::persist::mark_fresh(&mut tag);
+                // A gateway keeps the entity in its level (teleportSameDimension
+                // moves it, no addDuringTeleport): it doesn't join again.
+                super::persist::mark_moved(&mut tag);
                 match self
                     .world
                     .loaded_entities

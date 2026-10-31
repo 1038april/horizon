@@ -41,9 +41,21 @@ impl Launcher {
             ));
         }
         what.push(tr(if prepared { "Ready" } else { "Needs preparing" }).to_string());
-        if let Some(playing) = self.playing {
-            what.push(format!("{} playing now", thousands(playing)));
-        }
+        // The exact count, a link to the page with its history and peaks.
+        let ink = c(n.ink);
+        let playing = self.playing.map(|count| {
+            let label = format!("· {} playing now", thousands(count));
+            match telemetry::stats_url(&self.links.website) {
+                Some(url) => div()
+                    .id("playing-now")
+                    .cursor_pointer()
+                    .hover(move |s| s.text_color(ink))
+                    .child(label)
+                    .on_click(move |_: &ClickEvent, _, cx| cx.open_url(&url))
+                    .into_any_element(),
+                None => div().child(label).into_any_element(),
+            }
+        });
         let state = div()
             .flex()
             .items_center()
@@ -57,7 +69,10 @@ impl Launcher {
             .child(
                 shell::text(night::CAPTION, c(n.ink_soft))
                     .font_weight(FontWeight::MEDIUM)
-                    .child(what.join(" · ")),
+                    .flex()
+                    .gap(px(4.))
+                    .child(what.join(" · "))
+                    .children(playing),
             );
         // Never squeezed by the rows below: the ping notice can make it tall.
         let mut hero = div()
