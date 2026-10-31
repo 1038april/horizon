@@ -71,6 +71,15 @@ impl Game<'_> {
             let p = self.carts[i].position;
             hits.push((self.carts[i].id as i32, d, [p.x, p.y, p.z]));
         }
+        // Interaction.isPickable: an invisible box the server clicks through
+        // to its scripts, for both uses and attacks.
+        let reach = if self.creative { 5.0 } else { 3.0 };
+        for (&id, i) in &self.interactions {
+            if let Some(d) = ray_box(eye, dir, reach, i.bounds()) {
+                let p = i.position;
+                hits.push((id, d, [p.x, p.y, p.z]));
+            }
+        }
         if attacking {
             // EndCrystal.isPickable: its 2 x 2 box, with the server's entity
             // id, not special_targets' local projectile target id.
@@ -111,6 +120,11 @@ impl Game<'_> {
         };
         let vehicle_id = vehicle as u32;
         for m in &mut self.mobs {
+            // `Entity.isVehicle` (the saddle reins of a ridden horse): the
+            // server sends no rider on the mob itself, only this list.
+            if m.id == vehicle_id {
+                m.extra.rider = passengers.first().map(|&p| p as u32);
+            }
             if m.extra.mount == Some(vehicle_id) && !passengers.contains(&(m.id as i32)) {
                 m.extra.mount = None;
                 m.extra.passenger = false;
@@ -124,6 +138,20 @@ impl Game<'_> {
                 display.vehicle = Some(vehicle_id);
             } else if display.vehicle == Some(vehicle_id) {
                 display.vehicle = None;
+            }
+        }
+        for a in &mut self.armor_stands {
+            if passengers.contains(&(a.id as i32)) {
+                a.vehicle = Some(vehicle_id);
+            } else if a.vehicle == Some(vehicle_id) {
+                a.vehicle = None;
+            }
+        }
+        for (&id, i) in &mut self.interactions {
+            if passengers.contains(&id) {
+                i.vehicle = Some(vehicle_id);
+            } else if i.vehicle == Some(vehicle_id) {
+                i.vehicle = None;
             }
         }
         if passengers.contains(&me)
@@ -291,6 +319,11 @@ impl Game<'_> {
         let strafe = f32::from(u8::from(keys.left)) - f32::from(u8::from(keys.right));
         let forward = f32::from(u8::from(keys.forward)) - f32::from(u8::from(keys.backward));
         let m = &mut self.mobs[i];
+        if jump > 0.0 && equine::is_equine(m.species()) {
+            // LocalPlayer.aiStep also runs `onPlayerJump` here: the mount slides
+            // on the rider's keys and rears while the server does the same.
+            equine::on_player_jump(m);
+        }
         // playerJumpPendingScale waits for the ground.
         let pending = m.rider.map_or(0.0, |r| r.jump);
         m.rider = Some(equine::Rider {
@@ -315,6 +348,8 @@ impl Game<'_> {
         mob.removed = false;
         self.world.random = random;
         self.mobs.insert(i, mob);
+        // #4821: footstep, gallop, breathe, splash and landing sounds from mob.tick
+        let _ = self.handle_mob_events(events);
     }
 }
 
