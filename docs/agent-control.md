@@ -173,6 +173,11 @@ turn the switch off.
   under control. A game the player starts from the window is not, until they turn Agent Control
   on. An open socket lets any program of that user drive the game, so it opens only when an agent
   asked for the game, or when the player chose it.
+- **Headless:** `horizon-ctl launch --headless` (`horizon-client --headless --control`) starts a
+  game with no display, no window and no GPU: it runs where no display server is (an SSH session,
+  a server) and runs its own loop instead of winit's (`game/headless.rs`), one frame a tick. It
+  plays through these commands only; commands that need the screen's pixels (`screenshot`, clicks
+  at GUI points) answer with an error ([#4951](https://github.com/horizon-rust/horizon/issues/4951)).
 
 ## Design rules for a new command
 
