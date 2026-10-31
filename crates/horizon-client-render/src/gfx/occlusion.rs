@@ -156,8 +156,19 @@ impl Graph {
         )
     }
     fn contains(&self, key: SectionKey) -> bool {
-        self.index(key)
-            .is_some_and(|i| self.directions[i] & REACHED != 0)
+        if let Some(i) = self.index(key) {
+            self.directions[i] & REACHED != 0
+        } else if (0..=self.sections).contains(&key.1)
+            && key.1 >= self.y0 + self.height
+            && (key.0 - self.from.0).abs() <= self.radius
+            && (key.2 - self.from.2).abs() <= self.radius
+        {
+            let top_key = (key.0, self.y0 + self.height - 1, key.2);
+            self.index(top_key)
+                .is_some_and(|i| self.directions[i] & REACHED != 0)
+        } else {
+            false
+        }
     }
     /// The full search from the camera (vanilla's `scheduleFullUpdate`).
     fn search(
@@ -174,7 +185,30 @@ impl Graph {
         self.min_y = columns.min_y;
         self.sections = columns.sections;
         self.y0 = -1;
-        self.height = columns.sections + 2;
+        if from.1 >= columns.sections {
+            self.height = columns.sections + 2;
+        } else {
+            let mut max_non_air_y = 0;
+            for dz in -radius..=radius {
+                for dx in -radius..=radius {
+                    let Some(column) = columns.map.get(&(from.0 + dx, from.2 + dz)) else {
+                        continue;
+                    };
+                    for (y, &v) in column.iter().enumerate().rev() {
+                        let y = y as i32;
+                        if y <= max_non_air_y {
+                            break;
+                        }
+                        if v != ALL_VISIBLE {
+                            max_non_air_y = y;
+                            break;
+                        }
+                    }
+                }
+            }
+            let top_y = max_non_air_y.max(from.1);
+            self.height = (top_y + 3).max(3).min(columns.sections + 2);
+        }
         let side = (2 * radius + 1) as usize;
         let size = side * side * self.height as usize;
         self.directions.clear();
@@ -194,7 +228,8 @@ impl Graph {
                 let base = self
                     .index((from.0 + dx, 0, from.2 + dz))
                     .expect("column inside the searched box");
-                vis[base..base + column.len()].copy_from_slice(column);
+                let len = (column.len() as i32).min(self.height - 1) as usize;
+                vis[base..base + len].copy_from_slice(&column[..len]);
             }
         }
         queue.clear();
@@ -1225,5 +1260,27 @@ mod tests {
             assert_eq!(graph.directions, local.directions);
             assert_eq!(graph.entered, local.entered);
         }
+    }
+
+    #[test]
+    fn vertical_clamping_bounds_height_and_reaches_open_sky() {
+        let mut o = Occlusion::new(0, 24);
+        o.set((0, 5, 0), 0); // Wall at section 5
+        o.settle(at((0, 2, 0)), 4);
+        let graph = o.graph.as_ref().expect("searched");
+        assert_eq!(graph.height, 5 + 3);
+        assert!(o.contains((0, 2, 0)), "camera section is reached");
+        assert!(o.contains((1, 20, 1)), "open air column is reached");
+
+        // An enclosed cave cannot reach the sky
+        let mut cave = Occlusion::new(0, 24);
+        for (dx, dy, dz) in STEPS {
+            cave.set((dx, 1 + dy, dz), 0);
+        }
+        cave.settle(at((0, 1, 0)), 4);
+        assert!(
+            !cave.contains((0, 10, 0)),
+            "enclosed cave does not see the sky"
+        );
     }
 }
