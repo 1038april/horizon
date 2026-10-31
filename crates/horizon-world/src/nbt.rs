@@ -469,6 +469,10 @@ struct Writer {
     bytes: Vec<u8>,
     limits: Limits,
     nodes: usize,
+    /// `NbtIo.StringFallbackDataOutput`, the disk writer's: a string too long
+    /// for modified UTF-8 is written empty and the rest of the tree goes on.
+    /// shortcut: vanilla also logs "Failed to write NBT String"; this crate has no logger.
+    empty_long_strings: bool,
 }
 impl Writer {
     fn error(&self, reason: &'static str) -> Error {
@@ -498,8 +502,12 @@ impl Writer {
                 _ => 3,
             })
             .sum();
-        let len =
-            u16::try_from(len).map_err(|_| self.error("modified UTF-8 exceeds 65535 bytes"))?;
+        let Ok(len) = u16::try_from(len) else {
+            if self.empty_long_strings {
+                return self.put(&0u16.to_be_bytes());
+            }
+            return Err(self.error("modified UTF-8 exceeds 65535 bytes"));
+        };
         self.put(&len.to_be_bytes())?;
         for &c in &string.0 {
             match c {
@@ -609,11 +617,14 @@ impl Writer {
     }
 }
 
+/// `NbtIo.write`: a file root. A string too long for modified UTF-8 is
+/// written empty, as vanilla's disk writer does; [`write_network`] refuses it.
 pub fn write_named(root: &NamedTag, limits: Limits) -> Result<Vec<u8>, Error> {
     let mut writer = Writer {
         bytes: Vec::new(),
         limits,
         nodes: 0,
+        empty_long_strings: true,
     };
     writer.put(&[root.tag.id()])?;
     if root.tag.id() != 0 {
@@ -628,6 +639,7 @@ pub fn write_network(tag: &Tag, limits: Limits) -> Result<Vec<u8>, Error> {
         bytes: Vec::new(),
         limits,
         nodes: 0,
+        empty_long_strings: false,
     };
     writer.put(&[tag.id()])?;
     writer.payload(tag, 0)?;
@@ -831,6 +843,36 @@ impl Snbt<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// `NbtIo.write` (`StringFallbackDataOutput`) writes a string too long for
+    /// modified UTF-8 empty and goes on (#5064); the network writer refuses
+    /// it. Vanilla 26.3's bytes for `{s: 32768 x U+0000}` (65536 encoded).
+    #[test]
+    fn the_disk_writer_empties_a_string_too_long_for_modified_utf8() {
+        let long = Tag::String(JavaString(vec![0; 32768]));
+        let root = NamedTag {
+            name: "".into(),
+            tag: Tag::compound([("s", long.clone())]),
+        };
+        assert_eq!(
+            write_named(&root, Limits::saved()).unwrap(),
+            [0x0a, 0, 0, 0x08, 0, 1, b's', 0, 0, 0]
+        );
+        assert!(write_network(&root.tag, Limits::saved()).is_err());
+        // The rest of the tree is kept.
+        let root = NamedTag {
+            name: "".into(),
+            tag: Tag::compound([
+                ("before", Tag::String("kept".into())),
+                ("long", long),
+                ("after", Tag::Int(7)),
+            ]),
+        };
+        let bytes = write_named(&root, Limits::saved()).unwrap();
+        let back = read_named(&bytes, Limits::saved()).unwrap().0.tag;
+        assert_eq!(back.get("before"), Some(&Tag::String("kept".into())));
+        assert_eq!(back.get("long"), Some(&Tag::String("".into())));
+        assert_eq!(back.get("after"), Some(&Tag::Int(7)));
+    }
     #[test]
     fn streamed_lists_reach_the_visitor_and_stay_empty_in_the_tree() {
         let list = |n: i32| Tag::List((0..n).map(Tag::Int).collect());
