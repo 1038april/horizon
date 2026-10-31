@@ -1893,6 +1893,14 @@ impl Game<'_> {
                 event @ (HostEvent::Chat { .. } | HostEvent::Warn(_) | HostEvent::Error(_)) => {
                     self.lan_log_event(event);
                 }
+                HostEvent::ChatFiltered {
+                    sender,
+                    name,
+                    place,
+                    text,
+                    count,
+                    action,
+                } => self.chat_filtered(&mut host, sender, &name, place, &text, count, action),
                 HostEvent::PlayerChat { sender, text } => {
                     if let Some(g) = host.hub.guests.iter().find(|g| g.uuid == sender) {
                         if self.options.dedicated.is_some() {
