@@ -4,7 +4,7 @@
 pub use crate::chunk::block_entity::{
     Banner, Beacon, BlockEntity, Brushable, Campfire, ChiseledBookshelf, Crafter, CreakingHeart,
     EndGateway, Furnace, FurnaceKind, Jukebox, Lectern, MOD_MENUS, ModBlockEntity, ModContainer,
-    PotentSulfur, Shelf, Skull, SkullSkin,
+    ModFluidTanks, PotentSulfur, Shelf, Skull, SkullSkin,
 };
 use crate::items::ItemStack;
 use std::collections::HashMap;
@@ -80,6 +80,39 @@ pub fn display_name(custom: Option<&str>, default_key: &str) -> horizon_world::n
 /// `FIRST`), else the second's, else `container.chestDouble`.
 pub fn double_chest_name(first: Option<&str>, second: Option<&str>) -> horizon_world::nbt::Tag {
     display_name(first.or(second), "container.chestDouble")
+}
+
+/// `BaseContainerBlockEntity.sendChestLockedNotifications`: the action bar
+/// message of a container that refuses to open, `container.isLocked` naming it
+/// by its display name.
+pub fn locked_message(title: &horizon_world::nbt::Tag) -> horizon_world::nbt::Tag {
+    use horizon_world::nbt::Tag;
+    Tag::compound([
+        ("translate", Tag::String("container.isLocked".into())),
+        ("with", Tag::List(vec![title.clone()])),
+    ])
+}
+
+/// The menu a container vehicle's `createMenu` builds (`ContainerEntity`):
+/// `AbstractChestBoat.createMenu` and `MinecartChest.createMenu` are
+/// `ChestMenu.threeRows` (a 9x3 menu), `MinecartHopper.createMenu` is a
+/// `HopperMenu` (five slots). `None` for any other entity type.
+pub fn vehicle_menu(entity_type: &str) -> Option<(&'static str, usize)> {
+    match entity_type {
+        "minecraft:chest_minecart" => Some(("minecraft:generic_9x3", 27)),
+        "minecraft:hopper_minecart" => Some(("minecraft:hopper", HOPPER_SLOTS)),
+        n if n.ends_with("_chest_boat") || n.ends_with("_chest_raft") => {
+            Some(("minecraft:generic_9x3", 27))
+        }
+        _ => None,
+    }
+}
+
+/// `MenuProvider.getDisplayName` for a container vehicle: `Entity.getDisplayName`
+/// is its custom name, else `getName`, the entity type's name key. Horizon's
+/// vehicles keep no custom name, so this is the type's name key.
+pub fn vehicle_menu_name(entity_type: &str) -> String {
+    format!("entity.{}", entity_type.replacen(':', ".", 1))
 }
 
 impl Campfire {
