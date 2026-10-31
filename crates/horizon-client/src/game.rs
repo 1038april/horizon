@@ -1102,6 +1102,26 @@ impl LevelAccess for GameLevel<'_> {
         }
         signal.clamp(0, 15)
     }
+    fn adjust_has_analog_output(&self, state: BlockStateId, vanilla: bool) -> bool {
+        let mut output = vanilla;
+        if self.native_authoritative {
+            self.native_has_analog_output(state, &mut output);
+        }
+        output
+    }
+    fn adjust_analog_output(
+        &self,
+        pos: BlockPos,
+        state: BlockStateId,
+        direction: Direction,
+        vanilla: i32,
+    ) -> i32 {
+        let mut output = vanilla;
+        if self.native_authoritative {
+            self.native_analog_output(self.dimension, pos, state, direction, &mut output);
+        }
+        output.clamp(0, 15)
+    }
     fn before_random_tick(
         &mut self,
         ticks: &mut Ticks,
@@ -10952,12 +10972,13 @@ impl Game<'_> {
             "World",
             format!("{} ({})", level.name, save_root.display()),
         );
-        self.session_lock = Some(session_lock);
         self.end.set_locator(locator);
         self.share_spawn_conditions();
         self.score = Default::default();
         self.fns = Default::default();
         self.world_tables = self.build_world_tables();
+        // Native tag reads use the lock to tell that the tag tables are ready.
+        self.session_lock = Some(session_lock);
         // The registries a preload or an earlier world read are not this
         // world's packs': a world with packs sends its own (their dialogs,
         // recipes and advancements). For a world without packs, `sync_data`
