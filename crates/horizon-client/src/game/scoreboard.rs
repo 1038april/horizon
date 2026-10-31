@@ -10,7 +10,7 @@ use horizon_client::{
     },
     hud::HudBatch,
     hud_layout, hud_overlays,
-    lan::guest::Guest,
+    lan::{guest::Guest, playerdata::ints_uuid},
     save::{self, uuid_from_text, uuid_text},
     scoreboard::{self as sb, Comp, Scoreboard, literal},
     scoreboard_cmd::{self, Env, Holder},
@@ -18,7 +18,7 @@ use horizon_client::{
     text::Text,
 };
 use horizon_world::nbt::Tag;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// What `ServerPlayer` last recorded for the criteria that follow the player.
 #[derive(Default)]
@@ -43,6 +43,31 @@ pub(super) struct ScoreState {
 
 fn in_range(v: i32, (lo, hi): IntRange) -> bool {
     lo.is_none_or(|l| v >= l) && hi.is_none_or(|h| v <= h)
+}
+
+/// `TamableAnimal.getTeam`: a pet's own team, else, when it is tamed, its root
+/// owner's, else none. An untamed pet has no owner to take one from.
+fn pet_team<'a>(board: &'a Scoreboard, own: &str, owner: Option<&str>) -> Option<&'a sb::Team> {
+    board
+        .players_team(own)
+        .or_else(|| board.players_team(owner?))
+}
+/// A tamed pet's owner (`TamableAnimal.getOwnerReference` while `isTame`).
+fn tame_owner(m: &horizon_client::mobs::Mob) -> Option<[i32; 4]> {
+    m.extra.tame.then_some(m.extra.owner).flatten()
+}
+/// `TamableAnimal.getRootOwner`: the owner, or that owner's own root owner
+/// while it is a tamed pet itself. `pet_owner` is the owner of the tamed pet
+/// with a UUID, if it has one.
+fn root_owner(mut owner: [i32; 4], pet_owner: impl Fn([i32; 4]) -> Option<[i32; 4]>) -> [i32; 4] {
+    // shortcut: vanilla has no cycle check, this bound stops a hand-made loop.
+    for _ in 0..64 {
+        match pet_owner(owner) {
+            Some(next) => owner = next,
+            None => break,
+        }
+    }
+    owner
 }
 
 impl Game<'_> {
@@ -472,30 +497,83 @@ impl Game<'_> {
         self.remote_player_name(id)
             .map_or_else(|| uuid_text(uuid), str::to_owned)
     }
-    /// `Entity.getTeam` of a mob or another player.
+    /// `TamableAnimal.getTeam` of a mob or another player: its own team, else,
+    /// when it is a tamed pet, its root owner's.
     pub(super) fn mob_team(&self, id: u32) -> Option<&sb::Team> {
-        let uuid = self.persist.uuids.get(&id)?;
-        self.score
-            .board
-            .players_team(&self.scoreboard_name(id, *uuid))
+        if self.score.board.teams.is_empty() {
+            return None;
+        }
+        // The mob is looked up only when its own name has no team: the
+        // owner's team is the fallback.
+        self.team_with_owner(id, || {
+            self.mobs.iter().find(|m| m.id == id).and_then(tame_owner)
+        })
+    }
+    /// [`mob_team`](Self::mob_team) of a mob at hand, without looking it up.
+    pub(super) fn mob_team_of(&self, m: &horizon_client::mobs::Mob) -> Option<&sb::Team> {
+        if self.score.board.teams.is_empty() {
+            return None;
+        }
+        self.team_with_owner(m.id, || tame_owner(m))
+    }
+    /// A mob's own team, else its tamed owner's (`owner` is asked only then).
+    fn team_with_owner(
+        &self,
+        id: u32,
+        owner: impl FnOnce() -> Option<[i32; 4]>,
+    ) -> Option<&sb::Team> {
+        let uuid = *self.persist.uuids.get(&id)?;
+        let own = self.scoreboard_name(id, uuid);
+        if let Some(team) = self.score.board.players_team(&own) {
+            return Some(team);
+        }
+        let owner = owner().and_then(|o| self.root_owner_name(o));
+        pet_team(&self.score.board, &own, owner.as_deref())
+    }
+    /// `TamableAnimal.getRootOwner().getScoreboardName`: a pet's owner, through
+    /// owners that are tamed pets themselves.
+    fn root_owner_name(&self, owner: [i32; 4]) -> Option<String> {
+        let pet_owner = |uuid: [i32; 4]| {
+            let Target::Mob(pet) = self.target_by_uuid(ints_uuid(uuid))? else {
+                return None;
+            };
+            self.mobs
+                .iter()
+                .find(|m| m.id == pet && m.extra.tame)?
+                .extra
+                .owner
+        };
+        let root = root_owner(owner, pet_owner);
+        Some(match self.target_by_uuid(ints_uuid(root))? {
+            Target::Player => self.acting_player_name().to_owned(),
+            Target::Guest(conn) => self.command_guest(conn)?.name.clone(),
+            Target::Mob(id) => self.scoreboard_name(id, root),
+            _ => uuid_text(root),
+        })
     }
     pub(super) fn player_team(&self) -> Option<&sb::Team> {
         self.score.board.players_team(self.acting_player_name())
     }
     /// The teams of the player and of the mobs on one (empty without teams).
     pub(super) fn mob_teams(&self) -> horizon_client::mobs::Teams<'_> {
-        let board = &self.score.board;
-        if board.teams.is_empty() {
+        if self.score.board.teams.is_empty() {
             return Default::default();
         }
+        // One pass over the mobs, not one per mob.
+        let tame_owners: HashMap<u32, [i32; 4]> = self
+            .mobs
+            .iter()
+            .filter_map(|m| Some((m.id, tame_owner(m)?)))
+            .collect();
         horizon_client::mobs::Teams {
             player: self.player_team(),
             mobs: self
                 .persist
                 .uuids
-                .iter()
-                .filter_map(|(id, uuid)| {
-                    Some((*id, board.players_team(&self.scoreboard_name(*id, *uuid))?))
+                .keys()
+                .filter_map(|id| {
+                    let owner = || tame_owners.get(id).copied();
+                    Some((*id, self.team_with_owner(*id, owner)?))
                 })
                 .collect(),
         }
@@ -899,5 +977,76 @@ mod tab_list_tests {
         assert_eq!(players.len(), 2);
         assert_eq!(players[1].game_mode, 1);
         assert_eq!(players[1].latency, 123);
+    }
+}
+
+#[cfg(test)]
+mod team_tests {
+    use super::*;
+
+    const WOLF: [i32; 4] = [1, 2, 3, 4];
+    const CAT: [i32; 4] = [5, 6, 7, 8];
+    const STEVE: [i32; 4] = [9, 10, 11, 12];
+
+    /// The player in place is on `red`, the cat on `blue`; nobody else is on a
+    /// team (`Game::mob_team` names the player by profile, a mob by UUID).
+    fn board() -> Scoreboard {
+        let mut board = Scoreboard::default();
+        board.add_team("red");
+        board.add_to_team("Steve", "red");
+        board.add_team("blue");
+        board.add_to_team(&uuid_text(CAT), "blue");
+        board
+    }
+
+    fn team_name(team: Option<&sb::Team>) -> Option<&str> {
+        team.map(|t| t.name.as_str())
+    }
+
+    #[test]
+    fn a_tamed_pet_with_no_team_answers_its_owners() {
+        let board = board();
+        let wolf = uuid_text(WOLF);
+        assert_eq!(
+            team_name(pet_team(&board, &wolf, Some("Steve"))),
+            Some("red")
+        );
+    }
+
+    #[test]
+    fn a_pet_with_its_own_team_answers_that_one() {
+        let board = board();
+        let cat = uuid_text(CAT);
+        assert_eq!(
+            team_name(pet_team(&board, &cat, Some("Steve"))),
+            Some("blue")
+        );
+    }
+
+    #[test]
+    fn an_untamed_pet_answers_no_team() {
+        let board = board();
+        let wolf = uuid_text(WOLF);
+        // `mob_team` names no owner for a pet that is not tamed.
+        assert_eq!(pet_team(&board, &wolf, None), None);
+    }
+
+    #[test]
+    fn a_pet_owned_by_a_pet_reaches_the_root_owner() {
+        let board = board();
+        // The wolf's owner is the cat, whose own owner is the player: the
+        // wolf answers the player's team, not the cat's.
+        let pet_owner = |pet: [i32; 4]| (pet == CAT).then_some(STEVE);
+        let root = root_owner(CAT, pet_owner);
+        assert_eq!(root, STEVE);
+        let root_name = if root == STEVE { "Steve" } else { "nobody" };
+        assert_eq!(
+            team_name(pet_team(&board, &uuid_text(WOLF), Some(root_name))),
+            Some("red")
+        );
+        // An owner loop (only `/data` can make one) stops instead of hanging.
+        let looped = |uuid: [i32; 4]| Some(if uuid == WOLF { CAT } else { WOLF });
+        let root = root_owner(WOLF, looped);
+        assert!(root == WOLF || root == CAT);
     }
 }

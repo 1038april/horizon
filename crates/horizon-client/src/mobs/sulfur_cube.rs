@@ -460,6 +460,17 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if fuse(m) == 0
         && let Some((_, power, _)) = archetype(m).and_then(|a| a.explosion)
     {
+        // `level.explode(this, ...)`: the cube is the blast's source and its
+        // causing entity, so its entity query leaves it out.
+        let name = match &m.custom_name {
+            Some(name) => crate::text::Text::literal(name.clone()),
+            None => crate::text::Text::translate("entity.minecraft.sulfur_cube", &[]),
+        };
+        events.push(MobEvent::ExplosionSource {
+            mob: m.id,
+            charged: false,
+            name,
+        });
         events.push(MobEvent::Explode(
             [m.position.x, m.position.y + 0.0625, m.position.z],
             power,
@@ -726,6 +737,25 @@ mod fuse_anim_tests {
         let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
         kind.species = Species::SulfurCube;
         Mob::new(1, Arc::new(kind), Vec3::ZERO, 0.0)
+    }
+
+    #[test]
+    fn a_primed_cube_is_still_knocked_about() {
+        // SulfurCube.hurtServer runs the immune knockback before
+        // LivingEntity's invulnerability check, and priming makes it invulnerable.
+        load_archetype_items(&HashMap::from([(
+            "minecraft:sulfur_cube_archetype/explosive".to_owned(),
+            HashSet::from(["minecraft:tnt".to_owned()]),
+        )]));
+        let mut m = cube();
+        m.extra.head = Some("minecraft:tnt".into());
+        assert!(prime(&mut m, false));
+        assert!(m.invulnerable_flag);
+        let (health, fuse_left) = (m.health, fuse(&m));
+        m.damage(5.0, crate::mobs::Damage::player([2.0, 0.0, 0.0]));
+        assert!(m.velocity.x < 0.0, "velocity {:?}", m.velocity);
+        assert_eq!(m.health, health);
+        assert_eq!(fuse(&m), fuse_left);
     }
 
     #[test]

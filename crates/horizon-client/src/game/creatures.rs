@@ -397,6 +397,84 @@ impl Game<'_> {
         }
         Some(id)
     }
+    /// `Mob.burnUndead` for a mob in daylight with an item on its sun
+    /// protection slot (the head, or the body for a zombie horse or
+    /// nautilus): `hurtAndBreak(random.nextInt(2))` on a damageable item, and
+    /// when it breaks the slot empties and `onEquippedItemBroken` broadcasts
+    /// the break event.
+    fn wear_sun_protection(&mut self, id: u32) {
+        use horizon_world::player_inventory::EquipmentSlot;
+        let Some(m) = self.mobs.iter().find(|m| m.id == id) else {
+            return;
+        };
+        let body = horizon_client::mobs::drops::head_is_body(m.species());
+        let slot = if body {
+            EquipmentSlot::Body
+        } else {
+            EquipmentSlot::Head
+        };
+        let Some(mut stack) = m.item_by_slot(slot) else {
+            return;
+        };
+        if !horizon_client::stations::is_damageable(self.res.items(), &stack) {
+            return;
+        }
+        let at = [m.position.x, m.position.y, m.position.z];
+        let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
+            return;
+        };
+        let amount = m.random.next_int_bound(2).unwrap_or(0) as u32;
+        if amount == 0 {
+            return;
+        }
+        let loss = self.durability_loss(&stack, amount);
+        if loss == 0 {
+            return;
+        }
+        let max = self
+            .res
+            .items()
+            .get(&stack.item)
+            .map_or(0, |i| i.max_damage);
+        stack.damage += loss;
+        let broke = stack.damage >= max;
+        let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
+            return;
+        };
+        match (body, broke) {
+            (true, false) => m.extra.body_damage = stack.damage as i32,
+            (true, true) => {
+                m.extra.head = None;
+                m.extra.body_damage = 0;
+            }
+            (false, false) => m.extra.armor[0] = Some(stack),
+            (false, true) => {
+                m.extra.head = None;
+                m.extra.armor[0] = None;
+            }
+        }
+        if broke {
+            // LivingEntity.entityEventForEquipmentBreak: head 49, body 65.
+            self.lan_entity_event(id as i32, if body { 65 } else { 49 }, at);
+        }
+    }
+    /// What a converted frog gets once its tadpole has grown up: the spawn
+    /// finalization of a conversion, then persistence.
+    fn finalize_converted(&mut self, id: u32) {
+        let Some(at) = self.mobs.iter().find(|m| m.id == id).map(|m| m.position) else {
+            return;
+        };
+        let facts = self.biome_facts(
+            at.x.floor() as i32,
+            at.y.floor() as i32,
+            at.z.floor() as i32,
+        );
+        let difficulty = self.local_difficulty([at.x, at.y, at.z]);
+        if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
+            spawning::finalize(m, &facts, &difficulty);
+            m.persistent = true;
+        }
+    }
     /// `Mob.convertTo(type, ConversionParams.single(...))` for a mob already
     /// removed: a new mob of `kind`, made without spawn finalization, takes
     /// its place with what `conversion::single` carries over, and the old
@@ -620,17 +698,21 @@ impl Game<'_> {
     /// Generation's animals for the chunks generated since, once lit: chunk
     /// generation places them whether the level ticks or not.
     pub(super) fn spawn_fresh_chunks(&mut self) {
+        if !self.world.chunks.has_fresh() {
+            return;
+        }
         let fresh: Vec<(i32, i32)> = self
             .world
             .chunks
-            .iter()
-            .filter(|(_, c)| c.fresh && c.lit)
-            .map(|(k, _)| *k)
+            .fresh_keys_ordered()
+            .into_iter()
+            .filter(|k| self.world.chunks.get(k).is_some_and(|c| c.fresh && c.lit))
             .collect();
         for key in fresh {
             if let Some(c) = self.world.chunks.get_mut(&key) {
                 Arc::make_mut(c).fresh = false;
             }
+            self.world.chunks.remove_fresh(&key);
             self.spawn_generation_creatures(key.0, key.1);
         }
     }
@@ -726,6 +808,7 @@ impl Game<'_> {
                 .map(super::boat_leads::boat_state)
                 .collect();
             let base = self.mob_world_base(&[]);
+            let path_changes = horizon_client::mobs::collision_changes(&base, &path_writes);
             // Each mob keeps its snapshot slot all tick; the first slot of an
             // id answers, as a scan would.
             let mut index = horizon_client::fast_hash::FxHashMap::<u32, u32>::default();
@@ -786,7 +869,7 @@ impl Game<'_> {
                     continue;
                 }
                 horizon_client::mobs::apply_mob_pushes(m, &mut pushes);
-                horizon_client::mobs::blocks_changed(m, &w, &path_writes);
+                horizon_client::mobs::blocks_changed(m, &path_changes);
                 let from = events.len();
                 let kept = m.tick(&w, &mut scratch, &mut events);
                 // A killed mob's body is removed: its effects that act on
@@ -891,6 +974,7 @@ impl Game<'_> {
         self.tick_fangs();
         self.tick_allays();
         self.tick_pandas();
+        self.tick_mob_looting();
         self.tick_breeze_effects();
         self.tick_sniffer_effects();
         self.piglin_pickups();
@@ -1404,6 +1488,7 @@ impl Game<'_> {
                         .map_or([0.0; 3], |m| [m.velocity.x, m.velocity.y, m.velocity.z]);
                     self.drown_particles(at, v);
                 }
+                MobEvent::SunProtectionWear { mob } => self.wear_sun_protection(mob),
                 MobEvent::EntityEvent { mob, event, at } => {
                     self.lan_entity_event(mob as i32, event, at)
                 }
@@ -1546,11 +1631,19 @@ impl Game<'_> {
                     self.combat.explosion_source = Some(mob);
                     // The creeper causes the blast's damage, but it is out of
                     // the mob list already: its name comes with the event.
-                    self.combat.exploded.push((mob, name.clone()));
-                    self.note_named_attacker("minecraft:explosion", mob, name);
+                    self.combat.exploded.push((mob, name));
                     if charged {
                         self.combat.charged_exploders.push(mob);
                     }
+                }
+                MobEvent::LingeringCloud {
+                    at,
+                    effects,
+                    hidden,
+                    ambient,
+                    color,
+                } => {
+                    self.spawn_creeper_cloud(at, effects, hidden, ambient, color);
                 }
                 MobEvent::Explode(at, radius, species) => {
                     // The exploding mob causes the damage (Creeper.explodeCreeper).
@@ -1565,9 +1658,6 @@ impl Game<'_> {
                             .map(|m| m.id)
                             .next()
                     });
-                    if !noted && let Some(id) = source_mob {
-                        self.note_attacker("minecraft:explosion", id);
-                    }
                     self.combat.explosion_source = source_mob;
                     self.combat.explosion_source_named = noted;
                     self.combat.explosion_cause = match species {
@@ -1794,7 +1884,21 @@ impl Game<'_> {
                     }
                 }
                 MobEvent::Convert { from, kind, params } => {
-                    self.convert_to(&from, kind, params);
+                    let id = self.convert_to(&from, kind, params);
+                    // `Piglin.finishConversion` and `Hoglin.finishConversion`:
+                    // the converted mob is nauseous for 10 seconds.
+                    if matches!(kind, "minecraft:zombified_piglin" | "minecraft:zoglin")
+                        && let Some(m) = self.mobs.iter_mut().find(|m| Some(m.id) == id)
+                    {
+                        m.add_effect("minecraft:nausea", 200, 0);
+                    }
+                    // `Tadpole.ageUp`: the frog is finalized for the
+                    // conversion and made persistent.
+                    if kind == "minecraft:frog"
+                        && let Some(id) = id
+                    {
+                        self.finalize_converted(id);
+                    }
                 }
                 MobEvent::DropItem { item, count, at } => self.spawn_item(
                     ItemStack {
@@ -1811,6 +1915,23 @@ impl Game<'_> {
                     dispenser::new_item_motion(),
                     10,
                 ),
+                MobEvent::DropGoatHorn {
+                    mob,
+                    screaming,
+                    at,
+                    motion,
+                } => {
+                    let instrument =
+                        horizon_client::mobs::goat::create_horn(self.mob_uuid(mob), screaming);
+                    let mut horn = ItemStack::new("minecraft:goat_horn", 1);
+                    horn.data_mut().set_other(
+                        "minecraft:instrument",
+                        Some(horizon_world::nbt::Tag::String(instrument.into())),
+                    );
+                    // Goat.dropHorn's ItemEntity constructor leaves pickupDelay at
+                    // 0 (no setDefaultPickUpDelay).
+                    self.spawn_item(horn, at, motion, 0);
+                }
                 MobEvent::DropGift { table, at } => {
                     let stacks =
                         self.res
@@ -3956,6 +4077,13 @@ impl Game<'_> {
                 Hit::None => {}
             },
             (ProjectileKind::LargeFireball { power }, hit) => {
+                // Fireball explosions are caused by the shooter. A direct hit
+                // on the player takes `projectile_owner`, so read the owner
+                // from the fireball.
+                let owner = match p.owner {
+                    Some(Who::Mob(id)) => Some(id),
+                    _ => None,
+                };
                 if let Hit::Entity { who, .. } = hit {
                     match who {
                         Who::Player => {
@@ -3977,11 +4105,7 @@ impl Game<'_> {
                         }
                     }
                 }
-                // Fireball explosions are caused by the shooter.
-                if let Some(owner) = self.combat.projectile_owner {
-                    self.note_attacker("minecraft:explosion", owner);
-                }
-                self.combat.explosion_owner = self.combat.projectile_owner;
+                self.combat.explosion_owner = owner;
                 // The blast's source names the owner, so a dragon it kills
                 // remembers the player who shot it.
                 self.set_blast_by_player(p.owner == Some(Who::Player));
@@ -4229,7 +4353,7 @@ impl Game<'_> {
         let Some((index, distance)) = self.mob_hit() else {
             return Ok(false);
         };
-        if let Some(hit) = self.pick()
+        if let Some(hit) = self.pick_unfiltered()
             && let Some(eye) = self.eye_position()
         {
             let d = ((hit.point[0] - eye[0]).powi(2)
@@ -4902,7 +5026,15 @@ impl Game<'_> {
             // ALTERNATIVE_WITH_SPEED with a per-axis maximum speed.
             self.particles
                 .send_particles(&options, at, spread, 0.2, count);
-            self.lan_send_particles(&options, at, spread, 0.2, count);
+            self.lan_send_particles(super::lan_particles::QueuedParticle {
+                dimension: self.dim.id(),
+                options,
+                state: None,
+                at,
+                spread,
+                speed: 0.2,
+                count: count as i32,
+            });
         }
         // PlayerInteractTrigger: the item used on the mob, once the interaction took.
         if let Some(stack) = &held {
@@ -5200,6 +5332,7 @@ impl Game<'_> {
         if let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) {
             horizon_client::entity_nbt::apply_item_components(m, stack);
         }
+        self.apply_spawn_egg_entity_data(id, stack);
         self.swing_arm();
         if !self.creative
             && let Some(s) = self.held_mut().as_mut()
@@ -5210,6 +5343,25 @@ impl Game<'_> {
             }
         }
         Ok(true)
+    }
+    /// `EntityType.updateCustomEntityTag`: the egg's `minecraft:entity_data` on
+    /// the mob it spawned, once the guards let it through, as
+    /// `TypedEntityData.loadInto`: the mob's own compound, the data merged over
+    /// it, loaded back into the same mob (`/data merge entity`'s loader).
+    fn apply_spawn_egg_entity_data(&mut self, id: u32, stack: &ItemStack) {
+        let Some(i) = self.mobs.iter().position(|m| m.id == id) else {
+            return;
+        };
+        let kind = self.mobs[i].kind.id.clone();
+        let op = self.acting_player_is_op();
+        let Some(data) = horizon_client::block_entity_item::spawn_egg_entity_data(stack, &kind, op)
+        else {
+            return;
+        };
+        let own = self.mob_tree_nbt(i);
+        let tag = horizon_client::data_cmd::merged(&own, data);
+        // Nothing to report: the mob's own compound always loads back.
+        let _ = self.apply_entity_nbt(super::commands::Target::Mob(id), tag);
     }
     /// A beam target's centre (half its height), interpolated.
     fn beam_target(&self, who: Option<Who>, alpha: f64) -> Option<glam::DVec3> {
@@ -5346,8 +5498,20 @@ impl Game<'_> {
                 mob.position.z.floor() as i32,
             );
             let mut packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
-            if mob.fire_ticks > 0 || matches!(mob.species(), Species::Blaze | Species::MagmaCube) {
-                packed = (15 * 16) | ((15 * 16) << 8);
+            // EntityRenderer.getBlockLightLevel: a burning mob has 15 block
+            // light, and so do the Allay, Blaze, Magma Cube, Vex and Wither
+            // renderers' overrides; the sky light stays the level's.
+            if mob.fire_ticks > 0
+                || matches!(
+                    mob.species(),
+                    Species::Allay
+                        | Species::Blaze
+                        | Species::MagmaCube
+                        | Species::Vex
+                        | Species::Wither
+                )
+            {
+                packed = (packed & 0xFF) | ((15 * 16) << 8);
             }
             // GlowSquidRenderer.getBlockLightLevel: the body brightens as the
             // dark ticks run out (the block light is the second byte).
