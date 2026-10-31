@@ -69,7 +69,6 @@ impl Game<'_> {
             return Ok(());
         }
         let data = stack.data_mut();
-        data.wire = Default::default();
         data.set_other(&removed, None);
         data.set_other(id, value);
         stack.tidy();
@@ -96,7 +95,6 @@ impl Game<'_> {
             return Ok(());
         }
         let data = stack.data_mut();
-        data.wire = Default::default();
         data.set_other(id, None);
         data.set_other(&removed, default.then(|| Tag::Compound(Default::default())));
         stack.tidy();
