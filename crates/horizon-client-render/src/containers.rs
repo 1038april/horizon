@@ -185,6 +185,7 @@ impl SkullSkin {
         Self {
             download,
             dynamic,
+            texture: crate::skins::profile_texture_nbt(profile),
             fallback,
         }
     }
