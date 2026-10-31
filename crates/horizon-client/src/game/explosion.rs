@@ -284,16 +284,26 @@ impl Game<'_> {
                         } else {
                             0.0
                         };
+                        // A primed TNT minecart's rails and the blocks they
+                        // stand on: no resistance, and never blown up.
+                        let spared = self.combat.rail_proof_blast
+                            && (self.rail(pos[0], pos[1], pos[2]).is_some()
+                                || self.rail(pos[0], pos[1] + 1, pos[2]).is_some());
                         match resists {
                             Some((at, resistance)) if at == pos => {
                                 power -= (resistance + 0.3) * 0.3;
                             }
                             _ if !self.res.facts().is_air(state) || f.fluid != Fluid::None => {
-                                power -= (f.explosion_resistance.max(fluid) + 0.3) * 0.3;
+                                let resistance = if spared {
+                                    0.0
+                                } else {
+                                    f.explosion_resistance.max(fluid)
+                                };
+                                power -= (resistance + 0.3) * 0.3;
                             }
                             _ => {}
                         }
-                        if power > 0.0 {
+                        if power > 0.0 && !spared {
                             set.put(Key(pos), ());
                         }
                         xp += xd * f64::from(0.3f32);
@@ -581,6 +591,35 @@ impl Game<'_> {
             true
         });
         self.dropped = items;
+        // Experience orbs: `ExperienceOrb.hurtServer` takes the damage off
+        // their 5 health, and `pushFromExplosion` moves the ones that stay
+        // (a 0.5 x 0.5 box, the eyes at 0.85 of its height).
+        let mut orbs = std::mem::take(&mut self.orbs);
+        orbs.retain_mut(|o| {
+            let feet = [o.position.x, o.position.y, o.position.z];
+            let dist = distance(feet) / diameter;
+            if dist > 1.0 {
+                return true;
+            }
+            let half = 0.25;
+            let exposure = self.seen_percent(
+                center,
+                [feet[0] - half, feet[1], feet[2] - half],
+                [feet[0] + half, feet[1] + 0.5, feet[2] + half],
+            );
+            if o.hurt(damage(dist, exposure)) {
+                return false;
+            }
+            let dir = direction([feet[0], feet[1] + f64::from(0.5f32 * 0.85f32), feet[2]]);
+            let power = (1.0 - dist) * f64::from(exposure);
+            o.velocity = Vec3::new(
+                o.velocity.x + dir[0] * power,
+                o.velocity.y + dir[1] * power,
+                o.velocity.z + dir[2] * power,
+            );
+            true
+        });
+        self.orbs = orbs;
         // Primed TNT: knockback only, from its position (not its eyes).
         let mut tnts = std::mem::take(&mut self.tnts);
         for t in &mut tnts {
