@@ -283,7 +283,12 @@ pub fn read_pack(path: &Path) -> Result<BTreeMap<String, Vec<u8>>, String> {
             let name = entry
                 .enclosed_name()
                 .filter(|name| is_inside(name))
-                .ok_or_else(|| at(&format!("entry {:?} leaves the pack", String::from_utf8_lossy(entry.name_raw()))))?;
+                .ok_or_else(|| {
+                    at(&format!(
+                        "entry {:?} leaves the pack",
+                        String::from_utf8_lossy(entry.name_raw())
+                    ))
+                })?;
             let mut bytes = Vec::new();
             entry.read_to_end(&mut bytes).map_err(|e| at(&e))?;
             files.insert(name.to_string_lossy().replace('\\', "/"), bytes);
