@@ -630,6 +630,7 @@ impl Game<'_> {
                     Screen::Chat => self.chat_type(text),
                     Screen::CommandBlock => self.command_block_type(text),
                     Screen::BlockEditor => self.block_editor_type(text),
+                    Screen::DebugOptions => self.debug_options_type(text),
                     Screen::Options => self.ui.options.type_text(&self.gui.atlas, text),
                     // The port, or the game rules' search and number boxes.
                     Screen::WorldOptions if text == "\\b" => self.world_options_text(None),
@@ -909,6 +910,7 @@ impl Game<'_> {
             Screen::CommandBlock => "command-block",
             Screen::BlockEditor => "block-editor",
             Screen::Win => "win",
+            Screen::DebugOptions => "debug-options",
         }
     }
 
@@ -1040,8 +1042,8 @@ impl Game<'_> {
             "screen": self.screen_name(),
             "debug": {
                 "overlay": self.debug,
-                "hitboxes": self.show_hitboxes,
-                "chunk_borders": self.show_chunk_borders,
+                "hitboxes": self.debug_entry("entity_hitboxes"),
+                "chunk_borders": self.debug_entry("chunk_borders"),
                 "pause_menu": self.pause_menu,
                 "advanced_tooltips": self.settings.file.bool("advancedItemTooltips"),
                 "pause_on_lost_focus": self.settings.file.bool("pauseOnLostFocus"),
