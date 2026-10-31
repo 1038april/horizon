@@ -16,8 +16,12 @@ mod datapacks_page;
 mod dev_options;
 mod export_page;
 mod game_tools;
+mod github_mods_page;
 mod home;
+mod home_tabs;
 mod import_page;
+mod instance_icons;
+mod instance_mods;
 mod instances_page;
 mod internet;
 mod language_page;
@@ -25,6 +29,7 @@ mod launch_page;
 mod line_edit;
 mod markdown;
 mod mcp;
+mod microsoft;
 mod modpacks_page;
 mod mods_page;
 mod mods_project;
@@ -53,14 +58,15 @@ mod worlds_page;
 use gpui::{
     actions, div, ease_out_quint, prelude::*, px, relative, size, Animation, AnimationExt,
     AnyElement, App, Application, Bounds, ClickEvent, Context, Div, ElementId, FocusHandle,
-    FontWeight, Hsla, KeyBinding, KeyDownEvent, Menu, MenuItem, PathPromptOptions, SharedString,
-    Stateful, Subscription, Window, WindowBounds, WindowOptions,
+    FontWeight, Hsla, KeyBinding, KeyDownEvent, Menu, MenuItem, MouseDownEvent, PathPromptOptions,
+    Pixels, Point, SharedString, Stateful, Subscription, Window, WindowBounds, WindowOptions,
 };
 use horizon_launcher::account::{self, Accounts, SignIn, SignInState};
 use horizon_launcher::backend::{self, Job, Msg, Release, Running, Settings, Updates};
 use horizon_launcher::i18n::{self, tr, trf};
 use horizon_launcher::instances;
 use horizon_launcher::native_mods;
+use horizon_launcher::native_status;
 use horizon_launcher::telemetry;
 use scrollbar::Scrollbar;
 use std::borrow::Cow;
@@ -83,14 +89,14 @@ enum Page {
 }
 
 impl Page {
-    /// `HORIZON_LAUNCHER_PAGE=mods` (or `modpacks`, `shaders`, `servers`, `versions`, `notes`,
+    /// `HORIZON_LAUNCHER_PAGE=mods` (or `modpacks`, `resourcepacks`, `shaders`, `servers`, `versions`, `notes`,
     /// `settings`) opens on that page, for screenshots; Home otherwise (`getting-ready`: Home
     /// preparing, `home::getting_ready_preview`; `sign-in`: the owner gate's sheet with a
     /// made-up code, `owner_page::sign_in_preview`; `new-instance`: Home with the New instance
-    /// dialog open on Modded).
+    /// dialog open on Modded; `edit-instance`: the selected one's Edit dialog; `worlds`, `packs`...: Home on that tab, `HomeTab::from_env`).
     fn from_env() -> Page {
         match std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() {
-            Ok("mods" | "modpacks" | "shaders" | "datapacks") => Page::Mods,
+            Ok("mods" | "modpacks" | "resourcepacks" | "shaders" | "datapacks") => Page::Mods,
             Ok("servers") => Page::Servers,
             Ok("versions") => Page::Versions,
             Ok("notes") => Page::Notes,
@@ -176,23 +182,46 @@ struct Launcher {
     releases: Load<Vec<Release>>,
     installed: Vec<String>,
     installing: Option<(String, f32)>,
-    /// The version being deleted on a background thread. It is already out of `installed`, so
+    /// The versions being deleted on background threads. Each is already out of `installed`, so
     /// nothing can launch, select or prepare it, and its row can't install or remove it again.
-    removing: Option<String>,
+    /// More than one may run at once: a row's Remove stays usable while another version goes.
+    removing: Vec<String>,
     /// What each installed version takes on disk, measured on a thread for the Versions page, and
     /// the installed list it was measured for.
     disk: Vec<(String, u64)>,
     disk_for: Vec<String>,
     install_error: Option<(String, String)>,
-    /// Native mods (`native_mods`): the build's step while it runs, why it failed, and the
-    /// warning before a build while it is open, with the mods it names.
+    /// Native mods (`native_mods`, on the Mods page): the build's step while it runs, why it
+    /// failed, and the warning before a build while it is open, with the mods it names.
     native_step: Option<String>,
+    /// When the running native build started, and the whole seconds last drawn (the status shows
+    /// the time it has taken).
+    native_started: Option<(Instant, u64)>,
+    /// How the last native build ended ("Built in 42 s (fast, incremental)", or "Up to date").
+    native_done: Option<String>,
     native_error: Option<String>,
     native_confirm: Option<Result<Vec<native_mods::Bundle>, String>>,
+    /// The instance (id) the build under way, or the last one's error, is for.
+    native_for: Option<String>,
+    /// The newer Horizon the open warning's build moves to (Update), else None: a build stays
+    /// on the Horizon the instance plays.
+    native_update: Option<String>,
+    /// What each installed native build was made from, by version. A build's version names its
+    /// contents, so an entry never goes stale.
+    native_builds:
+        std::cell::RefCell<std::collections::HashMap<String, Option<native_status::Build>>>,
+    /// The mods of a build made for other Horizon versions (`native_mods::MISMATCH`): the build
+    /// waits for "Build anyway".
+    native_mismatch: Option<String>,
     confirm_remove: Option<String>,
     picker_open: bool,
+    /// Settings > Language's dropdown (`language_page.rs`).
+    language_menu: bool,
     /// The top bar's quick switch of who plays (`switch_page.rs`).
     account_menu: bool,
+    /// Where the mouse went down to close a menu by pressing outside it, so that the
+    /// same press, ending on the menu's own button, doesn't open it again.
+    menu_closed_at: Option<Point<Pixels>>,
     /// Settings > Account's skin panel for an offline name (`skin_page.rs`).
     skin: Option<skin_page::SkinPanel>,
     /// Why the last picture for Home's background was refused.
@@ -273,6 +302,12 @@ struct Launcher {
     prepare_started: Option<Instant>,
     /// The download under way as first seen (when, files done), for the time left.
     download_seen: Option<(Instant, usize)>,
+    /// The tab open under Home's hero (`home_tabs.rs`).
+    home_tab: home_tabs::HomeTab,
+    /// The selected instance's mods, for Home's Mods tab (`instance_mods.rs`).
+    instance_mods: instance_mods::InstanceMods,
+    /// Modrinth projects' icon URLs (`instance_mods.rs`).
+    project_icons: instance_mods::ProjectIcons,
     play_pressed: Option<Instant>,
     /// `horizon-launcher benchmark` started this window to measure it.
     bench: Option<perf::Bench>,
@@ -291,6 +326,7 @@ struct Launcher {
     starting_pack: Option<std::path::PathBuf>,
     /// The Mods page: the browser's search, installs and updates (`mods_page.rs`).
     mods: mods_page::Mods,
+    github: github_mods_page::Github,
     /// The instances, for the sidebar and Play, and their dialog (`instances_page.rs`).
     instances: instances_page::Instances,
     /// Home's Worlds section, of the selected instance (`worlds_page.rs`).
@@ -413,16 +449,24 @@ impl Launcher {
             releases: Load::Loading,
             installed,
             installing: None,
-            removing: None,
+            removing: Vec::new(),
             disk: Vec::new(),
             disk_for: Vec::new(),
             install_error: None,
             native_step: None,
+            native_started: None,
+            native_done: None,
             native_error: None,
             native_confirm: None,
+            native_for: None,
+            native_update: None,
+            native_builds: Default::default(),
+            native_mismatch: None,
             confirm_remove: None,
             picker_open: false,
+            language_menu: false,
             account_menu: false,
+            menu_closed_at: None,
             skin: None,
             background_error: None,
             args_input: line_edit::LineEdit::new(settings.game_args.clone(), 1024, 38),
@@ -476,6 +520,9 @@ impl Launcher {
             install_started: None,
             prepare_started: None,
             download_seen: None,
+            home_tab: home_tabs::HomeTab::from_env(),
+            instance_mods: Default::default(),
+            project_icons: Default::default(),
             play_pressed: None,
             bench: perf::Bench::from_env(),
             packs: Vec::new(),
@@ -488,6 +535,7 @@ impl Launcher {
             pack_error: None,
             starting_pack: None,
             mods: mods_page::Mods::new(cx),
+            github: github_mods_page::Github::new(cx),
             instances: instances_page::Instances::default(),
             worlds: worlds_page::Worlds::default(),
             multiplayer: multiplayer_page::Multiplayer::default(),
@@ -536,6 +584,9 @@ impl Launcher {
             this.open_instance_dialog(None);
             this.pick_kind(new_instance::NewKind::Modded, cx);
         }
+        if std::env::var("HORIZON_LAUNCHER_PAGE").as_deref() == Ok("edit-instance") {
+            this.open_instance_dialog(this.selected_instance().cloned());
+        }
         // What the game and the launcher kept, if the player allows it and there is a server.
         telemetry::send_in_background();
         telemetry::watch_playing(this.tx.clone());
@@ -557,6 +608,7 @@ impl Launcher {
             }
         }
         self.picker_open = false;
+        self.language_menu = false;
         self.account_menu = false;
     }
 
@@ -598,7 +650,7 @@ impl Launcher {
         let Some(release) = self.updates.horizon.clone() else {
             return;
         };
-        if self.installing.is_some() || self.removing.as_ref() == Some(&release.tag) {
+        if self.installing.is_some() || self.removing.contains(&release.tag) {
             return;
         }
         let select =
@@ -617,25 +669,36 @@ impl Launcher {
         Ok((folder, found))
     }
 
+    /// What installed native build `version` was made from (`native_status::Build`), read once.
+    fn native_build_of(&self, version: &str) -> Option<native_status::Build> {
+        if !native_mods::is_native(version) {
+            return None;
+        }
+        self.native_builds
+            .borrow_mut()
+            .entry(version.to_owned())
+            .or_insert_with(|| native_status::Build::read(version))
+            .clone()
+    }
+
     /// Builds the selected instance's native mods, once the player accepted the warning. The
-    /// build reuses the game files of the version the instance plays, else the newest installed.
-    fn build_native(&mut self) {
+    /// build stays on the Horizon the instance plays (`native_mods::base_for`), unless the
+    /// warning was Update's: then it moves to that newer Horizon.
+    /// `anyway`: the player agreed to build mods made for other Horizon versions together.
+    fn build_native(&mut self, anyway: bool) {
         if self.native_step.is_some() {
             return;
         }
         self.native_confirm = None;
         self.native_error = None;
+        self.native_mismatch = None;
         let instance = instances::selected();
-        let base = instance
-            .version
-            .clone()
-            .filter(|v| !native_mods::is_native(v))
-            .or_else(|| {
-                self.installed
-                    .iter()
-                    .find(|t| backend::is_game_tag(t) || t.starts_with("nightly-"))
-                    .cloned()
-            });
+        self.native_for = Some(instance.id.clone());
+        let plays = self.version_of(&instance).cloned();
+        let base = match self.native_update.take() {
+            Some(newer) => Some(newer),
+            None => native_mods::base_for(plays.as_deref(), &self.installed, false),
+        };
         let Some(base) = base else {
             self.native_error = Some(tr("Install Horizon first.").into());
             return;
@@ -648,9 +711,12 @@ impl Launcher {
             }
         };
         self.native_step = Some(tr("Starting the build").into());
+        self.native_started = Some((Instant::now(), 0));
+        self.native_done = None;
+        let profile = native_mods::Profile::from_setting(self.settings.native_release);
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let result = native_mods::build(&base, &folder, Some(&instance), |step| {
+            let result = native_mods::build(&base, &folder, &instance, anyway, profile, |step| {
                 let _ = tx.send(Msg::NativeProgress(step.label()));
             });
             let _ = tx.send(Msg::Native(result));
@@ -697,6 +763,13 @@ impl Launcher {
             }
             Some(perf::Step::Quit) => cx.quit(),
             Some(perf::Step::Wait) | None => {}
+        }
+        // The running build's clock moves on each second.
+        if let Some((started, shown)) = &mut self.native_started {
+            if started.elapsed().as_secs() != *shown {
+                *shown = started.elapsed().as_secs();
+                changed = true;
+            }
         }
         while let Ok(msg) = self.rx.try_recv() {
             changed = true;
@@ -858,9 +931,7 @@ impl Launcher {
                     }
                 }
                 Msg::Removed(tag, result) => {
-                    if self.removing.as_ref() == Some(&tag) {
-                        self.removing = None;
-                    }
+                    self.removing.retain(|t| *t != tag);
                     self.installed = backend::installed();
                     self.settings.selected =
                         selection_after_removal(&self.installed, Settings::load().selected);
@@ -887,11 +958,19 @@ impl Launcher {
                 Msg::Updates(Err(e)) => self.update_error = Some(e),
                 Msg::NativeProgress(step) => self.native_step = Some(step),
                 Msg::Native(result) => {
-                    self.native_step = None;
+                    // The last step of a build that worked says how it went.
+                    let last = self.native_step.take();
+                    self.native_started = None;
+                    self.native_done = result.is_ok().then_some(last).flatten();
                     self.installed = backend::installed();
                     self.reload_instances();
-                    if let Err(e) = result {
-                        self.native_error = Some(e);
+                    match result.map_err(|e| match e.strip_prefix(native_mods::MISMATCH) {
+                        Some(list) => Ok(list.to_owned()),
+                        None => Err(e),
+                    }) {
+                        Err(Ok(list)) => self.native_mismatch = Some(list),
+                        Err(Err(e)) => self.native_error = Some(e),
+                        Ok(_) => {}
                     }
                 }
                 Msg::LauncherProgress(p) => {
@@ -1026,6 +1105,7 @@ impl Launcher {
         }
         changed |= self.servers_tick();
         changed |= self.mods_tick();
+        changed |= self.github_tick();
         if let Some(sign_in) = &self.sign_in {
             let state = sign_in.state();
             let changed_state = format!("{state:?}") != format!("{:?}", self.sign_in_state);
@@ -1093,7 +1173,7 @@ impl Launcher {
     }
 
     fn install(&mut self, release: &Release) {
-        if release.asset.is_none() || self.removing.as_ref() == Some(&release.tag) {
+        if release.asset.is_none() || self.removing.contains(&release.tag) {
             return;
         }
         let (release, tx) = (release.clone(), self.tx.clone());
@@ -1115,14 +1195,12 @@ impl Launcher {
     /// the window must keep drawing meanwhile. `Msg::Removed` ends it.
     fn remove(&mut self, tag: &str) {
         self.confirm_remove = None;
-        if self.removing.is_some()
-            || self.installing.as_ref().is_some_and(|(t, _)| t == tag)
-            || !self.installed.iter().any(|t| t == tag)
-        {
+        let installing = self.installing.as_ref().map(|(t, _)| t.as_str());
+        if !removable(&self.installed, installing, &self.removing, tag) {
             return;
         }
         self.install_error = None;
-        self.removing = Some(tag.to_string());
+        self.removing.push(tag.to_string());
         self.installed.retain(|t| t != tag);
         self.settings.selected =
             selection_after_removal(&self.installed, self.settings.selected.take());
@@ -1733,6 +1811,19 @@ fn starts_now(prepared: bool, preparing: bool, running: bool) -> bool {
     play_press(prepared, None, preparing || running) == PlayPress::Play
 }
 
+/// Whether `tag` can start being deleted now: it is installed, no install is writing it, and it
+/// is not already going. Another version deleting at the same time does not stop it.
+fn removable(
+    installed: &[String],
+    installing: Option<&str>,
+    removing: &[String],
+    tag: &str,
+) -> bool {
+    installing != Some(tag)
+        && installed.iter().any(|t| t == tag)
+        && !removing.iter().any(|t| t == tag)
+}
+
 /// The selected version once one has been removed: the saved choice if it is still installed,
 /// else the newest left.
 fn selection_after_removal(installed: &[String], saved: Option<String>) -> Option<String> {
@@ -1975,7 +2066,10 @@ impl Launcher {
                             .child(how),
                     ),
             )
-            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+            .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
+                if this.closed_by_this_press(event) {
+                    return;
+                }
                 this.account_menu = !this.account_menu;
                 if this.account_menu {
                     // Who can play may have changed elsewhere since the window opened.
@@ -2252,6 +2346,12 @@ impl Launcher {
             .child(foot)
     }
 
+    /// Whether `event` is the press that just closed a menu from outside it (on the menu's
+    /// own button): the button then leaves the menu closed instead of opening it again.
+    fn closed_by_this_press(&mut self, event: &ClickEvent) -> bool {
+        closed_by_press(self.menu_closed_at.take(), event)
+    }
+
     fn picker(&self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         // "Nightly · ba6344a", a release's tag: the menu lists the full tags.
@@ -2289,8 +2389,10 @@ impl Launcher {
                         .child(shell::text(theme::night::UI, t.ink).child(label)),
                 )
                 .child(blocks::icon("chevron-down", 20., t.muted))
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.picker_open = !this.picker_open;
+                .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
+                    if !this.closed_by_this_press(event) {
+                        this.picker_open = !this.picker_open;
+                    }
                     cx.notify();
                 })),
         );
@@ -2306,7 +2408,12 @@ impl Launcher {
                 .border_color(plate::alpha(n.stroke, 2. * n.stroke_alpha))
                 .bg(t.surface)
                 .flex()
-                .flex_col();
+                .flex_col()
+                .on_mouse_down_out(cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                    this.picker_open = false;
+                    this.menu_closed_at = Some(event.position);
+                    cx.notify();
+                }));
             // Picking a version keeps the selected instance on it; the launcher's own version
             // (newest unless chosen otherwise on Versions) follows updates.
             let follows = self.launcher_version().cloned();
@@ -2499,14 +2606,12 @@ impl Launcher {
                         cx.notify();
                     })),
                 ),
-            Some(false) => div().child(
-                button("prepare-sign-in", "Sign in", Kind::Secondary, &t).on_click(cx.listener(
-                    |this, _: &ClickEvent, _, cx| {
-                        this.sign_in_to_play();
-                        cx.notify();
-                    },
-                )),
-            ),
+            Some(false) => div().child(microsoft::sign_in_button("prepare-sign-in", &t).on_click(
+                cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.sign_in_to_play();
+                    cx.notify();
+                }),
+            )),
             None => div().child(prepare),
         };
         let owner = self.owner == Some(true);
@@ -2527,18 +2632,9 @@ impl Launcher {
                     .into_any_element()
             },
         );
-        // "Ready to play" only when Play would start the game now: not while it needs preparing,
-        // prepares, waits for an account that owns it, or runs.
-        let running = self.client.is_some() || self.starting_client.is_some();
-        let ready = play_press(
-            prepared || java.is_some(),
-            self.owner,
-            self.preparing || running,
-        ) == PlayPress::Play;
         let mut rows = div()
             .flex()
             .flex_col()
-            .children(ready.then(|| section_title("Ready to play", "check", &t).mb(px(12.))))
             .children(self.instance_row(1, cx))
             .children(self.export_panel(cx))
             .children(self.launch_panel(cx));
@@ -2590,7 +2686,7 @@ impl Launcher {
                             .into_any_element(),
                     ),
                     Some(
-                        button("gate-sign-in", "Sign in", Kind::Primary, &t)
+                        microsoft::sign_in_button("gate-sign-in", &t)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.sign_in_to_play();
                                 cx.notify();
@@ -2687,22 +2783,7 @@ impl Launcher {
         if let Some(e) = self.prepare_error.clone() {
             page = page.child(notice(e, &t));
         }
-        page = page.child(rows);
-        if let Some(console) = self.console_section(cx) {
-            page = page.child(console);
-        }
-        if let Some(worlds) = self.worlds_section(cx) {
-            page = page.child(worlds);
-        }
-        if let Some(servers) = self.multiplayer_section(cx) {
-            page = page.child(servers);
-        }
-        if let Some(packs) = self.packs_section(cx) {
-            page = page.child(packs);
-        }
-        if let Some(shots) = self.screenshots_section(cx) {
-            page = page.child(shots);
-        }
+        page = page.child(self.home_tabs(rows, cx));
         if let Some(e) = self.client_error.clone() {
             page = page.child(notice(e, &t));
         }
@@ -3031,7 +3112,6 @@ impl Launcher {
                     .child(self.proxy_row(n + 4, cx))
                     .child(group("Game", "gamepad"))
                     .child(self.game_args_row(n + 5, cx))
-                    .child(self.native_mods_row(n + 5, cx))
                     .child(group("AI", "terminal"))
                     .child(self.no_ai_row(n + 6, cx))
                     .child(group("About", "info-box"))
@@ -3088,59 +3168,6 @@ impl Launcher {
             .children(self.dev_options_section(cx))
     }
 
-    /// Settings' Game arguments row: the extra arguments the game starts with, kept in
-    /// `settings.json` and appended to the launcher's own (quotes group a word with spaces).
-    /// Settings' Native mods row (docs/native-mods.md): off by default. On, Build compiles the
-    /// native mods installed in the instance Play starts, after a warning that names them, and
-    /// that instance then plays the build.
-    fn native_mods_row(&self, n: usize, cx: &mut Context<Self>) -> Div {
-        let t = self.theme;
-        let on = self.settings.native_mods;
-        let toggle =
-            switch("native-mods", on, &t).on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                this.settings.native_mods = !this.settings.native_mods;
-                this.native_confirm = None;
-                this.settings.save();
-                cx.notify();
-            }));
-        let mut detail = div().flex().flex_col().gap(px(4.)).child(
-            tr("Native mods from the Mods page compile into the game with the launcher's own Rust. Not sandboxed: they can do anything you can on this computer.").to_string(),
-        );
-        if on {
-            let status = match (&self.native_step, &self.native_error) {
-                (Some(step), _) => Some(div().child(step.clone())),
-                (None, Some(e)) => Some(div().text_color(t.danger).child(e.clone())),
-                (None, None) => instances::selected()
-                    .version
-                    .filter(|v| native_mods::is_native(v))
-                    .map(|v| {
-                        div().child(trf("{version} plays in this instance.", &[("version", &v)]))
-                    }),
-            };
-            detail = detail.children(status);
-            if self.native_step.is_none() && self.native_confirm.is_none() {
-                detail = detail.child(div().flex().gap(px(8.)).mt(px(4.)).child(
-                    button("native-build", "Build", Kind::Primary, &t).on_click(cx.listener(
-                        |this, _: &ClickEvent, _, cx| {
-                            this.native_confirm = Some(this.native_mods_to_build().map(|(_, b)| b));
-                            cx.notify();
-                        },
-                    )),
-                ));
-            }
-            if let Some(mods) = &self.native_confirm {
-                detail = detail.child(self.native_warning(mods, cx));
-            }
-        }
-        index_row(
-            n,
-            tr("Native mods (experimental)"),
-            Some(detail.into_any_element()),
-            Some(toggle.into_any_element()),
-            &t,
-        )
-    }
-
     /// The warning before a native build: what the mods can do and which mods. The build starts
     /// only from its button.
     fn native_warning(
@@ -3167,7 +3194,13 @@ impl Launcher {
             .child(div().text_color(t.danger).child(tr("These mods will run with full access to your computer").to_string()))
             .child(tr("They can read, change or delete your files, and use your accounts and network, like any program you run. Build them only if you trust their authors: the Mods page names them.").to_string())
             .child(trf("Mods: {mods}", &[("mods", &list)]))
-            .child(tr("The build compiles the game: 20 to 30 minutes and a few GB of disk the first time (it downloads Rust), a few minutes after that.").to_string());
+            .child(tr("The build compiles the game: 20 to 30 minutes and a few GB of disk the first time (it downloads Rust), a few minutes after that.").to_string())
+            .children(self.native_update.as_ref().map(|newer| {
+                div().text_color(t.warn).child(trf(
+                    "This moves the instance to Horizon {version}. It compiles the game from scratch, so it takes longer than a normal rebuild: up to 30 minutes.",
+                    &[("version", &native_status::horizon_label(newer))],
+                ))
+            }));
         let mut buttons = div().flex().gap(px(8.)).mt(px(4.));
         if mods.is_ok() {
             buttons = buttons.child(
@@ -3178,7 +3211,7 @@ impl Launcher {
                     &t,
                 )
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.build_native();
+                    this.build_native(false);
                     cx.notify();
                 })),
             );
@@ -3187,12 +3220,53 @@ impl Launcher {
             button("native-cancel", "Cancel", Kind::Secondary, &t).on_click(cx.listener(
                 |this, _: &ClickEvent, _, cx| {
                     this.native_confirm = None;
+                    this.native_update = None;
                     cx.notify();
                 },
             )),
         ))
     }
 
+    /// Mods made for other Horizon versions: which, and the version the build uses. They often
+    /// still work, so the player may build anyway.
+    fn native_mismatch_panel(&self, list: &str, cx: &mut Context<Self>) -> Div {
+        let t = self.theme;
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .mt(px(8.))
+            .p(px(12.))
+            .bg(t.well)
+            .child(div().text_color(t.danger).child(tr("These mods were made for different Horizon versions").to_string()))
+            .child(list.to_owned())
+            .child(tr("They often still work together. If the build fails, install versions made for the same Nightly.").to_string())
+            .child(
+                div()
+                    .flex()
+                    .gap(px(8.))
+                    .mt(px(4.))
+                    .child(
+                        button("native-anyway", "Build anyway", Kind::Primary, &t).on_click(
+                            cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.build_native(true);
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                    .child(
+                        button("native-mismatch-cancel", "Cancel", Kind::Secondary, &t).on_click(
+                            cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.native_mismatch = None;
+                                cx.notify();
+                            }),
+                        ),
+                    ),
+            )
+    }
+
+    /// Settings' Game arguments row: the extra arguments the game starts with, kept in
+    /// `settings.json` and appended to the launcher's own (quotes group a word with spaces).
     fn game_args_row(&self, n: usize, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         let focused = self.args_focused;
@@ -3464,7 +3538,7 @@ impl Launcher {
             None
         } else {
             Some(
-                button("sign-in", "Sign in with Microsoft", Kind::Secondary, &t)
+                microsoft::sign_in_button("sign-in", &t)
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.start_sign_in();
                         cx.notify();
@@ -3569,7 +3643,7 @@ impl Launcher {
             self.installing.as_ref().is_some_and(|(t, _)| t == tag)
                 || self.install_error.as_ref().is_some_and(|(t, _)| t == tag)
                 || self.confirm_remove.as_ref() == Some(tag)
-                || self.removing.as_ref() == Some(tag)
+                || self.removing.contains(tag)
         };
         let list = self.long_list.clone().column(
             &self.content_scroll.handle,
@@ -3609,7 +3683,7 @@ impl Launcher {
                                 .child(format!("{:.0}%", p * 100.)),
                         )
                         .into_any_element()
-                } else if self.removing.as_ref() == Some(&tag) {
+                } else if self.removing.contains(&tag) {
                     div()
                         .flex()
                         .items_center()
@@ -3930,6 +4004,7 @@ impl Render for Launcher {
         self.servers.note_focus(window);
         self.friend_focused = self.friend_focus.is_focused(window);
         self.mods.note_focus(window);
+        self.github.note_focus(window);
         self.args_focused = self.args_focus.is_focused(window);
         self.proxy_focused = self.proxy_focus.is_focused(window);
         let size = window.viewport_size();
@@ -4290,8 +4365,37 @@ fn main() {
         });
 }
 
+/// Whether the click `event` began with the mouse-down that closed a menu at `closed_at`.
+/// A keyboard click never did.
+fn closed_by_press(closed_at: Option<Point<Pixels>>, event: &ClickEvent) -> bool {
+    matches!(event, ClickEvent::Mouse(click) if closed_at == Some(click.down.position))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_menu_button_stays_closed_after_the_press_that_closed_its_menu() {
+        use super::closed_by_press;
+        use gpui::{point, px, ClickEvent, KeyboardClickEvent, MouseClickEvent, MouseDownEvent};
+        let click = |x: f32| {
+            ClickEvent::Mouse(MouseClickEvent {
+                down: MouseDownEvent {
+                    position: point(px(x), px(20.)),
+                    ..MouseDownEvent::default()
+                },
+                ..MouseClickEvent::default()
+            })
+        };
+        let closed_at = Some(point(px(10.), px(20.)));
+        // The press on the button that closed the open menu: it stays closed.
+        assert!(closed_by_press(closed_at, &click(10.)));
+        // A later press, or one with no menu closed, toggles as before.
+        assert!(!closed_by_press(closed_at, &click(11.)));
+        assert!(!closed_by_press(None, &click(10.)));
+        let keyboard = ClickEvent::Keyboard(KeyboardClickEvent::default());
+        assert!(!closed_by_press(closed_at, &keyboard));
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn cmd_q_quits_and_cmd_w_closes_the_window() {
@@ -4303,6 +4407,21 @@ mod tests {
         assert!(hit.iter().any(|b| b.action().partial_eq(&Quit)));
         let (hit, _) = keymap.bindings_for_input(&key("cmd-w"), &[]);
         assert!(hit.iter().any(|b| b.action().partial_eq(&CloseWindow)));
+    }
+
+    #[test]
+    fn a_second_version_can_be_removed_while_another_deletes() {
+        let installed = ["v0.2.97".to_string(), "v0.2.76".to_string()];
+        let removing = ["v0.2.97".to_string()];
+        assert!(super::removable(&installed, None, &removing, "v0.2.76"));
+        assert!(!super::removable(&installed, None, &removing, "v0.2.97"));
+        assert!(!super::removable(
+            &installed,
+            Some("v0.2.76"),
+            &[],
+            "v0.2.76"
+        ));
+        assert!(!super::removable(&installed, None, &[], "v0.2.85"));
     }
 
     #[test]

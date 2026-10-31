@@ -1118,8 +1118,9 @@ def social():
 
 
 def test_command():
-    # Horizon has no game test runner: `/test run|runmultiple|verify` of an
-    # existing instance and `/test create` are not compared.
+    # `/test run|runmultiple` of an existing instance start a real test (a
+    # tick-based run, not compared here); `verify`, `create`, `locate` and
+    # `pos` with test instance blocks around are not ported.
     return [
         cmd('/test clearall'),
         cmd('/test stop'),
@@ -1194,6 +1195,29 @@ def wither_breaks():
     ]
 
 
+def tnt_minecart_rails():
+    """A primed TNT minecart (MinecartTNT.isPrimed) on a powered activator rail inside an obsidian box: its
+    blast neither resists on nor breaks a rail or the block under one (getBlockExplosionResistance and
+    shouldBlockExplode, #4992), but breaks the stone beside them; the obsidian holds."""
+    return [
+        *setup('/fill 3 203 3 7 207 7 minecraft:obsidian', '/fill 4 204 4 6 206 6 minecraft:air',
+               '/setblock 5 204 5 minecraft:redstone_block', '/setblock 5 205 5 minecraft:activator_rail',
+               '/setblock 4 204 5 minecraft:stone', '/setblock 2 205 5 minecraft:stone'),
+        cmd('/summon minecraft:tnt_minecart 5.5 205.0625 5.5'),
+        {'op': 'tick', 'n': 5},
+        cmd('/execute if entity @e[type=minecraft:tnt_minecart]'),
+        {'op': 'tick', 'n': 100},
+        cmd('/execute if entity @e[type=minecraft:tnt_minecart]'),
+        cmd('/execute if block 5 205 5 minecraft:activator_rail'),
+        cmd('/execute if block 5 204 5 minecraft:redstone_block'),
+        cmd('/execute if block 4 204 5 minecraft:stone'),
+        cmd('/execute if block 3 205 5 minecraft:obsidian'),
+        cmd('/execute if block 2 205 5 minecraft:stone'),
+        *setup('/kill @e[type=!player]', '/fill 2 203 3 7 207 7 minecraft:air'),
+        {'op': 'tick', 'n': 5},
+    ]
+
+
 def ender_dragon():
     """`/kill` on the fight's dragon ends the fight (#3319): `EnderDragon.kill` removes it and calls
     `EnderDragonFight.setDragonKilled`, so no new dragon takes its place, the exit portal opens and the
@@ -1214,6 +1238,25 @@ def ender_dragon():
         cmd(f'{end} fill -3 0 -3 3 120 3 minecraft:air replace minecraft:dragon_egg'),
         *setup('/execute in minecraft:overworld run tp @s 8.5 230 8.5 0 0'),
         {'op': 'settle'},
+    ]
+
+
+def place_structure():
+    """`/place structure` (PlaceCommand.placeStructure): the id is resolved, a
+    `StructureStart` is generated for the position's chunk with vanilla's
+    `biome -> true` predicate, and its `placeInChunk` runs for every chunk of the
+    start's box in the live level. Buried treasure's one piece digs down from the
+    ocean floor and leaves a single chest, so a chest count in its chunk compares
+    the generated start and its placement without knowing the terrain height."""
+    return [
+        *setup('/gamemode creative', '/tp @s 8.5 230 8.5 0 0'),
+        {'op': 'settle'},
+        *setup('/kill @e[type=!minecraft:player]',
+               '/fill 0 0 0 15 120 15 minecraft:air replace minecraft:chest'),
+        cmd('/place structure minecraft:buried_treasure 4 210 4'),
+        # One chest between y 0 and 120 of chunk (0, 0): the piece's column is
+        # inside that chunk whatever height its dig reached.
+        cmd('/fill 0 0 0 15 120 15 minecraft:air replace minecraft:chest'),
     ]
 
 
@@ -1275,6 +1318,8 @@ def groups():
         ('social and scoreboard', social()),
         ('test', test_command()),
         ('wither breaks', wither_breaks()),
+        ('tnt minecart rails', tnt_minecart_rails()),
         ('ender dragon', ender_dragon()),
+        ('place structure', place_structure()),
         ('tame wolf kills', tame_wolf_kills()),
     ]

@@ -211,11 +211,21 @@ impl Connection {
             .collect();
         Self::connect_addresses(host, addrs, timeout)
     }
-    /// Minecraft's SRV redirect applies to the socket destination only. Callers
-    /// keep the player's original host and port in the protocol handshake.
+    /// Connect through Minecraft's SRV redirect. Status requests still use the
+    /// original address in their handshake (`ServerStatusPinger.pingServer`).
     pub fn connect_server(host: &str, port: u16, timeout: Duration) -> Result<Self> {
-        let addrs = crate::resolver::resolve(host, port)?;
-        Self::connect_addresses(host, addrs, timeout)
+        Self::connect_server_with_address(host, port, timeout).map(|(connection, _, _)| connection)
+    }
+    /// `ConnectScreen.startConnecting`: login handshakes use the resolved host
+    /// and port, including an SRV redirect, rather than the status request's address.
+    pub fn connect_server_with_address(
+        host: &str,
+        port: u16,
+        timeout: Duration,
+    ) -> Result<(Self, String, u16)> {
+        let resolved = crate::resolver::resolve(host, port)?;
+        let connection = Self::connect_addresses(host, resolved.addresses, timeout)?;
+        Ok((connection, resolved.host, resolved.port))
     }
     /// Each address starts once the earlier ones fail or [`ATTEMPT_DELAY`] after the last
     /// start, alongside those still trying, and the first to connect wins: a dead address
@@ -322,6 +332,12 @@ impl Connection {
     }
 }
 impl ConnReader {
+    /// Read exactly `len` bytes as they are, with no framing.
+    pub fn read_raw(&mut self, len: usize) -> Result<Vec<u8>> {
+        let mut out = vec![0u8; len];
+        self.stream.read_exact(&mut out)?;
+        Ok(out)
+    }
     /// Block until a whole packet arrives: (id, payload).
     pub fn recv(&mut self) -> Result<(i32, Vec<u8>)> {
         loop {
@@ -375,6 +391,13 @@ impl ConnReader {
     }
 }
 impl ConnWriter {
+    /// Write bytes as they are, with no framing: the legacy server list ping
+    /// (`LegacyServerPinger`) is not a framed protocol.
+    pub fn write_raw(&mut self, data: &[u8]) -> Result<()> {
+        self.stream.write_all(data)?;
+        self.stream.flush()?;
+        Ok(())
+    }
     /// Send one packet body (VarInt id + payload).
     pub fn send(&mut self, body: &[u8]) -> Result<()> {
         self.send_contents(&frame::contents(body, self.threshold)?)
