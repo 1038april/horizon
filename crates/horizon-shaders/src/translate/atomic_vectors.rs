@@ -191,7 +191,8 @@ pub(super) fn rewrite(pp: &Preprocessed) -> Option<Preprocessed> {
             }
             let index: String = tokens[open + 1..close].concat();
             base = format!("{base}[{index}]");
-            getter_args = index;
+            // GLSL won't turn a `uint` index into the `int` the getter and setter take.
+            getter_args = format!("int({index})");
             last = close;
         }
         let after = next(last);
@@ -324,8 +325,8 @@ mod tests {
         );
         assert!(out.contains("shared uint lights_hz[N * 2][2];"), "{out}");
         assert!(out.contains("atomicMax(lights_hz[k + 1][0], 3u);"));
-        assert!(out.contains("hz_set_lights(k, hz_get_lights(k) + ( uvec2(1u)));"));
-        assert!(out.contains("uvec2 l = hz_get_lights(k);"));
+        assert!(out.contains("hz_set_lights(int(k), hz_get_lights(int(k)) + ( uvec2(1u)));"));
+        assert!(out.contains("uvec2 l = hz_get_lights(int(k));"));
     }
 
     #[test]

@@ -367,7 +367,7 @@ impl FrameUniforms {
                 "previousCameraPositionFract" => fract(previous_exact),
                 // The camera is the eye in first person.
                 "eyePosition" => v3(frame.eye.as_vec3()),
-                "relativeEyePosition" => v3((frame.eye - frame.camera).as_vec3()),
+                "relativeEyePosition" => v3((frame.camera - frame.eye).as_vec3()),
                 "playerLookVector" | "playerBodyVector" => v3(look),
                 "eyeAltitude" => Value::f(&[frame.camera.y as f32]),
                 "upPosition" => v3(to_view(Vec3::new(0.0, 100.0, 0.0))),

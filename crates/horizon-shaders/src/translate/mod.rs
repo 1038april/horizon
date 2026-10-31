@@ -1448,7 +1448,9 @@ mod tests {
                    layout(r32i) uniform iimage2D colorimg5;\nvoid main() {\n    \
                    if (gl_LocalInvocationIndex == 0u) sums = ivec4(0);\n    barrier();\n    \
                    atomicAdd(sums.y, 1);\n    atomicMax(lights[gl_LocalInvocationIndex].x, 2u);\n    \
-                   sums += ivec4(1);\n    barrier();\n    imageStore(colorimg5, ivec2(0), ivec4(sums.y + int(lights[1].x)));\n}\n";
+                   sums += ivec4(1);\n    lights[gl_LocalInvocationIndex] += uvec2(1u);\n    \
+                   uvec2 l = lights[gl_LocalInvocationIndex];\n    barrier();\n    \
+                   imageStore(colorimg5, ivec2(0), ivec4(sums.y + int(lights[1].x + l.y)));\n}\n";
         let pack = Pack::from_zip_bytes("P.zip", zip(&[("shaders/deferred_a.csh", csh)])).unwrap();
         translate_compute(&preprocess(&pack, "deferred_a.csh", &Macros::standard()))
             .unwrap_or_else(|e| panic!("{e:?}"));
