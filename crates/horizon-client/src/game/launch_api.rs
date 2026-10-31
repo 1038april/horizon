@@ -3,7 +3,7 @@
 //! Update it with: `HORIZON_WRITE_DOCS=1 cargo test -p horizon-client --bin horizon-client launch_api`.
 
 /// The Launch API's version (docs/api/stability.md): an addition makes the next patch.
-pub const VERSION: &str = "0.1.0";
+pub const VERSION: &str = "0.1.1";
 
 /// One option of the contract: its name, its value's placeholder (none for a flag), what it does.
 pub struct LaunchOption {
@@ -39,6 +39,11 @@ pub const OPTIONS: &[LaunchOption] = &[
         "--home",
         Some("DIR"),
         "Logs (`logs/latest.log`) and crash reports (`crash-reports/`). Default: `HORIZON_HOME`, else `horizon` in the platform data folder.",
+    ),
+    option(
+        "--player-dir",
+        Some("DIR"),
+        "One player's own files, for several games playing in one game folder at the same time: `options.txt` and the settings beside it, `logs/`, `crash-reports/`, `horizon-player.txt`, `servers.dat`, `hotbar.nbt`, `screenshots/`. Saves, packs, mods and their config stay in the game folder. Created when missing. Default: the game folder, and `--home` for logs.",
     ),
     option(
         "--width",

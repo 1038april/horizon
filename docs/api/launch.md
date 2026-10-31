@@ -8,7 +8,7 @@ reference implementation. Proposed in horizon-rust/horizon#3545.
 
 | | |
 | --- | --- |
-| Version | 0.1.0, printed by `horizon-client --launch-api` |
+| Version | 0.1.1, printed by `horizon-client --launch-api` |
 | Level | experimental ([stability.md](stability.md)): preview once preparing and the guide are covered too |
 | Covers | starting `horizon-client`: its options, the session JSON, the exit codes, the crash report's path |
 | Not yet | finding a build, preparing it with `horizon-prepare` (see Not there yet) |
@@ -73,5 +73,6 @@ test keeps the contract and the code together.
 
 ## Changelog
 
+- 0.1.1: `--player-dir`, for several games playing in one game folder at the same time (#4952).
 - 0.1.0: `--game-dir`, `--home`, `--fullscreen`, `--session-stdin`, `--launch-api`, exit code 2 for a refused
   command line.
