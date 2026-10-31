@@ -170,6 +170,7 @@ impl<G: ChunkGenerator> Saves for G {
 #[derive(Clone, Copy)]
 struct MeshSettings {
     nether: bool,
+    shader_pack_lighting: bool,
     zoom: BiomeZoom,
     blend_radius: i32,
     smooth_lighting: bool,
@@ -310,6 +311,9 @@ impl Mailbox {
 }
 pub struct Streaming {
     shared: Arc<Shared>,
+    /// Columns generated and saved as they were left behind: new when they
+    /// next arrive, though read from the save (`World::loaded_chunks`).
+    dropped_new: FxHashSet<(i32, i32)>,
     light_view: Arc<dyn Fn(&Proto) -> Option<Chunk> + Send + Sync>,
     non_air_sections: Arc<dyn Fn(&Proto) -> Option<SectionMask> + Send + Sync>,
     threads: Vec<thread::JoinHandle<()>>,
@@ -372,6 +376,9 @@ pub struct Streaming {
     /// Dimension flags: sky light, Nether face shading.
     pub sky_light: bool,
     pub nether_shading: bool,
+    /// A shader pack lights the faces: sections mesh without face shading
+    /// (`Mesher::shader_pack_lighting`).
+    pub shader_pack_lighting: bool,
     /// `BiomeManager`'s zoom seed (the hashed world seed) and `biomeBlendRadius`.
     pub biome_zoom: BiomeZoom,
     pub biome_blend: i32,
@@ -652,7 +659,11 @@ impl Streaming {
                                     generator.decorate(&mut worker, &mut region);
                                     Done::Decorated(x, z, region)
                                 }
-                                Job::Finish(proto) => Done::Generated(generator.finish(proto)),
+                                Job::Finish(proto) => {
+                                    let mut chunk = generator.finish(proto);
+                                    chunk.generated = true;
+                                    Done::Generated(chunk)
+                                }
                                 Job::Save(protos) => {
                                     let refs: Vec<&Proto> = protos.iter().map(|(_, p)| p).collect();
                                     generator.save_protos(&refs);
@@ -680,6 +691,7 @@ impl Streaming {
                                     };
                                     let mut mesher = Mesher {
                                         nether_shading: settings.nether,
+                                        shader_pack_lighting: settings.shader_pack_lighting,
                                         zoom: settings.zoom,
                                         blend_radius: settings.blend_radius,
                                         smooth_lighting: settings.smooth_lighting,
@@ -729,6 +741,7 @@ impl Streaming {
             protos: Default::default(),
             light_views: Default::default(),
             decorated: Default::default(),
+            dropped_new: Default::default(),
             decorating: 0,
             saving: 0,
             decoration_order: DecorationOrder::default(),
@@ -754,6 +767,7 @@ impl Streaming {
             loading: false,
             sky_light: true,
             nether_shading: false,
+            shader_pack_lighting: false,
             biome_zoom: BiomeZoom::new(0),
             biome_blend: 2,
             smooth_lighting: true,
@@ -937,6 +951,7 @@ impl Streaming {
         // not give it back.
         if !self.ranges().chunk_kept(key.0, key.1, self.decorates) {
             if chunk.fresh {
+                self.dropped_new.insert(key);
                 self.saves.save_finished(chunk);
             }
             return;
@@ -960,6 +975,8 @@ impl Streaming {
         // A chunk saved with its light needs no light job; its unlit
         // neighbours still light themselves from it.
         let loaded = chunk.light_loaded;
+        let new = self.dropped_new.remove(&key) || chunk.generated;
+        world.loaded_chunks.push((key.0, key.1, new));
         world.chunks.insert(key, Arc::new(chunk));
         if loaded {
             self.lit.insert(key);
@@ -1548,6 +1565,7 @@ impl Streaming {
                         self.sequence,
                         MeshSettings {
                             nether: self.nether_shading,
+                            shader_pack_lighting: self.shader_pack_lighting,
                             zoom: self.biome_zoom,
                             blend_radius: self.biome_blend,
                             smooth_lighting: self.smooth_lighting,

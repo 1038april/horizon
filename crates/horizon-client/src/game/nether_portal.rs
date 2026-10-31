@@ -198,7 +198,7 @@ fn arrival_from_tag(a: &Tag) -> Option<Arrival> {
 
 impl Game<'_> {
     /// The world border's extent.
-    fn border_bounds(&self) -> BorderBounds {
+    pub(super) fn border_bounds(&self) -> BorderBounds {
         let [min_x, min_z, max_x, max_z] = self.border.bounds();
         BorderBounds {
             min_x,
@@ -954,7 +954,7 @@ impl Game<'_> {
                 uuid,
                 self.persist_raw(id),
             );
-            self.dropped.remove(i);
+            self.remove_dropped(i);
             self.forget_entity(id);
             self.portals.arrivals.push(Arrival { plan, tag });
             self.portals.dirty = true;
