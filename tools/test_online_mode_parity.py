@@ -307,7 +307,7 @@ def run_side(label, command, binary, build, services, discovery):
         server.wait_for(r'Failed to verify username', timeout=30)
         check('forgotten join: client message', got['error'], 'disconnected: Failed to verify username!')
         check('forgotten join: server verified and refused',
-              [(e[0], e[3]) for e in services.take_log()], [('join', True), ('verify', False)])
+              [(e[0], e[-1]) for e in services.take_log()], [('join', True), ('verify', False)])
 
         # 4. No account: refused by the client before anything is sent to the services.
         got = login('no-account', None)
@@ -322,7 +322,7 @@ def run_side(label, command, binary, build, services, discovery):
         got = login('not-whitelisted', GOOD)
         server.wait_for(r'Disconnecting Tester', timeout=30)
         check('not whitelisted: client message', got['error'], 'disconnected: You are not white-listed on this server!')
-        check('not whitelisted: verified first', [(e[0], e[3]) for e in services.take_log()],
+        check('not whitelisted: verified first', [(e[0], e[-1]) for e in services.take_log()],
               [('join', True), ('verify', True)])
 
         # 6. Whitelisted by name: the server knows the player from their first join (its name cache), so it
