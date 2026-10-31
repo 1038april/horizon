@@ -2373,6 +2373,36 @@ impl SaveDir {
     fn region_path(&self, folder: &str, rx: i32, rz: i32) -> PathBuf {
         region_path(&self.root, folder, rx, rz)
     }
+    /// The chunks of a region file that an older version generated, as
+    /// `IOWorker.createOldDataForRegion` finds them (bit `x + z * 32`): saved
+    /// before DataVersion 4997, or with `blending_data`.
+    pub fn old_chunk_bits(&self, rx: i32, rz: i32) -> [u64; 16] {
+        let mut bits = [0u64; 16];
+        let Ok(region) = RegionFile::open(self.region_path("region", rx, rz)) else {
+            return bits;
+        };
+        let present: Vec<ChunkPos> = region.chunks().map(|(pos, _)| pos).collect();
+        drop(region);
+        for pos in present {
+            let Some(root) = self.read_record("region", pos.x, pos.z) else {
+                continue;
+            };
+            let old = match root.tag.get("DataVersion") {
+                Some(Tag::Int(version)) => *version < 4997,
+                _ => true,
+            } || root.tag.get("blending_data").is_some();
+            if old {
+                let index = ((pos.x & 31) + (pos.z & 31) * 32) as usize;
+                bits[index / 64] |= 1 << (index % 64);
+            }
+        }
+        bits
+    }
+    /// A saved chunk as the region file keeps it, for the readers of its
+    /// fields that `load` does not decode (`blending_data`).
+    pub fn raw_chunk(&self, x: i32, z: i32) -> Option<NamedTag> {
+        self.read_record("region", x, z)
+    }
     /// The references a saved chunk keeps for its structure start `name`
     /// (`StructureStart.getReferences`, saved as `references`): 0 for a chunk
     /// not saved yet, a start it does not have or one without the field.
@@ -4706,6 +4736,30 @@ impl<G: ChunkGenerator> ChunkGenerator for Persistent<G> {
     }
     fn decorates(&self) -> bool {
         self.inner.decorates()
+    }
+    fn decorates_beside_final(&self) -> bool {
+        self.inner.decorates_beside_final()
+    }
+    fn proto_beside_final(
+        &self,
+        worker: &mut G::Worker,
+        snapshot: &Chunk,
+    ) -> Option<crate::streaming::Proto> {
+        self.inner.proto_beside_final(worker, snapshot)
+    }
+    fn final_writes(
+        &self,
+        snapshot: &Chunk,
+        proto: &crate::streaming::Proto,
+    ) -> Vec<([i32; 3], u32)> {
+        self.inner.final_writes(snapshot, proto)
+    }
+    fn final_block_entities(
+        &self,
+        proto: &crate::streaming::Proto,
+        writes: &[([i32; 3], u32)],
+    ) -> Vec<((i32, i32, i32), crate::chunk::block_entity::BlockEntity)> {
+        self.inner.final_block_entities(proto, writes)
     }
     fn decorate(&self, worker: &mut G::Worker, region: &mut [crate::streaming::Proto; 9]) {
         self.inner.decorate(worker, region);
