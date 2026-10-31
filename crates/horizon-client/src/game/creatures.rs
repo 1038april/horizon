@@ -209,7 +209,8 @@ fn flame_geometry(
                 normal: [0; 4],
                 pos: p.to_array(),
                 uv,
-                layer: 0,
+                // HDR output: the flames shine like fire (entity.wgsl fs_hdr_mark).
+                layer: u32::from(horizon_client::mesher::INCANDESCENT) << 16,
                 color: 0xFFFF_FFFF,
                 light: packed,
 
@@ -1140,6 +1141,7 @@ impl Game<'_> {
         let projectile = match d.kind {
             DamageKind::Arrow => Some("minecraft:arrow"),
             DamageKind::Fireball => Some("minecraft:fireball"),
+            DamageKind::WitherSkull => Some("minecraft:wither_skull"),
             DamageKind::Fireworks => Some("minecraft:firework_rocket"),
             _ => None,
         };
@@ -1240,6 +1242,10 @@ impl Game<'_> {
                 }),
                 DamageKind::Fireball => Some(LootEntity {
                     kind: "minecraft:fireball".into(),
+                    ..LootEntity::default()
+                }),
+                DamageKind::WitherSkull => Some(LootEntity {
+                    kind: "minecraft:wither_skull".into(),
                     ..LootEntity::default()
                 }),
                 DamageKind::Fireworks => Some(LootEntity {
@@ -2828,6 +2834,7 @@ impl Game<'_> {
         damage_type: &str,
         known: Option<Option<u32>>,
     ) -> bool {
+        let post_attack_if_alive = std::mem::take(&mut self.combat.post_attack_if_alive);
         let rocket = std::mem::take(&mut self.combat.rocket_hit);
         // ServerPlayer.canHarmPlayer refused another player's projectile.
         if self.creative || self.combat.refuse_player_hit {
@@ -2864,6 +2871,7 @@ impl Game<'_> {
                 }),
         };
         // The causing entity for the death message.
+        let marks = self.pending_marks();
         let owner = self.combat.projectile_owner.take();
         if let Some(a) = attacker.or(owner) {
             self.note_attacker(damage_type, a);
@@ -2878,6 +2886,11 @@ impl Game<'_> {
         // DamageSource.scalesWithDifficulty: a mob (or its projectile's
         // owner) caused the hit, not a player.
         let living_cause = attacker.or(owner).is_some();
+        // The native damage hook's causing entity: the one given, or the
+        // owner of the projectile that hit (`projectile_owner` outlives a
+        // projectile's other hits), not the guessed melee attacker.
+        let owner = owner.filter(|_| projectile);
+        let causing = known.flatten().or(owner).map_or(0, |id| id as i32);
         let mut outcome = horizon_client::health::BlockOutcome::default();
         if let Some(player) = self.player.as_mut()
             && let Some(id) = self.motion.health.damage.id(damage_type)
@@ -2888,6 +2901,7 @@ impl Game<'_> {
                 amount,
                 blocking,
                 living_cause,
+                causing,
             )
             && {
                 outcome = o;
@@ -2913,12 +2927,21 @@ impl Game<'_> {
                 }
             }
             // The thorns hurt the entity that caused the hit, if there is one.
-            if let Some(a) = attacker.or(owner) {
+            let killed = self.player.as_ref().is_some_and(|p| {
+                super::wither::killed(true, p.health.dead_or_dying(), p.health.totem_used)
+            });
+            if let Some(a) = attacker.or(owner)
+                && !(post_attack_if_alive && killed)
+            {
                 self.thorns(a);
             }
         }
         // LivingEntity.hurtServer: ENTITY_HURT_PLAYER, unless it returned
         // early (invulnerable, or inside the hurt cooldown).
+        // A hit a native mod canceled records no damage (hurtServer never ran).
+        if outcome.canceled {
+            self.drop_pending_since(marks);
+        }
         if outcome.hurt || outcome.sound {
             let source = attacker
                 .or(owner)
@@ -3673,10 +3696,13 @@ impl Game<'_> {
         ) {
             return self.wind_charge_hit(p, hit);
         }
+        // A wither skull's hit on a part or crystal goes through
+        // `wither_skull_hit` below, as on any entity, and then explodes.
         if let Hit::Entity {
             who: Who::Mob(id), ..
         } = hit
             && id >= super::dragon::SPECIAL
+            && !matches!(p.kind, ProjectileKind::WitherSkull { .. })
         {
             let by_player = p.owner == Some(Who::Player);
             if p.arrow.is_some() {
@@ -5370,7 +5396,7 @@ impl Game<'_> {
     /// the mob it spawned, once the guards let it through, as
     /// `TypedEntityData.loadInto`: the mob's own compound, the data merged over
     /// it, loaded back into the same mob (`/data merge entity`'s loader).
-    fn apply_spawn_egg_entity_data(&mut self, id: u32, stack: &ItemStack) {
+    pub(super) fn apply_spawn_egg_entity_data(&mut self, id: u32, stack: &ItemStack) {
         let Some(i) = self.mobs.iter().position(|m| m.id == id) else {
             return;
         };
@@ -5468,6 +5494,7 @@ impl Game<'_> {
         let atlas = &self.gui.atlas;
         let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
         let scale = self.view_scale();
+        self.rendered_mobs.set(0);
         for mob in &self.mobs {
             let entity_start = out.len();
             let outline = self.mob_outline(mob);
@@ -5514,6 +5541,7 @@ impl Game<'_> {
                 }
             }
             self.mark_entity(entity_start, &mob.kind.id);
+            self.rendered_mobs.set(self.rendered_mobs.get() + 1);
             let light = self.world.light(
                 mob.position.x.floor() as i32,
                 (mob.position.y + mob.eye_height()).floor() as i32,
@@ -5559,6 +5587,7 @@ impl Game<'_> {
             } else {
                 Vec::new()
             };
+            let body = out.len();
             let render = if layers_only {
                 horizon_client::mobs::render::render_layers
             } else {
@@ -5574,6 +5603,17 @@ impl Game<'_> {
                 &armor,
                 out,
             );
+            // HDR output: mobs that are light shine by their kind, as blocks do (entity.wgsl
+            // fs_hdr_mark); a tier's window lifts only their bright texels.
+            if let Some(tier) = match mob.species() {
+                Species::Blaze => Some(horizon_client::mesher::BRIGHT),
+                Species::MagmaCube | Species::GlowSquid => Some(horizon_client::mesher::LOW),
+                _ => None,
+            } {
+                for v in &mut out[body..] {
+                    v.layer |= u32::from(tier) << 16;
+                }
+            }
             if is_player {
                 // PlayerRenderer's CapeLayer, WingsLayer and SpinAttackEffectLayer.
                 // Only the cape hides with the body; WingsLayer and
@@ -5948,6 +5988,22 @@ fn bucketable(species: Species) -> Option<(&'static str, &'static str)> {
 pub(super) fn source_damage_type(d: Damage) -> &'static str {
     damage_type(d.kind, d.attacker.is_some())
 }
+/// Whether the causing entity deals `kind` itself, so it is the source's
+/// direct entity too: a melee hit (`DamageSources.mobAttack`, `playerAttack`,
+/// a mace's or a spear's), a sting, a sonic boom, thorns.
+pub(super) fn melee(kind: horizon_client::mobs::DamageKind) -> bool {
+    use horizon_client::mobs::DamageKind as K;
+    matches!(
+        kind,
+        K::PlayerAttack
+            | K::MaceSmash
+            | K::Spear
+            | K::MobAttack
+            | K::Sting
+            | K::SonicBoom
+            | K::Thorns
+    )
+}
 /// The damage type id of a Horizon damage kind. `caused`: the source has a
 /// causing entity (only a blast asks).
 pub(super) fn damage_type(kind: horizon_client::mobs::DamageKind, caused: bool) -> &'static str {
@@ -5995,6 +6051,7 @@ pub(super) fn damage_type(kind: horizon_client::mobs::DamageKind, caused: bool) 
         K::SulfurCubeHot => "minecraft:sulfur_cube_hot",
         K::WindCharge => "minecraft:wind_charge",
         K::Wither => "minecraft:wither",
+        K::WitherSkull => "minecraft:wither_skull",
     }
 }
 /// A Horizon item stack as a loot stack (id, count, damage, enchantments).
