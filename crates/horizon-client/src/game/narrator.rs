@@ -252,7 +252,7 @@ impl Game<'_> {
     /// book (no `EditBox`), the recipe book (its component has the focus) and
     /// the creative search (focused as a widget, not as the screen's focus)
     /// do not.
-    fn edit_box_focused(&mut self) -> bool {
+    pub(super) fn edit_box_focused(&mut self) -> bool {
         if self.dialog_open() {
             return self.dialog_typing();
         }

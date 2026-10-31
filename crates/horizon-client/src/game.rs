@@ -130,6 +130,7 @@ mod item_particles;
 mod jigsaw_blocks;
 mod jigsaw_edit;
 mod jukebox;
+mod key_focus;
 mod lan;
 mod lan_actions;
 mod lan_attributes;
@@ -7192,7 +7193,9 @@ impl Game<'_> {
     fn apply_cursor_icon(&mut self) {
         use horizon_client::widgets::Cursor;
         let wanted = horizon_client::widgets::take_cursor();
-        let effective = if self.settings.allow_cursor_changes {
+        // The widgets under the keyboard's hidden pointer aren't under the
+        // mouse (`handleCursor` asks only for a hovered widget).
+        let effective = if self.settings.allow_cursor_changes && !self.key_focus_driving() {
             wanted
         } else {
             Cursor::Arrow
@@ -14919,8 +14922,13 @@ impl ApplicationHandler for Game<'_> {
         ) {
             self.last_input = Instant::now();
         }
-        // The screen's narration hears of the input before the screen takes it.
-        narrator::narrate_input(&mut self.narration, &event, self.cursor);
+        // The real mouse takes the pointer back from the keyboard's focus.
+        self.key_focus_mouse(event_loop, &event);
+        // The screen's narration hears of the input before the screen takes
+        // it; the pointer events the keyboard's focus sends aren't the mouse.
+        if !self.key_focus_quiet() {
+            narrator::narrate_input(&mut self.narration, &event, self.cursor);
+        }
         // FileFixerProgressScreen: Cancel is the only way out (`shouldCloseOnEsc`
         // is false), so it takes the pointer and Escape does nothing.
         if let Some(loader) = &self.world_loader
@@ -15025,6 +15033,17 @@ impl ApplicationHandler for Game<'_> {
                 }
                 _ => {}
             }
+            return;
+        }
+        // Screen.keyPressed: Tab, the arrows and Enter move and press the
+        // menu's focus, unless the focused widget or the screen keeps them.
+        if let WindowEvent::KeyboardInput {
+            event: key_event, ..
+        } = &event
+            && key_event.state == ElementState::Pressed
+            && let PhysicalKey::Code(key) = key_event.physical_key
+            && self.key_focus_key(event_loop, key)
+        {
             return;
         }
         let result: Result<()> = (|| {
