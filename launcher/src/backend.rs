@@ -2593,8 +2593,9 @@ fn replace_binary(new: &Path, exe: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Deletes the binaries earlier self-updates moved aside (`replace_binary`). The one the launcher
-/// just restarted from is still exiting, so this keeps trying for a few seconds in the
+/// Deletes the binaries earlier self-updates moved aside (`replace_binary`), and the copies of an
+/// update that stopped before its new binary took its place (`<name>.update-<pid>`). The one the
+/// launcher just restarted from is still exiting, so this keeps trying for a few seconds in the
 /// background; one that stays in use (another launcher window) goes on a later start.
 #[cfg(windows)]
 pub fn remove_replaced_binaries() {
@@ -2603,7 +2604,10 @@ pub fn remove_replaced_binaries() {
         return;
     };
     let dir = dir.to_path_buf();
-    let prefix = format!("{}.old-", name.to_string_lossy());
+    let name = name.to_string_lossy();
+    let old = format!("{name}.old-");
+    let update = format!("{name}.update-");
+    let own = format!("{update}{}", std::process::id());
     std::thread::spawn(move || {
         for _ in 0..10 {
             let Ok(entries) = fs::read_dir(&dir) else {
@@ -2611,7 +2615,9 @@ pub fn remove_replaced_binaries() {
             };
             let mut left = false;
             for entry in entries.flatten() {
-                if entry.file_name().to_string_lossy().starts_with(&prefix) {
+                let file = entry.file_name();
+                let file = file.to_string_lossy();
+                if file.starts_with(&old) || (file.starts_with(&update) && file != own) {
                     left |= fs::remove_file(entry.path()).is_err();
                 }
             }
