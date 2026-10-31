@@ -13,6 +13,7 @@ mod http;
 mod init;
 mod lists;
 mod management;
+mod management_methods;
 mod management_schema;
 mod mcp;
 mod panel;

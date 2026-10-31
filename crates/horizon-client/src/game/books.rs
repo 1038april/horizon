@@ -542,7 +542,8 @@ impl Game<'_> {
         let (start, end) = rows[next];
         let chars: Vec<char> = text.chars().collect();
         let slice: String = chars[start..end].iter().collect();
-        let pos = start + self.gui.atlas.font.fit(&slice, x);
+        // MultilineTextField.LINE_SEEK_PIXEL_BIAS: vanilla biases this seek, not the drawn caret.
+        let pos = start + self.gui.atlas.font.fit(&slice, x + 2.0);
         if let Some(BookScreen::Edit { page_edit, .. }) = self.book.as_mut() {
             page_edit.set_cursor(pos, shift);
         }
