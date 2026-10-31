@@ -8,18 +8,18 @@ SpawnerBlockEntity.setEntityData	missing		minor: an op's spawn egg with an ENTIT
 StructureBlockEntity.updateBlockState	missing		player: the structure block's mode is never written to its block state, so the block does not switch between SAVE, LOAD, CORNER and DATA
 StructureBlockEntity.usedBy	missing		player: right-clicking a structure block opens no edit screen; Horizon has no structure block screen
 StructureBlockEntity.setStructureName	missing		player: the structure name box does nothing; the structure block edit packet (SET_STRUCTURE_BLOCK, id 60) has no handler
-StructureBlockEntity.setMode	missing		player: changing the mode in the structure block screen does nothing
-StructureBlockEntity.detectSize	missing		player: the Detect Size button does nothing, so a corner-marked area is never sized
-StructureBlockEntity.getEnclosingBoundingBox	missing		player: no area is found between corner blocks, so Detect Size and saving have nothing to use
-StructureBlockEntity.saveStructure	missing		player: the Save button and redstone save do nothing, so a built structure cannot be saved from the game
-StructureBlockEntity.placeStructureIfSameSize	missing		player: the Load button does nothing when the template size matches
-StructureBlockEntity.loadStructureInfo	missing		player: a structure block never reads a template's size and author
-StructureBlockEntity.placeStructure	port	crates/horizon-world/src/worldgen/structure/processor.rs::place_in_world	gap: player: the block's own settings (mirror, rotation, integrity, seed, strict, ignore entities) and its redstone trigger are not read; only the placement runs
+StructureBlockEntity.setMode	port	crates/horizon-client/src/game/structure_blocks.rs::Game::set_structure_mode	the screen's mode buttons write both the entity and the block state's mode
+StructureBlockEntity.detectSize	port	crates/horizon-client/src/game/structure_blocks.rs::Game::detect_structure_size	Detect Size finds the box between the corner blocks
+StructureBlockEntity.getEnclosingBoundingBox	port	crates/horizon-client-render/src/structure_block.rs::StructureBlock::enclosing_box	the box between the corner blocks
+StructureBlockEntity.saveStructure	port	crates/horizon-client/src/game/structure_blocks.rs::Game::save_structure	the Save button and a redstone rising edge write the template from the detected box
+StructureBlockEntity.placeStructureIfSameSize	port	crates/horizon-client/src/game/structure_blocks.rs::Game::place_structure_if_same_size	the Load button only places a template that matches the box
+StructureBlockEntity.loadStructureInfo	port	crates/horizon-client/src/game/structure_blocks.rs::Game::load_structure_info	the template's size and author are read back
+StructureBlockEntity.placeStructure	port	crates/horizon-client/src/game/structure_blocks.rs::Game::place_structure	mirror, rotation, integrity, seed, strict and ignore entities come from the block entity; the redstone path is Game::trigger_structure_block
 StructureBlockEntity.getStructureTemplate	port	crates/horizon-world/src/worldgen/structure.rs::StructureResources::template	name lookup only; nothing calls it for a structure block
 StructureBlockEntity.unloadStructure	missing		minor: no structure block to unload a template from; templates in StructureResources are never dropped
-StructureBlockEntity.isStructureLoadable	missing		player: the Load button never reports whether the template exists
-StructureBlockEntity.renderMode	missing		player: a structure block in creative shows no outline box for its SAVE or LOAD mode
-StructureBlockEntity.getRenderableBox	missing		player: no outline box is drawn around the structure's area
+StructureBlockEntity.isStructureLoadable	port	crates/horizon-client/src/game/structure_blocks.rs::Game::structure_loadable	the Load button reports whether the template exists
+StructureBlockEntity.renderMode	port	crates/horizon-client-render/src/structure_block.rs::StructureBlock::render_mode	a creative structure block shows its mode's outline
+StructureBlockEntity.getRenderableBox	port	crates/horizon-client-render/src/structure_block.rs::StructureBlock::renderable_box	the outline box of SAVE and LOAD modes
 TestInstanceBlockEntity.Data.withSize	skip:java		record copy-with builder; no behaviour of its own
 TestInstanceBlockEntity.Data.withStatus	missing		minor: test instance status never changes; Horizon has no game test runner (/test only reports no instances)
 TestInstanceBlockEntity.Data.withError	missing		minor: no game test runner, so no error message is ever set on a test instance block
