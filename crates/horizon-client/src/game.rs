@@ -9874,14 +9874,10 @@ impl Game<'_> {
         target_kind: &str,
         living: bool,
     ) -> (f32, f32, bool, bool) {
-        let hand_damage = 1.0 + self.attack_item_info().map_or(0.0, |i| i.attack_damage);
+        let hand_damage = self.attack_damage();
         // Riptide's spin replaces the attack damage attribute.
         let spin = self.player.as_ref().map_or(0.0, |p| p.auto_spin_attack_dmg);
-        let damage = if spin > 0.0 {
-            spin
-        } else {
-            hand_damage + self.effect_attack_bonus()
-        };
+        let damage = if spin > 0.0 { spin } else { hand_damage };
         let scale = self.attack_strength_scale();
         // getEnchantedDamage(target, damage, source) - damage, taken before the
         // attack strength scales the base damage.
