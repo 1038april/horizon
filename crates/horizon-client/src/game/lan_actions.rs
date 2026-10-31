@@ -6,7 +6,8 @@
 //! host, and every world change they cause reaches all players through the
 //! block log, the level events and the entity tracker.
 use super::{
-    Dim, Game, GuestUse, Hit, Mining, Screen, lan::LanHost, respawn_anchor::RespawnConfig,
+    Dim, Game, GuestUse, Hit, InteractTarget, Mining, Screen, lan::LanHost,
+    respawn_anchor::RespawnConfig,
 };
 use horizon_client::{
     command::vanilla,
@@ -206,6 +207,8 @@ pub(super) struct GuestSwap {
     packets: Vec<play::Clientbound>,
     /// The entity events queued for that guest.
     entity_events: Vec<i8>,
+    /// The equipment breaks queued for that guest.
+    equipment_breaks: Vec<(i8, [f64; 3])>,
     /// The host's count of swings started, kept while the guest acts.
     swings: u32,
     /// How many projectiles there were: those added since are the guest's.
@@ -400,6 +403,7 @@ impl Game<'_> {
         let host_combat = std::mem::replace(&mut self.combat, guest_combat);
         self.potions.swap_player(&mut g.effects, &mut play.potions);
         motion.position = Vec3::new(g.position[0], g.position[1], g.position[2]);
+        motion.entity_id = g.entity_id;
         motion.ground.on_ground = g.on_ground;
         motion.yaw = g.yaw;
         motion.pitch = g.pitch;
@@ -519,6 +523,7 @@ impl Game<'_> {
         );
         let packets = std::mem::take(&mut self.guest_packets);
         let entity_events = std::mem::take(&mut self.guest_entity_events);
+        let equipment_breaks = std::mem::take(&mut self.guest_equipment_breaks);
         let swings = self.swings_started;
         let projectiles = self.creatures.projectiles.len();
         let modifiers = std::mem::replace(
@@ -594,6 +599,7 @@ impl Game<'_> {
             known_movement,
             packets,
             entity_events,
+            equipment_breaks,
             swings,
             projectiles,
             modifiers,
@@ -669,6 +675,7 @@ impl Game<'_> {
             known_movement,
             packets,
             entity_events,
+            equipment_breaks,
             swings,
             projectiles,
             modifiers,
@@ -702,6 +709,10 @@ impl Game<'_> {
                     event,
                 }),
             );
+        }
+        // LivingEntity.onEquippedItemBroken: `broadcastEntityEvent`, the guest too.
+        for (event, at) in std::mem::replace(&mut self.guest_equipment_breaks, equipment_breaks) {
+            host.hub.entity_event(entity_id, event, at);
         }
         // Player.playSound: everyone near but the guest, in the players' source.
         let players = horizon_client::settings::SOUND_SOURCES
@@ -790,6 +801,9 @@ impl Game<'_> {
         (g.bed, g.sleep_timer, g.spawn) = (bed, guest_sleep_timer, guest_spawn);
         g.respawn_elsewhere = guest_respawn.map(|c| c.saved());
         g.sleeping = g.bed.is_some();
+        if fell_asleep {
+            g.woke_from = None;
+        }
         if let Some((text, _)) = guest_message {
             g.send(&C::SystemChat(play::SystemChat {
                 content: literal(&text),
@@ -892,6 +906,7 @@ impl Game<'_> {
                 f64::from(head[2]) + 0.5,
             ];
             g.position = at;
+            g.previous_position = at;
             if let Some(m) = g.motion.as_mut() {
                 m.position = Vec3::new(at[0], at[1], at[2]);
                 m.velocity = Vec3::ZERO;
@@ -1110,6 +1125,59 @@ impl Game<'_> {
             Slots::Block(_) => horizon_client::containers::block_menu_type(name).unwrap_or(menu),
             _ => menu,
         };
+        // BaseContainerBlockEntity.createMenu (and a double chest's own menu
+        // provider, which asks both halves) refuses a locked container with
+        // `sendChestLockedNotifications`: the action bar names it and everyone
+        // near hears the locked chest; no menu opens.
+        let (spectator, hand) = host.hub.guest(conn).map_or((false, None), |g| {
+            (
+                g.spectator(),
+                g.inventory.get(g.selected).cloned().flatten(),
+            )
+        });
+        let halves = match &slots {
+            Slots::Double(first, second) => [Some(*first), Some(*second)],
+            Slots::Block(k) => [Some(*k), None],
+            _ => [None, None],
+        };
+        let locked = halves
+            .iter()
+            .flatten()
+            .any(|&k| self.container_locked_for(k, spectator, hand.as_ref()));
+        if locked {
+            host.hub.send_to(
+                conn,
+                &C::SystemChat(play::SystemChat {
+                    content: horizon_client::containers::locked_message(&title),
+                    overlay: true,
+                }),
+            );
+            // `ChestBlock`: the double chest sounds between its halves, from
+            // the first one's centre plus half a block toward the other.
+            let at = match &slots {
+                Slots::Double(first, second) => [
+                    f64::from(first.0) + 0.5 + f64::from((second.0 - first.0).signum()) / 2.0,
+                    f64::from(first.1) + 0.5,
+                    f64::from(first.2) + 0.5 + f64::from((second.2 - first.2).signum()) / 2.0,
+                ],
+                Slots::Block(k) => [
+                    f64::from(k.0) + 0.5,
+                    f64::from(k.1) + 0.5,
+                    f64::from(k.2) + 0.5,
+                ],
+                _ => [0.0; 3],
+            };
+            let source = horizon_client::settings::sound_source("minecraft:block.chest.locked");
+            host.hub.sound(
+                "minecraft:block.chest.locked",
+                at,
+                1.0,
+                1.0,
+                source as i32,
+                None,
+            );
+            return false;
+        }
         // ServerPlayer.openMenu closes the menu that was open.
         self.guest_container_closed(host, conn);
         self.lan_station_closed(host, conn, None);
@@ -1714,10 +1782,15 @@ impl Game<'_> {
                     .is_some()
                 {
                     // handleInteract: the entity and that hand only; a click the
-                    // entity passes comes back as UseItem.
+                    // entity passes comes back as UseItem. The entity is the
+                    // packet's own id, which the range check above passed.
                     let hand = if p.hand == 1 { Hand::Off } else { Hand::Main };
+                    let target = InteractTarget {
+                        id: p.id,
+                        location: p.location,
+                    };
                     let swung = self.as_guest(host, conn, |g| {
-                        g.guest_use = Some(GuestUse::Entity(hand));
+                        g.guest_use = Some(GuestUse::Entity(hand, target));
                         let swings = g.swings_started;
                         let _ = g.use_item();
                         g.guest_use = None;
@@ -2481,11 +2554,18 @@ impl Game<'_> {
             .creatures
             .projectiles
             .iter()
-            .position(|p| p.id != 0 && p.id as i32 == id && super::deflect::redirectable(p))
+            .position(|p| p.id != 0 && p.id as i32 == id && super::deflect::attackable(p))
         {
             self.as_guest(host, conn, |g| {
                 if g.within_interaction_range(i) {
-                    g.deflect(i);
+                    if matches!(
+                        g.creatures.projectiles[i].kind,
+                        horizon_client::projectiles::ProjectileKind::ShulkerBullet { .. }
+                    ) {
+                        g.hit_shulker_bullet(i);
+                    } else {
+                        g.deflect(i);
+                    }
                 }
             });
             return;
@@ -2747,11 +2827,56 @@ impl Game<'_> {
         let skip = usize::from(text.starts_with('/'));
         let command = &text[skip..];
         let d = vanilla::game_dispatcher();
-        let level = std::mem::replace(&mut self.ui.registries.permission, permission);
+        // The completions come from the server's players and lists, not from the host's own registries: a
+        // dedicated server has no local player (they would list "Player"), and a LAN world's guests are not in
+        // the host's list.
+        let mut players = if self.options.dedicated.is_some() {
+            Vec::new()
+        } else {
+            self.ui.registries.players.clone()
+        };
+        players.extend(host.hub.guests.iter().map(|g| g.name.clone()));
+        let (ops, banned_players, banned_ips, whitelisted) = match &self.server_lists {
+            Some(lists) => {
+                let l = lists.lock().unwrap();
+                (
+                    l.ops
+                        .entries()
+                        .iter()
+                        .map(|e| e.user.name.clone())
+                        .collect(),
+                    l.bans
+                        .entries()
+                        .iter()
+                        .map(|e| e.user.name.clone())
+                        .collect(),
+                    l.ip_bans.entries().iter().map(|e| e.user.clone()).collect(),
+                    l.white
+                        .entries()
+                        .iter()
+                        .map(|e| e.user.name.clone())
+                        .collect(),
+                )
+            }
+            None => Default::default(),
+        };
+        let reg = &mut self.ui.registries;
+        let level = std::mem::replace(&mut reg.permission, permission);
+        let own_players = std::mem::replace(&mut reg.players, players);
+        let own_ops = std::mem::replace(&mut reg.ops, ops);
+        let own_banned = std::mem::replace(&mut reg.banned_players, banned_players);
+        let own_banned_ips = std::mem::replace(&mut reg.banned_ips, banned_ips);
+        let own_whitelisted = std::mem::replace(&mut reg.whitelisted, whitelisted);
         let parse = d.parse(command, &self.ui.registries);
         let ((start, end), mut suggestions) =
             d.suggestions(&parse, command.len(), &self.ui.registries);
-        self.ui.registries.permission = level;
+        let reg = &mut self.ui.registries;
+        reg.permission = level;
+        reg.players = own_players;
+        reg.ops = own_ops;
+        reg.banned_players = own_banned;
+        reg.banned_ips = own_banned_ips;
+        reg.whitelisted = own_whitelisted;
         // ServerCommandSuggestionsProvider.limitSuggestionCount.
         suggestions.truncate(1000);
         let utf16 = |byte: usize| command[..byte.min(command.len())].encode_utf16().count() as i32;
@@ -3169,6 +3294,52 @@ impl Game<'_> {
         text
     }
 
+    /// `LivingEntity.stopSleeping` and `ServerPlayer.stopSleepInBed` for a
+    /// guest who woke up from `head`: stand beside the bed facing it, and
+    /// teleport the client there.
+    fn wake_guest_from(&mut self, host: &mut LanHost, gi: usize, head: [i32; 3]) {
+        let yaw = host.hub.guests[gi].yaw;
+        let Some((stand, yaw)) = self.bed_wake_pose(head, yaw) else {
+            return;
+        };
+        let at = [stand.x, stand.y, stand.z];
+        let g = &mut host.hub.guests[gi];
+        g.position = at;
+        g.previous_position = at;
+        g.yaw = yaw;
+        g.pitch = 0.0;
+        g.moves.clear();
+        if let Some(m) = g.motion.as_mut() {
+            m.position = stand;
+            m.velocity = Vec3::ZERO;
+            m.yaw = yaw;
+            m.pitch = 0.0;
+            let _ = m.set_sleeping(false);
+        }
+        if !g.dead {
+            host.hub.teleport(gi, Some(at));
+        }
+    }
+
+    pub(super) fn wake_woken_guests(&mut self, host: &mut LanHost) {
+        for gi in 0..host.hub.guests.len() {
+            if host.hub.here(&host.hub.guests[gi])
+                && let Some(head) = host.hub.guests[gi].woke_from.take()
+            {
+                self.wake_guest_from(host, gi, head);
+            }
+        }
+    }
+
+    pub(super) fn wake_guest(&mut self, host: &mut LanHost, gi: usize) {
+        host.hub.wake(gi);
+        if host.hub.here(&host.hub.guests[gi])
+            && let Some(head) = host.hub.guests[gi].woke_from.take()
+        {
+            self.wake_guest_from(host, gi, head);
+        }
+    }
+
     /// `Player.tick`'s sleep counter, and `LivingEntity.tick`'s wake-up of a
     /// sleeper who died or whose bed is gone.
     fn guest_sleep_tick(&mut self, host: &mut LanHost, gi: usize) {
@@ -3178,7 +3349,13 @@ impl Game<'_> {
             let block = self.world.block(head[0], head[1], head[2]);
             let bed = self.res.facts().get(block).name.ends_with("_bed");
             if g.dead || g.health <= 0.0 || !bed {
-                host.hub.wake(gi);
+                self.wake_guest(host, gi);
+            } else {
+                // LivingEntity.tick: a sleeper's xRot is 0.
+                g.pitch = 0.0;
+                if let Some(m) = g.motion.as_mut() {
+                    m.pitch = 0.0;
+                }
             }
         }
     }
@@ -3270,11 +3447,13 @@ impl Game<'_> {
 
     /// `ServerLevel.wakeUpAllPlayers` for the guests.
     pub(super) fn wake_guests(&mut self) {
-        if let Some(host) = self.lan.as_mut() {
-            for i in 0..host.hub.guests.len() {
-                host.hub.wake(i);
-            }
+        let Some(mut host) = self.lan.take() else {
+            return;
+        };
+        for i in 0..host.hub.guests.len() {
+            self.wake_guest(&mut host, i);
         }
+        self.lan = Some(host);
     }
 
     /// `PlayerList.broadcastSystemMessage` of the advancements guests made
@@ -3894,7 +4073,7 @@ impl Game<'_> {
             let rest = self.as_guest(host, conn, |g| g.give(stack)).flatten();
             match rest {
                 None => {
-                    let item = self.dropped.remove(i);
+                    let item = self.remove_dropped(i);
                     if let Some(thrower) = thrower {
                         self.as_guest(host, conn, |g| {
                             g.trigger_thrown_picked_up_by_player(&item.stack, thrower);
@@ -4039,7 +4218,7 @@ impl Game<'_> {
         // A merged orb gives its value once per count and goes at zero.
         let orb = self.orbs[touching[pick]].clone();
         if orb.count <= 1 {
-            self.orbs.remove(touching[pick]);
+            self.remove_orb(touching[pick]);
         } else {
             self.orbs[touching[pick]].count -= 1;
         }

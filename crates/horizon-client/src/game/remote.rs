@@ -342,6 +342,9 @@ pub(super) struct Remote {
     /// Options.serverRenderDistance: the server's view distance from the
     /// login or the last chunk-cache-radius packet.
     pub(super) view_distance: i32,
+    /// `ClientLevel.serverSimulationDistance`: from the login or the last
+    /// simulation-distance packet.
+    pub(super) simulation_distance: i32,
     sequence: i32,
     position_sender: horizon_client::player_sync::PositionSender,
     last_input: u8,
@@ -400,7 +403,7 @@ pub(super) struct Remote {
     chat_queue: VecDeque<QueuedChat>,
     /// `ClientPacketListener.messageSignatureCache`: the signatures packed
     /// ones index, as the server's copy for this connection holds them.
-    signatures: horizon_protocol::secure_chat::SignatureCache,
+    pub(super) signatures: horizon_protocol::secure_chat::SignatureCache,
     /// `ChatListener.previousMessageTime`: when a message last showed, if one has.
     chat_previous: Option<Instant>,
     /// `ClientPacketListener.nextChatIndex`: the global index the next chat packet must carry.
@@ -417,6 +420,12 @@ pub(super) struct Remote {
     /// plus the commands native mods own (`chat::chat_tree_for`). Rebuilt where
     /// that base changes, not at each keystroke.
     pub chat_tree: horizon_client::command::Dispatcher,
+    /// Whether a `ClientboundCommandsPacket` has supplied the server's tree.
+    /// The local fallback is for UI completion only; vanilla signs command
+    /// arguments against an empty tree until the server sends one.
+    pub(super) chat_tree_received: bool,
+    /// The chat session, the last-seen window and the signature cache.
+    pub(super) secure_chat: super::remote_chat::SecureChat,
     /// `ClientSuggestionProvider.customCompletionSuggestions`: the extra chat
     /// completions this server sent (ClientboundCustomChatCompletionsPacket).
     custom_completions: std::collections::BTreeSet<String>,
@@ -432,7 +441,7 @@ pub(super) struct Remote {
     skins: HashMap<u128, String>,
     listed: std::collections::HashSet<u128>,
     /// `ClientboundLoginPacket.onlineMode`: the player list shows heads.
-    online_mode: bool,
+    pub(super) online_mode: bool,
     /// Player entities in the level: entity id to profile UUID.
     level_players: HashMap<i32, u128>,
     /// The profile name each player entity was created with (`RemotePlayer.getGameProfile`): it outlives the
@@ -654,6 +663,9 @@ impl Game<'_> {
     ) -> Result<()> {
         self.reset_tutorial();
         self.perf.world_opening();
+        // A server's own biomes come over the connection; the last local
+        // world's packed table must not name its ids.
+        self.world_biomes = None;
         let root = self.options.resources.clone();
         let builtin = Builtin::find(&root)
             .and_then(|p| Builtin::load(&p).ok())
@@ -826,6 +838,7 @@ impl Game<'_> {
             )),
             decoder: ChunkDecoder::new(),
             view_distance: self.settings.render_distance,
+            simulation_distance: self.settings.simulation_distance,
             sequence: 0,
             position_sender: Default::default(),
             last_input: 0,
@@ -862,6 +875,8 @@ impl Game<'_> {
             chat_sessions: HashMap::new(),
             chat_validators: HashMap::new(),
             chat_tree,
+            chat_tree_received: false,
+            secure_chat: Default::default(),
             custom_completions: Default::default(),
             players: HashMap::new(),
             tab_players: HashMap::new(),
@@ -1095,8 +1110,15 @@ impl Game<'_> {
     /// are, so tooltips and models see every field.
     pub(super) fn to_stack(&self, s: &Option<Stack>) -> Option<ItemStack> {
         let r = self.remote.as_ref()?;
+        let stack = s.as_ref()?;
+        if !horizon_protocol::item::custom::permitted(stack, r.registries.custom_components)
+            .unwrap_or(false)
+        {
+            log::warn!("Dropping a stack with unnegotiated custom components");
+            return None;
+        }
         Some(horizon_client::item_sync::from_network(
-            s.as_ref()?,
+            stack,
             &r.builtin,
             &r.registries,
         ))
@@ -1110,8 +1132,23 @@ impl Game<'_> {
         // components go back, as a vanilla client keeps them.
         if let Some((stack, patch)) = s.as_ref().and_then(|s| Some((s, s.wire_patch()?))) {
             let mut out = Stack::new(self.item_id(&stack.item), stack.count as i32);
-            out.wire = horizon_protocol::item::WirePatch(Some(patch));
-            return Some(out);
+            let safe = r.registries.custom_components
+                || horizon_protocol::item::custom::entries().next().is_none()
+                || horizon_protocol::item::WirePatch::decode(&patch)
+                    .and_then(|(added, removed)| {
+                        let decoded = Stack {
+                            added,
+                            removed,
+                            ..Stack::new(out.item, out.count)
+                        };
+                        horizon_protocol::item::custom::permitted(&decoded, false)
+                    })
+                    .unwrap_or(false);
+            if safe {
+                out.wire = horizon_protocol::item::WirePatch(Some(patch));
+                return Some(out);
+            }
+            log::warn!("Cannot send cached custom components to this peer");
         }
         horizon_client::lan::guest::stack_to_network(
             |name| self.item_id(name),
@@ -1121,6 +1158,12 @@ impl Game<'_> {
                     .get(registry)
                     .and_then(|ids| ids.id(name))
                     .or_else(|| r.registries.id(registry, name))
+                    .or_else(|| {
+                        (r.registries.custom_components
+                            && registry == "minecraft:data_component_type")
+                            .then(|| horizon_protocol::item::custom::id(name))
+                            .flatten()
+                    })
             },
             s,
         )
@@ -1215,11 +1258,18 @@ impl Game<'_> {
 
     /// `ChatListener.handleChatMessageError`: a message that fails validation shows as the red,
     /// italic `chat.validation_error` in its chat type (queued under Chat Delay as any
-    /// message). Vanilla also marks the message's signature as processed but not shown, for the
-    /// acknowledgement the client sends the server (no `LastSeenMessagesTracker` is kept here yet);
-    /// it skips a blocked sender and one restricted to friends (not kept here either) and
+    /// message). Its signature counts as processed but not shown, for the acknowledgement the
+    /// client sends the server. Vanilla also
+    /// skips a blocked sender and one restricted to friends (not kept here either) and
     /// narrates the line.
-    fn handle_chat_message_error(&mut self, chat_type: &play::ChatTypeBound) {
+    fn handle_chat_message_error(
+        &mut self,
+        chat_type: &play::ChatTypeBound,
+        signature: Option<&Signature>,
+    ) {
+        if let Some(signature) = signature {
+            self.mark_message_processed(signature, false);
+        }
         let error = serde_json::json!({
             "translate": "chat.validation_error",
             "color": "red",
@@ -1289,6 +1339,7 @@ impl Game<'_> {
                 horizon_client::text::Text::translate("multiplayer.disconnect.invalid_packet", &[]);
             return self.leave_server(Some(reason.plain()));
         };
+        r.secure_chat.ignore_pending(&signature);
         let queued = r.chat_queue.len();
         r.chat_queue
             .retain(|(_, _, s, _)| s.as_ref() != Some(&signature));
@@ -1309,6 +1360,9 @@ impl Game<'_> {
         trust: ChatTrust,
     ) -> bool {
         let shown = self.signed_chat_line(line, source, signature, trust);
+        if let Some(signature) = &signature {
+            self.mark_message_processed(signature, shown);
+        }
         if shown && let Some(r) = self.remote.as_mut() {
             r.chat_previous = Some(Instant::now());
         }
@@ -1374,7 +1428,7 @@ impl Game<'_> {
             return;
         };
         for (line, source, signature, trust) in queue {
-            self.signed_chat_line(line, source, signature, trust);
+            self.accept_chat(line, source, signature, trust);
         }
         if let Some(r) = self.remote.as_mut() {
             r.chat_previous = None;
@@ -1562,6 +1616,7 @@ impl Game<'_> {
                     // handleConfigurationStart: the held-back chat shows, then
                     // clearClientLevel opens ServerReconfigScreen over no level.
                     self.flush_chat_queue();
+                    self.send_chat_acknowledgement();
                     self.close_dialogs();
                     self.player = None;
                     self.screen = Screen::Playing;
@@ -1569,6 +1624,7 @@ impl Game<'_> {
                     let ticks = self.ticks;
                     if let Some(r) = self.remote.as_mut() {
                         r.reconfiguring = Some(ticks);
+                        r.chat_tree_received = false;
                     }
                 }
                 Event::Reconfigured(registries) => {
@@ -1720,7 +1776,7 @@ impl Game<'_> {
             .get("minecraft:worldgen/biome")
             .map(|list| {
                 list.iter()
-                    .map(|(name, _)| self.res.biomes().id(name))
+                    .map(|(name, _)| world_biomes!(self).id(name))
                     .collect()
             })
             .unwrap_or_default();
@@ -2649,6 +2705,7 @@ impl Game<'_> {
                     r.camera = None;
                     r.logged_in = true;
                     r.view_distance = p.chunk_radius;
+                    r.simulation_distance = p.simulation_distance;
                     r.show_death_screen = p.show_death_screen;
                 }
                 self.streaming.radius =
@@ -2666,6 +2723,7 @@ impl Game<'_> {
                     r.sent_info = info.clone();
                 }
                 self.send(S::ClientInformation(info));
+                self.remote_chat_login();
             }
             C::Respawn(p) => {
                 // A new player, without effects (the server sends them
@@ -3096,6 +3154,18 @@ impl Game<'_> {
                             let code = bed.map_or(0, |b| self.bed_facing(b));
                             if let Some(m) = self.mobs.iter_mut().find(|m| m.id == p.id as u32) {
                                 m.extra.ints[1] = code;
+                                if let Some(head) = *bed {
+                                    // LivingEntity.onSyncedDataUpdated(SLEEPING_POS_ID): setPosToBed.
+                                    let at = Vec3::new(
+                                        f64::from(head[0]) + 0.5,
+                                        f64::from(head[1]) + 0.5625 + 0.125,
+                                        f64::from(head[2]) + 0.5,
+                                    );
+                                    m.position = at;
+                                    m.previous = at;
+                                    m.head_pitch = 0.0;
+                                    m.previous_head_pitch = 0.0;
+                                }
                             }
                         }
                         // Avatar.DATA_PLAYER_MAIN_HAND (HumanoidArm: 0 left, 1
@@ -3124,6 +3194,22 @@ impl Game<'_> {
                                     self.sleep_timer = 0;
                                 }
                                 self.sleeping = *bed;
+                                if let Some(head) = *bed {
+                                    // LivingEntity.onSyncedDataUpdated(SLEEPING_POS_ID): setPosToBed.
+                                    let at = Vec3::new(
+                                        f64::from(head[0]) + 0.5,
+                                        f64::from(head[1]) + 0.5625 + 0.125,
+                                        f64::from(head[2]) + 0.5,
+                                    );
+                                    if let Some(pl) = self.player.as_mut() {
+                                        pl.position = at;
+                                        pl.velocity = Vec3::ZERO;
+                                        pl.pitch = 0.0;
+                                    }
+                                    self.previous_position = at;
+                                    self.pitch = 0.0;
+                                    self.snap_player_model_pitch();
+                                }
                             }
                             // Entity.DATA_SHARED_FLAGS_ID's sprinting bit: the
                             // server stops the sprint after a hit's extra
@@ -3922,6 +4008,7 @@ impl Game<'_> {
                 let chat_tree = self.chat_tree_for(Some(&tree));
                 if let Some(r) = self.remote.as_mut() {
                     r.chat_tree = chat_tree;
+                    r.chat_tree_received = true;
                 }
             }
             C::Cooldown(p) => {
@@ -3999,7 +4086,7 @@ impl Game<'_> {
                         "Received player chat packet for unknown player with ID: {:032x}",
                         p.sender
                     );
-                    self.handle_chat_message_error(&p.chat_type);
+                    self.handle_chat_message_error(&p.chat_type, signature.as_ref());
                     return Ok(());
                 }
                 let now = std::time::SystemTime::now()
@@ -4019,7 +4106,7 @@ impl Game<'_> {
                     filter: &p.filter,
                 };
                 let Some(validated) = r.validate_chat(&incoming, now) else {
-                    self.handle_chat_message_error(&p.chat_type);
+                    self.handle_chat_message_error(&p.chat_type, signature.as_ref());
                     return Ok(());
                 };
                 let signature = signature.filter(|_| validated == secure_chat::Validated::Signed);
@@ -4195,6 +4282,11 @@ impl Game<'_> {
                 None => self.score.board.reset_all(&p.owner),
             },
             C::SetPlayerTeam(p) => self.remote_team(p),
+            C::SetSimulationDistance(p) => {
+                if let Some(r) = self.remote.as_mut() {
+                    r.simulation_distance = p.distance;
+                }
+            }
             C::SetChunkCacheRadius(p) => {
                 self.streaming.radius = self.settings.render_distance.min(p.distance + 1).max(2);
                 if let Some(r) = self.remote.as_mut() {
@@ -4477,7 +4569,7 @@ impl Game<'_> {
     /// `PlayerInfo.getSkin` for every player entity, including NPCs that are
     /// never in the tab list: resolve each profile's textures and give the
     /// level's player models their skin.
-    fn update_remote_skins(&mut self) {
+    pub(super) fn update_remote_skins(&mut self) {
         let local = self.remote.as_ref().map(|r| r.profile);
         self.poll_own_profile();
         let Some(r) = self.remote.as_mut() else {
@@ -4542,7 +4634,7 @@ impl Game<'_> {
             && let Some((rgba, is_slim)) = horizon_client::skins::offline_skin()
         {
             const OFFLINE: &str = "horizon/offline_skin";
-            if !self.skin_slots.contains(OFFLINE) {
+            if !self.skin_slots.contains(OFFLINE) || !self.gui.atlas.sprites.contains_key(OFFLINE) {
                 self.store_skin(OFFLINE.into(), rgba.clone());
             }
             if *is_slim {
@@ -4555,7 +4647,7 @@ impl Game<'_> {
             && let Some(rgba) = horizon_client::skins::offline_cape()
         {
             const OFFLINE: &str = "capes/offline";
-            if !self.skin_slots.contains(OFFLINE) {
+            if !self.skin_slots.contains(OFFLINE) || !self.gui.atlas.sprites.contains_key(OFFLINE) {
                 self.store_skin(OFFLINE.into(), rgba.to_vec());
             }
             capes.insert(local, OFFLINE.into());
@@ -4739,7 +4831,8 @@ impl Game<'_> {
         uuid: u128,
         (skin, slim): (String, bool),
     ) -> (String, bool) {
-        if skin.starts_with("skins/") && !self.again_skin(&skin) {
+        if (skin.starts_with("skins/") || skin == "horizon/offline_skin") && !self.again_skin(&skin)
+        {
             let skin = horizon_client::tab_list::default_skin(uuid);
             return (skin.to_owned(), skin.contains("/slim/"));
         }
@@ -4827,6 +4920,7 @@ impl Game<'_> {
             pickup_delay: 0,
             bob_offset,
             ticks: 0,
+            needs_sync: false,
         });
     }
     /// `Entity.lerpMotion` (and `recreateFromPacket`'s motion) for the
@@ -5082,6 +5176,7 @@ impl Game<'_> {
         self.native_net.to_server = 0;
         self.native_tick();
         self.tell_native_now();
+        self.tick_chat_session();
         // Minecraft.tick sends this even when the player cannot tick yet,
         // including while waiting for chunks. Keep it outside early returns.
         if self.remote.as_ref().is_some_and(|r| r.joined) {
@@ -5208,7 +5303,7 @@ impl Game<'_> {
             .remote
             .as_ref()
             .is_some_and(|r| r.level_load.is_active());
-        let playing = self.screen == Screen::Playing && !loading;
+        let playing = self.screen == Screen::Playing && !loading && !self.dialog_open();
         let held = |k| playing && self.keys.contains(&k);
         let mut keys = Keys {
             forward: held(KeyCode::KeyW),
@@ -5282,7 +5377,8 @@ impl Game<'_> {
         let was_gliding = player.fall_flying;
         let dead = self.screen == Screen::Dead;
         // LivingEntity.isImmobile: a sleeper lies still in the bed.
-        if let Some(head) = self.sleeping {
+        let sleeping = self.sleeping;
+        if let Some(head) = sleeping {
             player.position = Vec3::new(
                 f64::from(head[0]) + 0.5,
                 // setPosToBed: the bed's top (getSleepHeight) and 0.125 above it.
@@ -5290,6 +5386,7 @@ impl Game<'_> {
                 f64::from(head[2]) + 0.5,
             );
             player.velocity = Vec3::ZERO;
+            player.pitch = 0.0;
         } else if !dead && !riding {
             player.client_side = true;
             player.velocity = player.velocity.add_vector(pushed);
@@ -5419,6 +5516,11 @@ impl Game<'_> {
         // The server owns health and hunger.
         self.apply_remote_health();
         self.tick_avatar(before, false);
+        // LivingEntity.tick: a sleeper's xRot is 0.
+        if sleeping.is_some() {
+            self.pitch = 0.0;
+            self.snap_player_model_pitch();
+        }
         // The player's own model (third person, the inventory's preview).
         self.tick_player_model();
         if !dead {
@@ -5879,6 +5981,11 @@ impl Game<'_> {
                 remote_player_head_turn(m);
                 // LivingEntity.tick: the glide count, wings and swim amount.
                 m.tick_avatar_pose(m.fluids.in_water);
+                // LivingEntity.tick: a sleeper's xRot is 0.
+                if m.extra.ints[1] != 0 {
+                    m.head_pitch = 0.0;
+                    m.previous_head_pitch = 0.0;
+                }
             } else if m.alive() {
                 m.body_rotation_tick();
             }
@@ -7514,7 +7621,10 @@ impl Game<'_> {
         };
         let mut input = std::mem::take(&mut r.input);
         let stop = std::mem::take(&mut r.stop_mining);
-        let ready = r.loaded_sent && self.screen == Screen::Playing && self.sleeping.is_none();
+        let ready = r.loaded_sent
+            && self.screen == Screen::Playing
+            && self.sleeping.is_none()
+            && !self.dialog_open();
         if stop || !ready {
             self.stop_remote_mining();
         }
@@ -7811,33 +7921,18 @@ impl Game<'_> {
             _ => Ok(false),
         }
     }
-    /// ClientPacketListener.sendChat / sendCommand (unsigned). The Chat
-    /// option's Hidden and System levels keep chat out and Hidden keeps the
-    /// commands out (ChatAbilities).
+    /// ClientPacketListener.sendChat / sendCommand, signed with a chat
+    /// session (game/remote_chat.rs). The Chat option's Hidden and System
+    /// levels keep chat out and Hidden keeps the commands out (ChatAbilities).
     pub(super) fn send_chat(&mut self, message: &str) {
         let message = message.trim();
         if message.is_empty() || !self.chat_abilities().allows(message) {
             return;
         }
         if let Some(command) = message.strip_prefix('/') {
-            self.send(S::ChatCommand(play::ChatCommand {
-                command: command.to_owned(),
-            }));
+            self.send_command(command);
         } else {
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_millis() as i64);
-            self.send(S::Chat(play::Chat {
-                message: message.chars().take(256).collect(),
-                timestamp,
-                salt: 0,
-                signature: None,
-                last_seen: play::LastSeenUpdate {
-                    offset: 0,
-                    acknowledged: [0; 3],
-                    checksum: 0,
-                },
-            }));
+            self.send_signed_chat(message);
         }
     }
     /// MultiPlayerGameMode.dropItem (key.drop): predict the removal, then send
