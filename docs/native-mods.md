@@ -113,25 +113,143 @@ blocks an explosion is about to break (a mod takes out those it spares), `native
 emptied, and `native_attack_entity` a player's blow on an entity (an item frame, an armor stand, an animal, a
 player). Each may cancel, and nothing happens. Bundles that use them need `"hooks": 22`.
 
+API 23 adds `native_level_tick_pre` and `native_level_tick_post`, server-side observations around each
+level tick pass. Each receives the dimension ID; neither can cancel the tick. Paused and held passes fire
+neither hook, and an error skips the post hook. Bundles that use them need `"hooks": 23`.
+
+API 24 adds `native_set_block`, a server-side `Game` helper that replaces a state in the current dimension through
+`Level.setBlock`. It accepts vanilla's neighbour and shape flags and returns whether a block changed; a block with a
+block entity gets one. Horizon sends every write to players whatever the flags: `UPDATE_CLIENTS`, `UPDATE_INVISIBLE`
+and `UPDATE_IMMEDIATE` change nothing yet. Hooks holding only `GameLevel` cannot call it yet. Bundles that use it need
+`"hooks": 24`.
+
+API 25 adds `GameLevel::native_play_sound` for registered vanilla sound events on an authoritative server.
+It queues the sound for nearby players in the level's dimension, including during a guest's turn.
+Pass a `SOUND_SOURCES` index, position, volume and pitch. The return value says whether the call
+was queued, not whether a player heard it. The server discards unknown sound events when it dispatches
+the queue. Bundles that use it need `"hooks": 25`.
+
+API 26 adds `Game::native_config_dir()`: the game's shared `config/` folder beside `options.txt` (beside
+`server.properties` on a dedicated server), where a mod names its own files, made when missing. It takes no `self`, so
+it works from any hook ([mods.md](mods.md#native-mods)). Bundles that use it need `"hooks": 26`.
+
+API 27 adds the player-health HUD rows through `native_health_hud`: every frame the HUD draws them, the
+hook hears the layout's inputs (`HealthInputs`) and the screen's GUI size, and a mod that answers with
+draws replaces all the rows — armour, hearts, food, air and the heights above the hotbar — for that
+frame. Nothing answered draws Horizon's own. Bundles that use it need `"hooks": 27`.
+
+API 28 adds `native_block_in_tag` and `native_item_in_tag` for server tick hooks. They read the world's merged block and item tags, including data packs and content mods. An unknown tag returns false. An empty item stack tests the `minecraft:air` item, as vanilla does. Calls with an inactive or stale tick context return an error. Bundles that use them need `"hooks": 28`.
+
+API 29 adds right-clicking an entity, on the server for every player: `native_interact_entity` hears a right click on
+an entity (its id and type, and the stack in the hand) where `Player.interactOn` starts, once per hand. A mod that claims
+it swings the hand instead of the entity's and the item's own interaction. Bundles that use it need `"hooks": 29`.
+
+API 30 adds left-clicking a block, on the server for every player: `native_left_click_block` hears the start of a dig
+(the block, the face hit) once the game allowed it, before the block is attacked (a note block plays) or broken in
+creative. A mod that cancels it keeps the block: on the server it isn't attacked, dug or broken, and the player's client
+gets it back. The clicking player's own client still predicts the crack until then.
+Bundles that use it need `"hooks": 30`.
+
+API 31 adds a player's server tick: `native_player_tick` runs once a tick for every living player in the world, at the
+end of their `ServerPlayer.tick`, with the helpers reading that player. Bundles that use it need `"hooks": 31`.
+
+API 32 adds shape updates a mod can answer through `native_update_shape`: on an authoritative server, each time a
+block's state is worked out from a neighbour (`BlockBehaviour.updateShape`): neighbour shape updates after a
+`setBlock`, a block fitted to all its neighbours as a piston lands it or a chunk is post-processed, and the blocks at
+a feature's edge as it is placed in the live world, such as a tree grown from a sapling
+(`StructureTemplate.updateShapeAtEdge`). It gets the dimension, position, state, the neighbour's direction, position
+and state, before the block computes it. `state` may not be in the world yet (a piston landing it), so decide from
+`state`, not from the block at `pos`. Answer only for your own blocks and leave `new` empty otherwise: a state put
+there is the block's new state, applied as vanilla applies the result (air breaks the block, with its drops, on a
+neighbour update; post-processing and a feature's edge write air without drops), and the block's own `updateShape`
+doesn't run, nor the ticks it would schedule. The level is read-only, as vanilla's `LevelReader` is there; the hook
+schedules ticks with its `ticks` through the level's `native_schedule_block_tick(ticks, pos, block, delay)` and
+`native_schedule_fluid_tick(ticks, pos, fluid, delay)` (vanilla's `ScheduledTickAccess.scheduleTick`; false for an
+unknown name or a position that isn't loaded). It runs often, at least six times per `setBlock` that updates shapes
+(more for redstone wire's diagonals and knock-on updates): keep it short. A LAN guest shows vanilla's shape for a
+moment, until the server's update arrives. The deprecated in-frame path and chunk generation fire none. Bundles that
+use it need `"hooks": 32`.
+
+API 33 adds random ticks a mod can handle through `native_random_tick`: on an authoritative server, each block
+`ServerLevel.tickChunk` random-ticks (`BlockState.randomTick`), with its dimension, position and state, before the
+block handles it. Only blocks that tick randomly fire it (a mod block as its vanilla template block does), once per
+draw that lands on one: it runs often, so keep it short. Bone meal's random ticks (`StemBlock.performBonemeal` calls
+`randomTick` itself) don't fire it. The hook may change the block with the level's
+`native_set_block_property(ticks, pos, key, value, flags)` and set `handled` to skip the block's own random tick, so a
+mod crop grows its own way. Without `handled`, the block then takes its own random tick as it is now (if it still
+ticks randomly), and lava's fluid random tick runs either way. It needs the level mutably, which only `native_random_tick` and API 34's `native_tick_block` give. It is API 18's `Game::native_set_block_property` with `Level.setBlock`'s flags (`native_hooks::flags`): a
+vanilla crop grows with `flags::UPDATE_CLIENTS` (neighbours' shapes update, so an observer fires, but no neighbour
+gets `neighborChanged` and comparators aren't told), a furnace sets its `lit` with `flags::UPDATE_ALL` (both). Horizon
+sends every write to players whatever the flags: `UPDATE_CLIENTS` (2), `UPDATE_INVISIBLE` (4) and `UPDATE_IMMEDIATE`
+(8) change nothing yet. It writes at any loaded position, returns false off an authoritative server (the `Game` one too: a window that isn't a server), for a property or
+value the block doesn't have or a position that isn't loaded, and true without writing when the property already has
+the value. Elsewhere, `Game::native_set_block_property_with(pos, key, value, flags)` does the same, as a brewing
+stand's tick sets its bottles with `flags::UPDATE_CLIENTS`. The deprecated in-frame path fires none. Bundles that use
+them need `"hooks": 33`.
+
+API 34 adds scheduled block ticks a mod can handle through `native_tick_block`: on an authoritative server, each due
+scheduled tick of a block that is still there (`ServerLevel.tickBlock` → `BlockState.tick`), with its dimension,
+position and state, before the block handles it. The hook may change the block with the level's
+`native_set_block_property` and the flags the block's own tick would write with (as in API 33: an observer's tick
+uses `flags::UPDATE_CLIENTS`) and set `handled` to skip the block's own tick. Without `handled`, the block then takes
+its own tick as it is now, if it is still the tick's block. The deprecated in-frame path fires none. Bundles that use
+it need `"hooks": 34`.
+
+API 35 adds the commands a mod owns on the client: `native_commands` is asked for their names, so the chat box
+colours, completes and lists them like the game's own, and `native_command` runs them. A name the game already has
+keeps that command. Bundles that use it need `"hooks": 35`.
+
+API 36 adds recipes of a mod's own types, for a machine's crusher or altar. A recipe file whose `type` is outside `minecraft`
+(`mymod:crusher`) in `data/<namespace>/recipe/`, in a content mod (`.hmod`) or a world's data pack (not in a native mod's own bundle), stays loaded as it is: `native_recipes_of_type`
+gives each one's id and JSON, for the mod to read as it likes, and `native_recipe_ingredient` and `native_recipe_result` read the
+usual fields, tags included (a bare id is read as `minecraft:`; items the game doesn't know are left out, and the helper gives nothing if none is left). The recipes are the server's table: on the server thread, a dedicated server or a LAN host; a client, the single-player window included, sees only the content mods' recipes, not the world's data packs'. All three give nothing outside a world. The game doesn't craft them or show them in the recipe book; `/reload` reads a data pack's again.
+Bundles that use them need `"hooks": 36`.
+
+API 37 adds [mobs](#mobs) for server mods: spawn one, read the mobs of a level in place, and move, hurt or remove one by its id.
+Bundles that use them need `"hooks": 37`.
+
+API 38 adds redstone from a mod's block, on authoritative servers. `native_block_signal` may change the signal a block gives on
+a face, weak or direct, and `native_is_signal_source` lets redstone wire connect to it. Both are asked very often, so check the
+block first and answer from the mod's own state. When the output changes, and once the block is placed (a direct signal past a conductor isn't read before), `native_update_signal_neighbors(dimension, pos)` makes the blocks around
+it read it again; it acts on the level in place and is refused for another dimension. Bundles that use them need `"hooks": 38`.
+
+API 39 adds item behaviour, on the server for every player: `native_hurt_enemy` hears a player's hit land on a mob with the
+held stack, `native_inventory_tick` runs each tick for every stack a player carries (armour and off hand included), and
+`native_carried_stack` reads and changes that stack, and `native_on_equip` hears an equipment slot take a different item. The helpers read the acting player. Bundles
+that use them need `"hooks": 39`.
+
+API 40 adds [mod messages](#mod-messages) between a mod's server and client halves, and hearing players and mobs on the
+server for every player: `native_player_died`, `native_mob_spawned`, `native_mob_killed` (a player's melee blow, a sweep or a spear thrust too),
+`native_item_dropped` (a throw; not the items scattered when a player dies) and `native_item_picked_up` (`canceled` leaves the stack on the ground). They name a player by UUID. Bundles that use them
+need `"hooks": 40`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads
 Rust and can take 20 to 30 minutes; later builds are faster) and turns on Settings → Game → **Native mods
 (experimental)**, which stays off for players who never install one; `mods install` does the same. Then **Build**. The launcher names the mods, warns in red, and builds only from "I trust these mods: build"; the
 row shows each step, the error if one fails, and the build the instance plays. From the command line:
-`horizon-launcher native-build [FOLDER] [--instance NAME] --trust-native-code`. FOLDER is a bundle, an unpacked
-`.hnmod`, or a folder of them; without it, the native mods turned on in the instance. It is not an MCP tool:
+`horizon-launcher native-build [FOLDER] [--instance NAME] [--update] --trust-native-code`. FOLDER is a bundle, an
+unpacked `.hnmod`, or a folder of them; without it, the native mods turned on in the instance. It is not an MCP tool:
 trusting native code is the player's decision, never an agent's.
 
 1. **Rust.** The launcher's own toolchain ([`rust_toolchain`](../launcher/src/rust_toolchain.rs)): Rust 1.99.1's
    official `rustc`, `cargo` and `rust-std` (and `rust-mingw` on Windows), each pinned by SHA-256, downloaded once
    from static.rust-lang.org into `<launcher data>/rust/`, with its own Cargo home `<launcher data>/cargo/`. No
-   rustup, nothing on the system; the player's own Rust is never used. Windows uses the `windows-gnu` host, which
-   links without Visual Studio. `rust-mingw` only links, so on Windows the toolchain also brings MinGW-w64
+   rustup, nothing on the system; the player's own Rust is never used. It ships for macOS on Apple Silicon, Linux
+   x86-64 and Windows x64; an Intel Mac has none yet, so native builds there stop with "the launcher has none for
+   macos x86_64". Windows uses the `windows-gnu` host, which links without Visual Studio. `rust-mingw` only links, so on Windows the toolchain also brings MinGW-w64
    (`rust_toolchain::MINGW`: WinLibs' GCC 16.2.0 on MinGW-w64 14.0.0, MSVCRT like `rust-mingw`, one zip pinned by
    SHA-256, its `mingw64/` without the documentation) on the build's `PATH`: `ring` and `hidapi` compile C,
    and `windows-sys`' `raw-dylib` imports need `dlltool` and the assembler it runs. The linker is the system's on
-   macOS (the Command Line Tools: the launcher asks for `xcode-select --install`) and Linux (`cc`).
+   macOS (the Command Line Tools: the launcher asks for `xcode-select --install`) and Linux (`cc`). On Linux the
+   game also builds against the system's ALSA (`alsa-sys`) and libudev (`libudev-sys`, `hidapi`), found with
+   `pkg-config`, whose development files desktop distributions don't install. Before downloading anything the
+   launcher checks for `cc`, the C library's headers (`cc` compiles an include of `stdint.h`), `pkg-config`,
+   `alsa` and `libudev` and names what is missing, with the install command for the distribution in
+   `/etc/os-release` (Debian, Ubuntu and Mint:
+   `sudo apt install build-essential pkg-config libasound2-dev libudev-dev`). SteamOS has GCC without the C
+   library's headers, and a read-only system: native builds don't work there yet.
    `horizon-launcher rust status|install|remove`.
 2. **horizon-mixins**, at the commit the mods name (their `.hnmod`'s `mixins`), else `native_mods::MIXINS_REV`,
    built once with that cargo (`cargo install --locked --git … --rev …`) into `native/tools/<commit>/`.
@@ -141,17 +259,40 @@ trusting native code is the player's decision, never an agent's.
 4. **Mixins.** The bundles are copied first, so the build and its key use that copy whatever happens to the
    folder meanwhile. `horizon-mixins apply` stages the modded source; the launcher copies only the files that
    changed into `native/stage/`, so Cargo, which goes by file times, recompiles only the crates the mods touch.
-5. **Compile**: `cargo build --locked --profile release --features horizon-client/mods -p horizon-client`, the
-   release's own command (game-build.yml), into `native/target/`. Cargo downloads the locked crates from
-   crates.io (Horizon has no git dependencies). The log is `native/build.log`; a failure shows its last lines (a
-   horizon-mixins diagnostic in one line).
+5. **Compile**: `cargo build --locked --profile fast [--features horizon-client/mods] -p horizon-client`, into
+   `native/target/`. `fast` is the workspace's own profile: the release's optimizations without its link-time
+   ones (`lto = false`, `codegen-units = 16`, incremental), so a rebuild recompiles and links only what changed.
+   A revision whose `Cargo.toml` has no `fast` builds with `release`, the release's own command (game-build.yml);
+   `native-mods.json` says which (`profile`). The mods feature is passed while the revision still has it. Cargo
+   downloads the locked crates from crates.io (Horizon has no git dependencies). The compiler and the
+   horizon-mixins build run at the lowest priority (`rust_toolchain::low_priority`: nice 19 and the idle I/O class
+   on Linux, nice 19 on macOS, below-normal priority on Windows), so the desktop and a game in play stay smooth;
+   on an otherwise idle computer they still use every core. The log is `native/build.log`; a failure shows its
+   last lines (a horizon-mixins diagnostic in one line).
 6. **Install**: a new version, `native-<commit>-<key>`, a copy of the starting version's folder (resources
    included, cloned on APFS, Btrfs and ReFS) with the built game in place of its own, and a `native-mods.json`
-   saying which commit, mods, horizon-mixins and Rust made it. The instance the mods are installed in plays it (a
-   folder built from the command line, or mods of the default home, go to the **Native mods** instance). That
-   instance gets each mod's settings from the default home the first time it plays it (its
-   `horizon-mods/.horizon-mod-data/<id>/` folder and `key.<id>.` lines of `horizon-mods.txt`, where earlier versions of
-   the mod kept them); nothing it already has is overwritten.
+   saying which release or Nightly it started from (`base`) and which commit, mods, horizon-mixins and Rust made
+   it. The instance the mods are installed in plays it, the default **Horizon** instance included: the build
+   pins its version, as picking a version does. Updates of the launcher's version leave a pinned instance where
+   it is, and their clean-up never removes a native build. An instance built before this (the **Native mods**
+   instance the default home's mods used to go to) keeps its worlds and its build.
+
+## Rebuilds stay on the instance's Horizon
+
+A build starts from the version the instance plays (`native_mods::base_for`). When that is a native build, the
+next one compiles the same commit (its `native-mods.json`'s `horizon`) from the same game files, unless a mod pins
+another, so a rebuild after a mod changes or is switched off compiles only what changed. A newer Horizon is taken
+only when the player asks: `native-build --update` starts from the newest installed release or Nightly (a full
+rebuild); `native_mods::update_for` says which one, if any, the window can offer.
+
+The compiler runs as the release's build does, whatever the player's own Rust setup: the launcher's toolchain
+drops the variables that change compiler flags or the target (`RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS`,
+`RUSTDOCFLAGS`, `CARGO_INCREMENTAL`, `CARGO_PROFILE_*`, `CARGO_BUILD_*` but `CARGO_BUILD_JOBS`, `CARGO_TARGET_*`,
+rustup's and the wrappers'), and starts Cargo from the disk's root with `--manifest-path`. Cargo reads `.cargo/config.toml` from
+the folder it starts in and every one above it, whatever `CARGO_HOME` says, so from the launcher's data folder it
+would read the player's `~/.cargo/config.toml`, whose `[profile]`, `[build]` and `[target]` settings beat the
+workspace and the environment; no switch turns that search off. The source's own `.cargo/config.toml`, if it
+has one, is passed with `--config`.
 
 ## Install from GitHub
 
@@ -192,7 +333,23 @@ The key hashes the commit, the horizon-mixins commit, Rust's version, the profil
 every bundle. The same set on the same commit is never built twice. A change gives a new build, and
 `native/target/` stays, so a rebuild compiles only `horizon-client` and what the mods touched.
 
-Measured 2026-10-28 on the Mac mini (M4 Pro, 14 cores) with Veinminer 0.3.0 on Nightly `83f15fa`,
+Measured 2026-10-30 on Linux (x86_64 desktop), Zoom 2.0.0 and FPS Counter 2.0.0 on Nightly `6f8c7a0`, the `fast`
+profile, the launcher at nice 19 with `CARGO_BUILD_JOBS=10` (an empty launcher home: Rust, the crates and the
+source downloaded first):
+
+| What | Time |
+|---|---|
+| First build: Rust, horizon-mixins, the whole game (384 crates) | 4 min 29 s in all; 3 min 6 s of compiling the game; `native/target/` about 2 GB |
+| One mod switched off, rebuild | 56 s in all, 51 s of compiling (only `horizon-client`) |
+| That mod switched on again | under 1 s: the kept build plays again |
+| Nothing changed, rebuild | 1 s, nothing compiled |
+
+The same set with the `release` profile took 7 min 6 s for the first build and 2 min 34 s per rebuild (2 min 28 s of
+compiling `horizon-client`, mostly its link-time optimization). In play, a `fast` game drew the same frames per
+second as the Nightly's own `release` build (vsync-bound, about 112 FPS at 120 Hz), with about 0.1 ms more CPU per
+frame (0.57 to 0.68 ms against 0.51 to 0.54 ms).
+
+Measured before builds used `fast`, with the `release` profile, on 2026-10-28 on the Mac mini (M4 Pro, 14 cores) with Veinminer 0.3.0 on Nightly `83f15fa`,
 `CARGO_BUILD_JOBS=8` while other agents' builds ran (upper bounds):
 
 | What | Size, time |
@@ -201,7 +358,7 @@ Measured 2026-10-28 on the Mac mini (M4 Pro, 14 cores) with Veinminer 0.3.0 on N
 | horizon-mixins (`native/tools/`) | 7 MB; built once in 19 s |
 | Crates in the launcher's Cargo home (`<launcher data>/cargo/`) | 289 MB |
 | Source of one commit, and the stage | 64 MB each |
-| First build: release profile, the whole game | 9 min 10 s of compiling, 9 min 41 s in all; `native/target/` 1.5 GB |
+| First build: the whole game | 9 min 10 s of compiling, 9 min 41 s in all; `native/target/` 1.5 GB |
 | Rebuild after a helper's code changed | 2 min 46 s of compiling (only `horizon-client`), 2 min 53 s in all |
 | A change horizon-mixins ignores (a comment) | nothing compiled; 31 s, mostly the version folder's copy |
 
@@ -212,13 +369,15 @@ Measured 2026-10-29 on Windows 11 (Ryzen 7 9800X3D, 16 threads), the same mod an
 |---|---|
 | Rust 1.99.1 and MinGW-w64 (`<launcher data>/rust/`) | 1.7 GB, MinGW-w64 875 MB of it |
 | Crates in the launcher's Cargo home | 657 MB |
-| First build: release profile, the whole game | 6 min 57 s of compiling, 8 min 3 s in all; `native/target/` 2.0 GB |
+| First build: the whole game | 6 min 57 s of compiling, 8 min 3 s in all; `native/target/` 2.0 GB |
 
 Measured 2026-10-28 on Linux (an x86_64 server with no Rust of its own), Zoom on Horizon `1149c92`, 3 jobs while CI
 ran: `rust install` in 11 s (592 MB), the first build in 12 min 9 s. The built game ran Zoom's proof (under `xvfb-run`:
 the game needs a display even with `--offscreen`).
 
-Only the native builds an instance plays are kept (`native_mods::prune`); `native/target/` stays for the next one.
+The native builds an instance plays are kept, and the three newest no instance plays (`native_mods::prune`, by when
+each was built or last used): switching a mod off and on again plays the kept build again without compiling.
+`native/target/` stays for the next one.
 
 ## Trust
 
@@ -236,8 +395,9 @@ Only the native builds an instance plays are kept (`native_mods::prune`); `nativ
   `horizon-native.json`. `revoked.toml` takes a bad release down.
   A content mod's entry may turn `native-mod` once (never back): its `.hmod` versions stay published and
   are checked as `.hmod`s, the index lists only its `.hnmod` versions, and the launcher's update keeps the
-  player's `.hmod`; removing the mod removes both.
-- **Isolation of data.** Native mods run only in the instance built for them, with its own worlds, options and logs.
+  player's `.hmod` (the game runs it until a native build has the mod, then skips it); removing the mod removes both.
+- **Isolation of data.** Native mods run only in the instance they are installed in, with its worlds, options and
+  logs (the default Horizon instance's, when they are installed there); other instances play their own versions.
 - What this does not do: sandbox the compiled game. horizon-mixins' checks stop mistakes, not a malicious helper
   ([security notes](https://github.com/horizon-rust/horizon-mixins/blob/main/docs/security.md)).
 
@@ -250,7 +410,8 @@ Only the native builds an instance plays are kept (`native_mods::prune`); `nativ
 
 ## Left to do
 
-- Rebuild after the mods or the Nightly change (asking first, as it compiles for minutes).
+- Rebuild after the mods change, and offer **Update** when `update_for` finds a newer Horizon (asking first, as it
+  compiles for minutes).
 - A prebuilt horizon-mixins from its CI instead of building it on the player's computer.
 
 ## Named hook catalog (draft)
@@ -318,11 +479,50 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   spreading (`kind` `fluid` or `fire`) from `from` into `to`, and a piston moving blocks once its structure resolved.
   Canceled, the block at `to` stays as it is, and the piston moves nothing. Fluids ask on every flow: answer from
   memory, fast.
+- **`native_random_tick(ticks, dimension, pos, state, handled)`** (API 33, on `GameLevel`): a block `tickChunk`
+  random-ticks, before its own `randomTick`. Change the block with the level's `native_set_block_property(ticks, pos,
+  key, value, flags)`; set `handled` to skip the block's own random tick.
+- **`native_tick_block(ticks, dimension, pos, state, handled)`** (API 34, on `GameLevel`): a due scheduled tick of a block
+  that is still there (`ServerLevel.tickBlock`), before its own `tick`; the same contract as `native_random_tick`.
 - **`native_explosion_detonate(dimension, center, blocks)`** (API 22): the positions an explosion is about to break,
   before any is hit; take out the ones to spare. Entities are hurt as before.
 - **`native_fill_bucket(stack, pos, canceled)`** and **`native_attack_entity(entity, kind, pos, canceled)`** (API 22):
   a player's bucket at a block, and their blow on an entity, with the acting player swapped in. Canceled, the bucket
   does nothing and the blow does no harm.
+
+### Mobs
+
+API 37, `crates/horizon-client/src/game/native_mobs.rs`: helpers for server mods, for the level in place, on a server only (on a
+client they do nothing, and the readers give nothing). Each takes the `dimension` (`minecraft:overworld`) of the level it means, as
+`native_set_block` does, and is refused when another level is in place. The per-level tick hooks (API 23) run with a defined level in
+place; `native_server_tick` does not define one, so name the dimension and expect a refusal there.
+
+- `native_spawn_mob(dimension, kind, pos, &NativeSpawn)` spawns a mob and returns its id. `NativeSpawn` holds an optional name and health, and the
+  `no_ai`, `invisible`, `silent`, `invulnerable` and `no_gravity` flags; its default is a plain mob. The mob is finalized as a natural spawn
+  is, and kept when its chunk unloads. Nothing is spawned outside `/summon`'s bounds, in a chunk that isn't loaded, or a monster on peaceful.
+- `native_mob(dimension, id)` and `native_mobs(dimension)` read the living mobs: id, dimension, kind, position, yaw, health and maximum health.
+- `native_teleport_mob(dimension, id, pos)` (as `/tp`: it dismounts and drops its path), `native_push_mob(dimension, id, velocity)` and
+  `native_set_mob_health(dimension, id, health)` change one, and answer false for no such mob or a value that isn't finite. Health must be
+  above 0.
+- `native_kill_mob(dimension, id)` kills as `/kill` does, with its loot; `native_remove_mob(dimension, id)` takes the mob away with no death
+  and no loot (it is not saved either).
+- While the game ticks its mobs they are out of the level: from a hook inside that tick, a spawned mob joins after the tick, and the others
+  read as gone.
+
+### Mod messages
+
+API 40, `crates/horizon-client/src/game/native_net.rs`: bytes between a mod's server half and its client half, on the
+one custom payload channel `horizon:mod_net`. A vanilla client never gets them, and a vanilla server isn't sent any.
+
+- `native_net_send_to_player(player, channel, data)` on the server and `native_net_send_to_server(channel, data)` on the
+  client send one. The channel is `mod_id:name`: the id `[a-z0-9_]`, the name `[a-z0-9_./-]`, each 1 to 64 characters;
+  `minecraft` and `horizon` are the game's. The data is at most 30 000 bytes, and 32 messages a tick go each way per
+  player. Ok means accepted: a player who left doesn't get it. Sending to the server is an error until the player has
+  joined.
+- `native_net_from_client(player, channel, data)` and `native_net_from_server(channel, data)` hear them, all mods on every
+  message: check the channel. What a client sent is checked by nothing, so treat it as a player's own input.
+- A player's message reaches the server's hook in the tick after it arrives, when the helpers can reach every player;
+  a message to a player leaves at the end of the tick, from any server hook.
 
 ### Server menus
 
