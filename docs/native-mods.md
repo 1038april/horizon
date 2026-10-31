@@ -187,8 +187,8 @@ vanilla crop grows with `flags::UPDATE_CLIENTS` (neighbours' shapes update, so a
 gets `neighborChanged` and comparators aren't told), a furnace sets its `lit` with `flags::UPDATE_ALL` (both). Horizon
 sends every write to players whatever the flags: `UPDATE_CLIENTS` (2), `UPDATE_INVISIBLE` (4) and `UPDATE_IMMEDIATE`
 (8) change nothing yet. It writes at any loaded position, returns false off an authoritative server (the `Game` one too: a window that isn't a server), for a property or
-value the block doesn't have or a position that isn't loaded, and true without writing when the property already has
-the value. Elsewhere, `Game::native_set_block_property_with(pos, key, value, flags)` does the same, as a brewing
+value the block doesn't have, a position that isn't loaded, or a property that already has the value (nothing is written:
+vanilla's `Level.setBlock` returns false for an unchanged state, as `native_set_block` does), and true when the block changed. Elsewhere, `Game::native_set_block_property_with(pos, key, value, flags)` does the same, as a brewing
 stand's tick sets its bottles with `flags::UPDATE_CLIENTS`. The deprecated in-frame path fires none. Bundles that use
 them need `"hooks": 33`.
 
@@ -250,6 +250,13 @@ API 44 adds the server starting and stopping, on the single player server thread
 (`ServerStoppingEvent`). Each start is followed by `native_world_lifecycle`'s `WorldOpenReady` or `WorldOpenFailed`,
 and each stop by `WorldCloseFinal`; a server whose loop fails reports `WorldCloseFailed` instead of stopping. Bundles
 that use them need `"hooks": 44`.
+
+API 45 sends mod block entities to clients. Each mod block has a block entity type of its own, named after it, after
+vanilla's; a client makes its copy of the block entity with `native_block_entity`, as the server does.
+`native_block_entity_update_tag` gives what clients get of one (`BlockEntity.getUpdateTag`, read from the block entity
+alone): it is asked when a chunk holding it is sent and when its block changes, and the client merges it into the
+copy's `nbt`. A saved chunk sent past the view distance asks it on its own thread, so read only `entity`. Keep it to what clients show (a machine running, its facing, a tank's level), not a menu's progress:
+menus have their own data slots. Bundles that use it need `"hooks": 45`.
 
 ## A bundle
 
@@ -453,6 +460,14 @@ the folder it starts in and every one above it, whatever `CARGO_HOME` says, so f
 would read the player's `~/.cargo/config.toml`, whose `[profile]`, `[build]` and `[target]` settings beat the
 workspace and the environment; no switch turns that search off. The source's own `.cargo/config.toml`, if it
 has one, is passed with `--config`.
+
+Every path the build's tools see — the toolchain, the Cargo home, `native/` and the tools' temp dir (TMPDIR,
+TMP and TEMP, where gcc, the assembler, `ld` and `cargo install` put their scratch files) — comes from
+`backend::build_dir`: the launcher's data folder, resolved (never through a link, which horizon-mixins
+refuses). On Windows, when that path is not spelled in ASCII — a Cyrillic user name in `%APPDATA%`, which
+MinGW-w64's tools can't open — it is the folder's own short (8.3) name where the volume keeps one, else a
+folder under `ProgramData` named for it (`horizon-launcher-<id>`); a data folder that is itself a junction to
+a drive with an ASCII path resolves to that and needs neither.
 
 ## Install from GitHub
 
