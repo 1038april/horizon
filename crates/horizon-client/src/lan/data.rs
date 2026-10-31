@@ -58,6 +58,7 @@ pub const CORE_PACK: (&str, &str, &str) = ("minecraft", "core", horizon_protocol
 const PACK_REGISTRIES: &[&str] = &["minecraft:dialog"];
 
 /// A data-driven registry: entry names in network order and their JSON.
+#[derive(Clone)]
 struct Entries {
     names: Vec<String>,
     json: Vec<Value>,
@@ -249,6 +250,20 @@ impl SyncData {
         };
         sync.recipes = super::recipes::update_recipes(resources, &sync, overlay);
         Ok(sync)
+    }
+
+    /// MinecraftServer.reloadResources: `/reload` keeps the synchronized
+    /// registries the server started with (`kept`'s, its
+    /// LayeredRegistryAccess) and reads the tags against them
+    /// (TagLoader.loadTagsForExistingRegistries); the rest stays reloaded.
+    pub fn keep_registries(&mut self, resources: &Path, kept: &SyncData) {
+        self.dynamic = kept.dynamic.clone();
+        self.registries = kept.registries.clone();
+        self.tags = Self::load_tags(
+            &resources.join("data/minecraft"),
+            &self.builtin,
+            &self.dynamic,
+        );
     }
 
     /// The id of a name in a built-in or synchronized registry.

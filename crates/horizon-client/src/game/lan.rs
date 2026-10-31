@@ -58,10 +58,29 @@ pub(super) fn sync_data(
         .clone()
 }
 
-/// Let go of what `sync_data` loaded: for a preload no world used
-/// (game/world_loading.rs).
+/// Let go of what `sync_data` loaded: a preload no world used
+/// (game/world_loading.rs), what was read before a world with packs opened,
+/// or before a `/reload` without a hub.
 pub(super) fn forget_sync_data() {
     *SYNC.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+/// `/reload` (MinecraftServer.reloadResources) under a running hub: the
+/// tags, recipes and advancements read again with the world's packs, the
+/// synchronized registries `kept` (the hub's) as they were, and that becomes
+/// what `sync_data` gives.
+pub(super) fn reload_sync_data(
+    root: &std::path::Path,
+    overlay: &horizon_world::loot::PackOverlay,
+    kept: &SyncData,
+) -> std::result::Result<Arc<SyncData>, String> {
+    let packs = !overlay.files.is_empty();
+    let sync = SyncData::load(root, overlay).map(|mut sync| {
+        sync.keep_registries(root, kept);
+        Arc::new(sync)
+    });
+    *SYNC.lock().unwrap_or_else(|e| e.into_inner()) = Some((packs, sync.clone()));
+    sync
 }
 
 impl Game<'_> {
@@ -110,7 +129,7 @@ impl SyncPreload {
         }
         if let Ok(read) = self.0.join() {
             let mut sync = SYNC.lock().unwrap_or_else(|e| e.into_inner());
-            if !sync.as_ref().is_some_and(|(with_packs, _)| !with_packs) {
+            if sync.as_ref().is_none_or(|(with_packs, _)| *with_packs) {
                 *sync = Some((false, read.map(Arc::new)));
             }
         }
