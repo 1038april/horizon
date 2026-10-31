@@ -1125,6 +1125,7 @@ dependencies = [
  "horizon-hdr",
  "horizon-items",
  "horizon-mods",
+ "horizon-narrator",
  "horizon-protocol",
  "horizon-server-files",
  "horizon-shader-api",
@@ -1192,6 +1193,7 @@ dependencies = [
  "horizon-core",
  "horizon-hdr",
  "horizon-items",
+ "horizon-narrator",
  "horizon-protocol",
  "horizon-shader-api",
  "horizon-shaders",
@@ -1209,6 +1211,7 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2",
+ "smallvec",
  "symphonia",
  "unicode-bidi",
  "ureq",
@@ -1292,6 +1295,18 @@ dependencies = [
  "toml",
  "wasmparser",
  "zip",
+]
+
+[[package]]
+name = "horizon-narrator"
+version = "0.1.0"
+dependencies = [
+ "libloading",
+ "log",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "windows 0.62.2",
 ]
 
 [[package]]

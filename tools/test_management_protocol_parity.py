@@ -2,8 +2,9 @@
 """Vanilla's server management protocol (JSON-RPC over a WebSocket), Horizon's against vanilla's.
 
 The pinned vanilla server (`net.minecraft.server.Main nogui`) and Horizon's (`horizon-server run`, which
-serves the protocol beside the game it supervises) start with the same `management-server-*` settings (a
-fixed secret, TLS off, one allowed origin). Each is then sent the same things, and every answer is compared
+serves the protocol beside the game it supervises) start in folders with the same lists (ops.json,
+whitelist.json, banned-players.json, banned-ips.json) and the same `management-server-*` settings (a fixed
+secret, TLS off, one allowed origin). Each is then sent the same things, and every answer is compared
 exactly:
 
 - HTTP requests without the secret, with a wrong one, and with it in the WebSocket subprotocol from an
@@ -11,8 +12,9 @@ exactly:
 - the handshake with the secret in the subprotocol from the allowed origin: the subprotocol answered;
 - over a WebSocket with the bearer token, a sequence of messages: malformed JSON, a bare number, unknown and
   unparsable method names, a bad request id, wrong parameters, a notification (no answer), a batch, an
-  answer to nothing, and `rpc.discover` (its document must also equal `reports/json-rpc-api-schema.json`
-  from vanilla's data generator).
+  answer to nothing, `rpc.discover` (its document must also equal `reports/json-rpc-api-schema.json` from
+  vanilla's data generator), `server/status`, the four lists, `players`, kicking nobody, `server/save` and
+  `server/system_message` with no one online, and `server/stop`.
 
 A parse error's `data` is Gson's message in vanilla and serde's in Horizon: left out. The notifications vanilla
 sends meanwhile (`server/started`, `server/saving`...) are set aside: Horizon doesn't send them yet.
@@ -43,6 +45,16 @@ NAME = 'management-protocol-parity'
 EXE = '.exe' if os.name == 'nt' else ''
 SECRET = 'abcdefghijABCDEFGHIJ0123456789abcdefghij'
 ORIGIN = 'http://localhost:3000'
+KIM = {'uuid': '93e029a5-04a0-349d-90b2-f7e145b2644f', 'name': 'Kim0'}
+LOU = {'uuid': '94d84bd8-1dc1-3f9b-88b6-c0c9dc9aa57d', 'name': 'Lou0'}
+LISTS = {
+    'ops.json': [dict(KIM, level=3, bypassesPlayerLimit=True)],
+    'whitelist.json': [LOU],
+    'banned-players.json': [dict(LOU, created='2026-10-31 14:00:00 +0000', source='Server',
+                                 expires='2026-11-30 12:30:00 +0000', reason='griefing')],
+    'banned-ips.json': [{'ip': '203.0.113.7', 'created': '2026-10-31 14:00:00 +0000', 'source': 'Server',
+                         'expires': 'forever', 'reason': 'Banned by an operator.'}],
+}
 # What both servers are sent over the socket, in order; None marks what must get no answer.
 MESSAGES = [
     '{nope',
@@ -58,10 +70,24 @@ MESSAGES = [
     '{"jsonrpc":"2.0","method":"minecraft:server/status"}',
     '{"jsonrpc":"2.0","id":8,"result":true}',
     '{"jsonrpc":"2.0","id":9}',
-    '[{"jsonrpc":"2.0","id":10,"method":"rpc.discover","params":{"x":1}},{"jsonrpc":"2.0","method":"rpc.discover"},'
-    '{"jsonrpc":"2.0","id":"eleven","method":"minecraft:nope","params":[]}]',
+    '[{"jsonrpc":"2.0","id":10,"method":"minecraft:allowlist"},{"jsonrpc":"2.0","method":"minecraft:bans"},'
+    '{"jsonrpc":"2.0","id":"eleven","method":"minecraft:operators","params":[]}]',
     '[]',
     '{"jsonrpc":"2.0","id":12,"method":"rpc.discover"}',
+    '{"jsonrpc":"2.0","id":13,"method":"server/status"}',
+    '{"jsonrpc":"2.0","id":null,"method":"minecraft:allowlist"}',
+    '{"jsonrpc":"2.0","id":14,"method":"minecraft:bans"}',
+    '{"jsonrpc":"2.0","id":15,"method":"minecraft:ip_bans"}',
+    '{"jsonrpc":"2.0","id":16,"method":"minecraft:operators"}',
+    '{"jsonrpc":"2.0","id":17,"method":"minecraft:players"}',
+    '{"jsonrpc":"2.0","id":18,"method":"minecraft:players/kick","params":{"kick":[{"player":{"name":"Nobody"}}]}}',
+    '{"jsonrpc":"2.0","id":19,"method":"minecraft:server/save","params":[false]}',
+    '{"jsonrpc":"2.0","id":20,"method":"minecraft:server/system_message",'
+    '"params":[{"message":{"literal":"Hello"},"overlay":false}]}',
+    '{"jsonrpc":"2.0","id":21,"method":"minecraft:server/system_message",'
+    '"params":[{"message":{"translatable":"chat.type.announcement","translatableParams":["a","b"]},'
+    '"overlay":true,"receivingPlayers":[]}]}',
+    '{"jsonrpc":"2.0","id":22,"method":"minecraft:server/system_message","params":[{"message":{},"overlay":false}]}',
 ]
 
 
@@ -76,7 +102,9 @@ def management_properties(port):
     }
 
 
-def write_eula(folder):
+def write_lists(folder):
+    for file, entries in LISTS.items():
+        (folder / file).write_text(json.dumps(entries, indent=2))
     (folder / 'eula.txt').write_text('eula=true\n')
 
 
@@ -202,6 +230,7 @@ def session(port, log):
             return value
 
     seen['answers'] = [answer(message) for message in MESSAGES]
+    seen['stop'] = answer('{"jsonrpc":"2.0","id":99,"method":"minecraft:server/stop"}')
     seen['notifications'] = notifications
     return seen
 
@@ -220,7 +249,7 @@ def main():
         for side in ('vanilla', 'horizon'):
             folder = work / side
             folder.mkdir()
-            write_eula(folder)
+            write_lists(folder)
             port, management = lab.free_port(), lab.free_port()
             props = {'server-port': str(port), 'online-mode': 'false', 'level-type': 'minecraft:flat',
                      'generate-structures': 'false', 'view-distance': '3', 'simulation-distance': '3',
@@ -245,11 +274,12 @@ def main():
                 server.wait_for(DONE, 600)
                 with (build / f'{side}-session.log').open('w') as log:
                     sides[side] = session(management, log)
+                server.process.wait(timeout=180)
             finally:
                 server.stop()
         vanilla, horizon = sides['vanilla'], sides['horizon']
         failures = []
-        for key in ('no secret', 'wrong secret', 'origin not allowed', 'subprotocol'):
+        for key in ('no secret', 'wrong secret', 'origin not allowed', 'subprotocol', 'stop'):
             if vanilla[key] != horizon[key]:
                 failures.append(f'{key}: vanilla {vanilla[key]!r}, Horizon {horizon[key]!r}')
         for message, v, h in zip(MESSAGES, vanilla['answers'], horizon['answers']):
@@ -264,7 +294,7 @@ def main():
             sys.exit(f'{NAME}: {len(failures)} differences (logs in {build}):\n' + '\n'.join(failures))
     finally:
         shutil.rmtree(work, ignore_errors=True)
-    print(f'{NAME}: {len(MESSAGES) + 4} exchanges answered as vanilla answers them; rpc.discover matches the report')
+    print(f'{NAME}: {len(MESSAGES) + 5} exchanges answered as vanilla answers them; rpc.discover matches the report')
 
 
 if __name__ == '__main__':

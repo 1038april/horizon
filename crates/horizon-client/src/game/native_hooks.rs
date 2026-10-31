@@ -6,6 +6,10 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 46 adds bounded world-space rim and colored-light requests
+//! (`native_visuals`) and opt-in texture-matched emissive material
+//! requests (`native_emissive`).
+//!
 //! API 45 sends mod block entities to clients (`native_block_entity_update_tag`).
 //!
 //! API 44 adds the server starting and stopping (`native_server_about_to_start`,
@@ -163,7 +167,7 @@ use horizon_client::{
     atlas_sources::qualified,
     block_entities::Pos,
     chat::ChatSource,
-    containers::{BlockEntity, MOD_MENUS, ModBlockEntity, ModContainer},
+    containers::{BlockEntity, MOD_MENUS, ModBlockEntity, ModContainer, ModFluidTanks},
     crafting::{CustomRecipe, Ingredient, recipe_result},
     extras::Corner,
     extras_hud::Corners,
@@ -206,7 +210,7 @@ pub(super) use horizon_world::level::flags;
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 45;
+pub(crate) const NATIVE_HOOKS_API: u32 = 46;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -378,6 +382,23 @@ impl GameLevel<'_> {
     ) {
         let _ = (ticks, dimension, pos, state, handled);
     }
+}
+
+/// A depth-tested outline of the client's block selection shape.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct NativeBlockRim {
+    pub(crate) pos: [i32; 3],
+    pub(crate) argb: u32,
+    pub(crate) width: f32,
+}
+
+/// A camera-local visual light, with no gameplay light or shadow writes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct NativeColoredLight {
+    pub(crate) at: [f64; 3],
+    pub(crate) rgb: u32,
+    pub(crate) radius: f32,
+    pub(crate) intensity: f32,
 }
 
 /// The zoom a native mod asks for (`native_zoom`): the factor (1 is none),
@@ -661,6 +682,21 @@ impl Game<'_> {
     /// and on servers), and the server's own (`native_window` is false
     /// there: the single player server thread, a dedicated server).
     pub(super) fn native_tick(&mut self) {}
+    /// The world frame's local visual sources. Push requests; Horizon validates
+    /// and limits them before rendering. Called only while a world is visible.
+    pub(super) fn native_visuals(
+        &self,
+        rims: &mut Vec<NativeBlockRim>,
+        lights: &mut Vec<NativeColoredLight>,
+    ) {
+        let _ = (rims, lights);
+    }
+    /// At most 32 pairs of already-loaded base and transparent overlay sprites.
+    /// Per-pixel alpha in the overlay marks full-bright material, without
+    /// illuminating the surrounding block or changing gameplay light.
+    pub(super) fn native_emissive(&self, layers: &mut Vec<(&'static str, &'static str)>) {
+        let _ = layers;
+    }
     /// The world's phases, read-only; `error_text` carries the engine's
     /// own open-failure text, empty otherwise. Server-side; the deprecated
     /// in-frame path delivers no lifecycle events. A server loop or final
@@ -858,6 +894,21 @@ impl Game<'_> {
         container: &mut Option<ModContainer>,
     ) {
         let _ = (block, container);
+    }
+    /// Block `block`'s block entity has fluid tanks: set `fluids` when the
+    /// block is yours, in the container's shape — each tank's capacity in
+    /// millibuckets, the tanks each face reaches, and the tanks a fill may
+    /// reach and a drain may take. Asked once for each mod block when the
+    /// ticking table is built; at most 16 tanks, capacities clamped to
+    /// 1..=1 000 000, and tank numbers past the count are left out. The tanks'
+    /// contents are kept in the entity's saved compound, under `fluids`, and
+    /// the fluid helpers below read and write them. API @API:fluids@.
+    pub(super) fn native_block_entity_fluids(
+        &self,
+        block: &str,
+        fluids: &mut Option<ModFluidTanks>,
+    ) {
+        let _ = (block, fluids);
     }
     /// A server tick of the block entity at `pos`, in vanilla's order among
     /// the others (`Level.tickBlockEntities`), when its `id` is yours: read
@@ -1132,6 +1183,45 @@ impl Game<'_> {
     pub(super) fn native_net_from_server(&mut self, channel: &str, data: &[u8]) {
         let _ = (channel, data);
     }
+    /// Chunk `chunk` (`[x, z]`, in chunks) of `dimension` came into the world
+    /// (NeoForge's `ChunkEvent.Load`): `new` when it was just generated, false
+    /// when read from the save. A flat world's chunk that leaves before it's
+    /// first lit isn't saved, so it's generated, and new, again; one generated
+    /// as the players left is new when it next comes, unless the server
+    /// restarts first, or the level closes for being empty, which drops its
+    /// memory of what never saved. Its blocks and block entities are there,
+    /// but its saved entities join afterwards and its light may not be ready:
+    /// change the world from a later tick. The chunks around the spawn come
+    /// before `WorldOpenReady`. Not told of a chunk a client receives.
+    /// Server-side. API @API:chunks_players@.
+    pub(super) fn native_chunk_load(&mut self, dimension: &str, chunk: [i32; 2], new: bool) {
+        let _ = (dimension, chunk, new);
+    }
+    /// Chunk `chunk` of `dimension` left the world (NeoForge's
+    /// `ChunkEvent.Unload`), with a level that closes for being empty too. Don't
+    /// read its blocks. Its block entities are still there for this call, so
+    /// `native_with_mod_block_entity` can change one and it's saved with the
+    /// chunk. Not told when the world closes, which `native_world_lifecycle`
+    /// tells. Server-side. API @API:chunks_players@.
+    pub(super) fn native_chunk_unload(&mut self, dimension: &str, chunk: [i32; 2]) {
+        let _ = (dimension, chunk);
+    }
+    /// `player` (`name`) joined the game (NeoForge's
+    /// `PlayerLoggedInEvent`): placed in the world and listed in
+    /// `native_server_players`, so `native_net_send_to_player` reaches them.
+    /// Once a join, with no player's state swapped in. Server-side. API @API:chunks_players@.
+    pub(super) fn native_player_logged_in(&mut self, player: u128, name: &str) {
+        let _ = (player, name);
+    }
+    /// `player` (`name`) left the game (NeoForge's `PlayerLoggedOutEvent`), by
+    /// any path: a lost connection, a kick, the server stopping or failing.
+    /// Once for each player `native_player_logged_in` told of. They've already
+    /// left `native_server_players`, except when the server stops, which tells
+    /// before it saves, with them still listed and able to get a last message.
+    /// Server-side. API @API:chunks_players@.
+    pub(super) fn native_player_logged_out(&mut self, player: u128, name: &str) {
+        let _ = (player, name);
+    }
     /// `player` died: where `ServerPlayer.die` starts, with the death
     /// message's key when the game knows it (`death.attack.lava`; none for a
     /// message it builds from the combat). It only hears. Server-side, for
@@ -1242,6 +1332,60 @@ impl Game<'_> {
     /// acting one). API 39.
     pub(super) fn native_on_equip(&mut self, slot: &str, new: Option<&ItemStack>) {
         let _ = (slot, new);
+    }
+    /// `MobEffect.shouldApplyEffectTickThisTick` for a content mod's effect
+    /// `effect` (`ruby:bleeding`), each tick a player or a mob has it, in
+    /// `MobEffectInstance.tickServer` before it counts down: `tick_count` is
+    /// the ticks left (the entity's tick count when infinite). Set `apply`
+    /// and `native_apply_effect_tick` follows. Server-side. API @API:mob_effect_hooks@.
+    pub(super) fn native_should_apply_effect_tick_this_tick(
+        &self,
+        effect: &str,
+        tick_count: i32,
+        amplifier: i32,
+        apply: &mut bool,
+    ) {
+        let _ = (effect, tick_count, amplifier, apply);
+    }
+    /// `MobEffect.applyEffectTick`: the content mod's effect `effect` acts on
+    /// `entity` in `dimension` (`minecraft:overworld`). Clear `keep` and the
+    /// effect ends now, before it counts down. `entity` is a mob's
+    /// `Entity.getId`, None for a player (`native_acting_player` says who).
+    /// It runs inside the entity's tick: a mob's world borrows the game
+    /// there, so the game is read-only, and it does not hold the ticking
+    /// mobs, nor the player's effects. Server-side. API @API:mob_effect_hooks@.
+    pub(super) fn native_apply_effect_tick(
+        &self,
+        effect: &str,
+        dimension: &str,
+        entity: Option<i32>,
+        amplifier: i32,
+        keep: &mut bool,
+    ) {
+        let _ = (effect, dimension, entity, amplifier, keep);
+    }
+    /// `MobEffect.onEffectAdded`: `LivingEntity.addEffect` gave `entity`
+    /// (as in `native_apply_effect_tick`) the content mod's effect `effect`,
+    /// which it didn't have. Server-side. API @API:mob_effect_hooks@.
+    pub(super) fn native_on_effect_added(
+        &mut self,
+        effect: &str,
+        entity: Option<i32>,
+        amplifier: i32,
+    ) {
+        let _ = (effect, entity, amplifier);
+    }
+    /// NeoForge's `MobEffectEvent.Added`, vanilla's `MobEffect.onEffectStarted`:
+    /// every `LivingEntity.addEffect` of the content mod's effect `effect`,
+    /// new or not, changed or not, after `native_on_effect_added`.
+    /// Server-side. API @API:mob_effect_hooks@.
+    pub(super) fn native_mob_effect_added(
+        &mut self,
+        effect: &str,
+        entity: Option<i32>,
+        amplifier: i32,
+    ) {
+        let _ = (effect, entity, amplifier);
     }
     /// `LivingEntity.hurtServer`, past its guards (invulnerable, dead, fire
     /// with fire resistance), is about to hurt entity `entity` of type `kind`
@@ -1489,6 +1633,39 @@ impl GameLevel<'_> {
 // Native mods use these; nothing in Horizon does.
 #[allow(dead_code)]
 impl Game<'_> {
+    /// Read a loaded, light-emitting block. No implicit chunk loading.
+    pub(super) fn native_lit_block_name(&self, pos: [i32; 3]) -> Option<&str> {
+        self.world
+            .chunks
+            .contains_key(&(pos[0].div_euclid(16), pos[2].div_euclid(16)))
+            .then(|| {
+                self.res
+                    .facts()
+                    .get(self.world.block(pos[0], pos[1], pos[2]))
+            })
+            .filter(|f| f.emission > 0)
+            .map(|f| f.name.as_ref())
+    }
+    /// A small local vanilla particle; caller should rate-limit emission.
+    pub(super) fn native_flame_particle(&mut self, at: [f64; 3], soul: bool) {
+        use horizon_client::particles::{ParticleOptions, ParticleType};
+        if !self.native_window() || at.iter().any(|v| !v.is_finite()) {
+            return;
+        }
+        let Some(p) = self.native_player() else {
+            return;
+        };
+        if (at[0] - p.x).powi(2) + (at[1] - p.y).powi(2) + (at[2] - p.z).powi(2) > 1024.0 {
+            return;
+        }
+        let kind = if soul {
+            ParticleType::SoulFireFlame
+        } else {
+            ParticleType::Flame
+        };
+        self.particles
+            .add(&ParticleOptions::simple(kind), at, [0.0, 0.01, 0.0]);
+    }
     /// The stack the acting player carries in `slot`, by
     /// `native_inventory_tick`'s numbers: none for an empty slot or another
     /// number. Change it as you like: a count of 0 empties the slot at the end
@@ -2099,6 +2276,48 @@ impl Game<'_> {
         self.native_item_picked_up(player, &stack.item, stack.count, &mut canceled);
         canceled
     }
+    /// Tells the mods of the chunks that came and went in this level.
+    pub(super) fn native_chunks_changed(
+        &mut self,
+        unloaded: &[std::sync::Arc<horizon_client::chunk::Chunk>],
+    ) {
+        let loaded = std::mem::take(&mut self.world.loaded_chunks);
+        if self.remote.is_some() {
+            return;
+        }
+        let dimension = self.dim.id();
+        for (x, z, new) in loaded {
+            self.native_chunk_load(dimension, [x, z], new);
+        }
+        for chunk in unloaded {
+            self.native_chunk_unload(dimension, [chunk.x, chunk.z]);
+        }
+    }
+    /// The players still here leave with the server (`PlayerList.removeAll`):
+    /// the mods hear it once, whichever path closes it.
+    pub(super) fn native_players_leaving(&mut self) {
+        let Some(host) = self.lan.as_mut() else {
+            return;
+        };
+        if std::mem::replace(&mut host.players_told_left, true) {
+            return;
+        }
+        let players: Vec<(u128, String)> = host
+            .hub
+            .guests
+            .iter()
+            .filter(|g| g.placed)
+            .map(|g| (g.uuid, g.name.clone()))
+            .collect();
+        for (player, name) in players {
+            self.native_player_logged_out(player, &name);
+        }
+        // No tick follows to send what they said.
+        if let Some(mut host) = self.lan.take() {
+            self.flush_native_net(&mut host);
+            self.lan = Some(host);
+        }
+    }
     /// The mobs from index `from` on are new in the world.
     pub(super) fn native_mobs_joined(&mut self, from: usize, natural: bool) {
         for i in from..self.mobs.len() {
@@ -2280,6 +2499,42 @@ impl Game<'_> {
             });
             if let Some(c) = container {
                 out.insert(i, Arc::clone(c));
+            }
+        }
+        out
+    }
+    /// The fluid tanks of the mod blocks' block entities, by block state
+    /// (`native_block_entity_fluids`), checked as the containers are.
+    pub(super) fn native_fluid_tables(&self) -> FxHashMap<u32, Arc<ModFluidTanks>> {
+        let registry = self.pack.assets.registry;
+        let mut by_block: FxHashMap<String, Option<Arc<ModFluidTanks>>> = FxHashMap::default();
+        let mut out = FxHashMap::default();
+        for i in 0..registry.len() as u32 {
+            let Some(state) = registry.state(horizon_world::registry::BlockStateId(i)) else {
+                continue;
+            };
+            if state.name.starts_with("minecraft:") {
+                continue;
+            }
+            let tanks = by_block.entry(state.name.clone()).or_insert_with(|| {
+                let mut fluids = None;
+                self.native_block_entity_fluids(&state.name, &mut fluids);
+                fluids.map(|mut f| {
+                    f.tanks.truncate(16);
+                    // Clamped, not dropped: the face and fill lists name
+                    // tanks by number, which must not shift.
+                    for c in &mut f.tanks {
+                        *c = (*c).clamp(1, 1_000_000);
+                    }
+                    let n = f.tanks.len();
+                    for list in f.faces.iter_mut().chain([&mut f.inputs, &mut f.outputs]) {
+                        list.retain(|&t| t < n);
+                    }
+                    Arc::new(f)
+                })
+            });
+            if let Some(t) = tanks {
+                out.insert(i, Arc::clone(t));
             }
         }
         out
@@ -2861,7 +3116,8 @@ mod tests {
     /// each goes through `property_change`, none returns true on its own.
     #[test]
     fn property_setters_refuse_no_change() {
-        let source = include_str!("native_hooks.rs");
+        // A Windows checkout has CRLF line ends: the searches below look for "\n".
+        let source = include_str!("native_hooks.rs").replace("\r\n", "\n");
         let code = source.split("#[cfg(test)]").next().unwrap_or_default();
         for head in [
             "    pub(super) fn native_set_block_property(\n        &mut self,\n        ticks:",

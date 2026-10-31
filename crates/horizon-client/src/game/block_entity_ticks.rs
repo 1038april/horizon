@@ -26,6 +26,8 @@ impl Game<'_> {
             self.world.block_entities.set_states(states);
             let containers = self.native_containers();
             self.world.block_entities.set_mod_containers(containers);
+            let fluids = self.native_fluid_tables();
+            self.world.block_entities.set_mod_fluids(fluids);
         }
         // Only lingering cooldowns are dropped; a hopper that ticks checks
         // its own block. Once a second is soon enough for the rest.

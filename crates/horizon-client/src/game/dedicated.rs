@@ -610,6 +610,7 @@ impl Game<'_> {
     pub(super) fn run_dedicated(&mut self) -> Result<()> {
         let result = self.run_dedicated_inner();
         if let Err(error) = &result {
+            self.native_players_leaving();
             self.native_lifecycle_world_failed(&error.to_string());
             self.native_lifecycle_close_failed(&error.to_string());
         }
@@ -1716,20 +1717,14 @@ impl Game<'_> {
         // MinecraftServer.stopServer's start: everyone is still here.
         self.native_server_stopping(true);
         log("INFO", "Stopping server");
+        self.native_players_leaving();
         log("INFO", "Saving players");
         if let Some(mut host) = self.lan.take() {
             self.flush_native_net(&mut host);
-            for g in &host.hub.guests {
-                // The vehicle the guest rides, for the file that names it.
-                let vehicle = self.root_vehicle_uuid(g.vehicle);
-                horizon_client::lan::playerdata::save(g, &self.world_root, vehicle);
-            }
+            // PlayerList.removeAll: each player's file, with the vehicle it
+            // alone rides, then its records.
+            self.save_leaving_guests(&mut host);
             self.lan = Some(host);
-        }
-        if let Some(h) = self.lan.as_ref() {
-            for g in &h.hub.guests {
-                self.save_guest_records(h, g);
-            }
         }
         if let Some(h) = self.lan.as_mut() {
             let conns: Vec<u32> = h.hub.guests.iter().map(|g| g.conn).collect();

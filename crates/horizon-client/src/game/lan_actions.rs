@@ -6,7 +6,8 @@
 //! host, and every world change they cause reaches all players through the
 //! block log, the level events and the entity tracker.
 use super::{
-    Dim, Game, GuestUse, Hit, Mining, Screen, lan::LanHost, respawn_anchor::RespawnConfig,
+    Dim, Game, GuestUse, Hit, InteractTarget, Mining, Screen, lan::LanHost,
+    respawn_anchor::RespawnConfig,
 };
 use horizon_client::{
     command::vanilla,
@@ -206,6 +207,8 @@ pub(super) struct GuestSwap {
     packets: Vec<play::Clientbound>,
     /// The entity events queued for that guest.
     entity_events: Vec<i8>,
+    /// The equipment breaks queued for that guest.
+    equipment_breaks: Vec<(i8, [f64; 3])>,
     /// The host's count of swings started, kept while the guest acts.
     swings: u32,
     /// How many projectiles there were: those added since are the guest's.
@@ -520,6 +523,7 @@ impl Game<'_> {
         );
         let packets = std::mem::take(&mut self.guest_packets);
         let entity_events = std::mem::take(&mut self.guest_entity_events);
+        let equipment_breaks = std::mem::take(&mut self.guest_equipment_breaks);
         let swings = self.swings_started;
         let projectiles = self.creatures.projectiles.len();
         let modifiers = std::mem::replace(
@@ -595,6 +599,7 @@ impl Game<'_> {
             known_movement,
             packets,
             entity_events,
+            equipment_breaks,
             swings,
             projectiles,
             modifiers,
@@ -670,6 +675,7 @@ impl Game<'_> {
             known_movement,
             packets,
             entity_events,
+            equipment_breaks,
             swings,
             projectiles,
             modifiers,
@@ -703,6 +709,10 @@ impl Game<'_> {
                     event,
                 }),
             );
+        }
+        // LivingEntity.onEquippedItemBroken: `broadcastEntityEvent`, the guest too.
+        for (event, at) in std::mem::replace(&mut self.guest_equipment_breaks, equipment_breaks) {
+            host.hub.entity_event(entity_id, event, at);
         }
         // Player.playSound: everyone near but the guest, in the players' source.
         let players = horizon_client::settings::SOUND_SOURCES
@@ -1772,10 +1782,15 @@ impl Game<'_> {
                     .is_some()
                 {
                     // handleInteract: the entity and that hand only; a click the
-                    // entity passes comes back as UseItem.
+                    // entity passes comes back as UseItem. The entity is the
+                    // packet's own id, which the range check above passed.
                     let hand = if p.hand == 1 { Hand::Off } else { Hand::Main };
+                    let target = InteractTarget {
+                        id: p.id,
+                        location: p.location,
+                    };
                     let swung = self.as_guest(host, conn, |g| {
-                        g.guest_use = Some(GuestUse::Entity(hand));
+                        g.guest_use = Some(GuestUse::Entity(hand, target));
                         let swings = g.swings_started;
                         let _ = g.use_item();
                         g.guest_use = None;
@@ -2539,11 +2554,18 @@ impl Game<'_> {
             .creatures
             .projectiles
             .iter()
-            .position(|p| p.id != 0 && p.id as i32 == id && super::deflect::redirectable(p))
+            .position(|p| p.id != 0 && p.id as i32 == id && super::deflect::attackable(p))
         {
             self.as_guest(host, conn, |g| {
                 if g.within_interaction_range(i) {
-                    g.deflect(i);
+                    if matches!(
+                        g.creatures.projectiles[i].kind,
+                        horizon_client::projectiles::ProjectileKind::ShulkerBullet { .. }
+                    ) {
+                        g.hit_shulker_bullet(i);
+                    } else {
+                        g.deflect(i);
+                    }
                 }
             });
             return;
@@ -2805,11 +2827,56 @@ impl Game<'_> {
         let skip = usize::from(text.starts_with('/'));
         let command = &text[skip..];
         let d = vanilla::game_dispatcher();
-        let level = std::mem::replace(&mut self.ui.registries.permission, permission);
+        // The completions come from the server's players and lists, not from the host's own registries: a
+        // dedicated server has no local player (they would list "Player"), and a LAN world's guests are not in
+        // the host's list.
+        let mut players = if self.options.dedicated.is_some() {
+            Vec::new()
+        } else {
+            self.ui.registries.players.clone()
+        };
+        players.extend(host.hub.guests.iter().map(|g| g.name.clone()));
+        let (ops, banned_players, banned_ips, whitelisted) = match &self.server_lists {
+            Some(lists) => {
+                let l = lists.lock().unwrap();
+                (
+                    l.ops
+                        .entries()
+                        .iter()
+                        .map(|e| e.user.name.clone())
+                        .collect(),
+                    l.bans
+                        .entries()
+                        .iter()
+                        .map(|e| e.user.name.clone())
+                        .collect(),
+                    l.ip_bans.entries().iter().map(|e| e.user.clone()).collect(),
+                    l.white
+                        .entries()
+                        .iter()
+                        .map(|e| e.user.name.clone())
+                        .collect(),
+                )
+            }
+            None => Default::default(),
+        };
+        let reg = &mut self.ui.registries;
+        let level = std::mem::replace(&mut reg.permission, permission);
+        let own_players = std::mem::replace(&mut reg.players, players);
+        let own_ops = std::mem::replace(&mut reg.ops, ops);
+        let own_banned = std::mem::replace(&mut reg.banned_players, banned_players);
+        let own_banned_ips = std::mem::replace(&mut reg.banned_ips, banned_ips);
+        let own_whitelisted = std::mem::replace(&mut reg.whitelisted, whitelisted);
         let parse = d.parse(command, &self.ui.registries);
         let ((start, end), mut suggestions) =
             d.suggestions(&parse, command.len(), &self.ui.registries);
-        self.ui.registries.permission = level;
+        let reg = &mut self.ui.registries;
+        reg.permission = level;
+        reg.players = own_players;
+        reg.ops = own_ops;
+        reg.banned_players = own_banned;
+        reg.banned_ips = own_banned_ips;
+        reg.whitelisted = own_whitelisted;
         // ServerCommandSuggestionsProvider.limitSuggestionCount.
         suggestions.truncate(1000);
         let utf16 = |byte: usize| command[..byte.min(command.len())].encode_utf16().count() as i32;
