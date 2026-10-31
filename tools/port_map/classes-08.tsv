@@ -14,11 +14,11 @@ RedstoneWireEvaluator.getWireSignal	port	crates/horizon-world/src/level/redstone
 SavedDataType	skip:java		equals over the saved-data type record; Horizon keys saved data by name
 WanderingTraderData.setSpawnChance	inline	crates/horizon-client/src/game/wandering_trader.rs::Game::tick_wandering_trader	field write of spawn_chance inside the tick; no setter
 WanderingTraderData.setSpawnDelay	inline	crates/horizon-client/src/game/wandering_trader.rs::Game::tick_wandering_trader	field write of spawn_delay inside the tick; no setter
-MapBanner.fromWorld	missing		player: using a map on a placed banner adds no banner marker to the map (MapItem.useOn toggle is not ported)
-MapBanner.getDecoration	missing		player: banner markers would show the dye colour icon; maps.rs has no banner decoration types
+MapBanner.fromWorld	port	crates/horizon-client/src/game/banners.rs::Game::map_banner_at	ticked in #3517; `MapBanner.fromWorld` is cited at crates/horizon-client/src/game/banners.rs:19
+MapBanner.getDecoration	port	crates/horizon-client/src/game/maps.rs::MapBanner::sprite	ticked in #3517; `MapBanner.getDecoration` is cited at crates/horizon-client/src/game/maps.rs:50
 MapBanner.getId	missing		minor: key string of a banner marker, only used by the marker feature
 MapDecorationTypes	skip:data		registry of map decoration types; maps.rs keeps its own DECORATION_TYPES table
-MapId.addToTooltip	missing		player: map tooltips show no 'Map #id', 'Locked' or advanced scale lines
+MapId.addToTooltip	port	crates/horizon-client/src/item_tooltip.rs::PlayerHeadName::map_id_lines	ticked in #3517; `MapId.addToTooltip` is cited at crates/horizon-client/src/item_tooltip.rs:412
 MapIndex.getNextMapId	port	crates/horizon-client/src/game/maps.rs::Game::next_map_id	
 DerivedLevelData	skip:debug		crash report category
 LevelData	skip:debug		crash report category

@@ -3,7 +3,7 @@ SpeleothemBlock.updateShape	port	crates/horizon-world/src/level/shapes.rs::Sim::
 SpeleothemBlock.getStateForPlacement	port	crates/horizon-world/src/level/place.rs::Sim::placement_class	Speleothem arm picks tip direction and thickness.
 SpeleothemBlock.calculateTipDirection	inline	crates/horizon-world/src/level/place.rs::Sim::placement_class	Tip direction choice is inside the placement arm.
 SpeleothemBlock.isSpeleothemWithDirection	port	crates/horizon-world/src/level/speleothem.rs::Sim::speleothem_with	
-SpeleothemBlock.onProjectileHit	missing		player: a thrown trident faster than 0.6 that hits pointed dripstone should break it. Horizon's trident only sticks in the block (game/trident.rs), so the dripstone stays.
+SpeleothemBlock.onProjectileHit	port	crates/horizon-client/src/game/creatures.rs::projectile_breaks_block	ticked in #3516; `SpeleothemBlock.onProjectileHit` is cited at crates/horizon-client/src/game/creatures.rs:3447 (in a comment, so `where` names the enclosing fn)
 SpeleothemBlock.tick	port	crates/horizon-world/src/level/tick.rs::Sim::tick_block	Speleothem arm: a stalagmite that cannot survive breaks, else a falling stalactite starts.
 SpeleothemBlock.isTip	port	crates/horizon-world/src/level/speleothem.rs::Sim::speleothem_is_tip	
 SpeleothemBlock.getFluidState	port	crates/horizon-world/src/registry_fluid.rs::RegistryFluidWorld::fluid_state	waterlogged fluid from block data
@@ -68,12 +68,12 @@ TripWireHookBlock.notifyNeighbors	port	crates/horizon-world/src/level/rails.rs::
 TripWireHookBlock.getDirectSignal	port	crates/horizon-world/src/level/redstone.rs::Sim::state_direct_signal	strong power from per-state data (powered and facing)
 TripWireHookBlock.rotate	port	crates/horizon-world/src/worldgen/structure.rs::StateTransforms::rotate	
 TripWireHookBlock.createBlockStateDefinition	skip:data		block state definition is data (blocks table in horizon-items)
-TurtleEggBlock.stepOn	missing		player: walking onto turtle eggs without sneaking should crack them (1 in 100 per step). Horizon's motion step_event does nothing, so eggs never break underfoot.
+TurtleEggBlock.stepOn	port	crates/horizon-client/src/motion.rs::MotionWorld::effects_from_blocks	ticked in #3516; `TurtleEggBlock.stepOn` is cited at crates/horizon-client/src/motion.rs:1434 (in a comment, so `where` names the enclosing fn)
 TurtleEggBlock.destroyEgg	port	crates/horizon-world/src/block_landing.rs::BlockLandingRegistry::fall_on	gap: player: only the fall roll (1 in 3) is here; the 1 in 100 step roll from stepOn is missing.
 TurtleEggBlock.decreaseEggs	inline	crates/horizon-world/src/block_landing.rs::BlockLandingRegistry::fall_on	One egg fewer, or the block removed, inside the TurtleEgg rule.
 TurtleEggBlock.onPlace	port	crates/horizon-world/src/level/hooks.rs::Sim::on_place	TurtleEgg arm: crack level event on sand.
 TurtleEggBlock.shouldUpdateHatchLevel	inline	crates/horizon-world/src/level/timeline.rs::Sim::turtle_egg_tick	The hatch chance check opens turtle_egg_tick.
-TurtleEggBlock.playerDestroy	missing		player: breaking a stack of 2 to 4 turtle eggs in survival should remove one egg and leave the rest. Horizon removes the whole stack (hooks.rs player_destroy).
+TurtleEggBlock.playerDestroy	port	crates/horizon-client/src/game.rs::break_block_as_player	ticked in #3516; `TurtleEggBlock.playerDestroy` is cited at crates/horizon-client/src/game.rs:5143 (in a comment, so `where` names the enclosing fn)
 TurtleEggBlock.canBeReplaced	port	crates/horizon-world/src/level/place.rs::Sim::can_be_replaced	TurtleEgg arm: adds an egg to a stack below 4.
 TurtleEggBlock.getStateForPlacement	port	crates/horizon-world/src/level/place.rs::Sim::placement_class	TurtleEgg arm adds an egg to a stack.
 TurtleEggBlock.getShape	port	crates/horizon-world/src/interaction_shapes.rs::InteractionShapes::shape	shape per egg count from the table

@@ -122,8 +122,8 @@ SignBlockEntity.resolveLine	missing		minor: unsure: sign text selectors are not 
 SignBlockEntity.updateText	port	crates/horizon-client/src/game/sign_edit.rs::Game::lan_sign_update	guest's sign write
 SignBlockEntity.updateMessages	missing		minor: unsure: sign text selectors are not resolved; SignText keeps plain strings (component_text)
 SignBlockEntity.setText	port	crates/horizon-client/src/game/sign_edit.rs::Game::sign_write	
-SignBlockEntity.canExecuteClickCommands	missing		player: sign text click events are not kept; Horizon flattens sign text to plain strings, so clicking a sign runs nothing
-SignBlockEntity.executeClickCommandsIfPresent	missing		player: sign text click events are not kept; clicking a sign runs nothing
+SignBlockEntity.canExecuteClickCommands	port	crates/horizon-client/src/game/sign_edit.rs::Game::sign_can_execute_click_commands	ticked in #3516; `SignBlockEntity.canExecuteClickCommands` is cited at crates/horizon-client/src/game/sign_edit.rs:97
+SignBlockEntity.executeClickCommandsIfPresent	port	crates/horizon-client/src/game/sign_edit.rs::Game::execute_sign_click_commands	ticked in #3516; `SignBlockEntity.executeClickCommandsIfPresent` is cited at crates/horizon-client/src/game/sign_edit.rs:139
 SignBlockEntity.createCommandSourceStack	missing		minor: unsure: only used by click commands (see executeClickCommandsIfPresent)
 SignBlockEntity.markUpdated	port	crates/horizon-client/src/game/trial_spawner.rs::Game::mark_block_entity_updated	
 SignBlockEntity.setWaxed	port	crates/horizon-client/src/game/sign_edit.rs::Game::use_sign_applicator	honeycomb wax
@@ -137,7 +137,7 @@ SignText.withColor	port	crates/horizon-client/src/game/sign_edit.rs::Game::use_s
 SignText.hasMessage	port	crates/horizon-client-render/src/signs.rs::SignText::is_empty	inverse of is_empty
 SignText.getRenderMessages	port	crates/horizon-client-render/src/block_entity_render.rs::sign_text_calls	lines drawn on the sign
 SignText.filteredMessagesForSerialization	skip:service		chat-filtered sign text for clients; Horizon has no text filter
-SignText.hasAnyClickCommands	missing		player: sign text click events are not kept; no click command exists on any sign
+SignText.hasAnyClickCommands	port	crates/horizon-client-render/src/signs.rs::SignText::has_any_click_commands	ticked in #3516; `SignText.hasAnyClickCommands` is cited at crates/horizon-client-render/src/signs.rs:81
 SignText.hasEditableText	skip:other		Horizon sign text has no click events, so every line is editable
 SignText.equals	skip:java		value equality
 SignText.hashCode	skip:java		value hashing
