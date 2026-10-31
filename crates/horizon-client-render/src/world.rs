@@ -109,6 +109,10 @@ pub struct World {
     /// The moving-piston block entities of the level, by position, copied
     /// from the block ticks after each tick: collision and rendering read them.
     pub moving_pistons: Vec<([i32; 3], horizon_world::piston_shape::MovingPistonState)>,
+    /// The `ShulkerBoxBlockEntity` lid state of the level, by position, copied
+    /// from the block entities after each tick: the collision queries read it
+    /// (`ShulkerBoxBlockEntity.getBoundingBox`), as `moving_pistons` for pistons.
+    pub shulkers: FxHashMap<[i32; 3], crate::block_entity_anim::Shulker>,
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Weather {
@@ -203,6 +207,7 @@ impl World {
             light_log: None,
             moving_piston_fallback: Vec::new(),
             moving_pistons: Vec::new(),
+            shulkers: FxHashMap::default(),
             pois: Default::default(),
         }
     }
