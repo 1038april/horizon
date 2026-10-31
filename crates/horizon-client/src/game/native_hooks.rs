@@ -795,7 +795,7 @@ impl Game<'_> {
     /// (`EntityBlock.newBlockEntity`): set `entity` to its id and saved
     /// compound when the block is yours and `entity` is none yet. The block's
     /// template must have a block entity (a chest, a furnace...), so that
-    /// breaking the block removes it. API 15.
+    /// breaking the block removes it; on another template it gets none. API 15.
     pub(super) fn native_block_entity(
         &mut self,
         block: &str,
@@ -1884,6 +1884,12 @@ impl Game<'_> {
         let mut entity = None;
         self.native_block_entity(name, &mut entity);
         let (id, nbt) = entity?;
+        // A template with no block entity (stone) never removes one, so it would stay in the save.
+        let state = self.pack.assets.registry.default_state(name)?;
+        if !self.res.facts().get(state).block_entity {
+            super::mods::warn_no_block_entity(name, &id);
+            return None;
+        }
         Some(BlockEntity::Mod(Box::new(ModBlockEntity {
             id,
             nbt,
@@ -1981,7 +1987,10 @@ impl Game<'_> {
     /// `target`: a mod block's is laid out by its mod (`native_screen`).
     pub(super) fn open_native_screen(&mut self, key: Pos, target: Option<Pos>, window: i32) {
         self.mod_screen = None;
-        let Some(t) = target else {
+        // Only when the clicked block holds this menu: `target` outlives the use
+        // that set it, so another menu opened later (a command's, another mod's)
+        // would otherwise get the last clicked machine's screen.
+        let Some(t) = target.filter(|t| *t == key) else {
             return;
         };
         let block = self
@@ -2225,8 +2234,10 @@ impl Game<'_> {
         true
     }
     /// The open mod screen's tooltip under the cursor (`native_screen_tooltip`).
-    pub(super) fn draw_native_screen_tooltip(&self, batch: &mut HudBatch) {
-        if self.carried.is_some() || self.slot_at(batch, self.cursor.0, self.cursor.1).is_some() {
+    pub(super) fn draw_native_screen_tooltip(&mut self, batch: &mut HudBatch) {
+        // Over no item: an empty slot still gets the mod's hint (which fuel it takes).
+        let slot = self.slot_at(batch, self.cursor.0, self.cursor.1);
+        if self.carried.is_some() || slot.is_some_and(|i| self.slot_view(i).is_some()) {
             return;
         }
         let Some((block, data, at)) = self.native_screen_at() else {
