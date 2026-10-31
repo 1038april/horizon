@@ -78,6 +78,7 @@ mod campfire_douse;
 mod cartography;
 mod cat_spawner;
 mod chat;
+mod chat_filter;
 mod chiseled_bookshelf;
 mod client_ambient;
 mod clipboard;

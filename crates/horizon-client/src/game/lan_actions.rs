@@ -2659,6 +2659,11 @@ impl Game<'_> {
             );
             return;
         }
+        // The chat filter's `/unmute` (game/chat_filter.rs), on servers that filter.
+        if words[0] == "unmute" && host.hub.chat_filter_on() {
+            self.guest_unmute(host, conn, &words);
+            return;
+        }
         // A native mod's command, for every player its level allows,
         // whether the world allows commands or not (game/native_server.rs).
         let integrated = host.hub.config.integrated;

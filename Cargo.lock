@@ -1102,6 +1102,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "horizon-chat-filter"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
 name = "horizon-client"
 version = "0.1.0"
 dependencies = [
@@ -1115,6 +1124,7 @@ dependencies = [
  "horizon-anticheat",
  "horizon-assets",
  "horizon-bench",
+ "horizon-chat-filter",
  "horizon-client-core",
  "horizon-client-input",
  "horizon-client-render",
@@ -1358,6 +1368,7 @@ dependencies = [
  "chrono",
  "horizon-anticheat",
  "horizon-bench",
+ "horizon-chat-filter",
  "horizon-core",
  "horizon-release-sign",
  "horizon-server-files",

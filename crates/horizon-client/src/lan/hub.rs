@@ -39,6 +39,7 @@ use std::sync::{Arc, Mutex, atomic::Ordering};
 
 /// GameEvent types (ClientboundGameEventPacket).
 pub mod chat;
+pub mod chat_filter;
 
 pub mod game_event {
     pub const NO_RESPAWN_BLOCK_AVAILABLE: u8 = 0;
@@ -175,6 +176,17 @@ pub enum HostEvent {
         sender: u128,
         text: String,
     },
+    /// A player's text the chat filter refused (docs/chat-filter.md): relayed to nobody, for the
+    /// game to log and to carry out `action`.
+    ChatFiltered {
+        sender: u128,
+        name: String,
+        place: chat_filter::Place,
+        text: String,
+        /// The hit's number in the filter's window.
+        count: u32,
+        action: horizon_chat_filter::Action,
+    },
     /// A server log warning (ServerGamePacketListenerImpl's LOGGER.warn).
     Warn(String),
     /// A server log error (LOGGER.error).
@@ -197,6 +209,8 @@ pub struct Hub {
     pub movement_checks: (bool, bool),
     /// The anticheat, when `server.toml` turns it on (dedicated servers).
     pub anticheat: Option<Box<super::anticheat::Anticheat>>,
+    /// The chat filter, when `server.toml` turns it on (dedicated servers).
+    pub chat_filter: Option<Box<horizon_chat_filter::Guard>>,
     /// The far ring, when `server.toml`'s `max_view_distance` turns it on (dedicated servers).
     pub far: Option<super::far::Far>,
     /// The `immediate_respawn` game rule, as the players were last told.
@@ -475,6 +489,7 @@ impl Hub {
             immediate_respawn: false,
             movement_checks: (true, true),
             anticheat: None,
+            chat_filter: None,
             far: None,
             singleplayer_owner: None,
             flat_world: false,
