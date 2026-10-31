@@ -4428,7 +4428,7 @@ mod tests {
         use super::{key_bindings, CloseWindow, Quit};
         use gpui::{Keymap, Keystroke};
         let keymap = Keymap::new(key_bindings());
-        let key = |s: &str| [Keystroke::parse(s).unwrap()];
+        let key = |s: &'static str| [Keystroke::parse(s).unwrap()];
         let (hit, _) = keymap.bindings_for_input(&key("cmd-q"), &[]);
         assert!(hit.iter().any(|b| b.action().partial_eq(&Quit)));
         let (hit, _) = keymap.bindings_for_input(&key("cmd-w"), &[]);
