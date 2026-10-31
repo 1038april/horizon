@@ -1436,7 +1436,9 @@ impl Game<'_> {
     /// (docs/native-mods.md, API 50). Change `amount`, or set `canceled`,
     /// and nothing of `hurtServer` itself happens (no damage, hurt sound,
     /// knockback, invulnerable time, statistics or criteria); the caller acts
-    /// as on a refused hit. Players and mobs, not the ender dragon yet. It runs
+    /// as on a refused hit, except that a canceled hit on the ender dragon
+    /// still counts as landed (`EnderDragon.hurt` returns true whatever
+    /// `reallyHurt` did: the arrow is spent, the melee effects run). It runs
     /// on the thread that ticks the world (the server thread; the window's
     /// in-frame): state shared with render thread hooks needs synchronising.
     /// No `self`: the game is in the middle of the hit. API 50.
@@ -1479,6 +1481,7 @@ fn hurt_server_args(hurting: Hurting<'_>) -> (i32, &str, HurtSource<'_>) {
     match hurting {
         Hurting::Player(entity, source) => (entity, "minecraft:player", source),
         Hurting::Mob(mob, damage) => (mob.id as i32, mob.kind.id.as_str(), mob_source(damage)),
+        Hurting::Dragon(entity, source) => (entity, "minecraft:ender_dragon", source),
     }
 }
 /// A mob's damage as its `DamageSource`: the causing entity is known when it
@@ -3329,6 +3332,8 @@ mod tests {
         };
         let player = (2, "minecraft:player", arrow);
         assert_eq!(hurt_server_args(Hurting::Player(2, arrow)), player);
+        let dragon = (5, "minecraft:ender_dragon", arrow);
+        assert_eq!(hurt_server_args(Hurting::Dragon(5, arrow)), dragon);
     }
 
     /// A mod container opens a slot grid or a furnace's menu, by its slot

@@ -420,16 +420,18 @@ entity (`causing`, vanilla's `DamageSource.getEntity`: a skeleton for its arrow)
 the sources listed below that Horizon doesn't track yet. A mod may change the amount, or set `canceled`: nothing of
 `hurtServer` itself happens then (no damage, hurt sound, knockback, invulnerable time, statistics or criteria), and
 the caller acts as on a refused hit, so a blast still pushes a mob whose hit was canceled, as vanilla pushes one that
-refused it. A ghast's canceled hit by a fireball it was sent back counts as landed (`Ghast.hurtServer`). A negative
-amount hurts by 0 and a NaN or infinite one by `Float.MAX_VALUE`, as vanilla clamps them. It fires for the players and
-mobs the game hurts; the ender dragon doesn't reach it yet. It has no `self`: the game is in the middle of the hit. It
-runs on the thread that ticks the world (the server thread; the window's on the deprecated in-frame path), so state a
-mod shares with its render thread hooks needs synchronising. On the in-frame path the window's player has id 0, or the
-host's id once the world is open to LAN. `/kill` and `native_kill_mob` don't reach it yet: they set the health to 0
-instead of hurting with `minecraft:generic_kill` as vanilla does.
+refused it. A canceled hit on the ender dragon still counts as landed, as vanilla's `EnderDragon.hurt` returns true
+whatever `reallyHurt` did: the arrow is spent and the melee effects run. A ghast's canceled hit by a fireball it was
+sent back counts as landed (`Ghast.hurtServer`). A negative amount hurts by 0 and a NaN or infinite one by
+`Float.MAX_VALUE`, as vanilla clamps them. It fires for the players, mobs and the ender dragon the game hurts. It has
+no `self`: the game is in the middle of the hit. It runs on the thread that ticks the world (the server thread; the
+window's on the deprecated in-frame path), so state a mod shares with its render thread hooks needs synchronising. On
+the in-frame path the window's player has id 0, or the host's id once the world is open to LAN. `/kill` and
+`native_kill_mob` don't reach it yet: they set the health to 0 instead of hurting with `minecraft:generic_kill` as
+vanilla does.
 
-A player's damage type is the source's own. A mob's comes from the kind of damage Horizon keeps for the hit, which
-doesn't tell every vanilla type apart yet:
+A player's damage type is the source's own. A mob's and the dragon's come from the kind of damage Horizon keeps for
+the hit, which doesn't tell every vanilla type apart yet:
 
 - A trident's hit on a mob is `minecraft:arrow`, not `minecraft:trident`
 - A wither skull's hit on a mob is `minecraft:magic`, not `minecraft:wither_skull`
@@ -438,6 +440,9 @@ doesn't tell every vanilla type apart yet:
 - A shulker bullet's hit has no `minecraft:mob_projectile`
 - A bed or respawn anchor blast on a mob is `minecraft:explosion`, not `minecraft:bad_respawn_point`
 - A blast from TNT a player lit is `minecraft:explosion` on a mob, not `minecraft:player_explosion`
+- A bed or respawn anchor blast on the dragon is `minecraft:explosion`, not `minecraft:bad_respawn_point`
+- A blast a mob caused (an end crystal a skeleton shot, a creeper's) is `minecraft:explosion` on the dragon, not
+  `minecraft:player_explosion`
 
 The causing and direct entities are 0 for now in these cases:
 
@@ -449,6 +454,8 @@ The causing and direct entities are 0 for now in these cases:
   lit)
 - A mob's direct entity when it isn't the causing one (a projectile, a blast, a potion)
 - A falling block on a mob, whose causing and direct entity is the block in vanilla
+- The dragon's direct entity for a projectile or a blast
+- The dragon's causing player when it isn't the acting one on a LAN guest's turn
 - `/damage` on a mob `by` an entity with a damage type that isn't melee: the direct entity is 0, not that entity
 
 And `/damage` on a mob `by` one entity `from` another with a melee damage type gives the `from` entity as the direct
