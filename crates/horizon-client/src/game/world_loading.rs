@@ -434,8 +434,6 @@ pub(super) fn preload_server_loot(resources: &std::path::Path) {
     }
 }
 
-/// The worldgen entries of the world's enabled data packs, logging what
-/// the generator leaves out of them.
 /// The game's biomes with the world's enabled packs over them, from the same
 /// pack list its worldgen is built from (`WorldgenOverrides` keeps only the
 /// biomes this table knows).
@@ -460,6 +458,8 @@ pub(super) fn packed_biomes(
     }
     Arc::new(base.with_packs(packed.iter().map(|(i, v)| (i.as_str(), v))))
 }
+/// The worldgen entries of the world's enabled data packs, logging what
+/// the generator leaves out of them.
 fn world_worldgen_overrides(
     world_root: &std::path::Path,
     resources: &std::path::Path,
