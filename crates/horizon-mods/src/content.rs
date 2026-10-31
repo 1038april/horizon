@@ -11,7 +11,7 @@
 use crate::manifest::{Capability, MANIFEST, Manifest};
 use serde::Deserialize;
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     io::Read,
     path::{Path, PathBuf},
 };
@@ -75,14 +75,27 @@ pub struct BlockProperties {
     pub sounds: Option<String>,
 }
 
+/// Per-state outline and collision boxes, selected by one state property.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct BlockShapes {
+    pub property: String,
+    pub values: BTreeMap<String, Vec<[f64; 6]>>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BlockFile {
     template: String,
     #[serde(default)]
     properties: BlockProperties,
+    shapes: Option<BlockShapes>,
+    #[serde(default)]
+    default_state: BTreeMap<String, String>,
     #[serde(default = "yes")]
     item: bool,
+    #[serde(default)]
+    components: BTreeMap<String, serde_json::Value>,
 }
 fn yes() -> bool {
     true
@@ -97,8 +110,13 @@ pub struct Block {
     /// The vanilla block it copies, `minecraft:<path>`.
     pub template: String,
     pub properties: BlockProperties,
+    pub shapes: Option<BlockShapes>,
+    /// State properties overlaid on the template default.
+    pub default_state: BTreeMap<String, String>,
     /// Also add a block item with the same id.
     pub item: bool,
+    /// Its item's component patch, as an [`Item`]'s.
+    pub components: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -116,6 +134,9 @@ struct ItemFile {
     template: String,
     max_stack_size: Option<u8>,
     rarity: Option<Rarity>,
+    #[serde(default)]
+    components: BTreeMap<String, serde_json::Value>,
+    crafting_remainder: Option<String>,
 }
 
 /// An item the mod adds: a vanilla template item's components under a new
@@ -127,6 +148,11 @@ pub struct Item {
     pub template: String,
     pub max_stack_size: Option<u8>,
     pub rarity: Option<Rarity>,
+    /// A 26.3 data component patch over the template's: `!minecraft:<type>` removes one.
+    pub components: BTreeMap<String, serde_json::Value>,
+    /// What it leaves in the crafting grid (`Item.Properties.craftRemainder`):
+    /// a vanilla item or one of the mod's own.
+    pub crafting_remainder: Option<String>,
 }
 
 #[derive(Debug)]
@@ -329,9 +355,13 @@ impl Content {
                 id: block,
                 template: file.template,
                 properties: file.properties,
+                shapes: file.shapes,
+                default_state: file.default_state,
                 item: file.item,
+                components: file.components,
             });
         }
+        let mut remainders = Vec::new();
         for (item, name) in items {
             let file: ItemFile =
                 serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
@@ -344,18 +374,67 @@ impl Content {
             if file.max_stack_size.is_some_and(|n| !(1..=99).contains(&n)) {
                 return Err(format!("{name}: max_stack_size is 1 to 99"));
             }
+            check_components(&file.components, &["max_stack_size", "rarity"])
+                .map_err(|e| format!("{name}: {e}"))?;
             if !ids.insert(item.clone()) {
                 return Err(format!("{name}: {item} is also a block's item"));
+            }
+            if let Some(rest) = &file.crafting_remainder {
+                remainders.push((name, rest.clone()));
             }
             self.items.push(Item {
                 id: item,
                 template: file.template,
                 max_stack_size: file.max_stack_size,
                 rarity: file.rarity,
+                components: file.components,
+                crafting_remainder: file.crafting_remainder,
             });
+        }
+        // After every item, so a remainder may be declared in a later file.
+        for (name, rest) in remainders {
+            if rest == "minecraft:air" {
+                return Err(format!(
+                    "{name}: crafting_remainder {rest:?} is no remainder (leave it out)"
+                ));
+            }
+            if !vanilla_id(&rest) && !ids.contains(&rest) {
+                return Err(format!(
+                    "{name}: crafting_remainder {rest:?} is not a vanilla item (minecraft:...) or one of this mod's"
+                ));
+            }
         }
         Ok(())
     }
+}
+
+/// Vanilla component types only, removals as `{}`, and none of `fields`,
+/// which the file sets with its own keys.
+fn check_components(
+    components: &BTreeMap<String, serde_json::Value>,
+    fields: &[&str],
+) -> Result<(), String> {
+    for (key, value) in components {
+        let (removed, kind) = match key.strip_prefix('!') {
+            Some(kind) => (true, kind),
+            None => (false, key.as_str()),
+        };
+        if !vanilla_id(kind) {
+            return Err(format!(
+                "component {key:?} is not a vanilla type (minecraft:...)"
+            ));
+        }
+        if let Some(own) = kind
+            .strip_prefix("minecraft:")
+            .filter(|k| fields.contains(k))
+        {
+            return Err(format!("component {key:?}: set {own} instead"));
+        }
+        if removed && !value.as_object().is_some_and(|o| o.is_empty()) {
+            return Err(format!("component {key:?}: a removal's value is {{}}"));
+        }
+    }
+    Ok(())
 }
 
 fn check_block(file: &BlockFile) -> Result<(), String> {
@@ -364,6 +443,20 @@ fn check_block(file: &BlockFile) -> Result<(), String> {
             "template {:?} is not a vanilla block (minecraft:...)",
             file.template
         ));
+    }
+    if let Some(shapes) = &file.shapes {
+        if shapes.property.is_empty() || shapes.values.is_empty() {
+            return Err("shapes needs a property and values".into());
+        }
+        for boxes in shapes.values.values() {
+            if boxes.len() > 16
+                || boxes
+                    .iter()
+                    .any(|b| b.iter().any(|n| !n.is_finite()) || (0..3).any(|i| b[i] > b[i + 3]))
+            {
+                return Err("shape needs at most 16 finite boxes with ordered bounds".into());
+            }
+        }
     }
     let p = &file.properties;
     let finite = |v: Option<f32>| v.is_none_or(f32::is_finite);
@@ -387,6 +480,21 @@ fn check_block(file: &BlockFile) -> Result<(), String> {
     }
     if p.sounds.as_deref().is_some_and(|s| !vanilla_id(s)) {
         return Err("sounds names a vanilla block (minecraft:...)".into());
+    }
+    if !file.item && !file.components.is_empty() {
+        return Err("item is false, so the block has no item to take components".into());
+    }
+    check_components(&file.components, &[])?;
+    // A block file has no `max_stack_size` / `rarity` keys, so those two take the same checks here.
+    if let Some(n) = file.components.get("minecraft:max_stack_size")
+        && !n.as_u64().is_some_and(|n| (1..=99).contains(&n))
+    {
+        return Err("component \"minecraft:max_stack_size\" is an integer 1 to 99".into());
+    }
+    if let Some(r) = file.components.get("minecraft:rarity")
+        && serde_json::from_value::<Rarity>(r.clone()).is_err()
+    {
+        return Err("component \"minecraft:rarity\" is common, uncommon, rare or epic".into());
     }
     Ok(())
 }
@@ -471,6 +579,8 @@ capabilities = ["registries"]
             [Block {
                 id: "ruby:ruby_block".into(),
                 template: "minecraft:iron_block".into(),
+                shapes: None,
+                default_state: BTreeMap::new(),
                 properties: BlockProperties {
                     hardness: Some(4.0),
                     light: Some(3),
@@ -478,10 +588,71 @@ capabilities = ["registries"]
                     ..BlockProperties::default()
                 },
                 item: true,
+                components: BTreeMap::new(),
             }]
         );
         assert_eq!(content.items[0].id, "ruby:ruby");
         assert_eq!(content.items[0].rarity, Some(Rarity::Uncommon));
+        assert!(content.items[0].components.is_empty());
+        assert_eq!(content.items[0].crafting_remainder, None);
+    }
+
+    #[test]
+    fn items_name_their_crafting_remainder() {
+        let files: &[(&str, &[u8])] = &[
+            (
+                "data/ruby/horizon/item/a_stew.json",
+                br#"{"template": "minecraft:mushroom_stew", "crafting_remainder": "minecraft:bowl"}"#,
+            ),
+            (
+                "data/ruby/horizon/item/b_flask.json",
+                br#"{"template": "minecraft:potion", "crafting_remainder": "ruby:c_flask"}"#,
+            ),
+            ("data/ruby/horizon/item/c_flask.json", ITEM),
+        ];
+        let content = hmod("remainder", MANIFEST_TEXT, files).unwrap();
+        let rests: Vec<_> = content
+            .items
+            .iter()
+            .map(|i| i.crafting_remainder.as_deref())
+            .collect();
+        assert_eq!(rests, [Some("minecraft:bowl"), Some("ruby:c_flask"), None]);
+    }
+
+    #[test]
+    fn items_patch_their_template_components() {
+        let sword = br#"{"template": "minecraft:iron_sword", "components": {
+            "minecraft:max_damage": 900,
+            "minecraft:attribute_modifiers": [{"type": "minecraft:attack_damage",
+                "id": "minecraft:base_attack_damage", "amount": 7.0,
+                "operation": "add_value", "slot": "mainhand"}],
+            "!minecraft:repairable": {}}}"#;
+        let files: &[(&str, &[u8])] = &[("data/ruby/horizon/item/ruby_sword.json", sword)];
+        let content = hmod("components", MANIFEST_TEXT, files).unwrap();
+        let components = &content.items[0].components;
+        assert_eq!(
+            components.keys().collect::<Vec<_>>(),
+            [
+                "!minecraft:repairable",
+                "minecraft:attribute_modifiers",
+                "minecraft:max_damage"
+            ]
+        );
+        assert_eq!(components["minecraft:max_damage"], 900);
+    }
+
+    #[test]
+    fn block_items_patch_their_components() {
+        let block = br#"{"template": "minecraft:iron_block", "components": {
+            "minecraft:max_stack_size": 16, "!minecraft:lore": {}}}"#;
+        let files: &[(&str, &[u8])] = &[("data/ruby/horizon/block/ruby_block.json", block)];
+        let content = hmod("block-components", MANIFEST_TEXT, files).unwrap();
+        let components = &content.blocks[0].components;
+        assert_eq!(
+            components.keys().collect::<Vec<_>>(),
+            ["!minecraft:lore", "minecraft:max_stack_size"]
+        );
+        assert_eq!(components["minecraft:max_stack_size"], 16);
     }
 
     #[test]
@@ -540,6 +711,15 @@ capabilities = ["registries"]
                 br#"{"template": "minecraft:stone", "glow": true}"#,
             )],
         );
+        refused("shape-reversed", &[("data/ruby/horizon/block/a.json", br#"{"template":"minecraft:stone","shapes":{"property":"axis","values":{"x":[[1,0,0,0,1,1]]}}}"#)]);
+        refused("shape-malformed", &[("data/ruby/horizon/block/a.json", br#"{"template":"minecraft:stone","shapes":{"property":"axis","values":{"x":[[0,0,0,1,1]]}}}"#)]);
+        refused(
+            "shape-no-values",
+            &[(
+                "data/ruby/horizon/block/a.json",
+                br#"{"template":"minecraft:stone","shapes":{"property":"axis","values":{}}}"#,
+            )],
+        );
         let e = refused(
             "clash",
             &[
@@ -556,6 +736,98 @@ capabilities = ["registries"]
                 br#"{"template": "minecraft:stick", "max_stack_size": 100}"#,
             )],
         );
+        for (case, components, why) in [
+            (
+                "modded-component",
+                r#"{"ruby:mana": 3}"#,
+                "not a vanilla type",
+            ),
+            (
+                "bare-component",
+                r#"{"max_damage": 3}"#,
+                "not a vanilla type",
+            ),
+            (
+                "own-key",
+                r#"{"minecraft:rarity": "epic"}"#,
+                "set rarity instead",
+            ),
+            (
+                "own-removal",
+                r#"{"!minecraft:max_stack_size": {}}"#,
+                "set max_stack_size",
+            ),
+            (
+                "removal-value",
+                r#"{"!minecraft:food": true}"#,
+                "a removal's value is {}",
+            ),
+        ] {
+            let item = format!(r#"{{"template": "minecraft:stick", "components": {components}}}"#);
+            let e = refused(case, &[("data/ruby/horizon/item/a.json", item.as_bytes())]);
+            assert!(e.contains(why), "{case}: {e}");
+        }
+        let glass = br#"{"template": "minecraft:glass", "item": false}"#;
+        for (case, rest) in [
+            ("bare-remainder", "bowl"),
+            ("missing-remainder", "ruby:bowl"),
+            ("other-mod-remainder", "jade:bowl"),
+            ("itemless-remainder", "ruby:glass"),
+            ("air-remainder", "minecraft:air"),
+        ] {
+            let item =
+                format!(r#"{{"template": "minecraft:stick", "crafting_remainder": "{rest}"}}"#);
+            let files: &[(&str, &[u8])] = &[
+                ("data/ruby/horizon/item/a.json", item.as_bytes()),
+                ("data/ruby/horizon/block/glass.json", glass),
+            ];
+            let e = refused(case, files);
+            assert!(e.contains("crafting_remainder"), "{case}: {e}");
+        }
+        for (case, block, why) in [
+            (
+                "block-modded-component",
+                r#"{"template": "minecraft:stone", "components": {"ruby:mana": 3}}"#,
+                "not a vanilla type",
+            ),
+            (
+                "block-removal-value",
+                r#"{"template": "minecraft:stone", "components": {"!minecraft:lore": []}}"#,
+                "a removal's value is {}",
+            ),
+            (
+                "block-stack-zero",
+                r#"{"template": "minecraft:stone", "components": {"minecraft:max_stack_size": 0}}"#,
+                "integer 1 to 99",
+            ),
+            (
+                "block-stack-100",
+                r#"{"template": "minecraft:stone", "components": {"minecraft:max_stack_size": 100}}"#,
+                "integer 1 to 99",
+            ),
+            (
+                "block-stack-string",
+                r#"{"template": "minecraft:stone", "components": {"minecraft:max_stack_size": "16"}}"#,
+                "integer 1 to 99",
+            ),
+            (
+                "block-rarity",
+                r#"{"template": "minecraft:stone", "components": {"minecraft:rarity": "bogus"}}"#,
+                "common, uncommon",
+            ),
+            (
+                "block-without-item",
+                r#"{"template": "minecraft:glass", "item": false,
+                    "components": {"minecraft:max_stack_size": 16}}"#,
+                "item is false",
+            ),
+        ] {
+            let e = refused(
+                case,
+                &[("data/ruby/horizon/block/a.json", block.as_bytes())],
+            );
+            assert!(e.contains(why), "{case}: {e}");
+        }
     }
 
     #[test]

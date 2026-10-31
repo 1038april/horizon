@@ -3,14 +3,15 @@
 use super::{Pack, Source, build_overlay_uncached};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-#[cfg(any(test, not(unix)))]
 use std::io::Read;
 use std::{collections::BTreeSet, fs, io, path::Path, path::PathBuf};
 
 // Bump when overlay/merge semantics change. Markers are disposable cache data.
 // Version 4 mirrored every untouched directory file by file on Windows.
 // Version 3 could omit untouched vanilla directories on Windows (#1649, #1688).
-const VERSION: u32 = 5;
+// Version 5 read every vanilla file to stamp it on Windows.
+// Version 6 stamps vanilla's files by their metadata on Windows too.
+const VERSION: u32 = 6;
 
 #[derive(Default, Serialize, Deserialize)]
 pub(super) struct Dependencies {
@@ -19,13 +20,16 @@ pub(super) struct Dependencies {
     failed: bool,
     #[serde(skip)]
     tracking: bool,
+    /// The vanilla root (absolute): its files are stamped without reading them.
+    #[serde(skip)]
+    vanilla: PathBuf,
 }
 impl Dependencies {
     fn record(&mut self, path: &Path, directory: bool) {
         if !self.tracking {
             return;
         }
-        match dependency_signature(path, directory) {
+        match dependency_signature(path, directory, &self.vanilla) {
             Ok(signature) => self.entries.push((path.into(), directory, signature)),
             Err(_) => self.failed = true,
         }
@@ -39,7 +43,7 @@ impl Dependencies {
     fn valid(&self) -> bool {
         !self.failed
             && self.entries.iter().all(|(path, directory, signature)| {
-                dependency_signature(path, *directory).is_ok_and(|s| s == *signature)
+                dependency_signature(path, *directory, &self.vanilla).is_ok_and(|s| s == *signature)
             })
     }
 }
@@ -60,7 +64,6 @@ fn field(hash: &mut Sha256, bytes: &[u8]) {
     hash.update((bytes.len() as u64).to_le_bytes());
     hash.update(bytes);
 }
-#[cfg(any(test, not(unix)))]
 fn content(hash: &mut Sha256, path: &Path) -> io::Result<()> {
     let mut file = fs::File::open(path)?;
     hash.update(file.metadata()?.len().to_le_bytes());
@@ -74,13 +77,16 @@ fn content(hash: &mut Sha256, path: &Path) -> io::Result<()> {
     }
     Ok(())
 }
-fn stamp(hash: &mut Sha256, path: &Path) -> io::Result<()> {
+/// `path`'s stamp; `read` lets platforms without a change timestamp hash a file's bytes.
+fn stamp(hash: &mut Sha256, path: &Path, read: bool) -> io::Result<()> {
     let meta = fs::metadata(path)?;
     hash.update(meta.len().to_le_bytes());
     field(hash, format!("{:?}", meta.modified()?).as_bytes());
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
+        // The change time stands in for the bytes here.
+        let _ = read;
         hash.update(meta.dev().to_le_bytes());
         hash.update(meta.ino().to_le_bytes());
         hash.update(meta.ctime().to_le_bytes());
@@ -89,8 +95,11 @@ fn stamp(hash: &mut Sha256, path: &Path) -> io::Result<()> {
     #[cfg(not(unix))]
     {
         // Portable metadata lacks a change timestamp. Preserve content-based
-        // validation for materialized files on those platforms.
-        if meta.is_file() {
+        // validation for the packs' materialized files on those platforms;
+        // vanilla's (the launcher's, tens of thousands) keep to the size and
+        // the write and creation times: reading each costs minutes on Windows,
+        // where every open is scanned by the antivirus.
+        if read && meta.is_file() {
             return content(hash, path);
         }
         if let Ok(created) = meta.created() {
@@ -106,17 +115,18 @@ fn entries(path: &Path) -> io::Result<Vec<PathBuf>> {
     entries.sort();
     Ok(entries)
 }
-fn dependency_signature(path: &Path, directory: bool) -> io::Result<String> {
+fn dependency_signature(path: &Path, directory: bool, vanilla: &Path) -> io::Result<String> {
     let mut hash = Sha256::new();
+    let read = !(path.starts_with(vanilla) || absolute(path).is_ok_and(|p| p.starts_with(vanilla)));
     match fs::metadata(path) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => field(&mut hash, b"missing"),
         Err(e) => return Err(e),
         Ok(meta) if directory && meta.is_dir() => {
             field(&mut hash, b"directory");
-            stamp(&mut hash, path)?;
+            stamp(&mut hash, path, read)?;
         }
         Ok(_) if directory => field(&mut hash, b"not-directory"),
-        Ok(_) => stamp(&mut hash, path)?,
+        Ok(_) => stamp(&mut hash, path, read)?,
     }
     Ok(finish(hash))
 }
@@ -192,7 +202,7 @@ fn tree_inner(
             if pack.is_none() {
                 return content(hash, path);
             }
-            stamp(hash, path)?;
+            stamp(hash, path, true)?;
         }
     }
     Ok(())
@@ -238,7 +248,10 @@ fn pack_signature(packs: &[Pack]) -> io::Result<String> {
             }
             Source::Zip(path) => {
                 field(&mut hash, absolute(path)?.as_os_str().as_encoded_bytes());
-                stamp(&mut hash, path)?;
+                // By its bytes, not its stamp: a server pack found in the download cache is
+                // marked used on every join (`HttpUtil.updateModificationTime`), and a new
+                // time rebuilt the whole overlay each time. One file reads in a moment.
+                content(&mut hash, path)?;
             }
         }
     }
@@ -282,11 +295,14 @@ pub(super) fn build(vanilla: &Path, packs: &[Pack], out: &Path) -> io::Result<()
     let signature = pack_signature(packs);
     if let Ok(signature) = &signature
         && let Ok(bytes) = fs::read(&marker_path)
-        && let Ok(marker) = serde_json::from_slice::<Marker>(&bytes)
+        && let Ok(mut marker) = serde_json::from_slice::<Marker>(&bytes)
         && marker.version == VERSION
         && marker.vanilla == vanilla_key
         && marker.packs == *signature
-        && marker.dependencies.valid()
+        && {
+            marker.dependencies.vanilla = vanilla_key.clone();
+            marker.dependencies.valid()
+        }
         && out.is_dir()
     {
         return Ok(());
@@ -299,6 +315,7 @@ pub(super) fn build(vanilla: &Path, packs: &[Pack], out: &Path) -> io::Result<()
     }
     let mut dependencies = Dependencies {
         tracking: signature.is_ok(),
+        vanilla: vanilla_key.clone(),
         ..Dependencies::default()
     };
     build_overlay_uncached(vanilla, packs, out, &mut dependencies)?;
@@ -349,6 +366,27 @@ mod tests {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, bytes).unwrap();
         }
+        /// Waits for the filesystem's clock to move on, as it does between a build and a
+        /// person's next edit. On Unix the cache compares stamps (length, mtime, ctime, inode),
+        /// and Linux takes them from a coarse clock (a few milliseconds a tick): an edit in the
+        /// tick of the build before kept them all, and the tests failed at random.
+        fn next_tick(&self) {
+            let probe = self.0.with_extension("tick");
+            // New bytes each time: NTFS keeps the time of a write that changes nothing.
+            let stamp = |n: u32| {
+                fs::write(&probe, n.to_le_bytes()).unwrap();
+                fs::metadata(&probe).unwrap().modified().unwrap()
+            };
+            let start = stamp(0);
+            // A second at most: no clock is that coarse, and a test never hangs on one.
+            for n in 1..1000 {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                if stamp(n) != start {
+                    break;
+                }
+            }
+            let _ = fs::remove_file(&probe);
+        }
         fn dir_pack(&self, name: &str) -> Pack {
             self.write(
                 &format!("{name}/pack.mcmeta"),
@@ -371,6 +409,7 @@ mod tests {
                 output_signature(&cached).unwrap(),
                 output_signature(&self.0.join("reference")).unwrap()
             );
+            self.next_tick();
         }
     }
     impl Drop for Fixture {
@@ -645,6 +684,38 @@ mod tests {
             packs::resource_root(&f.0.join("vanilla"), &[pack], &f.0.join("selection-cache"))
                 .is_err()
         );
+    }
+
+    /// A ZIP whose bytes are the same keeps its overlay when only its time changes: a server
+    /// pack found in the download cache is marked used on every join
+    /// (`HttpUtil.updateModificationTime`), and rebuilding the overlay took most of a minute.
+    #[test]
+    fn a_zip_touched_but_unchanged_keeps_its_overlay() {
+        let f = Fixture::new();
+        f.write("vanilla/assets/minecraft/textures/b", b"vanilla");
+        let files = vec![
+            (
+                "pack.mcmeta",
+                br#"{"pack":{"description":"test","pack_format":97}}"#.to_vec(),
+            ),
+            ("assets/minecraft/textures/a", b"aaa".to_vec()),
+        ];
+        f.write("pack.zip", &archive(&files, false));
+        let zip = f.0.join("pack.zip");
+        let pack = packs::pack("zip".into(), Text::empty(), Source::Zip(zip.clone())).unwrap();
+        let (vanilla, out) = (f.0.join("vanilla"), f.0.join("cached"));
+        packs::build_overlay(&vanilla, std::slice::from_ref(&pack), &out).unwrap();
+        // A rebuild empties the output first: this file survives a cache hit only.
+        fs::write(out.join("kept"), b"").unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&zip)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        packs::build_overlay(&vanilla, std::slice::from_ref(&pack), &out).unwrap();
+        assert!(out.join("kept").exists(), "the overlay was rebuilt");
     }
 
     #[cfg(unix)]
