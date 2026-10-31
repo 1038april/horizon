@@ -861,8 +861,8 @@ impl Game<'_> {
     /// block is yours, in the container's shape — each tank's capacity in
     /// millibuckets, the tanks each face reaches, and the tanks a fill may
     /// reach and a drain may take. Asked once for each mod block when the
-    /// ticking table is built; at most 16 tanks, capacities at most a
-    /// million, and tank numbers past the count are left out. The tanks'
+    /// ticking table is built; at most 16 tanks, capacities clamped to
+    /// 1..=1 000 000, and tank numbers past the count are left out. The tanks'
     /// contents are kept in the entity's saved compound, under `fluids`, and
     /// the fluid helpers below read and write them. API @API:fluids@.
     pub(super) fn native_block_entity_fluids(
@@ -2159,7 +2159,11 @@ impl Game<'_> {
                 self.native_block_entity_fluids(&state.name, &mut fluids);
                 fluids.map(|mut f| {
                     f.tanks.truncate(16);
-                    f.tanks.retain(|&c| (1..=1_000_000).contains(&c));
+                    // Clamped, not dropped: the face and fill lists name
+                    // tanks by number, which must not shift.
+                    for c in &mut f.tanks {
+                        *c = (*c).clamp(1, 1_000_000);
+                    }
                     let n = f.tanks.len();
                     for list in f.faces.iter_mut().chain([&mut f.inputs, &mut f.outputs]) {
                         list.retain(|&t| t < n);

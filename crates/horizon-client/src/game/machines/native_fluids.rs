@@ -112,7 +112,8 @@ fn read_tanks(nbt: &Compound, n: usize) -> Vec<Tank> {
     tanks
 }
 
-/// `read_tanks`'s writer: the list back into `nbt`, empty tanks left out.
+/// `read_tanks`'s writer: the list back into `nbt`, an empty tank as
+/// `minecraft:empty` so the tank numbers stay in place.
 fn write_tanks(nbt: &mut Compound, tanks: &[Tank]) {
     let list = tanks
         .iter()
