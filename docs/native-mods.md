@@ -718,6 +718,25 @@ Helpers for a server mod, by the rules hoppers follow: a furnace's sides, a doub
 
 During a machine's own tick its block entity is out of the world, so these answer as if no container were there: it has its slots in hand, in the `items` it's given. A composter takes one item a call, and these don't empty it: a hopper does. Container entities (minecarts, chest boats) aren't reached yet.
 
+### Entities
+
+`crates/horizon-client/src/game/native_entities.rs`: helpers for server mods, for the level in place, on a server only. Each
+names the level it means by its `dimension` (`minecraft:overworld`), as `native_set_block` does.
+
+- `native_summon(dimension, kind, pos, nbt)` spawns an entity of `kind` from its compound, as `/summon <kind> <pos> <nbt>`
+  does (passengers included), and returns its id. None on a client, for another dimension, a position outside `/summon`'s
+  bounds, a chunk that isn't loaded, a kind Horizon can't load, or one a mod kept out with `native_entity_join_level`.
+- `native_move_entity(dimension, id, pos, yaw, pitch)` moves an entity Horizon keeps without simulating it (a display, a
+  marker, an interaction); a display eases there over its teleport duration. Mobs move with `native_teleport_mob`.
+- `native_set_display(dimension, id, &NativeDisplay)` sets a `block_display`, `item_display` or `text_display`'s
+  transformation (translation, left rotation, scale, right rotation; quaternions `[x, y, z, w]`), the ticks players see it
+  ease over (`interpolation`) and its teleport duration (`teleport`, 0 to 59). Each call restarts the ease on clients.
+- `native_remove_entity(dimension, id)` removes such an entity as `/kill` does. Mobs go with `native_remove_mob`.
+
+A model that moves (a turning gun barrel, a thrown projectile) is an `item_display` showing an item whose model comes from
+the mod's `.hmod` assets: summon it once, then move and pose it from a tick hook. Easing between ticks happens on each
+client, so a call a tick looks smooth.
+
 ### Mod messages
 
 API 40, `crates/horizon-client/src/game/native_net.rs`: bytes between a mod's server half and its client half, on the
