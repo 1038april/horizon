@@ -363,6 +363,19 @@ impl Game<'_> {
         face: Direction,
         amount: i32,
     ) -> Option<(String, i32)> {
+        self.fluid_take(dimension, pos, face, amount)
+            .map(|(fluid, taken, _)| (fluid, taken))
+    }
+    /// `native_fluid_extract`'s drain, remembering what left which tank, so a
+    /// move can put it back without the fill sides' leave: an empty list is a
+    /// cauldron, whose own fill takes it back.
+    fn fluid_take(
+        &mut self,
+        dimension: &str,
+        pos: [i32; 3],
+        face: Direction,
+        amount: i32,
+    ) -> Option<(String, i32, Vec<(usize, i32)>)> {
         if amount <= 0 {
             return None;
         }
@@ -385,6 +398,7 @@ impl Game<'_> {
                     .find(|&&tank| state[tank].1 > 0)
                     .map(|&tank| state[tank].0.clone())?;
                 let mut want = amount;
+                let mut out = Vec::new();
                 for &tank in &tanks.faces[face as usize] {
                     if want == 0 || !tanks.outputs.contains(&tank) || tank >= n {
                         continue;
@@ -398,6 +412,7 @@ impl Game<'_> {
                         state[tank].0 = None;
                     }
                     want -= take;
+                    out.push((tank, take));
                 }
                 let taken = amount - want;
                 if taken == 0 {
@@ -410,7 +425,7 @@ impl Game<'_> {
                 };
                 write_tanks(&mut m.nbt, &state);
                 self.world.modified.insert((key.0 >> 4, key.2 >> 4));
-                Some((fluid?, taken))
+                Some((fluid?, taken, out))
             }
             FluidAt::Cauldron(CauldronFluids::Water(level)) => {
                 // A cauldron has no finer unit than its bottle's third, and
@@ -418,16 +433,81 @@ impl Game<'_> {
                 // whole third gives nothing.
                 let (taken, left) = drain_take(level, amount);
                 if taken > 0 && self.cauldron_set(pos, (left > 0).then_some(left), false) {
-                    Some(("minecraft:water".to_owned(), taken))
+                    Some(("minecraft:water".to_owned(), taken, Vec::new()))
                 } else {
                     None
                 }
             }
             FluidAt::Cauldron(CauldronFluids::Lava) => (amount >= 1000
                 && self.cauldron_set(pos, None, false))
-            .then(|| ("minecraft:lava".to_owned(), 1000)),
+            .then(|| ("minecraft:lava".to_owned(), 1000, Vec::new())),
             FluidAt::Cauldron(CauldronFluids::Empty) => None,
         }
+    }
+    /// Moves up to `max` millibuckets from the block at `from`, through its
+    /// side `from_face`, into the one at `to`, through its side `to_face`, as
+    /// `native_move_items` moves items: what the target won't take goes back
+    /// into the source, so none is lost — a cauldron's whole thirds included.
+    /// The fluid and how much moved; none where `native_fluid_tanks` is none
+    /// at `from`, where nothing drainable is, where no block holds fluids at
+    /// `to`, and within one block. @API:fluids_move@.
+    pub(in crate::game) fn native_move_fluids(
+        &mut self,
+        dimension: &str,
+        from: [i32; 3],
+        from_face: Direction,
+        to: [i32; 3],
+        to_face: Direction,
+        max: i32,
+    ) -> Option<(String, i32)> {
+        if from == to {
+            return None;
+        }
+        let (fluid, taken, receipt) = self.fluid_take(dimension, from, from_face, max)?;
+        let left = self.native_fluid_insert(to, to_face, &fluid, taken);
+        if left > 0 {
+            // What the target wouldn't take goes back where it came from,
+            // past the fill sides' leave: the tanks just gave it up, so they
+            // have the room, and a cauldron levels back up by the thirds it
+            // gave. What came back isn't moved: the answer is what the
+            // target kept.
+            let all_back = if receipt.is_empty() {
+                self.native_fluid_insert(from, from_face, &fluid, left) == left
+            } else {
+                self.fluid_return(from, &fluid, left, &receipt)
+            };
+            if !all_back {
+                log::warn!("Horizon: a fluid move left {left} mB of {fluid} nowhere to go");
+            }
+        }
+        Some((fluid, taken - left))
+    }
+    /// Puts `amount` of `fluid` back into the tanks `receipt` names, drained
+    /// moments ago: their room is exactly what left them. Whether it all went
+    /// back.
+    fn fluid_return(
+        &mut self,
+        pos: [i32; 3],
+        fluid: &str,
+        mut amount: i32,
+        receipt: &[(usize, i32)],
+    ) -> bool {
+        let key = (pos[0], pos[1], pos[2]);
+        let Some(horizon_client::containers::BlockEntity::Mod(m)) =
+            self.world.block_entities.get_mut(&key)
+        else {
+            return false;
+        };
+        let mut state = read_tanks(&m.nbt, receipt.iter().map(|r| r.0 + 1).max().unwrap_or(0));
+        for &(tank, took) in receipt {
+            let give = took.min(amount);
+            state[tank].1 += give;
+            state[tank].0 = Some(fluid.to_owned());
+            amount -= give;
+        }
+        write_tanks(&mut m.nbt, &state);
+        self.world.modified.insert((key.0 >> 4, key.2 >> 4));
+        amount == 0
     }
 }
 
@@ -504,6 +584,34 @@ mod tests {
             read_tanks(&nbt, 1),
             tanks(&[(Some("minecraft:water"), 4000)])
         );
+    }
+
+    #[test]
+    fn a_receipts_room_is_what_left_its_tanks() {
+        // The bookkeeping a move's put-back trusts: a receipt never names
+        // more than its tanks held, so returning it always fits.
+        let receipt = vec![(1usize, 333i32), (2, 100)];
+        let held = tanks(&[
+            (None, 0),
+            (Some("minecraft:water"), 333),
+            (Some("minecraft:water"), 100),
+        ]);
+        assert!(receipt.iter().all(|&(tank, took)| took <= held[tank].1));
+        let mut after = held.clone();
+        for &(tank, took) in &receipt {
+            after[tank].1 -= took;
+            if after[tank].1 == 0 {
+                after[tank].0 = None;
+            }
+        }
+        assert_eq!(after, tanks(&[(None, 0), (None, 0), (None, 0)]));
+        // And putting it back restores exactly what was there.
+        let mut back = after;
+        for &(tank, took) in &receipt {
+            back[tank].1 += took;
+            back[tank].0 = Some("minecraft:water".to_owned());
+        }
+        assert_eq!(back, held);
     }
 
     #[test]
