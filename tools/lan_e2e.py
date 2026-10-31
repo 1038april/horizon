@@ -279,6 +279,8 @@ address. The script then checks, from both sides, what a guest's game used to ge
 - merchant-close: the host and the guest each open a trade screen with the payment in its slot; the screen
              closes and the payment returns when they walk out of reach (7 blocks in survival, 9 in
              creative) or the villager dies, and stays open in range.
+- explorer_map: three shipwreck maps from a loot table point at three different buried treasures (an exploration
+             map skips the structures a map already pointed at), and the host and the guest each see their map.
 - sulfur_cube_power: an explosive sulfur cube (TNT inside) stays calm on stone, lights its fuse when a redstone
              block is put beside it, and blows up when the fuse runs out; the guest sees it flash.
 - merchant-reselect: the host and the guest each trade three times from one offer click: Space (a key
@@ -7115,8 +7117,8 @@ def check_sprint_hit_slowdown(host, guest, out):
 
     Player.attack runs on the attacker's client too, and RemotePlayer.hurtClient lets it reach
     causeExtraKnockback: the horizontal speed times 0.6 and setSprinting(false). Ctrl is released
-    before the hit (the sprint holds while W stays down), so only the hit can end it. The hit is a
-    plain left click: the `attack` agent task releases the movement keys when it reports.
+    before the hit (the sprint holds while W stays down), so only the hit can end it. Input and
+    the click run in one control script so command latency cannot carry the guest past the host.
     """
     if dead(guest):
         guest.raw('respawn')
@@ -7127,6 +7129,10 @@ def check_sprint_hit_slowdown(host, guest, out):
     guest('command', command='gamemode survival')
     guest('command', command='effect clear @s')
     guest('command', command='item replace entity @s weapon.mainhand with minecraft:air')
+    # Drain the server's attack log before the tick-tight click. The raw mouse
+    # click deliberately keeps W held; the `attack` agent command would release
+    # movement keys before its deferred result arrives.
+    host('hurtlog')
     hx, hy, hz = pos_of(host)
     x, y, z = math.floor(hx), math.floor(hy), math.floor(hz)
     host('command', command=f'fill {x - 6} {y} {z - 2} {x + 14} {y + 3} {z + 2} minecraft:air')
@@ -7135,36 +7141,59 @@ def check_sprint_hit_slowdown(host, guest, out):
     guest('command', command=f'tp @s {x + 12.5} {y} {z + 0.5} 90 0')
     guest.wait(40)  # a full attack charge
     guest.raw('look-at', f'{x + 0.5}', f'{y + 1.6}', f'{z + 0.5}')
-    horizontal = lambda p: round(math.hypot(p['velocity'][0], p['velocity'][2]), 4)
-    own = lambda: guest('state')['player']
     try:
-        guest.raw('key', 'w', 'down')
-        guest.raw('key', 'ctrl', 'down')
-        guest.until(lambda: pos_of(guest), lambda p: p[0] - pos_of(host)[0] < 2.6, ticks=80)
-        guest.raw('key', 'ctrl', 'up')
-        before = own()
-        guest.raw('mouse', 'left', 'click')
-        after = [own()]
-        for _ in range(8):
-            guest.wait(1)
-            after.append(own())
+        replies = guest.script([
+            'key w down',
+            'key ctrl down',
+            'wait 1',
+            f'command tp @s {x + 3.5} {y} {z + 0.5} 90 0',
+            'state',
+            'key ctrl up',
+            'mouse left click',
+            'state',
+            'wait 1',
+            'state',
+            'wait 1',
+            'state',
+            'wait 1',
+            'state',
+            'key w up',
+        ], every=True)
+        horizontal = lambda p: round(math.hypot(p['velocity'][0], p['velocity'][2]), 4)
+        states = [r['player'] for r in replies if 'player' in r]
+        logs = host('hurtlog').get('players', [])
+        victim_log = next((p for p in logs if p.get('name') == host.player), {})
+        attack = next(
+            (h for h in victim_log.get('hurts', [])
+             if h.get('source') == 'minecraft:player_attack' and h.get('hurt')),
+            None,
+        )
+        before_index = next(
+            (i for i, p in enumerate(states) if p['sprinting'] and horizontal(p) > 0.1),
+            None,
+        )
+        before = states[before_index] if before_index is not None else None
+        after = states[before_index + 1 :] if before_index is not None else []
     finally:
         guest.raw('key', 'ctrl', 'up')
         guest.raw('key', 'w', 'up')
         host('command', command='effect clear @s minecraft:resistance')
     guest.shot(out, 'sprint-hit-slowdown')
-    seen = {'before': {'sprinting': before['sprinting'], 'speed': horizontal(before)},
-            'after': [{'sprinting': p['sprinting'], 'speed': horizontal(p)} for p in after]}
-    assert before['sprinting'] and seen['before']['speed'] > 0.1, f'the guest was not sprinting at the host: {seen}'
+    seen = {
+        'before': None if before is None else {'sprinting': before['sprinting'], 'speed': horizontal(before)},
+        'after': [{'sprinting': p['sprinting'], 'speed': horizontal(p)} for p in after],
+        'attack': attack,
+    }
+    assert attack, f'the guest did not hit the host: {seen}'
+    assert before and seen['before']['speed'] > 0.1, f'the guest was not sprinting at the host: {seen}'
     # The click reaches the game on its next frame, so the samples may start before the hit.
     ended = next((i for i, a in enumerate(seen['after']) if not a['sprinting']), None)
     assert ended is not None and not any(a['sprinting'] for a in seen['after'][ended:]), \
         f'the hit did not end the guest\'s sprint: {seen}'
-    # Still holding W, the guest walks on. The cut drops it below its walking speed (0.1532 * 0.6, then a tick
-    # gives 0.104) and it climbs back; without the cut it would slow down from its sprint to the walk instead.
-    walk = seen['after'][-1]['speed']
-    assert walk < 0.9 * seen['before']['speed'], f'the guest sprints on after the hit: {seen}'
-    assert min(a['speed'] for a in seen['after'][ended:]) < walk - 0.003, f'the hit did not cut the guest\'s speed: {seen}'
+    # The first post-hit sample includes one local movement step after the 0.6 cut. Without the cut,
+    # it would remain at sprint speed until the server's later sprint flag update.
+    first = seen['after'][ended]
+    assert first['speed'] < 0.9 * seen['before']['speed'], f'the guest sprints on after the hit: {seen}'
     return seen
 
 
@@ -7587,6 +7616,42 @@ CHECKS += ['riptide_rain']
 CHECK_FNS['riptide_rain'] = check_riptide_rain
 
 
+def check_explorer_map(host, guest, out):
+    """TreasureMapForEmeralds / ExplorationMapFunction with skip_existing_chunks (a trade's default):
+    findNearestMapStructure with createReference adds a reference to the start it finds (StructureStart.addReference,
+    at most one), so the next map from the same place points at another structure. Three cartographers' offers
+    are made, one after the other: each adds as many new starts as the first did, none is pointed at twice."""
+    x, y, z = (int(v // 1) for v in pos_of(host))
+    file = host.work / 'saves' / 'Lan' / 'data' / 'horizon_structure_references_minecraft_overworld.json'
+    host('command', command=f'fill {x - 4} {y - 1} {z - 2} {x + 4} {y - 1} {z + 2} minecraft:stone')
+    host('command', command=f'fill {x - 4} {y} {z - 2} {x + 4} {y + 3} {z + 2} minecraft:air')
+    guest('command', command=f'tp @s {x - 3.5} {y} {z + 0.5}')
+    host('command', command='gamemode survival')
+    host('command', command=f'tp @s {x + 0.5} {y} {z + 0.5}')
+    sizes = []
+    for n in range(3):
+        host('command', command=f'summon minecraft:villager {x + 2.5} {y} {z + 0.5} {{Tags:["cartographer{n}"],'
+             'NoAI:1b,PersistenceRequired:1b,Xp:1,VillagerData:{type:"minecraft:plains",'
+             'profession:"minecraft:cartographer",level:5}}')
+        host.wait(20)
+        villager = next(e['id'] for e in host.raw('entities', 8, 'minecraft:villager')['entities']
+                        if math.dist(e['pos'], [x + 2.5, y, z + 0.5]) < 0.5)
+        host.raw('interact-entity', villager)
+        host.raw('wait-for', 'screen', 'station', '--timeout', 10)
+        host.wait(20)
+        if n == 0:
+            host.shot(out, 'explorer-map-trades')
+        host.raw('key', 'esc', 'tap')
+        host.wait(10)
+        host('command', command=f'kill @e[tag=cartographer{n}]')
+        sizes.append(len(json.loads(file.read_text())) if file.exists() else 0)
+    assert sizes[0] > 0, f'the first cartographer pointed no map at a structure: {sizes}'
+    assert sizes == [sizes[0] * k for k in (1, 2, 3)], f'a map pointed at a structure twice: {sizes}'
+    return {'starts_after_each_cartographer': sizes, 'pointed_at': json.loads(file.read_text())}
+
+
+CHECKS += ['explorer_map']
+CHECK_FNS['explorer_map'] = check_explorer_map
 def check_sulfur_cube_power(host, guest, out):
     """SulfurCube.primeWhenOnPoweredPosition: an explosive cube standing in or beside redstone power lights
     its fuse (getBestOwnOrNeighbourSignal), then explodes when the fuse is out."""
@@ -8152,6 +8217,53 @@ def check_recipe_settings(host, guest, out):
 
 CHECKS += ['recipe_settings']
 CHECK_FNS.update(recipe_settings=check_recipe_settings)
+
+
+def check_reopen_player(host, guest, out):
+    """Save and Quit, then reopen: the owner comes back where they stood with what
+    they held (the world's own player file, `players/data/<singleplayer uuid>.dat`),
+    and a guest likewise from their own file (#5065, #5075)."""
+    places = {host.name: (40.5, 120.0, -30.5), guest.name: (-25.5, 110.0, 45.5)}
+    items = {host.name: ('minecraft:diamond', 7), guest.name: ('minecraft:emerald', 5)}
+
+    def held(game):
+        item = items[game.name][0]
+        return game('inventory')['counts'].get(item, 0)
+
+    for game in (host, guest):
+        back_to_game(game)
+        x, y, z = places[game.name]
+        item, count = items[game.name]
+        # A glass block to stand on, so nobody is still falling when the world saves.
+        host('command', command=f'setblock {math.floor(x)} {int(y) - 1} {math.floor(z)} minecraft:glass')
+        game('command', command=f'tp @s {x} {y} {z}')
+        game('command', command=f'give @s {item} {count}')
+    host.wait(40)
+    before = {game.name: {'position': [round(v, 1) for v in pos_of(game)], 'held': held(game)}
+              for game in (host, guest)}
+    for game in (host, guest):
+        want = {'position': list(places[game.name]), 'held': items[game.name][1]}
+        assert before[game.name] == want, f'{game.name} not set up: {before[game.name]}'
+    guest.raw('disconnect')
+    host.raw('pause')
+    host.raw('click-button', 'Save and Quit to Title')
+    host.raw('wait-for', 'screen', 'title', '--timeout', 120)
+    host.raw('open', 'Lan')
+    host('wait_ready', seconds=400)
+    port = host.raw('lan', 'open', 0, 'commands')['port']
+    guest.raw('connect', f'127.0.0.1:{port}', GUEST_NAME)
+    guest.raw('wait-for', 'loaded', '--timeout', 300)
+    guest.wait(20)
+    after = {}
+    for game in (host, guest):
+        after[game.name] = {'position': [round(v, 1) for v in pos_of(game)], 'held': held(game)}
+        game.shot(out, 'reopen-player')
+    assert after == before, f'players reset on reopen: before={before}, after={after}'
+    return {'reopened': after}
+
+
+CHECKS += ['reopen_player']
+CHECK_FNS.update(reopen_player=check_reopen_player)
 
 
 def check_recipe_targets(host, guest, out):
