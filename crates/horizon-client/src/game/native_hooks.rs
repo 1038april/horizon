@@ -476,6 +476,7 @@ impl GameLevel<'_> {
 }
 
 /// What dropped the items [`Game::native_loot_drops`] hears.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct NativeLootDrops<'a> {
     /// The loot table rolled (`minecraft:blocks/stone`, `minecraft:entities/zombie`); empty when

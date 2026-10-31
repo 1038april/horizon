@@ -1320,14 +1320,19 @@ impl Game<'_> {
         own(self)
     }
     /// The UUID of the player `last_hurt_by_player` keeps: the guest on
-    /// connection `conn` (None once they left), else the player in place.
+    /// connection `conn` (None once they left), else the player in place
+    /// (None on a server, which has none of its own).
     fn killer_uuid(&mut self, conn: Option<u32>) -> Option<u128> {
         match conn {
             // During that guest's own turn, the hub is out of `lan`.
             Some(conn) if self.lan_acting != Some(conn) => {
                 Some(self.lan.as_ref()?.hub.guest(conn)?.uuid)
             }
-            _ => Some(self.native_acting_id()),
+            Some(_) => Some(self.native_acting_id()),
+            None if self.lan_acting.is_none() && self.player.is_some() => {
+                Some(self.native_acting_id())
+            }
+            None => None,
         }
     }
     fn drop_death_loot(
