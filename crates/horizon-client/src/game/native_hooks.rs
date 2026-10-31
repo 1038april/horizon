@@ -6,6 +6,17 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 31 adds a player's server tick (`native_player_tick`).
+//!
+//! API 30 adds left-clicking a block (`native_left_click_block`).
+//!
+//! API 29 adds right-clicking an entity (`native_interact_entity`).
+//!
+//! API 28 adds block and item tag reads for server tick hooks (`native_block_in_tag`,
+//! `native_item_in_tag`).
+//!
+//! API 27 adds the player-health HUD rows (`native_health_hud`).
+//!
 //! API 26 adds the game's shared config folder (`native_config_dir`).
 //!
 //! API 25 adds server sound playback (`native_play_sound`).
@@ -131,7 +142,7 @@ use winit::{event::MouseButton, keyboard::KeyCode};
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 26;
+pub(crate) const NATIVE_HOOKS_API: u32 = 31;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -519,6 +530,60 @@ impl Game<'_> {
     /// says is taken.
     pub(super) fn native_hud(&mut self, batch: &mut HudBatch, corners: &mut Corners) {
         let _ = (batch, corners);
+    }
+    /// A player right-clicks the entity `entity` (`Entity.getId`) of type
+    /// `kind` (`minecraft:cow`) with `self.hand`, holding `stack` (none in an
+    /// empty hand): where `Player.interactOn` starts, before the entity's own
+    /// `interact` and the item's `interactLivingEntity`. Set `claimed` to take
+    /// the click: the hand swings and neither runs. Asked once per hand, as
+    /// vanilla tries the main hand then the off hand. Server-side, for every
+    /// player of the world (the helpers read the acting one). API 29.
+    pub(super) fn native_interact_entity(
+        &mut self,
+        entity: i32,
+        kind: &str,
+        stack: Option<&ItemStack>,
+        claimed: &mut bool,
+    ) {
+        let _ = (entity, kind, stack, claimed);
+    }
+    /// A player left-clicks the block `state` at `pos`, `face` the face hit
+    /// (`[0, 1, 0]` is the top): where `ServerPlayerGameMode.handleBlockBreakAction`
+    /// takes a dig's start, after its reach, spawn protection and world border
+    /// checks, before `Block.attack` (a note block plays) or a creative break.
+    /// Set `canceled` to ignore the click: the block isn't attacked, dug or
+    /// broken on the server, and the player's client gets it back (its own
+    /// predicted crack still shows to the clicking player). Server-side, for
+    /// every player of the world (the helpers read the acting one). API 30.
+    pub(super) fn native_left_click_block(
+        &mut self,
+        pos: [i32; 3],
+        face: [i32; 3],
+        state: BlockStateId,
+        canceled: &mut bool,
+    ) {
+        let _ = (pos, face, state, canceled);
+    }
+    /// A living player's server tick ends (`ServerPlayer.tick`): once a tick
+    /// for every player in the world, after their digging, item use,
+    /// cooldowns, statistics and advancements. The helpers read that player.
+    /// API 31.
+    pub(super) fn native_player_tick(&mut self) {}
+    /// The player-health HUD rows, once a frame the HUD draws them
+    /// (`HealthHud::layout`, not under F1): `inputs` carries the health,
+    /// food, air and vehicle state the layout reads, `wi`/`hi` the screen's
+    /// GUI size. A mod that sets `draws` replaces every row — armour,
+    /// hearts, food, air and the heights (`left_height`/`right_height`)
+    /// above the hotbar are the answer's to give; `bubble_pop_sound` too.
+    /// Nothing set draws Horizon's own.
+    pub(super) fn native_health_hud(
+        &mut self,
+        inputs: &horizon_client::hud_layout::HealthInputs,
+        wi: i32,
+        hi: i32,
+        draws: &mut Option<Vec<horizon_client::hud_layout::GuiDraw>>,
+    ) {
+        let _ = (inputs, wi, hi, draws);
     }
     /// A key or mouse button went down or up, by its vanilla name
     /// (`key.keyboard.z`, `key.mouse.left`): keys on any screen (check

@@ -209,6 +209,26 @@
       "name": "attack_entity",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_attack_entity"
+    },
+    {
+      "name": "health_hud",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_health_hud"
+    },
+    {
+      "name": "interact_entity",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_interact_entity"
+    },
+    {
+      "name": "left_click_block",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_left_click_block"
+    },
+    {
+      "name": "player_tick",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_player_tick"
     }
   ]
 }

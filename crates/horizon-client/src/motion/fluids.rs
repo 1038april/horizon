@@ -91,6 +91,7 @@ impl BoatFluidBoxWorld for RiddenBoat {
     }
 }
 /// The player's `EntityFluidInteraction` and the water flags around it.
+#[derive(Clone)]
 pub struct PlayerFluids {
     pub interaction: EntityFluidInteraction,
     /// `Entity.wasTouchingWater` (`isInWater`).
