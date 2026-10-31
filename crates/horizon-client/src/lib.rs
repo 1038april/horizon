@@ -106,6 +106,7 @@ pub mod reconnect;
 pub mod save;
 pub mod scoreboard_cmd;
 pub mod screen_layout;
+pub mod screen_narrator;
 pub use horizon_server_files as server;
 pub mod server_packs;
 pub mod shadows;
