@@ -734,8 +734,13 @@ impl Loading {
                 self.settings.save(&Game::options_path());
             }
             let _ = title.update_toast(self.settings.notification_display_time);
-            title.draw(
+            let items = match &self.loaded {
+                Some(Ok(loaded)) => Some(&*loaded.pack.item_renderer),
+                _ => None,
+            };
+            title.draw_with_items(
                 &gui.atlas,
+                items,
                 batch,
                 self.menu.cursor,
                 self.settings.file.bool("hideSplashTexts"),
