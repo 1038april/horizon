@@ -26,7 +26,7 @@ FallingBlockEntity.causeFallDamage	port	crates/horizon-client/src/game/falling_d
 FallingBlockEntity.addAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::falling_block_to_nbt	gap: minor: TileEntityData of the carried block is not written
 FallingBlockEntity.readAdditionalSaveData	port	crates/horizon-client/src/entity_nbt.rs::falling_block_from_nbt	gap: minor: TileEntityData is not read; damage settings come from falling_block::Damage::from_nbt
 FallingBlockEntity.fillCrashReportCategory	skip:debug		crash report detail
-FallingBlockEntity.getTypeName	missing		player: death texts for falling blocks cannot name the block (Falling Anvil) because the hit has no source entity
+FallingBlockEntity.getTypeName	skip:data	-	the anvil death text is its damage type's message id (death.attack.anvil), which takes no block-name argument; game/falling_damage.rs picks falling_anvil, falling_stalactite or falling_block
 FallingBlockEntity.teleport	missing		unsure: no portal travel for falling blocks found in nether_portal.rs and no end-arrival tick
 ItemEntity.restoreFrom	skip:other		the ItemEntity value moves between levels with thrower kept; nothing to copy
 ItemEntity.setFluidMovement	inline	crates/horizon-client/src/entities.rs::ItemEntity::tick	water and lava drag and buoyancy are applied in tick

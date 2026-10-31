@@ -106,7 +106,7 @@ AbstractMinecartContainer.remove	inline	crates/horizon-client/src/game/minecarts
 MinecartChest.interact	inline	crates/horizon-client/src/game/minecarts.rs::Game::interact_cart	chest arm: opens the cart's items and plays the chest sound
 MinecartCommandBlock.activateMinecart	inline	crates/horizon-client/src/game/minecarts.rs::Game::activate_cart	gap: minor: no command ever runs; the cart holds no command since its editor is missing
 MinecartCommandBlock.defineSynchedData	missing		minor: the command text and last output are not synced; no command cart holds a command
-MinecartCommandBlock.interact	missing		player: a creative player right-clicking a command minecart gets no command editor; vanilla opens it
+MinecartCommandBlock.interact	port	crates/horizon-client/src/game/remote.rs::Game::remote_use_entity	the client opens the command editor of the cart it right-clicked
 MinecartCommandBlock.onSyncedDataUpdated	missing		minor: no synced command text to load into the cart
 MinecartCommandBlock.readAdditionalSaveData	inline	crates/horizon-client/src/game/minecarts.rs::Minecart::from_nbt	gap: minor: the saved Command text is not read
 MinecartCommandBlock.MinecartCommandBase.createCommandSourceStack	missing		minor: no command runs from a cart, so no source stack is built

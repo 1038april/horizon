@@ -86,7 +86,7 @@ TrapDoorBlock.getShape	port	crates/horizon-world/src/interaction_shapes.rs::Inte
 TrapDoorBlock.getStateForPlacement	port	crates/horizon-world/src/level/place.rs::Sim::placement_class	
 TrapDoorBlock.isPathfindable	skip:data		per-state path type is exported state data (StateData.path)
 TrapDoorBlock.neighborChanged	port	crates/horizon-world/src/level/hooks.rs::Sim::neighbor_changed	redstone update arm for trapdoors
-TrapDoorBlock.onExplosionHit	missing		player: a wind burst or explosion that could open a trapdoor leaves it shut; the explosion code has no trapdoor case
+TrapDoorBlock.onExplosionHit	port	crates/horizon-client/src/game/wind.rs::Game::wind_trigger_block	the same path toggles a non-iron trapdoor
 TrapDoorBlock.playSound	port	crates/horizon-world/src/level/redstone.rs::Sim::trapdoor_sound	
 TrapDoorBlock.toggle	inline	crates/horizon-world/src/level/interact.rs::Sim::use_without_item	the trapdoor arm cycles the open state
 TrapDoorBlock.updateShape	port	crates/horizon-world/src/level/shapes.rs::Sim::update_shape_class	

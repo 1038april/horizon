@@ -138,5 +138,5 @@ BeehiveBlock.resetHoneyLevel	port	crates/horizon-client/src/game/beehives.rs::Ga
 BeehiveBlock.spawnParticle	inline	crates/horizon-client/src/animate_tick.rs::beehive_drip	the drip point from the hive shape; the honey drip particle is added there
 BeehiveBlock.spawnFluidParticle	inline	crates/horizon-client/src/animate_tick.rs::beehive_drip	the dripping honey particle position
 BeehiveBlock.createBlockStateDefinition	skip:data		state definition comes from the block data tables
-BeehiveBlock.playerWillDestroy	missing		player: in survival, breaking a hive with bees or honey should give the hive item back with its bees and honey level; Horizon's break path only angers the bees
+BeehiveBlock.playerWillDestroy	port	crates/horizon-client/src/game.rs::Game::break_block_as_player	a creative break drops the hive with its bees and honey level
 BeehiveBlock.rotate	port	crates/horizon-world/src/worldgen/structure.rs::StateTransforms::rotate	rotation through the state transform table

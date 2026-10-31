@@ -123,7 +123,7 @@ BlockAttachedEntity.readAdditionalSaveData	port	crates/horizon-client/src/entity
 Cushion.isBreakingDeniedFor	inline	crates/horizon-client/src/game/cushions.rs::Game::attack_cushion	the may_build gate
 Cushion.isBreakingDeniedAtPosFor	inline	crates/horizon-client/src/game/cushions.rs::Game::attack_cushion	the mayInteract gate, folded into the one may_build check
 Cushion.tickAtCheckInterval	inline	crates/horizon-client/src/game/cushions.rs::Game::tick_cushions	gap: minor: fluid effects not applied; fire and survival checked every 100 ticks
-Cushion.thunderHit	missing		player: a lightning strike does not break a cushion
+Cushion.thunderHit	port	crates/horizon-client/src/game/lightning.rs::Game::thunder_hit	a cushion in the bolt's box breaks and drops its item, last first
 Cushion.setPos	skip:other		position field write; the block position is kept apart in cushion.pos
 Cushion.canBePlacedAt	port	crates/horizon-client/src/cushion.rs::can_place	
 Cushion.wouldSurviveAt	port	crates/horizon-client/src/cushion.rs::survives	

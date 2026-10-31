@@ -93,7 +93,7 @@ LecternBlockEntity.resolveBook	missing		minor: unsure: written-book components (
 LecternBlockEntity.createCommandSourceStack	missing		minor: unsure: only used by resolveBook (see there)
 LecternBlockEntity.loadAdditional	port	crates/horizon-client/src/save.rs::decode_block_entity	Book and Page
 LecternBlockEntity.saveAdditional	port	crates/horizon-client/src/save.rs::encode_block_entity	Book and Page
-SculkCatalystBlockEntity.CatalystListener.tryAwardItSpreadsAdvancement	missing		player: no 'It Spreads' advancement for a mob killed next to a sculk catalyst; Horizon never fires kill_mob_near_sculk_catalyst
+SculkCatalystBlockEntity.CatalystListener.tryAwardItSpreadsAdvancement	port	crates/horizon-client/src/game/creatures.rs::Game::mob_died	kill_mob_near_sculk_catalyst fires when the catalyst takes a mob's experience
 SculkShriekerBlockEntity.loadAdditional	port	crates/horizon-client/src/save.rs::decode_block_entity	shrieker state from the sculk arm
 SculkShriekerBlockEntity.saveAdditional	port	crates/horizon-client/src/save.rs::encode_block_entity	shrieker state from the sculk arm
 SculkShriekerBlockEntity.tryGetPlayer	inline	crates/horizon-client/src/game/sculk.rs::Game::sculk_listen	ctx.player flag decides whether a player set it off

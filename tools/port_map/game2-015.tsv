@@ -33,7 +33,7 @@ ScaffoldingBlock.getFluidState	port	crates/horizon-world/src/registry_fluid.rs::
 RedStoneOreBlock.interact	port	crates/horizon-world/src/level/interact.rs::Behaviours::attack_block	gap: player: no red dust burst when the ore lights; the lit set is in attack_block and game/sculk.rs step_on_redstone_ore
 RedStoneOreBlock.randomTick	port	crates/horizon-world/src/level/tick.rs::Sim::random_tick_block	
 RedStoneOreBlock.spawnAfterBreak	inline	crates/horizon-world/src/level/removal.rs::break_experience	ore experience (1 to 5) for the break is in break_experience
-RedStoneOreBlock.spawnParticles	missing		player: no red dust particles burst around a redstone ore when it lights from mining, stepping on it, or a right-click with an item
+RedStoneOreBlock.spawnParticles	port	crates/horizon-client/src/game/sculk.rs::Game::redstone_ore_particles	the dust burst of an ore that lights, from mining, stepping on it or a right click
 RedstoneWireBlock.makeShapes	skip:data		wire shapes are per-state data from the block tables
 RedstoneWireBlock.getMissingConnections	inline	crates/horizon-world/src/level/redstone.rs::Sim::wire_connection_state	the missing-side loop of the connection state
 RedstoneWireBlock.updateShape	port	crates/horizon-world/src/level/redstone.rs::Sim::redstone_wire_update_shape	
