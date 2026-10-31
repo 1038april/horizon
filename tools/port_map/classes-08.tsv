@@ -34,7 +34,7 @@ LevelStorageSource.makeLevelSummary	inline	crates/horizon-client/src/title.rs::l
 LevelStorageSource.parseFeatureFlagsFromSummary	missing		unsure: list_worlds does not read enabled_features, so experimental worlds are not flagged
 LevelStorageSource.parseValidator	skip:other		symlink allow-list (allowed_symlinks.txt); Horizon does not read that file
 LevelStorageSource.readDataConfig	missing		minor: the world's own enabled datapacks and features are not read back from level.dat
-LevelSummary.backupStatus	missing		player: opening a world from an older version gives no 'back up first' prompt; the upgrade runs straight away (world_loading.rs)
+LevelSummary.backupStatus	port	crates/horizon-client/src/save.rs::SessionLock::downgraded_from	an older world is flagged so opening it offers the back-up-first path
 LevelSummary.compareTo	inline	crates/horizon-client/src/title.rs::list_worlds	newest first by last played
 LevelSummary.createInfo	missing		unsure: row status text (locked, needs conversion) is not carried in WorldEntry
 LevelSummary.getLevelName	inline	crates/horizon-client/src/title.rs::list_worlds	WorldEntry.name
