@@ -249,16 +249,26 @@ impl Game<'_> {
                         } else {
                             0.0
                         };
+                        // A primed TNT minecart's rails and the blocks they
+                        // stand on: no resistance, and never blown up.
+                        let spared = self.combat.rail_proof_blast
+                            && (self.rail(pos[0], pos[1], pos[2]).is_some()
+                                || self.rail(pos[0], pos[1] + 1, pos[2]).is_some());
                         match resists {
                             Some((at, resistance)) if at == pos => {
                                 power -= (resistance + 0.3) * 0.3;
                             }
                             _ if !self.res.facts().is_air(state) || f.fluid != Fluid::None => {
-                                power -= (f.explosion_resistance.max(fluid) + 0.3) * 0.3;
+                                let resistance = if spared {
+                                    0.0
+                                } else {
+                                    f.explosion_resistance.max(fluid)
+                                };
+                                power -= (resistance + 0.3) * 0.3;
                             }
                             _ => {}
                         }
-                        if power > 0.0 {
+                        if power > 0.0 && !spared {
                             set.put(Key(pos), ());
                         }
                         xp += xd * f64::from(0.3f32);
