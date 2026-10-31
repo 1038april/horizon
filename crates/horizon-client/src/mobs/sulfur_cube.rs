@@ -246,6 +246,31 @@ pub fn swallowable(m: &Mob, item: &str) -> bool {
 pub fn has_body(m: &Mob) -> bool {
     m.extra.head.is_some()
 }
+
+#[cfg(test)]
+mod knockback_sync_tests {
+    use super::*;
+    use crate::mobs::{Mob, Species};
+    use std::sync::Arc;
+
+    /// `SulfurCube.knockback` sets `needsSync`, as `LivingEntity.knockback`
+    /// does, so a guest sees a cube with a block knocked about at once.
+    #[test]
+    fn a_knocked_cube_with_a_block_syncs_at_once() {
+        load_archetype_items(&HashMap::from([(
+            "minecraft:sulfur_cube_archetype/explosive".to_owned(),
+            HashSet::from(["minecraft:tnt".to_owned()]),
+        )]));
+        let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        kind.species = Species::SulfurCube;
+        let mut m = Mob::new(1, Arc::new(kind), Vec3::ZERO, 0.0);
+        m.extra.head = Some("minecraft:tnt".into());
+        assert!(!m.needs_sync);
+        m.damage(5.0, Damage::player([2.0, 0.0, 0.0]));
+        assert!(m.velocity.x < 0.0, "velocity {:?}", m.velocity);
+        assert!(m.needs_sync);
+    }
+}
 pub fn archetype(m: &Mob) -> Option<&'static Archetype> {
     m.extra.head.as_deref().and_then(archetype_of)
 }
@@ -567,6 +592,8 @@ pub fn knockback(m: &mut Mob, direction: (f64, f64), from: Option<[f64; 3]>, dam
     );
     // The hit sound plays on the next tick (no event queue here).
     m.extra.scratch[1] = 2;
+    // needsSync: the push reaches the other players at once.
+    m.needs_sync = true;
     true
 }
 /// `SulfurCube.tick` and `customServerAiStep` additions after the cube's
