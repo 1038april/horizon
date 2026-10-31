@@ -718,6 +718,20 @@ Helpers for a server mod, by the rules hoppers follow: a furnace's sides, a doub
 
 During a machine's own tick its block entity is out of the world, so these answer as if no container were there: it has its slots in hand, in the `items` it's given. A composter takes one item a call, and these don't empty it: a hopper does. Container entities (minecarts, chest boats) aren't reached yet.
 
+### Falling blocks
+
+`crates/horizon-client/src/game/native_falling.rs`: a helper for server mods, for the level in place, on a server only. It
+names the level it means by its `dimension` (`minecraft:overworld`), as `native_set_block` does.
+
+- `native_spawn_falling_block(dimension, state, pos, velocity, falling)` throws a falling block of `state` from `pos` (its
+  bottom centre) at `velocity` in blocks a tick, each axis cut to 3.9. It flies, lands and places itself as sand does, or
+  drops as an item where it can't be placed. `NativeFalling` holds `drop_item` (default true) and `hurts` (hurts what it
+  lands on as an anvil does, 2 a block fallen and 40 at most; default false).
+- The block at `pos` stays: take it away first with `native_set_block` to make a block fall out of the world, as an
+  explosion's debris or a collapsing tower would.
+- It answers false, throwing nothing, on a client, for another dimension, air or an unknown state, a chunk that isn't
+  loaded, a value that isn't finite, or with 1024 falling blocks in the level already.
+
 ### Mod messages
 
 API 40, `crates/horizon-client/src/game/native_net.rs`: bytes between a mod's server half and its client half, on the
