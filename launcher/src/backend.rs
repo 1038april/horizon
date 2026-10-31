@@ -462,7 +462,7 @@ impl Default for Links {
     /// What the launcher uses until (or unless) it can read links.json.
     fn default() -> Self {
         Self {
-            discord: "https://discord.gg/HcTeMZxe5E".into(),
+            discord: "https://discord.gg/playhorizon".into(),
             sponsor: "https://github.com/sponsors/ludovic111".into(),
             website: "https://playhorizon.dev".into(),
         }
@@ -4094,12 +4094,12 @@ pub fn {f}("
     #[test]
     fn links_fall_back_to_the_built_in_ones() {
         let defaults = Links::default();
-        assert_eq!(defaults.discord, "https://discord.gg/HcTeMZxe5E");
+        assert_eq!(defaults.discord, "https://discord.gg/playhorizon");
         assert_eq!(defaults.sponsor, "https://github.com/sponsors/ludovic111");
         assert_eq!(defaults.website, "https://playhorizon.dev");
         // The file on main says the same thing as the defaults.
         let file = Links::parse(
-            r#"{"discord": "https://discord.gg/HcTeMZxe5E", "sponsor": "https://github.com/sponsors/ludovic111", "website": "https://playhorizon.dev"}"#,
+            r#"{"discord": "https://discord.gg/playhorizon", "sponsor": "https://github.com/sponsors/ludovic111", "website": "https://playhorizon.dev"}"#,
         );
         assert_eq!(file, defaults);
         // Unreadable or missing, offline included: the defaults.
