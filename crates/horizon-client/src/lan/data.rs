@@ -202,7 +202,10 @@ impl SyncData {
             .ok_or("registries.json not found next to the resources")?;
         let root: PathBuf = resources.join("data/minecraft");
         let mut registries = Vec::new();
-        let mut dynamic = Dynamic::default();
+        let mut dynamic = Dynamic {
+            custom_components: horizon_protocol::item::custom::entries().next().is_some(),
+            ..Default::default()
+        };
         for key in SYNCHRONIZED {
             let path = key.trim_start_matches("minecraft:");
             let mut found = BTreeMap::new();
@@ -232,7 +235,9 @@ impl SyncData {
             registries.push(((*key).to_owned(), e));
         }
         let tags = Self::load_tags(&root, &builtin, &dynamic);
-        let content_identity = if resources.join(crate::content_identity::MARKER).exists() {
+        let content_identity = if resources.join(crate::content_identity::MARKER).exists()
+            || horizon_protocol::item::custom::entries().next().is_some()
+        {
             Some(crate::content_identity::identity(resources).map_err(|error| error.to_string())?)
         } else {
             None
@@ -275,6 +280,12 @@ impl SyncData {
 
     /// The id of a name in a built-in or synchronized registry.
     pub fn id(&self, registry: &str, name: &str) -> Option<i32> {
+        if registry == "minecraft:data_component_type"
+            && self.dynamic.custom_components
+            && let Some(id) = horizon_protocol::item::custom::id(name)
+        {
+            return Some(id);
+        }
         if let Some(ids) = self.builtin.get(registry) {
             return ids.id(name);
         }
