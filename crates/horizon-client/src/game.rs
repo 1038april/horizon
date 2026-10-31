@@ -112,6 +112,7 @@ mod frames;
 mod friends;
 mod functions;
 mod game_mode;
+mod game_tests;
 mod gamemode_switcher;
 mod ghasts;
 mod glowing;
@@ -129,6 +130,7 @@ mod jukebox;
 mod lan;
 mod lan_actions;
 mod lan_attributes;
+mod lan_camera;
 mod lan_chat;
 mod lan_crafting;
 mod lan_entities;
@@ -1106,6 +1108,12 @@ impl LevelAccess for GameLevel<'_> {
         _state: BlockStateId,
         _direction: Direction,
     ) -> i32 {
+        // TestBlock.ownSignal.
+        if let Some(BlockEntity::TestBlock(b)) =
+            self.world.block_entities.get(&(pos.x, pos.y, pos.z))
+        {
+            return b.own_signal();
+        }
         // TrappedChestBlock.getSignal: the players with it open, at most 15.
         if let Some(count) = self.lid_openers.get(&(pos.x, pos.y, pos.z)) {
             return (*count).clamp(0, 15);
@@ -1918,6 +1926,8 @@ struct Game<'a> {
     lectern_pulses: Vec<((i32, i32, i32), i32)>,
     /// LevelLoadingScreen.smoothedProgress while the player is not placed yet.
     loading_progress: f32,
+    /// When `loading_progress` last eased (the server thread's load, 50 ms a step).
+    loading_progress_at: Option<std::time::Instant>,
     /// The world spawn search's origin chunk and fallback height, once known.
     spawn_origin: Option<((i32, i32), i32)>,
     spawn_spiral: horizon_client::world_spawn::ChunkSpiral,
@@ -2089,6 +2099,11 @@ struct Game<'a> {
     waypoints: horizon_client::locator_bar::ClientWaypoints,
     /// The camera the last frame drew from (position, yaw, pitch, fov), for the locator bar.
     locator_camera: Option<([f64; 3], f32, f32, f32)>,
+    /// `LocalPlayer.postEffects`: the chains the server has the screen run
+    /// (`ClientboundPostEffectsPacket`), in order.
+    post_effects: Vec<String>,
+    /// `GameRenderer.spectatedEntityPostEffect` (`checkEntityPostEffect`).
+    spectated_post_effect: Option<&'static str>,
     /// `LocalPlayer.experienceDisplayStartTick`: (last progress, seen a change, tick).
     experience_display: (f32, bool, u64),
     boats: Vec<boats::Boat>,
@@ -2238,6 +2253,8 @@ struct Game<'a> {
     structure_templates: HashMap<String, Option<structure_blocks::TemplateEntry>>,
     /// The game tests read so far, by id (the test instance registry).
     test_defs: std::cell::RefCell<HashMap<String, Option<test_instances::TestDef>>>,
+    /// `GameTestTicker.SINGLETON`: the game tests running on this server.
+    game_tests: game_tests::GameTests,
     /// KeyboardHandler's debug key state (game/debug_keys.rs), the physical
     /// keys held, and the debug renderers F3+B and F3+G switch on.
     debug_keys: horizon_client::debug_keys::DebugKeys,
@@ -4187,6 +4204,16 @@ impl Game<'_> {
                     kind: "structure_block",
                     ..
                 } => self.structure_block_neighbor_changed((pos.x, pos.y, pos.z)),
+                LevelEvent::BlockEvent {
+                    pos,
+                    kind: "test_block",
+                    ..
+                } => self.test_block_neighbor_changed((pos.x, pos.y, pos.z)),
+                LevelEvent::BlockEvent {
+                    pos,
+                    kind: "test_block_tick",
+                    ..
+                } => self.reset_test_block((pos.x, pos.y, pos.z)),
                 LevelEvent::BlockEvent {
                     pos,
                     kind: "brushable",
@@ -6452,6 +6479,10 @@ impl Game<'_> {
             });
             horizon_client::spans::time("tick_particles", || self.tick_particles());
             self.tick_client_ambient();
+        }
+        if running {
+            // MinecraftServer.tickServer: GameTestTicker.SINGLETON.tick().
+            self.tick_game_tests();
         }
         // ServerBossEvent broadcasts, after this level's entities have ticked.
         self.publish_boss_bars();
@@ -9204,19 +9235,23 @@ impl Game<'_> {
                         | "minecraft:test_instance_block"
                 )
             };
-            let visible = r.block_entities().filter(|(p, state)| {
-                if !self.res.block_entity_render().renders(*state) {
-                    return false;
-                }
-                off_screen(*state)
-                    || view.is_none_or(|v| {
-                        let o =
-                            (glam::DVec3::new(f64::from(p[0]), f64::from(p[1]), f64::from(p[2]))
-                                - camera)
-                                .as_vec3();
-                        v.intersects(o - glam::Vec3::ONE, o + glam::Vec3::splat(2.0))
-                    })
-            });
+            let visible =
+                r.visible_block_entities(self.settings.chunk_fade)
+                    .filter(|(p, state)| {
+                        if !self.res.block_entity_render().renders(*state) {
+                            return false;
+                        }
+                        off_screen(*state)
+                            || view.is_none_or(|v| {
+                                let o = (glam::DVec3::new(
+                                    f64::from(p[0]),
+                                    f64::from(p[1]),
+                                    f64::from(p[2]),
+                                ) - camera)
+                                    .as_vec3();
+                                v.intersects(o - glam::Vec3::ONE, o + glam::Vec3::splat(2.0))
+                            })
+                    });
             if self.entity_culler.is_some() || self.pack_ids.is_some() {
                 for block in visible {
                     let start = out.len();
@@ -10568,6 +10603,8 @@ impl Game<'_> {
     }
     fn close_world(&mut self) -> Result<()> {
         self.clear_waypoints();
+        self.post_effects.clear();
+        self.spectated_post_effect = None;
         if self.external_server() {
             return self.leave_server(None);
         }
@@ -12884,8 +12921,7 @@ impl Game<'_> {
             self.apply_ui_settings();
         }
         // Minecraft.doWorldLoad: the LevelLoadingScreen while single player's
-        // server starts. Its chunk map and progress are the server's, which
-        // the window doesn't see yet: the title alone, over the menu background.
+        // server starts, with the server's chunk map and progress.
         if self.integrated_starting.is_some() {
             if let Some(renderer) = &mut self.renderer {
                 let mut hud = HudBatch::new([renderer.config.width, renderer.config.height]);
@@ -12899,7 +12935,22 @@ impl Game<'_> {
                     h,
                     false,
                 );
-                horizon_client::level_loading::draw(&mut hud, &self.gui.atlas, None, None);
+                // The chunk map and progress are the server thread's.
+                let view = self
+                    .integrated_starting
+                    .as_ref()
+                    .map(|s| s.handle.load_view().clone());
+                let status = |x: i32, z: i32| view.as_ref().and_then(|v| v.status(x, z));
+                let progress = view
+                    .as_ref()
+                    .is_some_and(|v| v.has_progress())
+                    .then_some(self.loading_progress);
+                horizon_client::level_loading::draw(
+                    &mut hud,
+                    &self.gui.atlas,
+                    Some(&status),
+                    progress,
+                );
                 return renderer.render(&loading_frame(&hud));
             }
             return Ok(false);
@@ -13169,6 +13220,7 @@ impl Game<'_> {
         } else {
             self.spinning_matrix(camera_alpha as f32)
         };
+        let requested_post_effects = self.requested_post_effects();
         let terrain_distance = self.terrain_distance();
         let distance = (terrain_distance * 16) as f32;
         let depth_far =
@@ -13365,6 +13417,12 @@ impl Game<'_> {
                 .boss_overlay
                 .darken_amount(self.clock.fraction() as f32),
             menu_blur: self.menu_blur(),
+            post_effects: horizon_client::post_chain::Request {
+                effects: &requested_post_effects,
+                root: &self.options.resources,
+                menu_blur_radius: self.settings.menu_blur as f32,
+            },
+            chunk_fade: self.settings.chunk_fade,
         };
         let result = match self.renderer.as_mut() {
             Some(renderer) => {
@@ -13406,13 +13464,13 @@ impl Game<'_> {
             .count();
         horizon_client::level_loading::progress(ready)
     }
-    /// `LevelLoadingScreen.extractBackground` and `extractRenderState`.
-    fn draw_level_loading(
+    /// `LevelLoadingScreen.extractBackground`.
+    pub(super) fn draw_level_loading_background(
         &self,
         batch: &mut HudBatch,
         reason: horizon_client::level_loading::Reason,
     ) {
-        use horizon_client::level_loading::{self, Reason, STATUS_RADIUS};
+        use horizon_client::level_loading::Reason;
         let atlas = &self.gui.atlas;
         let (w, h) = (batch.width, batch.height);
         match reason {
@@ -13426,6 +13484,16 @@ impl Game<'_> {
             }
             Reason::EndPortal => batch.fill(atlas, 0.0, 0.0, w, h, rgba(20, 20, 20, 255)),
         }
+    }
+    /// `LevelLoadingScreen.extractBackground` and `extractRenderState`.
+    fn draw_level_loading(
+        &self,
+        batch: &mut HudBatch,
+        reason: horizon_client::level_loading::Reason,
+    ) {
+        use horizon_client::level_loading::{self, STATUS_RADIUS};
+        self.draw_level_loading_background(batch, reason);
+        let atlas = &self.gui.atlas;
         let (cx, cz) = self.streaming.center;
         let status = |x: i32, z: i32| {
             self.streaming.latest_status(
@@ -13435,6 +13503,18 @@ impl Game<'_> {
             )
         };
         level_loading::draw(batch, atlas, Some(&status), Some(self.loading_progress));
+    }
+    /// `GameRenderer.update`'s `requestedPostEffects`: `end_of_frame` (a resource
+    /// pack's own chain), then the server's `LocalPlayer.postEffects`. Only the
+    /// world is drawn through them.
+    fn requested_post_effects(&self) -> Vec<String> {
+        if self.title.is_some() || self.player.is_none() {
+            return Vec::new();
+        }
+        std::iter::once("minecraft:end_of_frame".to_owned())
+            .chain(self.post_effects.iter().cloned())
+            .chain(self.spectated_post_effect.map(str::to_owned))
+            .collect()
     }
     /// `Screen.extractBlurredBackground` over the panorama or the world and
     /// HUD, when `menuBackgroundBlurriness` is at least 1.
@@ -15374,6 +15454,7 @@ impl<'a> Game<'a> {
             book_last_click: None,
             lectern_pulses: Vec::new(),
             loading_progress: 0.0,
+            loading_progress_at: None,
             spawn_origin: None,
             spawn_spiral: Default::default(),
             player_spawn: None,
@@ -15473,6 +15554,8 @@ impl<'a> Game<'a> {
             waypoint_styles: prepared.waypoint_styles,
             waypoints: Default::default(),
             locator_camera: None,
+            post_effects: Vec::new(),
+            spectated_post_effect: None,
             experience_display: Default::default(),
             boats: Vec::new(),
             leash_boats: Vec::new(),
@@ -15563,6 +15646,7 @@ impl<'a> Game<'a> {
             block_editor: None,
             structure_templates: HashMap::new(),
             test_defs: std::cell::RefCell::new(HashMap::new()),
+            game_tests: game_tests::GameTests::default(),
             friends: None,
             debug_keys: Default::default(),
             debug_charts: Default::default(),
@@ -16538,6 +16622,8 @@ fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         night_vision: 0.0,
         block_flicker: 0.0,
         boss_darken: 0.0,
+        chunk_fade: 0.0,
+        post_effects: horizon_client::post_chain::Request::none(),
         menu_blur: None,
     }
 }
