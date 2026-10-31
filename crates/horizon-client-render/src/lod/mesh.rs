@@ -1000,24 +1000,6 @@ fn emit_quad(mesh: &mut SectionMesh, key: FaceKey, rect: Rect) {
     ) {
         points.reverse()
     }
-    // Track the mesh's bounds here, on the meshing worker: the frame thread
-    // only ever reads them.
-    let (mut low, mut high) = (points[0], points[0]);
-    for point in points {
-        for axis in 0..3 {
-            low[axis] = low[axis].min(point[axis]);
-            high[axis] = high[axis].max(point[axis]);
-        }
-    }
-    match &mut mesh.bounds {
-        Some((min, max)) => {
-            for axis in 0..3 {
-                min[axis] = min[axis].min(low[axis]);
-                max[axis] = max[axis].max(high[axis]);
-            }
-        }
-        bounds @ None => *bounds = Some((low, high)),
-    }
     let out = if key.translucent {
         &mut mesh.translucent
     } else {

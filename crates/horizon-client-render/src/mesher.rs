@@ -199,6 +199,9 @@ pub struct SectionMesh {
     pub block_entities: Vec<([i32; 3], u32)>,
     /// Axis-aligned bounding box [min, max] of actual terrain mesh vertices in section-local space [0, 16].
     pub bounds: Option<[glam::Vec3; 2]>,
+    /// A far mesh was clipped around finer tiles or resident chunks. Keep
+    /// the previous GPU mesh while its replacements fade in.
+    pub keep: bool,
 }
 impl Default for SectionMesh {
     fn default() -> Self {
@@ -209,6 +212,7 @@ impl Default for SectionMesh {
             visibility: ALL_VISIBLE,
             block_entities: Vec::new(),
             bounds: None,
+            keep: false,
         }
     }
 }
@@ -225,6 +229,7 @@ impl SectionMesh {
         self.sides = Sides::default();
         self.visibility = ALL_VISIBLE;
         self.bounds = None;
+        self.keep = false;
     }
     pub(crate) fn capacity_bytes(&self) -> usize {
         self.solid.capacity() * std::mem::size_of::<TerrainVertex>()

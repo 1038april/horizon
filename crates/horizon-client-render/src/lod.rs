@@ -729,6 +729,11 @@ enum Done {
         key: TileKey,
         version: u64,
         mesh: SectionMesh,
+        canceled: Arc<AtomicBool>,
+    },
+    MeshCanceled {
+        key: TileKey,
+        version: u64,
     },
 }
 /// One tile's mesh job. Every job of a batch shares one immutable snapshot,
@@ -740,6 +745,7 @@ struct MeshJob {
     finer: Vec<TileKey>,
     covered: Arc<FxHashSet<(i32, i32)>>,
     bounds: Option<[i32; 4]>,
+    canceled: Arc<AtomicBool>,
 }
 struct MeshQueued {
     /// Lower is more urgent: near tiles first.
@@ -789,6 +795,8 @@ struct Shared {
     stop: AtomicBool,
     /// Reduced far detail: samplers approximate wide cells.
     approximate: AtomicBool,
+    /// On small machines, hold queued far meshing while near terrain loads.
+    mesh_held: AtomicBool,
 }
 /// One background worker and at most two outstanding sample jobs. Only the
 /// current view's quadtree and a bounded set of visited summaries are retained.
@@ -826,6 +834,11 @@ pub struct Lod {
     dirty: FxHashMap<TileKey, u64>,
     /// The newest revision of each active tile's mesh.
     mesh_version: FxHashMap<TileKey, u64>,
+    /// The newest revision accepted by the renderer for each active tile.
+    /// Older in-flight results can still fill a hole while a newer job waits.
+    shown_version: FxHashMap<TileKey, u64>,
+    /// Cancellation tokens for queued or running jobs of active tiles.
+    mesh_cancel: FxHashMap<TileKey, Arc<AtomicBool>>,
     next_version: u64,
     /// Mesh jobs queued or running; the cutout waits for all of them.
     outstanding_meshes: usize,
@@ -893,6 +906,7 @@ impl Lod {
             mesh_wake: Condvar::new(),
             stop: AtomicBool::new(false),
             approximate: AtomicBool::new(false),
+            mesh_held: AtomicBool::new(false),
         });
         let worker = shared.clone();
         let (tx, results) = mpsc::channel();
@@ -921,12 +935,29 @@ impl Lod {
                                         if shared.stop.load(Ordering::Relaxed) {
                                             return;
                                         }
+                                        if shared.mesh_held.load(Ordering::Relaxed) {
+                                            jobs = shared.mesh_wake.wait(jobs).unwrap();
+                                            continue;
+                                        }
                                         if let Some(job) = jobs.pop() {
                                             break job.job;
                                         }
                                         jobs = shared.mesh_wake.wait(jobs).unwrap();
                                     }
                                 };
+                                if job.canceled.load(Ordering::Acquire) {
+                                    if tx
+                                        .send(Done::MeshCanceled {
+                                            key: job.key,
+                                            version: job.version,
+                                        })
+                                        .is_err()
+                                    {
+                                        return;
+                                    }
+                                    continue;
+                                }
+                                let keep_finer = !job.finer.is_empty();
                                 let input = job.snapshot.mesh_input(job.key, job.finer);
                                 let columns = input.columns();
                                 let edges = input.edges();
@@ -940,11 +971,32 @@ impl Lod {
                                     &input.finer,
                                 );
                                 mesh.sort_solid();
+                                let [ox, _, oz] = job.key.origin();
+                                let size = job.key.size();
+                                mesh.keep = keep_finer
+                                    || job.covered.iter().any(|&(cx, cz)| {
+                                        let x = cx * 16;
+                                        let z = cz * 16;
+                                        x < ox + size && x + 16 > ox && z < oz + size && z + 16 > oz
+                                    });
+                                if job.canceled.load(Ordering::Acquire) {
+                                    if tx
+                                        .send(Done::MeshCanceled {
+                                            key: job.key,
+                                            version: job.version,
+                                        })
+                                        .is_err()
+                                    {
+                                        return;
+                                    }
+                                    continue;
+                                }
                                 if tx
                                     .send(Done::Mesh {
                                         key: job.key,
                                         version: job.version,
                                         mesh,
+                                        canceled: job.canceled,
                                     })
                                     .is_err()
                                 {
@@ -1114,6 +1166,8 @@ impl Lod {
             active: FxHashSet::default(),
             dirty: FxHashMap::default(),
             mesh_version: FxHashMap::default(),
+            shown_version: FxHashMap::default(),
+            mesh_cancel: FxHashMap::default(),
             next_version: 1,
             outstanding_meshes: 0,
             mesh_workers: meshing_threads(cores),
@@ -1189,6 +1243,12 @@ impl Lod {
     }
     /// Marks an active tile for remeshing. Versioned so a result from an
     /// older batch can never overwrite a newer one.
+    fn cancel_mesh(&mut self, key: TileKey) {
+        if let Some(token) = self.mesh_cancel.remove(&key) {
+            token.store(true, Ordering::Release);
+            self.shared.mesh_wake.notify_all();
+        }
+    }
     fn mark_mesh(&mut self, key: TileKey) {
         if !self.active.contains(&key) {
             return;
@@ -1365,7 +1425,9 @@ impl Lod {
                 } else {
                     self.active.remove(&node);
                     self.removed_pending.insert(node);
+                    self.cancel_mesh(node);
                     self.mesh_version.remove(&node);
+                    self.shown_version.remove(&node);
                     self.meshed.remove(&node);
                     self.unmeshed.remove(&node);
                     self.dirty.remove(&node);
@@ -1562,6 +1624,10 @@ impl Lod {
     /// terrain then holds back (`HELD_SAMPLE_STEP`).
     pub fn set_near_loading(&mut self, loading: bool) {
         self.near_loading = loading;
+        let held = self.held();
+        if self.shared.mesh_held.swap(held, Ordering::Release) && !held {
+            self.shared.mesh_wake.notify_all();
+        }
     }
     /// Reduced far detail (`graphics::FarDetail::Reduced`): the next update
     /// replans when it changes, and tiles sampled from then on approximate
@@ -1736,6 +1802,8 @@ impl Lod {
             }
         }
         self.mesh_version.retain(|key, _| self.active.contains(key));
+        self.shown_version
+            .retain(|key, _| self.active.contains(key));
         self.dirty.retain(|key, _| self.active.contains(key));
         self.meshed.retain(|key| self.active.contains(key));
         self.unmeshed.retain(|key| self.active.contains(key));
@@ -1753,6 +1821,7 @@ impl Lod {
         let changed: Vec<_> = old.symmetric_difference(&self.active).copied().collect();
         for &key in &changed {
             if old.contains(&key) && !self.active.contains(&key) {
+                self.cancel_mesh(key);
                 self.removed_pending.insert(key);
                 self.meshed.remove(&key);
                 self.dirty.remove(&key);
@@ -1772,14 +1841,37 @@ impl Lod {
                 }
                 Done::DetailRequested => self.detail_request_pending = false,
                 Done::Sample { key, samples } => self.finish_sample(key, samples),
-                Done::Mesh { key, version, mesh } => {
+                Done::Mesh {
+                    key,
+                    version,
+                    mesh,
+                    canceled,
+                } => {
                     self.outstanding_meshes = self.outstanding_meshes.saturating_sub(1);
-                    // A newer batch (or the tile leaving) makes this stale.
-                    if self.active.contains(&key) && self.mesh_version.get(&key) == Some(&version) {
+                    // A result newer than what is shown is useful even when a
+                    // still newer job is pending. Keep that newer revision
+                    // dirty so a busy frontier cannot discard every result.
+                    if !canceled.load(Ordering::Acquire)
+                        && self.active.contains(&key)
+                        && self
+                            .shown_version
+                            .get(&key)
+                            .is_none_or(|shown| version > *shown)
+                    {
+                        self.shown_version.insert(key, version);
                         meshes.push((key, mesh));
                         self.meshed.insert(key);
-                        self.unmeshed.remove(&key);
-                        self.cutout_waiting.remove(&key);
+                        if self.mesh_version.get(&key) == Some(&version) {
+                            self.mesh_cancel.remove(&key);
+                            self.unmeshed.remove(&key);
+                            self.cutout_waiting.remove(&key);
+                        }
+                    }
+                }
+                Done::MeshCanceled { key, version } => {
+                    self.outstanding_meshes = self.outstanding_meshes.saturating_sub(1);
+                    if self.mesh_version.get(&key) == Some(&version) {
+                        self.mesh_cancel.remove(&key);
                     }
                 }
             }
@@ -1943,7 +2035,7 @@ impl Lod {
     /// Queues every dirty active tile with a shared immutable snapshot. One
     /// batch used to clone all maps and serialize the whole view on one worker.
     fn dispatch_meshes(&mut self, camera: [i32; 2]) {
-        if self.dirty.is_empty() {
+        if self.dirty.is_empty() || self.held() {
             return;
         }
         // Under load, let the pool drain and send one larger batch with one
@@ -1973,6 +2065,8 @@ impl Lod {
         let count = keys.len();
         for (key, version) in keys {
             let finer = self.finer_of(key);
+            let canceled = Arc::new(AtomicBool::new(false));
+            self.mesh_cancel.insert(key, canceled.clone());
             // Screen-space urgency: nearer blocks cost more pixels per work.
             let priority = i64::from(key.distance(camera)) * 16 / i64::from(key.size());
             queued.push(MeshQueued {
@@ -1985,6 +2079,7 @@ impl Lod {
                     finer,
                     covered: covered.clone(),
                     bounds: self.covered_bounds,
+                    canceled,
                 },
             });
         }
@@ -2089,7 +2184,11 @@ impl Lod {
     #[cfg(test)]
     fn snapshot(&self) -> Snapshot {
         Snapshot {
-            samples: self.ready.clone(),
+            samples: self
+                .active
+                .iter()
+                .filter_map(|key| self.ready.get(key).map(|columns| (*key, columns.clone())))
+                .collect(),
             saved: self.saved.clone(),
             reduced: self.reduced.clone(),
         }
@@ -3093,6 +3192,28 @@ mod tests {
         assert_eq!([1, 2, 4, 8, 11].map(sampling_threads), [1, 1, 1, 4, 5]);
         assert_eq!([12, 16, 64].map(sampling_threads), [6, 8, 8]);
         assert_eq!([2, 8, 12, 16].map(meshing_threads), [1, 3, 5, 7]);
+    }
+
+    #[test]
+    fn far_meshing_holds_while_small_machine_near_terrain_loads() {
+        let mut lod = Lod::scheduler_for_test();
+        let key = TileKey {
+            x: 0,
+            z: 0,
+            level: 0,
+        };
+        lod.small = true;
+        lod.active.insert(key);
+        lod.ready
+            .insert(key, Arc::new(vec![Column::default(); CELLS * CELLS]));
+        lod.mark_mesh(key);
+        lod.set_near_loading(true);
+        lod.dispatch_meshes([0, 0]);
+        assert!(lod.shared.mesh_jobs.lock().unwrap().is_empty());
+
+        lod.set_near_loading(false);
+        lod.dispatch_meshes([0, 0]);
+        assert_eq!(lod.shared.mesh_jobs.lock().unwrap().len(), 1);
     }
 
     /// Drives the scheduler by hand: every sample the new incremental path
