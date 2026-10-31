@@ -327,7 +327,7 @@ fn heightmap(column: &Column, mut fluid: impl FnMut(&Span) -> bool) -> Column {
         min: crate::chunk::MIN_Y as i16,
         ..*span
     };
-    let mut spans = Vec::with_capacity(2);
+    let mut spans = Spans::with_capacity(2);
     match below.last() {
         Some(under) if fluid(top) => {
             spans.push(ground(under));
@@ -351,25 +351,36 @@ fn mesh_columns_with_edges(
     mut material: impl FnMut(&Span, Direction, [i32; 2]) -> Material,
 ) -> SectionMesh {
     assert_eq!(columns.len(), CELLS * CELLS);
-    let heightmap_columns;
-    let heightmap_neighbors;
+    // The heightmap columns are built here and borrowed like the tile's own.
+    let heightmap_columns: Vec<Column>;
+    let heightmap_refs: Vec<&Column>;
+    let heightmap_edges: [Vec<Column>; 4];
+    let heightmap_neighbors: [Vec<EdgeColumn<'_>>; 4];
     let (columns, neighbors) = if key.level >= HEIGHTMAP_LEVEL {
         let [ox, _, oz] = key.origin();
         let mut fluid = |span: &Span| material(span, Direction::Up, [ox, oz]).fluid != 0;
         heightmap_columns = columns
             .iter()
             .map(|column| heightmap(column, &mut fluid))
-            .collect::<Vec<_>>();
-        heightmap_neighbors = neighbors.each_ref().map(|side| {
+            .collect();
+        heightmap_edges = neighbors.each_ref().map(|side| {
             side.iter()
-                .map(|edge| EdgeColumn {
+                .map(|edge| heightmap(edge.column, &mut fluid))
+                .collect()
+        });
+        heightmap_refs = heightmap_columns.iter().collect();
+        heightmap_neighbors = std::array::from_fn(|side| {
+            neighbors[side]
+                .iter()
+                .zip(&heightmap_edges[side])
+                .map(|(edge, column)| EdgeColumn {
                     start: edge.start,
                     end: edge.end,
-                    column: heightmap(&edge.column, &mut fluid),
+                    column,
                 })
-                .collect::<Vec<_>>()
+                .collect()
         });
-        (&heightmap_columns[..], &heightmap_neighbors)
+        (&heightmap_refs[..], &heightmap_neighbors)
     } else {
         (columns, neighbors)
     };
@@ -1198,13 +1209,13 @@ mod tests {
         let fluid = |s: &Span| s.state.0 == 2;
         let strata = Column {
             surface: None,
-            spans: vec![span(0, 60, 1), span(60, 63, 3), span(63, 64, 4)],
+            spans: vec![span(0, 60, 1), span(60, 63, 3), span(63, 64, 4)].into(),
         };
         let flat = heightmap(&strata, fluid);
         assert_eq!(flat.spans, [span(-64, 64, 4)]);
         let sea = Column {
             surface: None,
-            spans: vec![span(0, 50, 1), span(50, 62, 2)],
+            spans: vec![span(0, 50, 1), span(50, 62, 2)].into(),
         };
         let flat = heightmap(&sea, fluid);
         assert_eq!(flat.spans, [span(-64, 50, 1), span(50, 62, 2)]);
@@ -1219,7 +1230,8 @@ mod tests {
                         span(0, top - 4, 1),
                         span(top - 4, top - 1, 3),
                         span(top - 1, top, 4),
-                    ],
+                    ]
+                    .into(),
                 }
             })
             .collect();
