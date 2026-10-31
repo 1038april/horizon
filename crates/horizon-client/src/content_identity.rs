@@ -1,6 +1,6 @@
 //! Identity of the ordered block-state registry used by chunk packets, and of
-//! the item and mob effect registries once content mods add to them (item
-//! stacks and effect packets carry their network ids).
+//! the item, mob effect and entity type registries once content mods add to
+//! them (item stacks, effect and entity packets carry their network ids).
 use horizon_protocol::registry::Builtin;
 use serde::{Deserialize, Serialize, de::IgnoredAny};
 use sha2::{Digest, Sha256};
@@ -93,7 +93,11 @@ fn hash_facts(bytes: &[u8]) -> Result<[u8; 32], IdentityError> {
 }
 
 /// The built-in registries whose network ids content mods extend besides blocks.
-const REGISTRIES: [&str; 2] = ["minecraft:item", "minecraft:mob_effect"];
+const REGISTRIES: [&str; 3] = [
+    "minecraft:item",
+    "minecraft:mob_effect",
+    "minecraft:entity_type",
+];
 
 fn parse_registries(bytes: &[u8]) -> Result<Builtin, IdentityError> {
     let text = std::str::from_utf8(bytes).map_err(|e| IdentityError::Registries(e.to_string()))?;
