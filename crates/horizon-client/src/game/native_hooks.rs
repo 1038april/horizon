@@ -6,6 +6,19 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 62 adds nicknames for server mods: `native_set_nickname` shows a name in place of a player's in chat and
+//! the Tab list (the real one on hover), and `native_text_allowed` asks the server's chat filter, in
+//! `native_server.rs`.
+//!
+//! API 61 adds mods' own sound events in `native_play_sound`: another
+//! namespace's event is sent by name, as vanilla sends an unregistered sound.
+//!
+//! API 60 adds the small bar under an item (`native_item_bar`): `GuiGraphicsExtractor.itemDecorations`
+//! hands it vanilla's choice (the damage bar, or a bundle's fullness already applied), to replace or hide.
+//!
+//! API 59 adds entities for server mods (`native_summon`, `native_move_entity`,
+//! `native_set_display`, `native_remove_entity`, in `native_entities.rs`).
+//!
 //! API 58 adds the renderer's hook points, in `horizon-client-render`'s
 //! `gfx/native_render.rs`: `native_world_drawn` (draw with the world's colour,
 //! depth, matrices and entity geometry before the hand and the HUD) and
@@ -110,7 +123,7 @@
 //! API 29 adds right-clicking an entity (`native_interact_entity`).
 //!
 //! API 28 adds block and item tag reads for server tick hooks (`native_block_in_tag`,
-//! `native_item_in_tag`).
+//! `native_item_in_tag`). API @API:server_tag_reads@ adds context-free tag reads for any server hook.
 //!
 //! API 27 adds the player-health HUD rows (`native_health_hud`).
 //!
@@ -255,7 +268,7 @@ pub(super) use horizon_world::level::flags;
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 58;
+pub(crate) const NATIVE_HOOKS_API: u32 = 62;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -349,6 +362,39 @@ impl GameLevel<'_> {
     #[inline(always)]
     pub(super) fn native_is_signal_source(&self, state: BlockStateId, source: &mut bool) {
         let _ = (state, source);
+    }
+
+    /// `BlockState.hasAnalogOutputSignal`: set `output` for a block of yours
+    /// that comparators read (how full or far along it is, as a composter's
+    /// level), so they ask `native_analog_output`. Asked from inside the
+    /// level's update: answer from `state` alone. Authoritative servers only.
+    /// API @API:analog_output@.
+    #[inline(always)]
+    pub(super) fn native_has_analog_output(&self, state: BlockStateId, output: &mut bool) {
+        let _ = (state, output);
+    }
+
+    /// `BlockState.getAnalogOutputSignal`: the signal a comparator reads from
+    /// the block `state` at `pos`, `face` the side that touches the comparator
+    /// (or the conductor in front of it). `output` holds vanilla's answer:
+    /// change it when the block is yours (0 to 15; anything else is clamped).
+    /// Asked only for blocks `native_has_analog_output` answered for, from
+    /// inside the level's update: don't change the world here. When the
+    /// answer changes without the block's state changing, call
+    /// `native_update_output_neighbors`; a change of state through
+    /// `native_set_block` or `native_set_block_property` (neighbour updates
+    /// on) tells the comparators itself, as vanilla's `Level.setBlock` does.
+    /// Authoritative servers only. API @API:analog_output@.
+    #[inline(always)]
+    pub(super) fn native_analog_output(
+        &self,
+        dimension: LevelDimension,
+        pos: BlockPos,
+        state: BlockStateId,
+        face: Direction,
+        output: &mut i32,
+    ) {
+        let _ = (dimension, pos, state, face, output);
     }
 
     /// An authoritative server's `ServerLevel.tickChunk` is about to
@@ -1110,6 +1156,14 @@ impl Game<'_> {
     pub(super) fn native_tooltip(&self, stack: &ItemStack, lines: &mut Vec<(Text, u32)>) {
         let _ = (stack, lines);
     }
+    /// The small bar `GuiGraphicsExtractor.itemDecorations` draws under an
+    /// item, wherever the game shows one: `bar` arrives holding vanilla's value
+    /// (the damage bar, or a bundle's fullness already applied) and may be
+    /// replaced (width `0..=13`, colour `rgb`) or set to `None` to hide it.
+    /// Asked each frame a stack is drawn. Client-side. 60.
+    pub(super) fn native_item_bar(&self, stack: &ItemStack, bar: &mut Option<(i32, u32)>) {
+        let _ = (stack, bar);
+    }
     /// A player uses `stack` (right click) with `self.hand` on the block at
     /// `pos`, `face` the face clicked (`[0, 1, 0]` is the top), once the
     /// block itself let the click through (a chest still opens): where
@@ -1504,6 +1558,21 @@ fn mob_source(damage: &Damage) -> HurtSource<'static> {
     }
 }
 
+/// Whether `id` is a sound event's id, `namespace:path` as `Identifier`
+/// allows: the namespace of `[a-z0-9_.-]`, the path also with `/`.
+fn sound_id(id: &str) -> bool {
+    let Some((namespace, path)) = id.split_once(':') else {
+        return false;
+    };
+    let allowed = |c: char, slash: bool| {
+        c.is_ascii_lowercase() || c.is_ascii_digit() || "_.-".contains(c) || (slash && c == '/')
+    };
+    !namespace.is_empty()
+        && !path.is_empty()
+        && namespace.chars().all(|c| allowed(c, false))
+        && path.chars().all(|c| allowed(c, true))
+}
+
 fn dimension_id(dimension: LevelDimension) -> &'static str {
     match dimension {
         LevelDimension::Overworld => "minecraft:overworld",
@@ -1515,9 +1584,13 @@ fn dimension_id(dimension: LevelDimension) -> &'static str {
 /// Server-level helpers for native mods.
 #[allow(dead_code)]
 impl GameLevel<'_> {
-    /// Play a registered vanilla sound for nearby players in this server level.
-    /// The return value means queued, not heard. Unknown sound events are
-    /// rejected at dispatch when the server registry is available.
+    /// Play a sound event for nearby players in this server level. The return
+    /// value means queued, not heard. A `minecraft:` event must be registered:
+    /// an unknown one is dropped at dispatch. Another namespace's event (a
+    /// mod's, `mymod:machine_hum`) is sent by name, as vanilla sends a sound
+    /// that isn't in its registry (`Holder.direct`, a variable range): players
+    /// hear it if their resources define it (`assets/mymod/sounds.json`, a
+    /// content mod's). API 61.
     pub(super) fn native_play_sound(
         &mut self,
         sound: &str,
@@ -1526,7 +1599,7 @@ impl GameLevel<'_> {
         volume: f32,
         pitch: f32,
     ) -> bool {
-        if !self.native_authoritative || !sound.starts_with("minecraft:") {
+        if !self.native_authoritative || !sound_id(sound) {
             return false;
         }
         if source >= horizon_client::settings::SOUND_SOURCES.len() {
@@ -1882,6 +1955,26 @@ impl Game<'_> {
         };
         let at = BlockPos::new(pos[0], pos[1], pos[2]);
         self.with_level(|b, level, ticks| b.set_block(level, ticks, at, id, flags))
+    }
+    /// The block at `pos` changed its comparator output
+    /// (`native_analog_output`) without changing its state: the comparators
+    /// beside it, or behind a conductor there, read it again
+    /// (`Level.updateNeighbourForOutputSignal`). Acts on the level in place:
+    /// false (and nothing happens) when `dimension` is another, or this
+    /// window isn't a server. API @API:analog_output@.
+    pub(super) fn native_update_output_neighbors(
+        &mut self,
+        dimension: &str,
+        pos: [i32; 3],
+    ) -> bool {
+        if (self.serving.is_none() && self.options.dedicated.is_none())
+            || dimension != self.dim.id()
+        {
+            return false;
+        }
+        let at = BlockPos::new(pos[0], pos[1], pos[2]);
+        self.with_level(|b, level, ticks| b.update_neighbour_for_output_signal(level, ticks, at));
+        true
     }
     /// The block at `pos` changed the signal it gives: its neighbours, and
     /// theirs (a block it powers passes the signal on), read it again, as
@@ -3127,6 +3220,30 @@ fn box_meets(b: &horizon_core::geometry::Aabb, min: [f64; 3], max: [f64; 3]) -> 
 
 #[cfg(test)]
 mod tests {
+
+    /// `native_play_sound` takes vanilla's and mods' sound ids, nothing else.
+    #[test]
+    fn sound_ids_are_identifiers() {
+        for id in [
+            "minecraft:block.note_block.harp",
+            "mymod:machine/hum",
+            "my_mod.x-1:a",
+        ] {
+            assert!(super::sound_id(id), "{id}");
+        }
+        for id in [
+            "",
+            "hum",
+            ":hum",
+            "mymod:",
+            "MyMod:hum",
+            "mymod:Hum",
+            "my/mod:hum",
+            "a:b c",
+        ] {
+            assert!(!super::sound_id(id), "{id}");
+        }
+    }
 
     /// A mod's property write: none for a key or value the block lacks, the
     /// state itself when it already has the value, else the new state.

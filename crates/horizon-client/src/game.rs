@@ -185,6 +185,7 @@ mod moving_pistons;
 mod music;
 mod names;
 mod narrator;
+mod native_entities;
 mod native_hooks;
 mod native_lifecycle;
 mod native_menus;
@@ -1100,6 +1101,26 @@ impl LevelAccess for GameLevel<'_> {
             self.native_block_signal(self.dimension, pos, state, face, direct, &mut signal);
         }
         signal.clamp(0, 15)
+    }
+    fn adjust_has_analog_output(&self, state: BlockStateId, vanilla: bool) -> bool {
+        let mut output = vanilla;
+        if self.native_authoritative {
+            self.native_has_analog_output(state, &mut output);
+        }
+        output
+    }
+    fn adjust_analog_output(
+        &self,
+        pos: BlockPos,
+        state: BlockStateId,
+        direction: Direction,
+        vanilla: i32,
+    ) -> i32 {
+        let mut output = vanilla;
+        if self.native_authoritative {
+            self.native_analog_output(self.dimension, pos, state, direction, &mut output);
+        }
+        output.clamp(0, 15)
     }
     fn before_random_tick(
         &mut self,
@@ -7465,13 +7486,16 @@ impl Game<'_> {
         let cooldown =
             horizon_client::cooldowns::group(stack, info.and_then(|i| i.use_cooldown.as_ref()));
         let partial = self.clock.fraction() as f32;
+        // BundleItem overrides the bar with its fullness.
+        let mut bar = horizon_client::bundle::Contents::of(self.items(), stack)
+            .map(|c| c.bar())
+            .unwrap_or_else(|| hud_overlays::damage_bar(stack.damage as i32, max_damage));
+        // Client-only: a mod may replace or hide the bar vanilla just chose.
+        self.native_item_bar(stack, &mut bar);
         let decorations = hud_overlays::ItemDecorations {
             count: stack.count,
             count_text,
-            // BundleItem overrides the bar with its fullness.
-            bar: horizon_client::bundle::Contents::of(self.items(), stack)
-                .map(|c| c.bar())
-                .unwrap_or_else(|| hud_overlays::damage_bar(stack.damage as i32, max_damage)),
+            bar,
             cooldown: self.cooldowns.percent(&cooldown, partial),
         };
         let mut draws = vec![hud_layout::GuiDraw::Push(vec![
@@ -10948,12 +10972,13 @@ impl Game<'_> {
             "World",
             format!("{} ({})", level.name, save_root.display()),
         );
-        self.session_lock = Some(session_lock);
         self.end.set_locator(locator);
         self.share_spawn_conditions();
         self.score = Default::default();
         self.fns = Default::default();
         self.world_tables = self.build_world_tables();
+        // Native tag reads use the lock to tell that the tag tables are ready.
+        self.session_lock = Some(session_lock);
         // The registries a preload or an earlier world read are not this
         // world's packs': a world with packs sends its own (their dialogs,
         // recipes and advancements). For a world without packs, `sync_data`

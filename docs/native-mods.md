@@ -141,7 +141,7 @@ hook hears the layout's inputs (`HealthInputs`) and the screen's GUI size, and a
 draws replaces all the rows — armour, hearts, food, air and the heights above the hotbar — for that
 frame. Nothing answered draws Horizon's own. Bundles that use it need `"hooks": 27`.
 
-API 28 adds `native_block_in_tag` and `native_item_in_tag` for server tick hooks. They read the world's merged block and item tags, including data packs and content mods. An unknown tag returns false. An empty item stack tests the `minecraft:air` item, as vanilla does. Calls with an inactive or stale tick context return an error. Bundles that use them need `"hooks": 28`.
+API 28 adds `native_block_in_tag` and `native_item_in_tag` for server tick hooks; calls with an inactive or stale tick context return an error. API @API:server_tag_reads@ adds `native_server_block_in_tag` and `native_server_item_in_tag` for any server hook, without a tick context. They read the world's merged block and item tags, including data packs and content mods. An unknown tag returns false. An empty item stack tests the `minecraft:air` item, as vanilla does. The new helpers return `NotServer` on a client and `TagsUnavailable` before the world loads its tags. Bundles using them need `"hooks": @API:server_tag_reads@`.
 
 API 29 adds right-clicking an entity, on the server for every player: `native_interact_entity` hears a right click on
 an entity (its id and type, and the stack in the hand) where `Player.interactOn` starts, once per hand. A mod that claims
@@ -507,6 +507,23 @@ API 57 adds chunks and players coming and going, on the server: `native_chunk_lo
 API 58 adds [the renderer's hook points](#render-hook-points): `native_world_drawn`, called once the world is drawn with its colour, depth, matrices and entity geometry, and
 `native_render_needs`, where a mod asks for the entity runs and the world's depth without a shader pack. Bundles that use them need `"hooks": 58`.
 
+API 59 adds [entities](#entities) for server mods: `native_summon(dimension, kind, pos, nbt)` spawns any entity from its compound
+as `/summon` does, and `native_move_entity`, `native_set_display` (a display's transformation, eased over ticks) and
+`native_remove_entity` move, pose and remove displays, markers and interactions: models that move, from a mod's own
+item models. Bundles that use them need `"hooks": 59`.
+
+API 60 adds `native_item_bar(stack, bar)`: the small bar `GuiGraphicsExtractor.itemDecorations` draws under an item,
+wherever the game shows one. `bar` arrives holding
+vanilla's choice (the damage bar, or a bundle's fullness, already applied); set it to a width `0..=13` and an
+`rgb` colour, or to `None` to hide it. Asked each frame a stack is drawn. Client-side (NeoForge has no event for
+this; vanilla's `Item.isBarVisible`/`getBarWidth`/`getBarColor`). Bundles that use it need `"hooks": 60`.
+
+API 61 adds mods' own sound events in `native_play_sound`: an event of another namespace than `minecraft` (`mymod:machine_hum`) is sent to players by
+name, as vanilla sends a sound that isn't in its registry, and they hear it when their resources define it (a content mod's `assets/mymod/sounds.json`
+and its `.ogg` files). `minecraft:` events must still be registered. Bundles that play their own sounds need `"hooks": 61`.
+
+API 62 adds nicknames for server mods: `native_set_nickname(uuid, Option<&str>)` shows a name in place of a player's in chat (their messages, `/me`, `/msg`) and the Tab list, the real name on hover and everywhere else; `native_text_allowed(text)` asks the server's chat filter. Both outside a player's hook. Bundles need "hooks": 62.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page, into the instance picked on the left ("Installs into
@@ -853,6 +870,25 @@ Helpers for a server mod, by the rules hoppers follow: a furnace's sides, a doub
 - **`native_dimension()`:** the level in place (`minecraft:overworld`), for a hook that isn't told it, such as `native_block_entity_tick`.
 
 During a machine's own tick its block entity is out of the world, so these answer as if no container were there: it has its slots in hand, in the `items` it's given. A composter takes one item a call, and these don't empty it: a hopper does. Container entities (minecarts, chest boats) aren't reached yet.
+
+### Entities
+
+`crates/horizon-client/src/game/native_entities.rs`: helpers for server mods, for the level in place, on a server only. Each
+names the level it means by its `dimension` (`minecraft:overworld`), as `native_set_block` does.
+
+- `native_summon(dimension, kind, pos, nbt)` spawns an entity of `kind` from its compound, as `/summon <kind> <pos> <nbt>`
+  does (passengers included), and returns its id. None on a client, for another dimension, a position outside `/summon`'s
+  bounds, a chunk that isn't loaded, a kind Horizon can't load, or one a mod kept out with `native_entity_join_level`.
+- `native_move_entity(dimension, id, pos, yaw, pitch)` moves an entity Horizon keeps without simulating it (a display, a
+  marker, an interaction); a display eases there over its teleport duration. Mobs move with `native_teleport_mob`.
+- `native_set_display(dimension, id, &NativeDisplay)` sets a `block_display`, `item_display` or `text_display`'s
+  transformation (translation, left rotation, scale, right rotation; quaternions `[x, y, z, w]`), the ticks players see it
+  ease over (`interpolation`) and its teleport duration (`teleport`, 0 to 59). Each call restarts the ease on clients.
+- `native_remove_entity(dimension, id)` removes such an entity as `/kill` does. Mobs go with `native_remove_mob`.
+
+A model that moves (a turning gun barrel, a thrown projectile) is an `item_display` showing an item whose model comes from
+the mod's `.hmod` assets: summon it once, then move and pose it from a tick hook. Easing between ticks happens on each
+client, so a call a tick looks smooth.
 
 ### Mod messages
 
