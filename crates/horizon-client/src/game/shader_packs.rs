@@ -27,32 +27,6 @@ fn active_pack<'a>(picked: &'a str, mods: &horizon_client::mod_list::ModList) ->
     }
 }
 
-#[cfg(test)]
-mod native_pack_tests {
-    use super::active_pack;
-    use horizon_client::mod_list::{Installed, ModList, NativePage};
-
-    #[test]
-    fn native_shader_follows_its_mod_without_affecting_other_packs() {
-        let mut mods = ModList::default();
-        mods.installed.push(Installed {
-            id: "horizon_better_visuals".into(),
-            title: "Better Visuals".into(),
-            description: String::new(),
-            problem: None,
-            dev: false,
-            native: Some(NativePage::default()),
-        });
-        let owned = "native-horizon_better_visuals";
-        assert_eq!(active_pack(owned, &mods), owned);
-        mods.disabled.insert("horizon_better_visuals".into());
-        assert_eq!(active_pack(owned, &mods), "");
-        assert_eq!(active_pack("golden_hour", &mods), "golden_hour");
-        mods.installed[0].native = None;
-        assert_eq!(active_pack(owned, &mods), owned);
-    }
-}
-
 /// The ids a pack gives entities and block entities (4.1, 5.3), for the spans of the entity
 /// geometry.
 pub(super) struct PackIds {
@@ -446,4 +420,30 @@ fn block_id_table(pack: &super::PackResources, ids: &BlockIds) -> Vec<i32> {
         }
     }
     table
+}
+
+#[cfg(test)]
+mod native_pack_tests {
+    use super::active_pack;
+    use horizon_client::mod_list::{Installed, ModList, NativePage};
+
+    #[test]
+    fn native_shader_follows_its_mod_without_affecting_other_packs() {
+        let mut mods = ModList::default();
+        mods.installed.push(Installed {
+            id: "horizon_better_visuals".into(),
+            title: "Better Visuals".into(),
+            description: String::new(),
+            problem: None,
+            dev: false,
+            native: Some(NativePage::default()),
+        });
+        let owned = "native-horizon_better_visuals";
+        assert_eq!(active_pack(owned, &mods), owned);
+        mods.disabled.insert("horizon_better_visuals".into());
+        assert_eq!(active_pack(owned, &mods), "");
+        assert_eq!(active_pack("golden_hour", &mods), "golden_hour");
+        mods.installed[0].native = None;
+        assert_eq!(active_pack(owned, &mods), owned);
+    }
 }
