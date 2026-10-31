@@ -29,11 +29,24 @@ pub(super) enum Claim {
     Pass,
 }
 
-/// The same kind of controller back (a new id on macOS) takes back its player with any button;
-/// another takes over the player waiting longest with A, or lets it leave with B. P1 is only
-/// given its own back (another joins as P1 through the offer to join).
-pub(super) fn claim<Id>(lost: &[Lost<Id>], uuid: [u8; 16], button: Button) -> Claim {
-    if uuid != [0; 16]
+/// The same kind of controller back takes back its player with any button; another takes over
+/// the player waiting longest with A, or lets it leave with B. P1 is only given its own back
+/// (another joins as P1 through the offer to join).
+///
+/// `uuid` names the model, not the device (gilrs' SDL-style GUID), so it stands for "the same
+/// controller" only where a reconnect gets a new id (`model_match`: macOS; elsewhere the id
+/// survives and `PadEvent::Back` takes it), and only when one waiting player has that model:
+/// otherwise another DualSense would silently take a DualSense player's seat.
+pub(super) fn claim<Id>(
+    lost: &[Lost<Id>],
+    uuid: [u8; 16],
+    button: Button,
+    model_match: bool,
+) -> Claim {
+    let same_model = || lost.iter().filter(|l| l.uuid == uuid).count() == 1;
+    if model_match
+        && uuid != [0; 16]
+        && same_model()
         && let Some(k) = lost.iter().position(|l| l.uuid == uuid)
     {
         return Claim::Give(k);
@@ -98,8 +111,10 @@ impl Split<'_> {
             // In a menu, or alone in a world, the first controller pressed is P1's (alone it
             // drives P1 anyway).
             let offered = self.offers.iter().any(|(o, _)| *o == id);
-            if !self.in_world() || (self.guests.is_empty() && self.p1_pad.is_none() && !offered) {
-                if self.p1_pad.is_none() {
+            // P1 with controllers off plays on keyboard and mouse: a pad given to it is dead.
+            let p1_takes = self.p1_pad.is_none() && self.host.settings.controller.enabled;
+            if !self.in_world() || (self.guests.is_empty() && p1_takes && !offered) {
+                if p1_takes {
                     self.p1_pad = Some(id);
                     self.fresh.push(id);
                 }
@@ -115,7 +130,9 @@ impl Split<'_> {
                         self.offers.remove(k);
                         joins.push(id);
                     }
-                    Button::North if self.p1_pad.is_none() => {
+                    Button::North
+                        if self.p1_pad.is_none() && self.host.settings.controller.enabled =>
+                    {
                         self.offers.remove(k);
                         self.p1_pad = Some(id);
                         self.fresh.push(id);
@@ -223,7 +240,12 @@ impl Split<'_> {
     /// A button on a controller nobody has while players wait for one: true when it answered
     /// them (`claim`).
     fn claim_for_lost(&mut self, id: PadId, button: Button) -> bool {
-        match claim(&self.lost, self.pads.uuid(id), button) {
+        match claim(
+            &self.lost,
+            self.pads.uuid(id),
+            button,
+            cfg!(target_os = "macos"),
+        ) {
             Claim::Give(k) => {
                 let seat = self.lost.remove(k).seat;
                 self.give_pad(seat, id);
@@ -261,7 +283,7 @@ impl Split<'_> {
             offers => format!("{} controllers want to join", offers.len()),
         };
         let mut choices = vec![(Button::South, "Join")];
-        if self.p1_pad.is_none() {
+        if self.p1_pad.is_none() && self.host.settings.controller.enabled {
             choices.push((Button::North, "Play as P1"));
         }
         choices.push((Button::East, "No"));
@@ -330,27 +352,57 @@ mod tests {
     #[test]
     fn the_same_controller_back_takes_its_player_with_any_button() {
         let waiting = [lost(2, [7; 16]), lost(3, [9; 16])];
-        assert_eq!(claim(&waiting, [9; 16], Button::North), Claim::Give(1));
+        assert_eq!(
+            claim(&waiting, [9; 16], Button::North, true),
+            Claim::Give(1)
+        );
     }
 
     #[test]
     fn another_controller_takes_over_or_lets_go_the_longest_waiting() {
         let waiting = [lost(3, [7; 16]), lost(2, [8; 16])];
-        assert_eq!(claim(&waiting, [1; 16], Button::South), Claim::Give(0));
-        assert_eq!(claim(&waiting, [1; 16], Button::East), Claim::Leave(0));
-        assert_eq!(claim(&waiting, [1; 16], Button::North), Claim::Wait);
+        assert_eq!(
+            claim(&waiting, [1; 16], Button::South, true),
+            Claim::Give(0)
+        );
+        assert_eq!(
+            claim(&waiting, [1; 16], Button::East, true),
+            Claim::Leave(0)
+        );
+        assert_eq!(claim(&waiting, [1; 16], Button::North, true), Claim::Wait);
     }
 
     #[test]
     fn only_p1_waiting_leaves_the_offer_to_join() {
         let waiting = [lost(1, [7; 16])];
-        assert_eq!(claim(&waiting, [1; 16], Button::South), Claim::Pass);
-        assert_eq!(claim(&waiting, [7; 16], Button::South), Claim::Give(0));
+        assert_eq!(claim(&waiting, [1; 16], Button::South, true), Claim::Pass);
+        assert_eq!(
+            claim(&waiting, [7; 16], Button::South, true),
+            Claim::Give(0)
+        );
+    }
+
+    #[test]
+    fn the_same_model_is_only_known_back_where_ids_change_and_unambiguous() {
+        // Windows and Linux keep the id across a reconnect: another of the same model asks.
+        let waiting = [lost(2, [7; 16])];
+        assert_eq!(claim(&waiting, [7; 16], Button::North, false), Claim::Wait);
+        assert_eq!(
+            claim(&waiting, [7; 16], Button::South, false),
+            Claim::Give(0)
+        );
+        // Two players wait with the same model: no guess, the longest waiting is asked for.
+        let waiting = [lost(3, [7; 16]), lost(2, [7; 16])];
+        assert_eq!(claim(&waiting, [7; 16], Button::North, true), Claim::Wait);
+        assert_eq!(
+            claim(&waiting, [7; 16], Button::East, true),
+            Claim::Leave(0)
+        );
     }
 
     #[test]
     fn a_controller_the_system_does_not_describe_is_not_known_back() {
         let waiting = [lost(2, [0; 16])];
-        assert_eq!(claim(&waiting, [0; 16], Button::North), Claim::Wait);
+        assert_eq!(claim(&waiting, [0; 16], Button::North, true), Claim::Wait);
     }
 }

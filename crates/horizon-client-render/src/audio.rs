@@ -62,6 +62,12 @@ struct Mixer {
     /// The callback's cameras (position, basis, world), kept to be refilled without allocating.
     cameras: Vec<([f64; 3], Basis, u32)>,
     limiter_peak: f32,
+    /// The output device the stream was opened on (`Library.currentDeviceName`).
+    #[cfg(feature = "audio")]
+    device_name: String,
+    /// The stream reported its device gone (`Library.isCurrentDeviceDisconnected`).
+    #[cfg(feature = "audio")]
+    device_lost: bool,
 }
 /// A camera's forward, up and right vectors.
 type Basis = ([f64; 3], [f64; 3], [f64; 3]);
@@ -224,6 +230,20 @@ pub struct Audio {
     pub stopped: std::collections::BTreeMap<String, u32>,
     /// The volume sliders' `SoundPreviewHandler`.
     preview: crate::sound_preview::SoundPreview,
+    /// `SoundEngine.lastSeenDevices`: the system default output last seen.
+    #[cfg(feature = "audio")]
+    default_seen: Option<String>,
+    /// The ALSA cards (Linux) or Core Audio devices (macOS) last seen: listing
+    /// the output devices probes every one, so it waits for these to change
+    /// (`card_fingerprint`).
+    #[cfg(feature = "audio")]
+    cards_seen: Option<String>,
+    /// The other half of `lastSeenDevices`: every output device last seen.
+    #[cfg(feature = "audio")]
+    devices_seen: Vec<String>,
+    /// Ticks since the output devices were last looked at (`DeviceTracker.tick`).
+    #[cfg(feature = "audio")]
+    device_ticks: u32,
 }
 fn decode(path: &Path) -> Option<(Vec<f32>, u32)> {
     use symphonia::core::{
@@ -665,18 +685,95 @@ fn open_device(
     use cpal::SampleFormat as F;
     let config = device.default_output_config()?;
     let stream = match config.sample_format() {
-        F::F32 => build_stream::<f32>(device, &config, mixer),
-        F::F64 => build_stream::<f64>(device, &config, mixer),
-        F::I16 => build_stream::<i16>(device, &config, mixer),
-        F::I32 => build_stream::<i32>(device, &config, mixer),
-        F::I8 => build_stream::<i8>(device, &config, mixer),
-        F::U16 => build_stream::<u16>(device, &config, mixer),
-        F::U32 => build_stream::<u32>(device, &config, mixer),
-        F::U8 => build_stream::<u8>(device, &config, mixer),
+        F::F32 => build_stream::<f32>(device, &config, mixer.clone()),
+        F::F64 => build_stream::<f64>(device, &config, mixer.clone()),
+        F::I16 => build_stream::<i16>(device, &config, mixer.clone()),
+        F::I32 => build_stream::<i32>(device, &config, mixer.clone()),
+        F::I8 => build_stream::<i8>(device, &config, mixer.clone()),
+        F::U16 => build_stream::<u16>(device, &config, mixer.clone()),
+        F::U32 => build_stream::<u32>(device, &config, mixer.clone()),
+        F::U8 => build_stream::<u8>(device, &config, mixer.clone()),
         other => Err(format!("unsupported sample format {other}").into()),
     }?;
     stream.play()?;
+    if let Ok(mut m) = mixer.lock() {
+        m.device_name = device.name().unwrap_or_default();
+        m.device_lost = false;
+    }
     Ok((stream, config))
+}
+/// Try one output device for `open`: skip it when it was already tried, log it
+/// when it opens, and keep its error when it does not.
+#[cfg(feature = "audio")]
+fn try_open_device(
+    device: &cpal::Device,
+    mixer: Arc<Mutex<Mixer>>,
+    tried: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) -> Option<cpal::Stream> {
+    let name = device.name().unwrap_or_else(|_| "unnamed device".into());
+    if tried.contains(&name) {
+        return None;
+    }
+    tried.push(name.clone());
+    match open_device(device, mixer) {
+        Ok((stream, config)) => {
+            log::info!(
+                "Horizon: audio output {name} ({} Hz, {} channels, {})",
+                config.sample_rate().0,
+                config.channels(),
+                config.sample_format()
+            );
+            Some(stream)
+        }
+        Err(e) => {
+            errors.push(format!("{name}: {e}"));
+            None
+        }
+    }
+}
+/// The name of the system's default output device.
+#[cfg(feature = "audio")]
+fn default_output_name() -> Option<String> {
+    cpal::default_host()
+        .default_output_device()
+        .and_then(|d| d.name().ok())
+}
+/// A cheap fingerprint of what `output_devices` can list. On Linux, the ALSA
+/// cards: the rest are `cpal`'s fixed names. On macOS, every Core Audio
+/// device's name, inputs included: telling which of them play opens each one
+/// (about 90 ms a second with twenty devices), naming them takes 2 or 3 ms.
+/// `None` elsewhere, where the list is always looked at.
+#[cfg(feature = "audio")]
+fn card_fingerprint() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string("/proc/asound/cards").ok()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let devices = cpal::default_host().devices().ok()?;
+        Some(
+            devices
+                .filter_map(|d| d.name().ok())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        None
+    }
+}
+/// Whether the output device list should be looked at again: only the ALSA
+/// cards can add or remove an entry, and `None` means there is no fingerprint,
+/// so the list has to be checked as before.
+#[cfg(any(feature = "audio", test))]
+fn cards_changed(seen: Option<&str>, cards: Option<&str>) -> bool {
+    match (seen, cards) {
+        (Some(seen), Some(cards)) => seen != cards,
+        _ => true,
+    }
 }
 #[cfg(feature = "audio")]
 fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
@@ -687,6 +784,7 @@ fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
     let rate = config.sample_rate().0;
     let channels = config.channels() as usize;
     let mut scratch = Vec::new();
+    let on_error = mixer.clone();
     let stream = device.build_output_stream(
         &config.config(),
         move |data: &mut [T], _| {
@@ -700,7 +798,14 @@ fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
                 *out = T::from_sample(*s);
             }
         },
-        |e| log::warn!("Horizon: audio stream error: {e}"),
+        move |e| {
+            log::warn!("Horizon: audio stream error: {e}");
+            if matches!(e, cpal::StreamError::DeviceNotAvailable)
+                && let Ok(mut m) = on_error.lock()
+            {
+                m.device_lost = true;
+            }
+        },
         None,
     )?;
     Ok(stream)
@@ -774,6 +879,17 @@ impl Audio {
         };
         let mut engine = SoundEngine::new(registry);
         engine.loaded = live;
+        #[cfg(feature = "audio")]
+        let cards = if live { card_fingerprint() } else { None };
+        // Where the cards gate the list (Linux, macOS), it starts empty: opening the
+        // output does not need it, and listing it probes every device; the first
+        // change fills it. Elsewhere it starts with every device listed, as before.
+        #[cfg(feature = "audio")]
+        let devices = if live && cards.is_none() {
+            output_devices()
+        } else {
+            Vec::new()
+        };
         Self {
             _stream: stream,
             device_name: target_device.to_owned(),
@@ -799,6 +915,14 @@ impl Audio {
             heard: Default::default(),
             stopped: Default::default(),
             preview: Default::default(),
+            #[cfg(feature = "audio")]
+            default_seen: if live { default_output_name() } else { None },
+            #[cfg(feature = "audio")]
+            cards_seen: cards,
+            #[cfg(feature = "audio")]
+            devices_seen: devices,
+            #[cfg(feature = "audio")]
+            device_ticks: 0,
         }
     }
     #[cfg(not(feature = "audio"))]
@@ -863,29 +987,20 @@ impl Audio {
         }
         let host = cpal::default_host();
         let mut errors = Vec::new();
-        // The default device first, then any other output a host lists:
-        // a default that cannot open (busy, or a stale ALSA default) should
-        // not leave the game silent when another device works.
-        let default = host.default_output_device();
-        let others = host.output_devices().into_iter().flatten();
+        // The default device first: it is what plays, and listing the others
+        // probes every PCM, which is slow and prints ALSA's errors for the
+        // plugins this system lacks.
         let mut tried = Vec::new();
-        for device in default.into_iter().chain(others) {
-            let name = device.name().unwrap_or_else(|_| "unnamed device".into());
-            if tried.contains(&name) {
-                continue;
-            }
-            tried.push(name.clone());
-            match open_device(&device, mixer.clone()) {
-                Ok((stream, config)) => {
-                    log::info!(
-                        "Horizon: audio output {name} ({} Hz, {} channels, {})",
-                        config.sample_rate().0,
-                        config.channels(),
-                        config.sample_format()
-                    );
-                    return Ok(stream);
-                }
-                Err(e) => errors.push(format!("{name}: {e}")),
+        if let Some(device) = host.default_output_device()
+            && let Some(stream) = try_open_device(&device, mixer.clone(), &mut tried, &mut errors)
+        {
+            return Ok(stream);
+        }
+        // A default that cannot open (busy, or a stale ALSA default) should not
+        // leave the game silent when another device works.
+        for device in host.output_devices().into_iter().flatten() {
+            if let Some(stream) = try_open_device(&device, mixer.clone(), &mut tried, &mut errors) {
+                return Ok(stream);
             }
         }
         if errors.is_empty() {
@@ -959,6 +1074,15 @@ impl Audio {
             heard: Default::default(),
             stopped: Default::default(),
             preview: Default::default(),
+            // The device belongs to the first player's output, which looks after it.
+            #[cfg(feature = "audio")]
+            default_seen: self.default_seen.clone(),
+            #[cfg(feature = "audio")]
+            cards_seen: self.cards_seen.clone(),
+            #[cfg(feature = "audio")]
+            devices_seen: self.devices_seen.clone(),
+            #[cfg(feature = "audio")]
+            device_ticks: 0,
         }
     }
     /// Sync the volume options, refreshing the categories that changed
@@ -977,8 +1101,81 @@ impl Audio {
         }
         self.engine.listening = self.record_heard;
     }
+    /// `SoundEngine.shouldChangeDevice`: the open device was lost, the system
+    /// default changed (with no device chosen in the options), or the chosen
+    /// device came back; the output is then opened again. The devices are looked
+    /// at once a second.
+    #[cfg(feature = "audio")]
+    fn should_change_device(&mut self) -> bool {
+        // A splitscreen share plays through the first player's output: it leaves the device,
+        // and the mixer's lost flag, to that output.
+        if self.backend.owner != 0 {
+            return false;
+        }
+        let (current, lost) = match self.backend.mixer.lock() {
+            Ok(mut m) => (m.device_name.clone(), std::mem::take(&mut m.device_lost)),
+            Err(_) => return false,
+        };
+        if lost {
+            log::info!("Horizon: audio device was lost");
+            self.default_seen = default_output_name();
+            self.cards_seen = card_fingerprint();
+            self.devices_seen = output_devices();
+            return true;
+        }
+        self.device_ticks += 1;
+        if self._stream.is_none() || self.device_ticks < 20 {
+            return false;
+        }
+        self.device_ticks = 0;
+        let default = default_output_name();
+        let cards = card_fingerprint();
+        // Listing the devices probes every one (on Linux every built-in PCM,
+        // printing ALSA's errors for the plugins this system lacks; on macOS
+        // every Core Audio device, about 90 ms with twenty of them); only the
+        // fingerprint's devices can change the list, and it is cheap.
+        if default == self.default_seen
+            && !cards_changed(self.cards_seen.as_deref(), cards.as_deref())
+        {
+            return false;
+        }
+        self.cards_seen = cards;
+        let devices = output_devices();
+        // Only a change in the device lists is looked at, as in vanilla: a
+        // preferred device that is listed but cannot open is not retried.
+        if default == self.default_seen && devices == self.devices_seen {
+            return false;
+        }
+        self.default_seen = default.clone();
+        let wanted = self.device_name.clone();
+        let available = devices.contains(&wanted);
+        self.devices_seen = devices;
+        if wanted.is_empty() {
+            let changed = default.as_deref().is_some_and(|d| d != current);
+            if changed {
+                log::info!("Horizon: system default audio device has changed");
+            }
+            return changed;
+        }
+        let changed = current != wanted && available;
+        if changed {
+            log::info!("Horizon: preferred audio device has become available");
+        }
+        changed
+    }
     /// `SoundManager.tick(paused)`, once per client tick.
     pub fn tick(&mut self, paused: bool, ctx: &TickContext) {
+        #[cfg(feature = "audio")]
+        {
+            if self.should_change_device() {
+                // SoundEngine.reload: stop every sound, open the output again.
+                self.stop_all();
+                let device = self.device_name.clone();
+                if let Err(e) = self.set_device(&device) {
+                    log::warn!("Horizon: could not reopen the audio output: {e}");
+                }
+            }
+        }
         self.sync_volumes();
         self.engine.tick(paused, ctx, &mut self.backend);
     }
@@ -1013,6 +1210,37 @@ impl Audio {
     pub fn play(&mut self, event: &str, at: Option<[f64; 3]>, volume: f32, pitch: f32) {
         let seed = self.random.next_long();
         self.play_seeded(event, at, volume, pitch, seed);
+    }
+    /// `ClientLevel.playLocalSound` with `distanceDelay`: a sound more than 10
+    /// blocks from the camera starts `sqrt(distance) / 40` seconds later.
+    pub fn play_distance_delayed(
+        &mut self,
+        event: &str,
+        at: [f64; 3],
+        volume: f32,
+        pitch: f32,
+        camera: [f64; 3],
+    ) {
+        let distance_sqr: f64 = (0..3).map(|i| (at[i] - camera[i]).powi(2)).sum();
+        if distance_sqr <= 100.0 {
+            self.play(event, Some(at), volume, pitch);
+            return;
+        }
+        let seed = self.random.next_long();
+        if let Some(capture) = self.capture.as_mut() {
+            capture.push((event.to_owned(), at, volume, pitch));
+        }
+        *self.heard.entry(event.to_owned()).or_default() += 1;
+        self.sync_volumes();
+        let event = crate::sound_events::normalize(event);
+        let source = self
+            .source_override
+            .unwrap_or_else(|| crate::settings::sound_source(&event));
+        let instance =
+            SoundInstance::at(&event, source, volume, pitch, LegacyRandom::new(seed), at);
+        let id = self.engine.add(instance, false);
+        self.engine
+            .play_delayed(id, (distance_sqr.sqrt() / 40.0 * 20.0) as i32);
     }
     /// `play` for this client only: a sound a packet's handler plays
     /// (`playLocalSound`), which the guests play from that packet themselves.
@@ -1573,5 +1801,16 @@ mod tests {
         let mut data = [0.0; 2];
         mix(&mut m, &mut data, 1, 48_000);
         assert_eq!(data, [0.5; 2]);
+    }
+
+    #[test]
+    fn output_devices_are_looked_at_again_only_when_the_cards_change() {
+        // No fingerprint (not Linux, or the cards could not be read): the list
+        // has to be looked at as before.
+        assert!(cards_changed(None, None));
+        assert!(cards_changed(Some("0 [PCH ]"), None));
+        // The same cards list the same devices; a card added or removed does not.
+        assert!(!cards_changed(Some("0 [PCH ]"), Some("0 [PCH ]")));
+        assert!(cards_changed(Some("0 [PCH ]"), Some("0 [PCH ]\n 1 [USB ]")));
     }
 }

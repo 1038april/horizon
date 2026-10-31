@@ -33,6 +33,7 @@ pub mod doors;
 pub mod drops;
 pub mod enderman;
 pub mod equine;
+pub mod equip;
 pub mod farm;
 pub mod finalize;
 pub mod fox;
@@ -584,6 +585,14 @@ impl DamageKind {
         matches!(self, DamageKind::OutOfWorld | DamageKind::GenericKill)
     }
 }
+/// `source.getEntity()` of a blow, as `SulfurCube.knockback` reads it: `getEyePosition()`,
+/// `getLookAngle()` and `position()`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Aim {
+    pub eye: [f64; 3],
+    pub look: [f64; 3],
+    pub feet: [f64; 3],
+}
 /// A damage source: its type, the attacking entity and where it came from.
 #[derive(Clone, Copy, Debug)]
 pub struct Damage {
@@ -635,6 +644,16 @@ impl Damage {
     pub fn indirect_magic(attacker: Option<Who>, from: [f64; 3]) -> Self {
         Self {
             kind: DamageKind::IndirectMagic,
+            attacker,
+            from: Some(from),
+        }
+    }
+    /// `DamageSources.fireworks(rocket, owner)`: `attacker` is the owner
+    /// (none for a rocket nobody fired), `from` the rocket's position, which
+    /// the knockback pushes away from (`calculateHorizontalHurtKnockbackDirection`).
+    pub fn fireworks(attacker: Option<Who>, from: [f64; 3]) -> Self {
+        Self {
+            kind: DamageKind::Fireworks,
             attacker,
             from: Some(from),
         }
@@ -730,6 +749,7 @@ impl Damage {
                 | DamageKind::Starve
                 | DamageKind::SulfurCubeHot
                 | DamageKind::Wither
+                | DamageKind::Spear
         )
     }
     pub fn is_projectile(&self) -> bool {
@@ -798,6 +818,9 @@ pub struct Extra {
     /// Secondary variant (horse markings, tropical fish pattern colours, panda hidden gene).
     pub variant2: u8,
     pub variant3: u8,
+    /// `MushroomCow.stewEffects`: what a brown one took from a flower, given
+    /// back in its next bowl of stew. `None` is vanilla's null.
+    pub stew_effects: Option<Vec<(Arc<str>, i32)>>,
     /// Dye colour id (sheep wool, collars).
     pub color: u8,
     pub sheared: bool,
@@ -865,6 +888,9 @@ pub struct Extra {
     pub blocking: bool,
     pub fall_flying: bool,
     pub fall_fly_ticks: i32,
+    /// `Entity.deltaMovementOnPreviousTick`: the velocity before this tick's
+    /// move, which the elytra lean interpolates from (`getDeltaMovementLerped`).
+    pub previous_velocity: Vec3,
     /// `Entity.DATA_POSE` of another player, as the server sent it.
     pub synced_pose: u8,
     /// `LivingEntity.isAutoSpinAttack` (Riptide).
@@ -875,10 +901,15 @@ pub struct Extra {
     /// `LivingEntity.DATA_STINGER_COUNT_ID`: the bee stingers stuck in a
     /// player (`BeeStingerLayer`).
     pub stinger_count: i32,
+    /// `Player.DATA_SHOULDER_PARROT_LEFT` and `_RIGHT`: the variant of the
+    /// parrot on each shoulder (`ParrotOnShoulderLayer`).
+    pub shoulder_parrots: [Option<i32>; 2],
     pub main_hand_left: bool,
     /// The skin layers a player hides (`PlayerModelPart` bits, set to
     /// `Avatar.DATA_PLAYER_MODE_CUSTOMISATION` inverted); 0 shows all.
     pub hidden_model_parts: u8,
+    /// `AvatarRenderState.isSpectator`: a player in spectator mode shows only its head.
+    pub spectator: bool,
     pub elytra: ElytraAnimation,
     pub swim: SwimAnimation,
     /// `ClientAvatarState` of a player: the cloak, bob and walked distance its cape swings with.
@@ -910,6 +941,9 @@ pub struct Extra {
     pub effects: Vec<(&'static str, i32, i32)>,
     /// The effects above given with `hideParticles`: no swirls for them.
     pub hidden_effects: Vec<&'static str>,
+    /// The effects above that are ambient (`MobEffectInstance.isAmbient`: a beacon's), whose swirls
+    /// are faint.
+    pub ambient_effects: Vec<&'static str>,
     /// `LivingEntity.DATA_EFFECT_PARTICLES` and `DATA_EFFECT_AMBIENCE_ID` as a
     /// server gave them: the swirls around it, and whether they are all faint.
     pub effect_particles: Vec<crate::particles::ParticleOptions>,
@@ -1093,6 +1127,14 @@ pub struct Mob {
     pub silent: bool,
     /// `Invulnerable`: immune to damage (but not to `/kill`).
     pub invulnerable_flag: bool,
+    /// The entity that causes the blow being dealt (`source.getEntity()`): its eye, view
+    /// direction and feet, which `SulfurCube.knockback` turns the launch by. Set by whoever deals
+    /// the blow (`Game::attacker_aim`) and cleared once it is dealt.
+    pub attacker_aim: Option<Aim>,
+    /// The horizontal motion `(x, z)` of the projectile that is the direct entity of the blow
+    /// being dealt (`Projectile.calculateHorizontalHurtKnockbackDirection`): the knock goes the
+    /// way it was travelling. None for any other direct entity.
+    pub projectile_motion: Option<[f64; 2]>,
     pub climbing: bool,
     pub fire_ticks: i32,
     pub ticks_frozen: i32,
@@ -1144,6 +1186,12 @@ pub enum MobEvent {
     Drown {
         mob: u32,
         at: [f64; 3],
+    },
+    /// `Mob.burnUndead` in daylight on a mob wearing something in its
+    /// `sunProtectionSlot`: the item loses up to 1 durability (the game knows
+    /// the item data) instead of the mob catching fire.
+    SunProtectionWear {
+        mob: u32,
     },
     /// `Level.broadcastEntityEvent` for a mob: guests run its
     /// `handleEntityEvent`.
@@ -1330,11 +1378,30 @@ pub enum MobEvent {
     /// The centre, the radius and the kind of the mob blowing up (it may be
     /// gone from the list by the time the blast is handled).
     Explode([f64; 3], f32, Species),
+    /// `Creeper.spawnLingeringCloud`, right after its `Explode`: an `AreaEffectCloud` at the
+    /// creeper with its active effects `(id, remaining ticks, amplifier)`, in their mixed colour.
+    LingeringCloud {
+        at: [f64; 3],
+        effects: Vec<(&'static str, i32, i32)>,
+        /// The effects among them added hidden (`hideParticles`).
+        hidden: Vec<&'static str>,
+        /// The effects among them that are ambient.
+        ambient: Vec<&'static str>,
+        color: u32,
+    },
     /// Melee or ranged damage to another mob.
     AttackMob {
         target: u32,
         amount: f32,
         source: Damage,
+    },
+    /// `AbstractCubeMob.dealDamage` on the player (`playerTouch`): the hit,
+    /// then, only when `hurtServer` let it land, the cube's
+    /// `entity.slime.attack` with its pitch drawn from the cube's random.
+    CubeHurtPlayer {
+        cube: u32,
+        amount: f32,
+        from: [f64; 3],
     },
     /// `AbstractCubeMob.dealDamage` on a mob (an iron golem it touches): the
     /// hit, then, only when `hurtServer` let it land, the cube's
@@ -1404,6 +1471,15 @@ pub enum MobEvent {
         item: Arc<str>,
         count: u32,
         at: [f64; 3],
+    },
+    /// `Goat.dropHorn`: a horn from goat `mob` (`Goat.createHorn` picks the
+    /// instrument from its UUID), thrown with `motion` as
+    /// `new ItemEntity(.., deltaX, deltaY, deltaZ)`.
+    DropGoatHorn {
+        mob: u32,
+        screaming: bool,
+        at: [f64; 3],
+        motion: [f64; 3],
     },
     /// `Mob.dropFromGiftLootTable`: a gift loot table's items dropped at `at`.
     DropGift {
@@ -1552,6 +1628,12 @@ pub enum MobEvent {
     VillagerMeet {
         mob: u32,
         other: u32,
+    },
+    /// `AbstractVillager.getOffers` for a villager whose offers are not made
+    /// yet: the level rolls them (the brain has no trade data), so the
+    /// behaviour that asked reads them from the next tick on.
+    VillagerOffers {
+        mob: u32,
     },
     /// Two villagers make a baby (`VillagerMakeLove.tryToGiveBirth`): the
     /// parent has eaten and, with a bed for the child, rests; the partner
@@ -1965,22 +2047,34 @@ impl PendingPushes {
         self.by_mob.entry(id).or_default().push(v);
     }
 }
-/// Adds the pending pushes aimed at `m` to its velocity, in push order.
 /// `ServerLevel.sendBlockUpdated`: for each write that changed a block's collision
 /// shape, a mob whose path runs near it re-paths (`PathNavigation.shouldRecomputePath`).
-pub fn blocks_changed(m: &mut Mob, w: &MobWorld, writes: &[((i32, i32, i32), u32, u32)]) {
+/// The writes whose shape changed are found once per tick ([`collision_changes`]).
+pub fn blocks_changed(m: &mut Mob, changed: &[[i32; 3]]) {
     if m.ai.nav.is_done() {
         return;
     }
-    for &((x, y, z), old, new) in writes {
-        let at = [x, y, z];
-        let shape = |state| w.collision_bounds_of(horizon_world::registry::BlockStateId(state), at);
-        if shape(old) != shape(new) && m.should_recompute_path(at) {
+    for &at in changed {
+        if m.should_recompute_path(at) {
             m.queue_path_recompute();
             return;
         }
     }
 }
+/// The writes of `writes` that changed the block's collision shape, in order:
+/// `sendBlockUpdated` compares the two shapes once per write, not per mob.
+pub fn collision_changes(w: &MobWorld, writes: &[((i32, i32, i32), u32, u32)]) -> Vec<[i32; 3]> {
+    writes
+        .iter()
+        .filter_map(|&((x, y, z), old, new)| {
+            let at = [x, y, z];
+            let shape =
+                |state| w.collision_bounds_of(horizon_world::registry::BlockStateId(state), at);
+            (shape(old) != shape(new)).then_some(at)
+        })
+        .collect()
+}
+/// Adds the pending pushes aimed at `m` to its velocity, in push order.
 pub fn apply_mob_pushes(m: &mut Mob, pending: &mut PendingPushes) {
     // Entity.push(x, y, z) sets needsSync.
     let mut add = |v: Vec3| {
@@ -2150,6 +2244,8 @@ pub struct MobWorld<'a> {
     /// player in the level stands, alive or not (the despawn distance).
     pub nearest_player: Option<Vec3>,
     pub others: &'a [Seen],
+    /// The boats and rafts a lead can hang on (`Holder::Boat`): id and state.
+    pub leash_boats: &'a [(u32, leash::HolderState)],
     /// `others` by position, when the caller keeps one (the mob ticks).
     pub others_grid: Option<&'a seen_grid::SeenGrid>,
     /// Where each id stands in `others`, when the caller keeps one.
@@ -2167,6 +2263,8 @@ pub struct MobWorld<'a> {
     pub biomes: &'a crate::biome::Biomes,
     /// The `mob_griefing` game rule.
     pub mob_griefing: bool,
+    /// The `universal_anger` game rule (`NeutralMob.isAngryAtAllPlayers`).
+    pub universal_anger: bool,
     /// The `mob_drops` game rule (`shouldDropLoot`).
     pub mob_drops: bool,
     /// The `max_entity_cramming` game rule.
@@ -2254,6 +2352,8 @@ impl Mob {
             no_ai: false,
             silent: false,
             invulnerable_flag: false,
+            attacker_aim: None,
+            projectile_motion: None,
             climbing: false,
             fire_ticks: 0,
             ticks_frozen: 0,
@@ -2392,6 +2492,27 @@ impl Mob {
         .map(|i| spawning::armor_stats(i))
         .fold((0.0, 0.0), |(a, t), (x, y)| (a + x, t + y))
     }
+    /// `damage` of a blow whose causing entity is `aim` (`SulfurCube.knockback` reads it).
+    pub fn damage_aimed(&mut self, amount: f32, source: Damage, aim: Option<Aim>) -> bool {
+        self.attacker_aim = aim;
+        let hurt = self.damage(amount, source);
+        self.attacker_aim = None;
+        hurt
+    }
+    /// `damage` of a blow dealt by a projectile (`motion`: its horizontal movement) whose owner
+    /// is `aim`.
+    pub fn damage_projectile(
+        &mut self,
+        amount: f32,
+        source: Damage,
+        aim: Option<Aim>,
+        motion: [f64; 2],
+    ) -> bool {
+        self.projectile_motion = Some(motion);
+        let hurt = self.damage_aimed(amount, source, aim);
+        self.projectile_motion = None;
+        hurt
+    }
     pub fn damage(&mut self, amount: f32, source: Damage) -> bool {
         self.damage_with(amount, source, None)
     }
@@ -2405,6 +2526,14 @@ impl Mob {
     ) -> bool {
         axolotl::before_damage(self, amount, &source);
         raider::note_hurt(self);
+        // SulfurCube.hurtServer: the priming and a block's immune knockback
+        // come before LivingEntity's checks, so a primed (invulnerable) cube
+        // is still knocked about.
+        if self.species() == Species::SulfurCube
+            && !sulfur_cube::accepts_damage(self, &source, amount)
+        {
+            return false;
+        }
         // LivingEntity.isInvulnerableTo: only #bypasses_invulnerability gets past it.
         if !self.alive()
             || self.removed
@@ -2533,9 +2662,14 @@ impl Mob {
         // dealDefaultKnockback, unless the damage type is tagged no_knockback;
         // a source without a position knocks in a random direction.
         if knock && !source.no_knockback() {
-            let (dx, dz) = source.from.map_or((0.0, 0.0), |f| {
-                (f[0] - self.position.x, f[2] - self.position.z)
-            });
+            // dealDefaultKnockback: a projectile knocks the way it travelled
+            // (`calculateHorizontalHurtKnockbackDirection`), else from the source's position.
+            let (dx, dz) = match self.projectile_motion {
+                Some([x, z]) => (-x, -z),
+                None => source.from.map_or((0.0, 0.0), |f| {
+                    (f[0] - self.position.x, f[2] - self.position.z)
+                }),
+            };
             self.knockback(f64::from(0.4f32), dx, dz);
         }
         ai::after_hurt(self, &source);
@@ -2744,6 +2878,49 @@ impl Mob {
     /// or the Invisibility effect on a mob this game ticks itself.
     pub fn is_invisible(&self) -> bool {
         self.invisible || self.has_effect("minecraft:invisibility")
+    }
+    /// `LivingEntity.addEffect` of a `MobEffectInstance` with its flags: the effect as
+    /// `add_effect` has it, and `MobEffectInstance.update`'s rules for the flags of one already
+    /// there: it takes the new ambient flag when the new one is not ambient or the effect
+    /// changed, and always the new visibility.
+    pub fn add_effect_with(
+        &mut self,
+        effect: &'static str,
+        ticks: i32,
+        amplifier: i32,
+        ambient: bool,
+        visible: bool,
+    ) {
+        let effect = horizon_client_core::potions::namespaced(effect);
+        let before = self
+            .extra
+            .effects
+            .iter()
+            .find(|e| e.0 == effect)
+            .map(|e| (e.1, e.2));
+        self.add_effect(effect, ticks, amplifier);
+        let after = self
+            .extra
+            .effects
+            .iter()
+            .find(|e| e.0 == effect)
+            .map(|e| (e.1, e.2));
+        let present_ambient = self.extra.ambient_effects.contains(&effect);
+        // A new effect takes its flags as they are; one already there by update's rules.
+        let take_ambient = match before {
+            None => true,
+            Some(_) => (!ambient && present_ambient) || before != after,
+        };
+        if take_ambient {
+            self.extra.ambient_effects.retain(|h| *h != effect);
+            if ambient {
+                self.extra.ambient_effects.push(effect);
+            }
+        }
+        self.extra.hidden_effects.retain(|h| *h != effect);
+        if !visible {
+            self.extra.hidden_effects.push(effect);
+        }
     }
     pub fn add_effect(&mut self, effect: &'static str, ticks: i32, amplifier: i32) {
         let effect = horizon_client_core::potions::namespaced(effect);
@@ -3193,6 +3370,32 @@ mod elytra_tests {
         for (angle, resting) in wings.angles.iter().zip(ElytraAnimation::RESTING) {
             assert!((angle - resting).abs() < 0.00001);
         }
+    }
+}
+#[cfg(test)]
+mod spear_knockback_tests {
+    use super::sensor_scan_tests::kind;
+    use super::*;
+    use horizon_core::geometry::Vec3;
+
+    /// `spear` is in `#no_knockback`: the stab's hurt deals no default
+    /// knockback (the spear pushes with `causeExtraKnockback` itself).
+    #[test]
+    fn a_spear_stab_hurts_without_the_default_knockback() {
+        let mut m = Mob::new(1, kind(), Vec3::ZERO, 0.0);
+        let health = m.health;
+        assert!(m.damage(1.0, Damage::spear([2.0, 0.0, 0.0])));
+        assert_eq!(m.health, health - 1.0);
+        let v = m.velocity;
+        assert_eq!([v.x, v.y, v.z], [0.0; 3]);
+    }
+
+    /// a plain player hit still knocks the mob away from the attacker.
+    #[test]
+    fn a_player_hit_still_knocks_back() {
+        let mut m = Mob::new(1, kind(), Vec3::ZERO, 0.0);
+        assert!(m.damage(1.0, Damage::player([2.0, 0.0, 0.0])));
+        assert!(m.velocity.x < 0.0, "velocity {:?}", m.velocity);
     }
 }
 #[cfg(test)]
@@ -3670,5 +3873,89 @@ mod held_stack_tests {
         extra.take_main_hand();
         assert!(extra.main_hand.is_none());
         assert!(extra.main_hand_stack().is_none());
+    }
+}
+
+#[cfg(test)]
+mod magic_absorb_tests {
+    use super::sensor_scan_tests::kind;
+    use super::*;
+    use horizon_core::geometry::Vec3;
+
+    fn witch() -> Mob {
+        let mut kind = kind();
+        let k = Arc::make_mut(&mut kind);
+        k.id = "minecraft:witch".into();
+        k.species = Species::Witch;
+        Mob::new(1, kind, Vec3::ZERO, 0.0)
+    }
+
+    /// `MobEffectInstance.update` for the flags of an effect a mob has: a new instance that is
+    /// not ambient takes the ambient flag off an ambient one, one that is ambient does not unless
+    /// the effect itself changes, and visibility is always the new instance's.
+    #[test]
+    fn an_effect_added_again_updates_its_ambient_and_visible_flags_as_vanilla() {
+        let mut m = witch();
+        let speed = "minecraft:speed";
+        // A new effect takes its flags as they are.
+        m.add_effect_with("speed", 600, 0, true, false);
+        assert!(
+            m.extra.ambient_effects.contains(&speed) && m.extra.hidden_effects.contains(&speed)
+        );
+        // The same effect, no stronger and no longer, ambient again and visible: ambient stays
+        // (nothing changed), the visibility follows.
+        m.add_effect_with("speed", 100, 0, true, true);
+        assert_eq!(m.extra.effects, vec![(speed, 600, 0)]);
+        assert!(
+            m.extra.ambient_effects.contains(&speed) && !m.extra.hidden_effects.contains(&speed)
+        );
+        // Not ambient: it takes the flag off, though nothing else changed.
+        m.add_effect_with("speed", 100, 0, false, true);
+        assert!(!m.extra.ambient_effects.contains(&speed));
+        // Ambient over a not ambient one that does not change: not taken; one that changes: taken.
+        m.add_effect_with("speed", 100, 0, true, true);
+        assert!(!m.extra.ambient_effects.contains(&speed));
+        m.add_effect_with("speed", 900, 0, true, true);
+        assert!(m.extra.ambient_effects.contains(&speed));
+        assert_eq!(m.extra.effects, vec![(speed, 900, 0)]);
+    }
+
+    /// `Witch.getDamageAfterMagicAbsorb`: `#witch_resistant_to` (`magic`,
+    /// `indirect_magic`, `sonic_boom`, `thorns`) takes 15% of the hit, which
+    /// leaves a 10 health witch on 7 of a 20 hit it would not survive whole.
+    #[test]
+    fn a_witch_takes_15_percent_of_a_witch_resistant_hit() {
+        for resistant in [
+            DamageKind::Magic,
+            DamageKind::IndirectMagic,
+            DamageKind::SonicBoom,
+            DamageKind::Thorns,
+        ] {
+            let mut m = witch();
+            assert!(m.damage(20.0, Damage::of(resistant)));
+            assert_eq!(m.health, 7.0, "{resistant:?} is in #witch_resistant_to");
+        }
+    }
+
+    /// A hit outside the tag (`mob_attack`) takes all of it.
+    #[test]
+    fn a_witch_takes_all_of_a_physical_hit() {
+        let mut m = witch();
+        m.damage(4.0, Damage::of(DamageKind::MobAttack));
+        assert_eq!(m.health, 6.0);
+    }
+
+    /// `Witch.getDamageAfterMagicAbsorb`: a source whose entity is the witch
+    /// itself takes nothing, so its own harming potion cannot hurt it.
+    #[test]
+    fn a_witch_takes_nothing_from_its_own_hit() {
+        let mut m = witch();
+        let own = Damage {
+            kind: DamageKind::IndirectMagic,
+            attacker: Some(Who::Mob(m.id)),
+            from: None,
+        };
+        m.damage(20.0, own);
+        assert_eq!(m.health, 10.0);
     }
 }
