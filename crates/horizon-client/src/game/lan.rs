@@ -1226,7 +1226,9 @@ impl Game<'_> {
         // that has some rebuilds them over them (`RegistryDataLoader`), so its
         // dialogs, recipes and advancements reach the guests.
         let overlay = self.pack_files();
-        forget_sync_data();
+        if !overlay.files.is_empty() {
+            forget_sync_data();
+        }
         let sync = sync_data(&self.options.resources, &overlay)?;
         let biome_names: Vec<String> = self
             .res
