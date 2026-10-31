@@ -7360,7 +7360,8 @@ impl Game<'_> {
             return false;
         }
         let gliding = self.player.as_ref().is_some_and(|p| p.fall_flying);
-        use_ends_click(&info, gliding)
+        // A stack's own `blocks_attacks` raises it as a shield's does.
+        use_ends_click(&info, gliding) || self.blocks_attacks(&held).is_some()
     }
 
     /// Whether `held`'s `Item.use` needs a target this client sees none of

@@ -5985,7 +5985,7 @@ impl Game<'_> {
             self.using = None;
             return;
         };
-        if info.blocks_attacks.is_some() {
+        if self.blocks_attacks(&stack).is_some() {
             // ShieldItem: used for 72000 ticks, i.e. until released.
             self.using = Some((slot, ticks + 1));
             return;
@@ -11779,8 +11779,7 @@ impl Game<'_> {
         let shield = self
             .offhand
             .as_ref()
-            .and_then(|s| self.items().get(&s.item))
-            .is_some_and(|i| i.blocks_attacks.is_some());
+            .is_some_and(|s| self.blocks_attacks(s).is_some());
         if shield && !self.keys.contains(&KeyCode::ShiftLeft) {
             return None;
         }
