@@ -112,7 +112,8 @@ fn read_tanks(nbt: &Compound, n: usize) -> Vec<Tank> {
     tanks
 }
 
-/// `read_tanks`'s writer: the list back into `nbt`, empty tanks left out.
+/// `read_tanks`'s writer: the list back into `nbt`, an empty tank as
+/// `minecraft:empty` so the tank numbers stay in place.
 fn write_tanks(nbt: &mut Compound, tanks: &[Tank]) {
     let list = tanks
         .iter()
@@ -134,10 +135,6 @@ fn write_tanks(nbt: &mut Compound, tanks: &[Tank]) {
 // Native mods use these; nothing in Horizon does.
 #[allow(dead_code)]
 impl Game<'_> {
-    /// Whether this game simulates a world, as `native_set_block` asks.
-    fn native_simulates(&self) -> bool {
-        self.serving.is_some() || self.options.dedicated.is_some()
-    }
     /// What holds fluids at `pos` in the level in place, `dimension`: a mod
     /// block's tanks (its block entity's, and not the placeholder standing in
     /// while it ticks), or a cauldron.
@@ -450,7 +447,8 @@ impl Game<'_> {
     /// into the source, so none is lost — a cauldron's whole thirds included.
     /// The fluid and how much moved; none where `native_fluid_tanks` is none
     /// at `from`, where nothing drainable is, where no block holds fluids at
-    /// `to`, and within one block. @API:fluids_move@.
+    /// `to` or it has no room for that fluid, and within one block. The
+    /// source is asked for no more than the target's room. API @API:fluids_move@.
     pub(in crate::game) fn native_move_fluids(
         &mut self,
         dimension: &str,
@@ -463,6 +461,10 @@ impl Game<'_> {
         if from == to {
             return None;
         }
+        // Ask the source for no more than the target has room for: a
+        // cauldron drains in whole thirds and fills back only by them, so a
+        // part the target refused couldn't always go back.
+        let max = max.min(self.fluid_room(dimension, from, from_face, to, to_face)?);
         let (fluid, taken, receipt) = self.fluid_take(dimension, from, from_face, max)?;
         let left = self.native_fluid_insert(to, to_face, &fluid, taken);
         if left > 0 {
@@ -472,9 +474,9 @@ impl Game<'_> {
             // gave. What came back isn't moved: the answer is what the
             // target kept.
             let all_back = if receipt.is_empty() {
-                self.native_fluid_insert(from, from_face, &fluid, left) == left
+                self.native_fluid_insert(from, from_face, &fluid, left) == 0
             } else {
-                self.fluid_return(from, &fluid, left, &receipt)
+                self.fluid_return(dimension, from, &fluid, left, &receipt)
             };
             if !all_back {
                 log::warn!("Horizon: a fluid move left {left} mB of {fluid} nowhere to go");
@@ -482,25 +484,61 @@ impl Game<'_> {
         }
         Some((fluid, taken - left))
     }
+    /// How much of the fluid `from`'s side `from_face` would give first fits
+    /// into `to` through `to_face`: the room of its fillable tanks holding
+    /// that fluid or none. None when `from` gives nothing or `to` holds no
+    /// fluids.
+    fn fluid_room(
+        &self,
+        dimension: &str,
+        from: [i32; 3],
+        from_face: Direction,
+        to: [i32; 3],
+        to_face: Direction,
+    ) -> Option<i32> {
+        let fluid = self
+            .native_fluid_tanks(dimension, from, from_face)?
+            .into_iter()
+            .find(|t| t.can_drain && t.amount > 0)?
+            .fluid?;
+        let room = self
+            .native_fluid_tanks(dimension, to, to_face)?
+            .iter()
+            .filter(|t| t.can_fill && t.fluid.as_deref().is_none_or(|f| f == fluid))
+            .fold(0_i32, |room, t| {
+                room.saturating_add((t.capacity - t.amount).max(0))
+            });
+        Some(room)
+    }
     /// Puts `amount` of `fluid` back into the tanks `receipt` names, drained
     /// moments ago: their room is exactly what left them. Whether it all went
     /// back.
     fn fluid_return(
         &mut self,
+        dimension: &str,
         pos: [i32; 3],
         fluid: &str,
         mut amount: i32,
         receipt: &[(usize, i32)],
     ) -> bool {
+        let Some(FluidAt::Mod(tanks)) = self.native_fluid_at(dimension, pos) else {
+            return false;
+        };
         let key = (pos[0], pos[1], pos[2]);
         let Some(horizon_client::containers::BlockEntity::Mod(m)) =
             self.world.block_entities.get_mut(&key)
         else {
             return false;
         };
-        let mut state = read_tanks(&m.nbt, receipt.iter().map(|r| r.0 + 1).max().unwrap_or(0));
+        // The declared count, as `fluid_take` read them: a shorter read
+        // would write the other tanks away.
+        let n = tanks.tanks.len();
+        let mut state = read_tanks(&m.nbt, n);
         for &(tank, took) in receipt {
             let give = took.min(amount);
+            if give <= 0 || tank >= n {
+                continue;
+            }
             state[tank].1 += give;
             state[tank].0 = Some(fluid.to_owned());
             amount -= give;
