@@ -1538,8 +1538,7 @@ impl Game<'_> {
                     self.combat.explosion_source = Some(mob);
                     // The creeper causes the blast's damage, but it is out of
                     // the mob list already: its name comes with the event.
-                    self.combat.exploded.push((mob, name.clone()));
-                    self.note_named_attacker("minecraft:explosion", mob, name);
+                    self.combat.exploded.push((mob, name));
                     if charged {
                         self.combat.charged_exploders.push(mob);
                     }
@@ -1557,9 +1556,6 @@ impl Game<'_> {
                             .map(|m| m.id)
                             .next()
                     });
-                    if !noted && let Some(id) = source_mob {
-                        self.note_attacker("minecraft:explosion", id);
-                    }
                     self.combat.explosion_source = source_mob;
                     self.combat.explosion_source_named = noted;
                     self.combat.explosion_cause = match species {
@@ -3934,6 +3930,13 @@ impl Game<'_> {
                 Hit::None => {}
             },
             (ProjectileKind::LargeFireball { power }, hit) => {
+                // Fireball explosions are caused by the shooter. A direct hit
+                // on the player takes `projectile_owner`, so read the owner
+                // from the fireball.
+                let owner = match p.owner {
+                    Some(Who::Mob(id)) => Some(id),
+                    _ => None,
+                };
                 if let Hit::Entity { who, .. } = hit {
                     match who {
                         Who::Player => {
@@ -3955,11 +3958,7 @@ impl Game<'_> {
                         }
                     }
                 }
-                // Fireball explosions are caused by the shooter.
-                if let Some(owner) = self.combat.projectile_owner {
-                    self.note_attacker("minecraft:explosion", owner);
-                }
-                self.combat.explosion_owner = self.combat.projectile_owner;
+                self.combat.explosion_owner = owner;
                 // The blast's source names the owner, so a dragon it kills
                 // remembers the player who shot it.
                 self.set_blast_by_player(p.owner == Some(Who::Player));
