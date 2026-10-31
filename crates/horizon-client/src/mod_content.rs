@@ -17,7 +17,7 @@
 use crate::{Result, blocks::MAP_COLORS};
 use horizon_core::geometry::{Aabb, Axis, ShapeOp, Vec3, VoxelShape};
 use horizon_mods::content::{Block, Content, CreativeTab, MobEffect, Rarity, StateProperty};
-use horizon_world::nbt::{self, JavaString, Limits, Tag};
+use horizon_world::nbt::{self, Compound, JavaString, Limits, Tag};
 use serde::{Deserialize, Serialize, de};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -313,6 +313,30 @@ fn set_state_properties(row: &mut J, combo: &[(String, String)]) {
     }
 }
 
+/// The same for an NBT table's state, which spells a state the way
+/// `BlockState::to_nbt` does: `{id: "…", properties: {"<name>": "<value>"}}`,
+/// with the compound left out when there are no properties.
+fn set_nbt_properties(state: &mut Tag, combo: &[(String, String)]) {
+    if combo.is_empty() {
+        return;
+    }
+    let Tag::Compound(c) = state else {
+        return;
+    };
+    let properties = c
+        .entry(JavaString::from("properties"))
+        .or_insert_with(|| Tag::Compound(Compound::new()));
+    let Tag::Compound(properties) = properties else {
+        return;
+    };
+    for (name, value) in combo {
+        properties.insert(
+            JavaString::from(name.as_str()),
+            Tag::String(JavaString::from(value.as_str())),
+        );
+    }
+}
+
 // DiscreteVoxelShape.forAllEdges: merge consecutive boundary edges.
 fn shape_edges(shape: &VoxelShape) -> Vec<J> {
     let sizes = shape.sizes();
@@ -599,7 +623,18 @@ impl<'a> Plan<'a> {
                 }
                 let combos = combinations(&decl.state_properties, &decl.default_state)
                     .map_err(|e| format!("{}: {e}", decl.id))?;
-                if !decl.default_state.is_empty() {
+                // A `default_state` key the block itself declares is its own,
+                // and `combinations` already checks that value against the
+                // property. Only a key the template already has narrows which
+                // of the template's states is the default, and only that needs
+                // the template's own properties: a template with none (`stone`
+                // has a single state) can still be given a property and have
+                // it defaulted.
+                let on_template = decl
+                    .default_state
+                    .keys()
+                    .any(|key| !decl.state_properties.contains_key(key));
+                if on_template {
                     let mut wanted = properties(default).cloned().ok_or_else(|| {
                         format!("{}: template default has no state properties", decl.id)
                     })?;
@@ -1052,7 +1087,11 @@ impl<'a> Plan<'a> {
                 for key in ["rotate", "mirror", "full_block"] {
                     states(doc, key, true, false)?;
                 }
-                let added: usize = self.blocks.iter().map(|b| b.rename.states.len()).sum();
+                let added: usize = self
+                    .blocks
+                    .iter()
+                    .map(|b| b.rename.states.len() * b.combos.len())
+                    .sum();
                 doc.set("states", J::Num(((self.states + added) as u64).into()));
             }
             _ => return Err("no rule for this table".into()),
@@ -1070,10 +1109,16 @@ impl<'a> Plan<'a> {
         };
         for block in &self.blocks {
             if let Some(shapes) = &block.shapes {
+                let fanout = block.combos.len();
                 for (i, shape) in shapes.iter().enumerate() {
                     let id = entries.len() as i32;
                     entries.push(encode_shape(shape));
-                    indices.push((block.rename.first as usize + i, id));
+                    // One shape per template state, shared by every combination
+                    // of it: the geometry is the template's, the properties are
+                    // the block's.
+                    for c in 0..fanout {
+                        indices.push((block.rename.first as usize + i * fanout + c, id));
+                    }
                 }
             }
         }
@@ -1162,19 +1207,32 @@ impl<'a> Plan<'a> {
             match (key.to_string_lossy().as_str(), value) {
                 ("states", Tag::List(list)) if list.len() == self.states => {
                     for b in &self.blocks {
+                        // One row per template state per combination, the same
+                        // order `states` numbers them in (`Rename::id`): a
+                        // template state's combinations are one run, and the
+                        // first of the run is where the template state maps.
                         for id in b.rename.states.clone() {
-                            let mut state = list[id as usize].clone();
-                            if let Some(slot) = state.get_mut("id") {
-                                *slot = Tag::String(b.decl.id.as_str().into());
+                            for combo in &b.combos {
+                                let mut state = list[id as usize].clone();
+                                if let Some(slot) = state.get_mut("id") {
+                                    *slot = Tag::String(b.decl.id.as_str().into());
+                                }
+                                set_nbt_properties(&mut state, combo);
+                                list.push(state);
                             }
-                            list.push(state);
                         }
                     }
                 }
                 ("cached_shapes", Tag::IntArray(a)) if a.len() == self.states => {
                     for b in &self.blocks {
-                        let r = &b.rename.states;
-                        let copy = a[r.start as usize..r.end as usize].to_vec();
+                        // Parallel to `states`: every combination of a template
+                        // state keeps that state's shape.
+                        let mut copy = Vec::new();
+                        for id in b.rename.states.clone() {
+                            for _ in &b.combos {
+                                copy.push(a[id as usize]);
+                            }
+                        }
                         a.extend(copy);
                     }
                 }

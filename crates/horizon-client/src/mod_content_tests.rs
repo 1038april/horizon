@@ -1890,18 +1890,33 @@ fn a_fan_out_rename_moves_a_template_state_to_its_first_state() {
 /// A base root of one template with two states, and a mod that adds a block
 /// to it. `declarations` go in as the block file.
 fn block_base(tag: &str, declarations: &[&str]) -> (PathBuf, Vec<ContentMod>) {
+    block_base_of(
+        tag,
+        declarations,
+        r#"{"states":[
+      ["minecraft:test",false,false,"",{"id":"minecraft:test","properties":{"axis":"x"}}],
+      ["minecraft:test",false,false,"",{"id":"minecraft:test","properties":{"axis":"y"}}]],
+      "defaults":{"minecraft:test":0}}"#,
+    )
+}
+
+/// The same over a base root whose `facts.json` is `facts`: the other tables
+/// the plan reads are built from its state count, so a template can have one
+/// state and no properties of its own (a `stone`) as easily as two.
+fn block_base_of(tag: &str, declarations: &[&str], facts: &str) -> (PathBuf, Vec<ContentMod>) {
     let scratch = std::env::temp_dir().join(format!("horizon-mod-{tag}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&scratch);
     let base = scratch.join("base");
     fs::create_dir_all(&base).unwrap();
-    let facts = r#"{"states":[
-      ["minecraft:test",false,false,"",{"id":"minecraft:test","properties":{"axis":"x"}}],
-      ["minecraft:test",false,false,"",{"id":"minecraft:test","properties":{"axis":"y"}}]],
-      "defaults":{"minecraft:test":0}}"#;
     fs::write(base.join("facts.json"), facts).unwrap();
+    let count = match serde_json::from_str::<J>(facts).unwrap().get("states") {
+        Some(J::Arr(rows)) => rows.len(),
+        _ => panic!("{tag}: facts.json has no states"),
+    };
+    let rows = vec![r#"{"item":"minecraft:test"}"#; count].join(",");
     fs::write(
         base.join("gameplay-facts.json"),
-        r#"{"states":[{"item":"minecraft:test"},{"item":"minecraft:test"}]}"#,
+        format!(r#"{{"states":[{rows}]}}"#),
     )
     .unwrap();
     fs::write(base.join("items.json"), r#"{"minecraft:test":{}}"#).unwrap();
@@ -2093,6 +2108,201 @@ fn content_block_state_properties_are_validated() {
         error.contains("more than the") && error.contains("world can hold"),
         "{error}"
     );
+    fs::remove_dir_all(&base).unwrap();
+    fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
+}
+
+/// A `default_state` that names only properties the block itself declares
+/// asks the template for nothing: `stone` has a single state and no properties
+/// at all, and a block that gives it `lit` can still default `lit`.
+#[test]
+fn a_declared_property_defaults_on_a_template_with_none() {
+    let declaration = r#"{"template":"minecraft:test","item":false,
+      "state_properties":{"lit":{"type":"boolean"}},
+      "default_state":{"lit":"true"}}"#;
+    let (base, mods) = block_base_of(
+        "block-propertyless-default",
+        &[declaration],
+        r#"{"states":[["minecraft:test",true,true,"",{"id":"minecraft:test"}]],
+      "defaults":{"minecraft:test":0}}"#,
+    );
+    let plan = Plan::new(&base, &mods).unwrap();
+    let mut doc: J =
+        serde_json::from_str(&fs::read_to_string(base.join("facts.json")).unwrap()).unwrap();
+    plan.json("facts.json", &mut doc).unwrap();
+    let Some(J::Arr(rows)) = doc.get("states") else {
+        panic!("no states")
+    };
+    // One template state times the two combinations of `lit`.
+    assert_eq!(rows.len(), 1 + 2);
+    let lit = |i: usize| -> Option<String> {
+        let J::Arr(row) = rows.get(i)? else {
+            return None;
+        };
+        let J::Obj(state) = row.get(4)? else {
+            return None;
+        };
+        let (_, properties) = state.iter().find(|(k, _)| k == "properties")?;
+        match properties.get("lit") {
+            Some(J::Str(s)) => Some(s.clone()),
+            _ => None,
+        }
+    };
+    // The declared default opens the block's run, and the other value follows.
+    assert_eq!(lit(1).as_deref(), Some("true"));
+    assert_eq!(lit(2).as_deref(), Some("false"));
+    // The block's default state is the first of its run.
+    assert_eq!(
+        doc.get("defaults").unwrap().get("testmod:test"),
+        Some(&J::Num(1.into()))
+    );
+    fs::remove_dir_all(&base).unwrap();
+    fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
+}
+
+/// An NBT state row for the two-state `minecraft:test` template, the shape
+/// `BlockState::to_nbt` writes.
+fn test_state_row(axis: &str) -> Tag {
+    Tag::Compound(Compound::from([
+        (
+            JavaString::from("id"),
+            Tag::String(JavaString::from("minecraft:test")),
+        ),
+        (
+            JavaString::from("properties"),
+            Tag::Compound(Compound::from([(
+                JavaString::from("axis"),
+                Tag::String(JavaString::from(axis)),
+            )])),
+        ),
+    ]))
+}
+
+/// The NBT tables fan out like the JSON ones: `cached-collision.nbt`,
+/// `occlusion.nbt` and the rest get one row per combination, so `states` and
+/// `cached_shapes` stay the same length, and each row carries the properties
+/// its combination declares.
+#[test]
+fn the_nbt_tables_fan_out_with_the_states() {
+    let declaration = r#"{"template":"minecraft:test","item":false,
+      "state_properties":{"lit":{"type":"boolean"}}}"#;
+    let (base, mods) = block_base("block-nbt-fanout", &[declaration]);
+    let plan = Plan::new(&base, &mods).unwrap();
+    let mut tag = Tag::Compound(Compound::from([
+        (
+            JavaString::from("states"),
+            Tag::List(vec![test_state_row("x"), test_state_row("y")]),
+        ),
+        (JavaString::from("cached_shapes"), Tag::IntArray(vec![7, 9])),
+    ]));
+    plan.nbt(&mut tag);
+    let Some(Tag::List(states)) = tag.get("states") else {
+        panic!("no states")
+    };
+    let Some(Tag::IntArray(shapes)) = tag.get("cached_shapes") else {
+        panic!("no cached_shapes")
+    };
+    // Two template states times the two combinations of `lit`, and the shapes
+    // stay parallel to the states — that is what makes the file load.
+    assert_eq!(states.len(), 2 + 4);
+    assert_eq!(shapes.len(), states.len());
+    // A combination keeps the shape of the template state it came from.
+    assert_eq!(shapes, &vec![7, 9, 7, 7, 9, 9]);
+    let properties = |i: usize| -> BTreeMap<String, String> {
+        let Some(Tag::Compound(c)) = states.get(i) else {
+            panic!("row {i} is not a compound")
+        };
+        let Some(Tag::Compound(p)) = c.get(&JavaString::from("properties")) else {
+            panic!("row {i} has no properties")
+        };
+        p.iter()
+            .filter_map(|(k, v)| match v {
+                Tag::String(s) => Some((k.to_string_lossy(), s.to_string_lossy())),
+                _ => None,
+            })
+            .collect()
+    };
+    let mut expected: Vec<String> = Vec::new();
+    for axis in ["x", "y"] {
+        for lit in ["false", "true"] {
+            expected.push(format!("{axis}/{lit}"));
+        }
+    }
+    let seen: Vec<String> = (2..states.len())
+        .map(|i| {
+            let p = properties(i);
+            // The declared properties are the only ones on the row.
+            assert_eq!(p.len(), 2, "row {i} is {p:?}");
+            let axis = p.get("axis").cloned().unwrap_or_default();
+            let lit = p.get("lit").cloned().unwrap_or_default();
+            format!("{axis}/{lit}")
+        })
+        .collect();
+    assert_eq!(seen, expected);
+    for i in 2..states.len() {
+        let Some(Tag::String(id)) = states[i].get("id") else {
+            panic!("row {i} has no id")
+        };
+        assert_eq!(id.to_string_lossy(), "testmod:test");
+    }
+    fs::remove_dir_all(&base).unwrap();
+    fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
+}
+
+/// A block's shape and its count in `structure-blocks.json` cover every
+/// combination too: the table's declared total and the lengths of its lists
+/// grow by the fan-out, and every state of the block maps to a shape.
+#[test]
+fn a_shape_and_the_state_count_cover_every_combination() {
+    let declaration = r#"{"template":"minecraft:test","item":false,
+      "state_properties":{"lit":{"type":"boolean"}},
+      "shapes":{"property":"axis","values":{"x":[[0,0,0,1,1,1]],"y":[[0,0,0,0.5,1,1]]}}}"#;
+    let (base, mods) = block_base("block-shape-fanout", &[declaration]);
+    let plan = Plan::new(&base, &mods).unwrap();
+    // The template's two states, no shapes yet, every vanilla state unmapped.
+    // `nbt` grows the arrays to the block's four states and `collision_shapes`
+    // writes into them, in the order the real path applies them.
+    let mut tag = Tag::Compound(Compound::from([
+        (
+            JavaString::from("states"),
+            Tag::List(vec![test_state_row("x"), test_state_row("y")]),
+        ),
+        (JavaString::from("shapes"), Tag::List(Vec::new())),
+        (
+            JavaString::from("cached_shapes"),
+            Tag::IntArray(vec![-1, -1]),
+        ),
+    ]));
+    plan.nbt(&mut tag);
+    plan.collision_shapes(&mut tag).unwrap();
+    let Some(Tag::List(entries)) = tag.get("shapes") else {
+        panic!("no shapes")
+    };
+    let Some(Tag::IntArray(mapping)) = tag.get("cached_shapes") else {
+        panic!("no cached_shapes")
+    };
+    // One shape per template state, shared by that state's combinations.
+    assert_eq!(entries.len(), 2);
+    assert_eq!(mapping.len(), 2 + 4);
+    let added = &mapping[2..];
+    assert!(added.iter().all(|id| *id >= 0), "{added:?}");
+    assert_eq!((added[0], added[1]), (added[0], added[0]));
+    assert_eq!((added[2], added[3]), (added[2], added[2]));
+    assert_ne!(added[0], added[2]);
+
+    let rows = "[[false,false],[false,false]]";
+    let text = format!(r#"{{"rotate":{rows},"mirror":{rows},"full_block":{rows},"states":2}}"#);
+    let mut doc: J = serde_json::from_str(&text).unwrap();
+    plan.json("worldgen/blocks/structure-blocks.json", &mut doc)
+        .unwrap();
+    for key in ["rotate", "mirror", "full_block"] {
+        let Some(J::Arr(list)) = doc.get(key) else {
+            panic!("{key} is not a list")
+        };
+        assert_eq!(list.len(), 2 + 4, "{key}");
+    }
+    // The declared total agrees with the lists, which is what a loader checks.
+    assert_eq!(doc.get("states"), Some(&J::Num(6.into())));
     fs::remove_dir_all(&base).unwrap();
     fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
 }
