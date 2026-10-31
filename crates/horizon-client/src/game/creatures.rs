@@ -499,7 +499,13 @@ impl Game<'_> {
         }
         let mut broke: Vec<i8> = Vec::new();
         // The four armour slots, then the body slot (`extra.head`).
-        for (index, event) in [(0usize, 49i8), (1, 50), (2, 51), (3, 52)] {
+        let event_of = horizon_client::mobs::item_break::equipment_break_event;
+        for (index, slot) in [
+            (0usize, EquipmentSlot::Head),
+            (1, EquipmentSlot::Chest),
+            (2, EquipmentSlot::Legs),
+            (3, EquipmentSlot::Feet),
+        ] {
             let Some(m) = self.mobs.iter().find(|m| m.id == id) else {
                 return;
             };
@@ -519,7 +525,7 @@ impl Game<'_> {
             };
             if lost >= max {
                 m.extra.armor[index] = None;
-                broke.push(event);
+                broke.push(event_of(slot));
             } else if let Some(worn) = m.extra.armor[index].as_mut() {
                 worn.damage = lost;
             }
@@ -542,7 +548,7 @@ impl Game<'_> {
                     if lost >= max {
                         m.extra.head = None;
                         m.extra.body_damage = 0;
-                        broke.push(65);
+                        broke.push(event_of(EquipmentSlot::Body));
                     } else {
                         m.extra.body_damage = lost as i32;
                     }
