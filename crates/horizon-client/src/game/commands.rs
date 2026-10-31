@@ -1305,7 +1305,7 @@ impl Game<'_> {
                             p[2],
                         ]);
                         g.throw_from_eyes(rest, eye, false);
-                        if let Some(item) = g.dropped.last_mut() {
+                        if let Some(item) = g.just_spawned_item() {
                             item.thrower = None;
                             item.pickup_delay = 0;
                             item.target = uuid;
@@ -1891,7 +1891,7 @@ impl Game<'_> {
         self.feedback(Text::translate(key, &[]));
         Ok(duration.unwrap_or(-1))
     }
-    fn kill_target(&mut self, t: Target) {
+    pub(super) fn kill_target(&mut self, t: Target) {
         // An entity in another level is killed in the level that holds it.
         let _ = self.in_target_level(t, |g| g.kill_target_in_level(t));
     }
@@ -1934,7 +1934,13 @@ impl Game<'_> {
                 self.creatures.projectiles.retain(|p| p.id != id);
             }
             Target::Stand(id) => self.armor_stands.retain(|a| a.id != id),
-            Target::Frame(id) => self.item_frames.retain(|f| f.id != id),
+            Target::Frame(id) => {
+                // ItemFrame.onKilled.
+                if let Some(frame) = self.item_frames.iter().find(|f| f.id == id).cloned() {
+                    self.remove_framed_map(&frame);
+                }
+                self.item_frames.retain(|f| f.id != id);
+            }
             Target::Painting(id) => self.paintings.retain(|p| p.id != id),
             Target::Boat(id) => {
                 // AbstractBoat.remove: a killed boat drops its lead.
@@ -2054,6 +2060,16 @@ impl Game<'_> {
                         count: 1,
                         ticks: 0,
                     });
+                    // tryAddFreshEntityWithPassengers refused: ERROR_DUPLICATE_UUID.
+                    if !self.native_entity_joins(
+                        self.next_entity,
+                        "minecraft:experience_orb",
+                        pos,
+                        false,
+                    ) {
+                        self.orbs.pop();
+                        return Err(err("commands.summon.failed.uuid", &[]));
+                    }
                     name = Text::translate("entity.minecraft.experience_orb", &[]);
                 }
                 "lightning_bolt" => {
