@@ -462,11 +462,13 @@ impl HudAtlas {
         for folder in folders {
             walk(&textures.join(folder), &mut files);
         }
-        // Content mods' equipment textures, which their equipment assets name as `<ns>:<path>`.
+        // Content mods' entity textures: their equipment assets name them as
+        // `<ns>:<path>`, and native mods draw their block entities with them
+        // (`native_draw_quad`: `<ns>:entity/...`).
         if folders.contains(&"entity") {
             for namespace in horizon_items::content_namespaces::namespaces(root) {
                 walk(
-                    &root.join(format!("assets/{namespace}/textures/entity/equipment")),
+                    &root.join(format!("assets/{namespace}/textures/entity")),
                     &mut files,
                 );
             }
@@ -2092,7 +2094,7 @@ mod tests {
         atlas.pixels[at..at + 4].try_into().unwrap()
     }
     #[test]
-    fn content_mod_equipment_textures_pack_under_their_namespace() {
+    fn content_mod_entity_textures_pack_under_their_namespace() {
         let root = std::env::temp_dir().join(format!("horizon-atlas-equip-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let equipment = root.join("assets/gems/textures/entity/equipment/humanoid");
@@ -2112,10 +2114,17 @@ mod tests {
             br#"["gems"]"#,
         )
         .unwrap();
+        // A block entity's texture, for a native mod's renderer.
+        let machine = root.join("assets/gems/textures/entity/machine");
+        fs::create_dir_all(&machine).unwrap();
+        write_strip(&machine.join("cog.png"), 32, 32, &[[0, 0, 200, 255]], None);
         let atlas = HudAtlas::build(&root).unwrap();
         let rect = atlas.sprites["gems:entity/equipment/humanoid/ruby"];
         assert_eq!(texel_at(&atlas, rect, 0, 0), [200, 0, 0, 255]);
-        // Only equipment: the mods' other textures reach the atlas through atlas definitions.
+        let rect = atlas.sprites["gems:entity/machine/cog"];
+        assert_eq!(rect.texels((atlas.width, atlas.height)), (32, 32));
+        assert_eq!(texel_at(&atlas, rect, 0, 0), [0, 0, 200, 255]);
+        // Only entity textures: the mods' others reach the atlas through atlas definitions.
         assert!(!atlas.sprites.contains_key("gems:item/ruby"));
         fs::remove_dir_all(&root).unwrap();
     }

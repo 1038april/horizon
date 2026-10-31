@@ -156,6 +156,7 @@ use super::native_lifecycle::{NativeLifecycleContext, ServerTickPhase, WorldPhas
 use super::{
     Game, GameLevel, LevelDimension, Screen,
     execution_role::ExecutionRole,
+    native_block_entity_draw::BlockEntityDraw,
     native_panel_recipes::RecipePage,
     native_server::{NativeCommand, NativeServerPlayer},
 };
@@ -883,6 +884,24 @@ impl Game<'_> {
         tag: &mut Option<Compound>,
     ) {
         let _ = (pos, entity, tag);
+    }
+    /// Draw the mod block entity at `pos`, of block `block`
+    /// (`mymod:machine`), on this client: once a frame while it is in view
+    /// (vanilla's `BlockEntityRenderer.submit`: within 64 blocks, in the
+    /// frustum, its chunk faded in), when its `id` is yours. `entity` holds
+    /// what the server sent (`native_block_entity_update_tag`). Add geometry
+    /// with `native_draw_quad`, `native_draw_cube` and `native_draw_block`
+    /// under `draw`'s pose stack, which starts at the block's lower north-west
+    /// corner, in blocks; `draw` also has the partial tick, the game time and
+    /// the block's light. API @API:block_entity_submit@.
+    pub(super) fn native_block_entity_submit(
+        &self,
+        pos: [i32; 3],
+        block: &str,
+        entity: &ModBlockEntity,
+        draw: &mut BlockEntityDraw,
+    ) {
+        let _ = (pos, block, entity, draw);
     }
     /// A menu opens on this client for block `block`, a mod's: set `screen`
     /// when the block is yours, to lay its screen out (`native_screen_draw`

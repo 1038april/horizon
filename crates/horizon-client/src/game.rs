@@ -169,6 +169,7 @@ mod mounts;
 mod moving_pistons;
 mod music;
 mod names;
+mod native_block_entity_draw;
 mod native_hooks;
 mod native_lifecycle;
 mod native_menus;
@@ -9556,22 +9557,19 @@ impl Game<'_> {
                         | "minecraft:test_instance_block"
                 )
             };
+            let in_view = |p: &[i32; 3]| {
+                view.is_none_or(|v| {
+                    let o = (glam::DVec3::new(f64::from(p[0]), f64::from(p[1]), f64::from(p[2]))
+                        - camera)
+                        .as_vec3();
+                    v.intersects(o - glam::Vec3::ONE, o + glam::Vec3::splat(2.0))
+                })
+            };
             let visible =
                 r.visible_block_entities(self.settings.chunk_fade)
                     .filter(|(p, state)| {
-                        if !self.res.block_entity_render().renders(*state) {
-                            return false;
-                        }
-                        off_screen(*state)
-                            || view.is_none_or(|v| {
-                                let o = (glam::DVec3::new(
-                                    f64::from(p[0]),
-                                    f64::from(p[1]),
-                                    f64::from(p[2]),
-                                ) - camera)
-                                    .as_vec3();
-                                v.intersects(o - glam::Vec3::ONE, o + glam::Vec3::splat(2.0))
-                            })
+                        self.res.block_entity_render().renders(*state)
+                            && (off_screen(*state) || in_view(p))
                     });
             if self.entity_culler.is_some() || self.pack_ids.is_some() {
                 for block in visible {
@@ -9589,6 +9587,11 @@ impl Game<'_> {
                     .block_entity_render()
                     .render(&scene, visible, &mut out);
             }
+            // Mod block entities: their mods draw them (`native_block_entity_submit`).
+            let mods = r
+                .visible_block_entities(self.settings.chunk_fade)
+                .filter(|(p, state)| !self.res.block_entity_render().renders(*state) && in_view(p));
+            self.mod_block_entity_geometry(mods, camera, alpha as f32, &mut out);
             self.mark_stage(out.len(), "DESTROY");
             for &(pos, stage) in &cracks {
                 let state = self.world.block(pos[0], pos[1], pos[2]);
