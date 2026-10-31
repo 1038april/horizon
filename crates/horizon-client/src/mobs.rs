@@ -578,6 +578,8 @@ pub enum DamageKind {
     WindCharge,
     /// `wither`: the wither effect.
     Wither,
+    /// `wither_skull`: an owned wither skull's hit (`DamageSources.witherSkull`).
+    WitherSkull,
 }
 impl DamageKind {
     /// DamageTypeTags.BYPASSES_INVULNERABILITY
@@ -749,12 +751,17 @@ impl Damage {
                 | DamageKind::Starve
                 | DamageKind::SulfurCubeHot
                 | DamageKind::Wither
+                | DamageKind::Spear
         )
     }
     pub fn is_projectile(&self) -> bool {
         matches!(
             self.kind,
-            DamageKind::Arrow | DamageKind::Thrown | DamageKind::Fireball | DamageKind::WindCharge
+            DamageKind::Arrow
+                | DamageKind::Thrown
+                | DamageKind::Fireball
+                | DamageKind::WindCharge
+                | DamageKind::WitherSkull
         )
     }
 }
@@ -1488,6 +1495,12 @@ pub enum MobEvent {
     SetBlock {
         pos: [i32; 3],
         state: horizon_world::registry::BlockStateId,
+    },
+    /// `TurtleEggBlock.decreaseEggs` after a mob's step won its 1 in 100: the
+    /// break sound, then one egg fewer, or the block destroyed when it was
+    /// the last.
+    CrackTurtleEgg {
+        pos: [i32; 3],
     },
     /// `LivingEntity.startSleeping` / `stopSleeping`: the bed head at `pos`
     /// gets `occupied` (`setBlockAndUpdate`; the foot follows it).
@@ -2557,6 +2570,18 @@ impl Mob {
         if self.species() == Species::Armadillo {
             amount = armadillo::reduce_damage(self, amount);
         }
+        // LivingEntity.hurtServer, past its guards: a native mod's hook.
+        if crate::health::hurt_server_canceled(
+            crate::health::Hurting::Mob(self, &source),
+            &mut amount,
+        ) {
+            // Ghast.hurtServer: true for a reflected fireball whatever
+            // super.hurtServer did.
+            return reflected;
+        }
+        if amount < 0.0 {
+            amount = 0.0;
+        }
         // #damages_helmet: falling anvils, blocks and stalactites.
         if matches!(
             source.kind,
@@ -2574,6 +2599,9 @@ impl Mob {
             )
         {
             amount *= 5.0;
+        }
+        if !amount.is_finite() {
+            amount = f32::MAX;
         }
         let (worn, worn_toughness) = self.worn_armor();
         // Shulker.setRawPeekAmount: a closed shell adds the covered armor modifier.
@@ -3369,6 +3397,32 @@ mod elytra_tests {
         for (angle, resting) in wings.angles.iter().zip(ElytraAnimation::RESTING) {
             assert!((angle - resting).abs() < 0.00001);
         }
+    }
+}
+#[cfg(test)]
+mod spear_knockback_tests {
+    use super::sensor_scan_tests::kind;
+    use super::*;
+    use horizon_core::geometry::Vec3;
+
+    /// `spear` is in `#no_knockback`: the stab's hurt deals no default
+    /// knockback (the spear pushes with `causeExtraKnockback` itself).
+    #[test]
+    fn a_spear_stab_hurts_without_the_default_knockback() {
+        let mut m = Mob::new(1, kind(), Vec3::ZERO, 0.0);
+        let health = m.health;
+        assert!(m.damage(1.0, Damage::spear([2.0, 0.0, 0.0])));
+        assert_eq!(m.health, health - 1.0);
+        let v = m.velocity;
+        assert_eq!([v.x, v.y, v.z], [0.0; 3]);
+    }
+
+    /// a plain player hit still knocks the mob away from the attacker.
+    #[test]
+    fn a_player_hit_still_knocks_back() {
+        let mut m = Mob::new(1, kind(), Vec3::ZERO, 0.0);
+        assert!(m.damage(1.0, Damage::player([2.0, 0.0, 0.0])));
+        assert!(m.velocity.x < 0.0, "velocity {:?}", m.velocity);
     }
 }
 #[cfg(test)]

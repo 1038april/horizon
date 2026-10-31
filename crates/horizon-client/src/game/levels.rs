@@ -164,6 +164,7 @@ impl Game<'_> {
             dim,
             self.level_shapes.get(dim.id()),
             self.level.seed,
+            &self.level.enabled_features,
         )?;
         let mut world = World::new(self.res.facts().air, self.level.seed);
         world.shape = self.level_shapes.get(dim.id());
@@ -428,6 +429,7 @@ impl Game<'_> {
             if observe_level {
                 self.native_level_tick_post(dim.id());
             }
+            self.publish_server_debug(dim);
         }
         self.level_pass = Pass::default();
         if result.is_err() {
