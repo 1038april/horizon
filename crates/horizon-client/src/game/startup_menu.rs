@@ -1,5 +1,6 @@
 //! The interactive title before world resources exist. Uses only the menu
 //! atlas/panorama; transfers the actual screen and queued entry to Game.
+use super::event_loop::EventLoopCtl;
 use super::*;
 use horizon_client::{
     clipboard::{self, AppendSelection, SystemClipboard},
@@ -482,7 +483,7 @@ impl Loading {
         self.menu_option_events(events);
     }
 
-    fn menu_action(&mut self, event_loop: &ActiveEventLoop, action: Action) {
+    fn menu_action(&mut self, event_loop: &dyn EventLoopCtl, action: Action) {
         match action {
             Action::Quit => event_loop.exit(),
             Action::Options => self.open_menu_options(Page::Main),
@@ -513,7 +514,7 @@ impl Loading {
 
     pub(super) fn menu_event(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn EventLoopCtl,
         event: WindowEvent,
     ) -> Result<()> {
         if let WindowEvent::KeyboardInput { event, .. } = &event
