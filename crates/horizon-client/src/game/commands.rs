@@ -1178,6 +1178,8 @@ impl Game<'_> {
         {
             // `ShieldItem.getName`: the banner's base colour names the shield.
             Text::translate(&format!("item.minecraft.shield.{color}"), &[])
+        } else if let Some(head) = horizon_client::item_tooltip::player_head_name(s) {
+            head.text()
         } else {
             // Item.getDescriptionId: a block item's is the block's.
             let (namespace, path) = item.split_once(':').unwrap_or(("minecraft", item));
@@ -2059,6 +2061,7 @@ impl Game<'_> {
                         on_ground: false,
                         count: 1,
                         ticks: 0,
+                        health: 5,
                     });
                     // tryAddFreshEntityWithPassengers refused: ERROR_DUPLICATE_UUID.
                     if !self.native_entity_joins(
