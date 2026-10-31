@@ -1674,6 +1674,7 @@ mod tests {
                 sea_level: 63,
                 items: Some(&items),
                 lid_openers: &lid_openers,
+                mod_effects: None,
             };
             let kind = std::sync::Arc::new(types.types["minecraft:pig"].clone());
             let mut m = Mob::new(1, kind, Vec3::new(0.5, 1.0, 0.5), 0.0);
