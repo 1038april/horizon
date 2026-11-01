@@ -289,6 +289,7 @@ use horizon_client::{
     extras::Corner,
     extras_hud::Corners,
     fast_hash::FxHashMap,
+    first_person::Hand,
     health::{HurtSource, Hurting},
     hud::{HudBatch, rgba},
     items::ItemStack,
@@ -304,6 +305,7 @@ use horizon_core::{
     ticks::{ScheduleResult, TickPriority},
 };
 use horizon_world::{
+    consumable::UseAnimation,
     fluid::{FluidKind, FluidState},
     level::{BlockId, LevelAccess, PlacementContext, Ticks},
     nbt::Compound,
@@ -1802,6 +1804,79 @@ impl Game<'_> {
     /// player of the world; an item on cooldown is never used. API 13.
     pub(super) fn native_use_item(&mut self, stack: &ItemStack, claimed: &mut bool) {
         let _ = (stack, claimed);
+    }
+    /// `Item.getUseDuration` of `stack`, in ticks: `duration` arrives with
+    /// vanilla's (a consumable's time, 72000 for a shield, a spear, a bow,
+    /// 0 for an item with no use over time). A mod's own item (outside
+    /// `minecraft:`) with no `consumable`, `blocks_attacks` or kinetic
+    /// weapon that answers above 0 is used over time on a right click, as an
+    /// `Item.use` that calls `startUsingItem`, until it is let go or the time
+    /// runs out (`native_living_entity_use_item_finish`). A consumable's time
+    /// changes too, potions and the other vanilla items keep their own.
+    /// Asked when a use starts, each tick a mod's item is in use, and each
+    /// frame the hand draws one in use, on both sides. It has no user, as
+    /// it is asked so often: answer from the stack alone. API @API:item_use_over_time@.
+    pub(super) fn native_use_duration(&self, stack: &ItemStack, duration: &mut i32) {
+        let _ = (stack, duration);
+    }
+    /// `Item.getUseAnimation` of `stack` in use, for the first person hand:
+    /// `animation` arrives with its consumable's (`eat`, `drink`), else
+    /// `None`. `Eat` and `Drink` bring the food to the mouth, `Bow` draws,
+    /// `Trident` raises, `Brush` sweeps; the rest hold the item still.
+    /// Asked each frame the hand draws an item in use, for an item with no
+    /// pose of its own (bows, crossbows, tridents, brushes and spears keep
+    /// theirs). Client-side. API @API:item_use_over_time@.
+    pub(super) fn native_use_animation(&self, stack: &ItemStack, animation: &mut UseAnimation) {
+        let _ = (stack, animation);
+    }
+    /// `Player.canEat` for the food `stack`, from `Consumable.canConsume`
+    /// when eating starts: `can_eat` arrives with vanilla's (creative,
+    /// `can_always_eat`, or hungry). Clear it to refuse the food, set it to
+    /// let a full player eat. Both sides (the client starts eating as the
+    /// server does), so answer from the stack and the player alone. API @API:item_use_over_time@.
+    pub(super) fn native_can_eat(&self, stack: &ItemStack, can_eat: &mut bool) {
+        let _ = (stack, can_eat);
+    }
+    /// NeoForge's `LivingEntityUseItemEvent.Start`: `entity` starts using
+    /// `stack` in `hand` (`LivingEntity.startUsingItem`), for `duration`
+    /// ticks (`native_use_duration`'s answer). `entity` is a mob's
+    /// `Entity.getId`, None for a player (`native_acting_player` says who);
+    /// only players fire it so far. Change `duration` (consumables other
+    /// than potions, and mods' items, count to it; 0 or less lasts until let
+    /// go), or set `canceled` and the use doesn't start. Both sides, as
+    /// vanilla's: wherever the world runs (the server, single player
+    /// in-frame, a LAN host) for every player of the world, and on a
+    /// server's client for the uses it predicts. Answer the same on both,
+    /// and change the world only where this `Game` runs the world, not on a
+    /// server's client: no helper tells the two apart yet (`native_window`
+    /// is also true in-frame and on an in-frame LAN host). API @API:item_use_over_time@.
+    pub(super) fn native_living_entity_use_item_start(
+        &mut self,
+        stack: &ItemStack,
+        entity: Option<i32>,
+        hand: Hand,
+        duration: &mut i32,
+        canceled: &mut bool,
+    ) {
+        let _ = (stack, entity, hand, duration, canceled);
+    }
+    /// NeoForge's `LivingEntityUseItemEvent.Finish`: `entity`'s use of
+    /// `stack` in `hand` ran its time (`LivingEntity.completeUsingItem`),
+    /// `duration` the ticks left, always 0. `entity` is as in
+    /// `native_living_entity_use_item_start`. `result` arrives with what
+    /// `finishUsingItem` left in the hand (the bowl of a stew, none for the
+    /// last apple; a mod's own item is kept) and may be replaced. Fired for
+    /// consumables, potions and mods' items. Server-side, for every player
+    /// of the world (the helpers read the acting one). API @API:item_use_over_time@.
+    pub(super) fn native_living_entity_use_item_finish(
+        &mut self,
+        stack: &ItemStack,
+        entity: Option<i32>,
+        hand: Hand,
+        duration: i32,
+        result: &mut Option<ItemStack>,
+    ) {
+        let _ = (stack, entity, hand, duration, result);
     }
     /// A player breaks the block `state` at `pos`, once the game allowed it
     /// (the held item can break blocks, the debug stick didn't take the
