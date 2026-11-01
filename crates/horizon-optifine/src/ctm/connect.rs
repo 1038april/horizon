@@ -396,7 +396,7 @@ pub fn random_index(pos: Vec3, face: Face, loops: u32, weights: &[u32], count: u
             }
             None => true,
         })
-        .unwrap_or(0)
+        .expect("pick is below the weights' total")
 }
 
 /// A 32-bit finalizer (Chris Wellons' `lowbias32`): every input bit moves every output bit.
@@ -485,6 +485,24 @@ mod tests {
     }
 
     #[test]
+    fn every_turned_face_keeps_its_texture_facing_out() {
+        // A texture's right x up is the face's normal on a cube, and turning keeps it.
+        let cross = |a: Vec3, b: Vec3| {
+            [
+                a[1] * b[2] - a[2] * b[1],
+                a[2] * b[0] - a[0] * b[2],
+                a[0] * b[1] - a[1] * b[0],
+            ]
+        };
+        for face in Face::ALL {
+            for axis in [Axis::X, Axis::Y, Axis::Z] {
+                let a = Axes::column(face, axis);
+                assert_eq!(cross(a.right, a.up), face.normal(), "{face:?} {axis:?}");
+            }
+        }
+    }
+
+    #[test]
     fn neighbour_masks() {
         let axes = Axes::cube(Face::North);
         let normal = Face::North.normal();
@@ -495,6 +513,18 @@ mod tests {
         let covered = |o: Vec3| glass(o) || o == add(WEST, NORTH);
         assert_eq!(neighbours(axes, normal, false, covered), U | UR | R);
         assert_eq!(neighbours(axes, normal, true, covered), U | UR);
+        // A covered corner counts as covered too.
+        let corner = |o: Vec3| glass(o) || o == add(add(WEST, UP), NORTH);
+        assert_eq!(neighbours(axes, normal, true, corner), U | R);
+    }
+
+    #[test]
+    fn symmetry() {
+        assert_eq!(symmetric_face(Face::South, Symmetry::None), Face::South);
+        assert_eq!(symmetric_face(Face::South, Symmetry::Opposite), Face::North);
+        assert_eq!(symmetric_face(Face::East, Symmetry::Opposite), Face::West);
+        assert_eq!(symmetric_face(Face::Up, Symmetry::Opposite), Face::Down);
+        assert_eq!(symmetric_face(Face::East, Symmetry::All), Face::Down);
     }
 
     #[test]
@@ -505,9 +535,6 @@ mod tests {
         assert_eq!(repeat_index([-1, 0, 0], north, 2, 2), 1);
         assert_eq!(repeat_index([0, -1, 0], north, 2, 2), 2);
         assert_eq!(repeat_index([-3, 5, 7], north, 3, 2), 3);
-        assert_eq!(symmetric_face(Face::South, Symmetry::Opposite), Face::North);
-        assert_eq!(symmetric_face(Face::East, Symmetry::Opposite), Face::West);
-        assert_eq!(symmetric_face(Face::Up, Symmetry::All), Face::Down);
     }
 
     #[test]
