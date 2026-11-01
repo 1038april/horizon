@@ -124,6 +124,27 @@ sprites = ["block/glass", "block/*_stained_glass"]
 
 Terrain carries its sprite, not its block, so a sprite drawn by several blocks gets the tag for all of them.
 
+## Coloured block light
+
+Each `[[lights]]` entry gives the blocks it names a colour. The material stage reads the colour at a point with
+`block_light_color(input.position)`: rgb the colours of the sources nearby, averaged by how near each is, and a how
+strongly they reach it (0 where none does). Block light keeps its own brightness, so walls still stop it: this is only its
+colour, and only what a pack does with it shows.
+
+```toml
+[[lights]]
+color = [0.3, 0.7, 1.0]
+blocks = ["soul_torch", "soul_wall_torch", "soul_lantern"]
+```
+
+```wgsl
+let tint = block_light_color(input.position);
+let block = mix(vec3(1.0), tint.rgb, min(tint.a, 1.0)) * input.light.x;
+```
+
+It covers 128 blocks around the camera, moved in steps of 16, and is rebuilt on the CPU when the camera steps or a source
+changes, from at most 2048 sources, the nearest first.
+
 ## Options
 
 A picked pack with options gets a Shader Options... button at the top of the Shader Packs page. A click picks an

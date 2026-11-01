@@ -14,6 +14,8 @@ pub const MAX_POST_PASSES: usize = 8;
 pub const MAX_OPTIONS: usize = 64;
 /// The most GPU time a pack may declare for itself, in milliseconds.
 pub const MAX_GPU_MS: f32 = 16.0;
+/// `[[lights]]` entries a manifest may declare.
+pub const MAX_LIGHTS: usize = 256;
 /// Sprite tags a pack may declare: the bits of `MaterialInput.tags`.
 pub const MAX_TAGS: usize = 32;
 
@@ -38,6 +40,9 @@ pub struct Manifest {
     pub options: Vec<PackOption>,
     /// Sprite tags the material stage reads, in bit order.
     pub tags: Vec<SpriteTag>,
+    /// The colour of block light by the block giving it off: the first entry with a matching
+    /// pattern wins (`Manifest::light_of`).
+    pub lights: Vec<LightColor>,
     pub budget: Budget,
     /// When the material stage's water mirror (`reflection`) is drawn.
     pub reflection: Option<Reflection>,
@@ -80,6 +85,18 @@ pub struct Reflection {
     /// if any.
     #[serde(default)]
     pub option: Option<String>,
+}
+
+/// `[[lights]]`: the colour of the block light from some blocks, as the material stage reads
+/// it through `block_light_color`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LightColor {
+    /// Each channel 0 to 4.
+    pub color: [f32; 3],
+    /// Block names such as `minecraft:soul_torch` (the namespace defaults to `minecraft`),
+    /// each with any number of `*` matching any run of characters.
+    pub blocks: Vec<String>,
 }
 
 /// A set of block sprites the material stage can tell apart: its bit in
@@ -182,6 +199,8 @@ struct Raw {
     options: Vec<RawOption>,
     #[serde(default)]
     tags: Vec<SpriteTag>,
+    #[serde(default)]
+    lights: Vec<LightColor>,
     #[serde(default)]
     budget: RawBudget,
     reflection: Option<Reflection>,
@@ -295,6 +314,34 @@ impl Manifest {
                 )));
             }
         }
+        if !raw.lights.is_empty() && raw.material.is_none() {
+            return Err(err(
+                "lights are read by the material stage: give it a [material]".into(),
+            ));
+        }
+        if raw.lights.len() > MAX_LIGHTS {
+            return Err(err(format!(
+                "{} [[lights]]; a pack may declare {MAX_LIGHTS}",
+                raw.lights.len()
+            )));
+        }
+        if let Some(l) = raw
+            .lights
+            .iter()
+            .find(|l| l.color.iter().any(|c| !(0.0..=4.0).contains(c)))
+        {
+            return Err(err(format!(
+                "light color {:?} is not in 0..=4 per channel",
+                l.color
+            )));
+        }
+        if raw
+            .lights
+            .iter()
+            .any(|l| l.blocks.is_empty() || l.blocks.iter().any(String::is_empty))
+        {
+            return Err(err("a [[lights]] entry needs blocks".into()));
+        }
         let gpu_ms = match raw.budget.gpu_ms {
             Some(ms) if !(ms > 0.0 && ms <= f64::from(MAX_GPU_MS)) => {
                 return Err(err(format!(
@@ -344,6 +391,7 @@ impl Manifest {
             post: raw.post,
             options,
             tags: raw.tags,
+            lights: raw.lights,
             budget: Budget { gpu_ms },
             reflection: raw.reflection,
             shadow: raw.shadow,
@@ -373,6 +421,20 @@ impl Manifest {
         layers.into_iter().collect()
     }
 
+    /// The `[[lights]]` colour of the block `name` (`namespace:path`): the first entry with a
+    /// matching pattern.
+    pub fn light_of(&self, name: &str) -> Option<[f32; 3]> {
+        self.lights
+            .iter()
+            .find(|l| {
+                l.blocks.iter().any(|pattern| match pattern.contains(':') {
+                    true => glob(pattern, name),
+                    false => glob(&format!("minecraft:{pattern}"), name),
+                })
+            })
+            .map(|l| l.color)
+    }
+
     /// Every WGSL file the manifest names, shared files first, each once.
     pub fn files(&self) -> Vec<&str> {
         let mut files: Vec<&str> = Vec::new();
@@ -394,6 +456,26 @@ pub fn pack_identifier(name: &str) -> bool {
         && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
         && name.len() <= 64
         && !name.starts_with("horizon_")
+}
+
+/// Whether `text` matches `pattern`, where `*` stands for any run of characters.
+fn glob(pattern: &str, text: &str) -> bool {
+    let mut parts = pattern.split('*');
+    let first = parts.next().unwrap_or_default();
+    let Some(mut rest) = text.strip_prefix(first) else {
+        return false;
+    };
+    let parts: Vec<&str> = parts.collect();
+    let Some((last, middle)) = parts.split_last() else {
+        return rest.is_empty();
+    };
+    for part in middle {
+        match rest.find(part) {
+            Some(i) => rest = &rest[i + part.len()..],
+            None => return false,
+        }
+    }
+    rest.len() >= last.len() && rest.ends_with(last)
 }
 
 impl RawOption {

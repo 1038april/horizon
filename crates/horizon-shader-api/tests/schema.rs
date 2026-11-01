@@ -305,3 +305,40 @@ fn refuses_files_a_pack_does_not_use() {
             .contains("missing at the pack's root")
     );
 }
+
+#[test]
+fn a_block_takes_the_colour_of_the_first_light_that_names_it() {
+    let manifest = |rest: &str| {
+        Manifest::parse(&format!(
+            "schema = 1\nid = \"a\"\nname = \"A\"\nversion = \"1\"\napi = \"0.1\"\n\
+             [material]\nfile = \"m.wgsl\"\n{rest}"
+        ))
+    };
+    let m = manifest(
+        "[[lights]]\ncolor = [0.2, 0.8, 1.0]\nblocks = [\"soul_*\"]\n\
+         [[lights]]\ncolor = [1.0, 0.5, 0.1]\nblocks = [\"*torch\", \"mod:*_*\"]\n",
+    )
+    .unwrap();
+    assert_eq!(m.light_of("minecraft:soul_torch"), Some([0.2, 0.8, 1.0]));
+    assert_eq!(m.light_of("minecraft:wall_torch"), Some([1.0, 0.5, 0.1]));
+    assert_eq!(m.light_of("mod:glow_stick"), Some([1.0, 0.5, 0.1]));
+    assert_eq!(m.light_of("mod:glow"), None);
+    assert_eq!(m.light_of("minecraft:stone"), None);
+    let refused = |rest: &str, needle: &str| {
+        let e = manifest(rest).unwrap_err().to_string();
+        assert!(e.contains(needle), "{e}");
+    };
+    refused(
+        "[[lights]]\ncolor = [5.0, 0.0, 0.0]\nblocks = [\"a\"]\n",
+        "0..=4",
+    );
+    refused(
+        "[[lights]]\ncolor = [1.0, 0.0, 0.0]\nblocks = []\n",
+        "needs blocks",
+    );
+    let e = Manifest::parse(
+        "schema = 1\nid = \"a\"\nname = \"A\"\nversion = \"1\"\napi = \"0.1\"\n\
+         [[post]]\nfile = \"p.wgsl\"\n[[lights]]\ncolor = [1.0, 0.0, 0.0]\nblocks = [\"a\"]\n",
+    );
+    assert!(e.unwrap_err().to_string().contains("give it a [material]"));
+}

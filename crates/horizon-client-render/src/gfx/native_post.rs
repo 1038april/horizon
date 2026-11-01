@@ -50,6 +50,8 @@ pub struct NativeFrame {
     pub(super) buffer: wgpu::Buffer,
     /// Group 3 of the sky and material stages.
     pub layout: wgpu::BindGroupLayout,
+    /// The colour of block light around the camera (`[[lights]]`), bindings 9 and 10.
+    pub block_light: super::block_light::BlockLight,
     pub group: wgpu::BindGroup,
     /// The world's depth before translucent terrain (the material stage's `opaque_depth`,
     /// binding 6), copied each frame.
@@ -151,10 +153,12 @@ fn eased(value: f32, target: f32, half_life: f32, dt: f32) -> f32 {
 }
 
 impl NativeFrame {
-    /// The frame of a pack with the `[shadow]` settings `shadow`, if any.
+    /// The frame of a pack with the `[shadow]` settings `shadow`, if any, and the
+    /// block light colours `lights`.
     pub fn new(
         device: &wgpu::Device,
         shadow: Option<&horizon_shader_api::manifest::Shadow>,
+        lights: super::block_light::LightTable,
     ) -> Self {
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Native shader pack frame"),
@@ -173,6 +177,26 @@ impl NativeFrame {
                 texture_entry(6, wgpu::TextureSampleType::Depth),
                 texture_entry(7, wgpu::TextureSampleType::Depth),
                 texture_entry(8, wgpu::TextureSampleType::Float { filterable: true }),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 9,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D3,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 10,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
                 texture_entry(11, wgpu::TextureSampleType::Float { filterable: false }),
             ],
         });
@@ -192,6 +216,7 @@ impl NativeFrame {
             ..Default::default()
         });
         let shadow_map = super::native_shadow::ShadowMap::new(device, shadow);
+        let block_light = super::block_light::BlockLight::new(device, lights);
         let group = Self::group(
             device,
             &layout,
@@ -200,8 +225,10 @@ impl NativeFrame {
             &shadow_map,
             &opaque_depth,
             &opaque_color,
+            &block_light,
         );
         Self {
+            block_light,
             buffer,
             layout,
             group,
@@ -243,11 +270,20 @@ impl NativeFrame {
         shadow: &super::native_shadow::ShadowMap,
         opaque_depth: &wgpu::Texture,
         opaque_color: &wgpu::Texture,
+        block_light: &super::block_light::BlockLight,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Native shader pack frame"),
             layout,
             entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: wgpu::BindingResource::TextureView(&block_light.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 10,
+                    resource: block_light.grid.as_entire_binding(),
+                },
                 wgpu::BindGroupEntry {
                     binding: 0,
                     resource: buffer.as_entire_binding(),
@@ -340,6 +376,7 @@ impl NativeFrame {
             &self.shadow_map,
             &self.opaque_depth,
             &self.opaque_color,
+            &self.block_light,
         );
     }
 
@@ -934,7 +971,7 @@ mod tests {
             .into();
         let report = check(&Pack::from_files(files).unwrap()).unwrap();
         let format = wgpu::TextureFormat::Rgba8Unorm;
-        let frame = NativeFrame::new(&device, None);
+        let frame = NativeFrame::new(&device, None, Default::default());
         queue.write_buffer(
             &frame.buffer,
             0,
@@ -1053,7 +1090,7 @@ file = \"b.wgsl\"
             .into();
         let report = check(&Pack::from_files(files).unwrap()).unwrap();
         let format = wgpu::TextureFormat::Rgba8Unorm;
-        let frame = NativeFrame::new(&device, None);
+        let frame = NativeFrame::new(&device, None, Default::default());
         let mut post = NativePost::new(&device, report.stages, &[], format, &frame).unwrap();
         let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
         let color = texture(&device, format, usage).create_view(&Default::default());

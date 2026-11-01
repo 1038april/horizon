@@ -137,7 +137,7 @@ const POST_RESOURCES: [Resource; 11] = [
 
 /// The material stage's resources: the frame, and the world as it was before translucent
 /// terrain drew (for water and glass to see what lies behind them).
-const MATERIAL_RESOURCES: [Resource; 9] = [
+const MATERIAL_RESOURCES: [Resource; 11] = [
     FRAME,
     Resource {
         binding: 1,
@@ -160,6 +160,18 @@ const MATERIAL_RESOURCES: [Resource; 9] = [
         name: "opaque_depth",
         ty: "var opaque_depth: texture_depth_2d",
         doc: "The world's depth before translucent terrain (reversed, like `scene_depth`), for the translucent pass: `textureLoad(opaque_depth, vec2<i32>(input.screen * frame.resolution), 0)` is what lies behind water or glass. Stale while solid terrain draws.",
+    },
+    Resource {
+        binding: 9,
+        name: "block_light_colors",
+        ty: "var block_light_colors: texture_3d<f32>",
+        doc: "The colour of the block light around the camera, from the `[[lights]]` of the light sources nearby: rgb their colours averaged by how near each is, over 4; a how strongly they reach the cell. Read it through `block_light_color`.",
+    },
+    Resource {
+        binding: 10,
+        name: "block_light_grid",
+        ty: "var<uniform> block_light_grid: vec4<f32>",
+        doc: "Where `block_light_colors` lies: xyz its corner, camera-relative, w the side of one of its cells in blocks.",
     },
     Resource {
         binding: 11,
@@ -188,6 +200,18 @@ fn view_position(uv: vec2<f32>, depth: f32) -> vec3<f32> {
 /// What the material entries (the checker's below and the renderer's) share: the
 /// surface's normal and tangent from the derivatives of its position and uv.
 const MATERIAL_HELPERS: &str = "\
+// The colour of the block light at the camera-relative `position` (rgb, from the `[[lights]]`
+// of the sources nearby) and how strongly they reach it (a, 0 where none does). Block light
+// keeps its own brightness (`input.light.x`): this is its colour only.
+fn block_light_color(position: vec3<f32>) -> vec4<f32> {
+    let size = vec3<f32>(textureDimensions(block_light_colors));
+    let uvw = (position - block_light_grid.xyz) / (block_light_grid.w * size);
+    if any(uvw < vec3<f32>(0.0)) || any(uvw > vec3<f32>(1.0)) {
+        return vec4<f32>(0.0);
+    }
+    let c = textureSampleLevel(block_light_colors, reflection_sampler, uvw, 0.0);
+    return vec4<f32>(c.rgb * 4.0, c.a);
+}
 // Block faces are flat: the derivatives of the position give the face's normal, turned
 // toward the camera. Far away they lose precision, so a normal within about 3.6 degrees of
 // an axis (every full block face) is that axis exactly: no shimmer on distant faces. The

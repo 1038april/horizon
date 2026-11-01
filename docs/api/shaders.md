@@ -72,6 +72,10 @@ min = 0.0
 max = 2.0
 step = 0.05
 
+[[lights]]                 # 256 at most: block_light_color's colour, the first entry that matches
+color = [0.3, 0.7, 1.0]    # each channel 0 to 4
+blocks = ["soul_*"]        # block names, any number of * each
+
 [[tags]]                   # 32 at most: bit i of MaterialInput.tags is the i-th tag
 id = "glass"
 sprites = ["block/glass", "block/*_stained_glass"]   # sprite names, at most one * each
@@ -107,6 +111,7 @@ stages.
 
 ## Changelog
 
+- 2026-11-01: API 0.1 (additions): `[[lights]]` and the material stage's `block_light_color`.
 - 2026-10-31: API 0.1 (additions): translucent terrain in the shadow pass: `shadow_map_translucent`
   and `shadow_color`, so a pack can tint the light that passes through water and stained glass.
 - 2026-10-31: API 0.1 (additions): `Frame.mods`, eight `vec4<f32>` a native mod hands the pack it bundles each
