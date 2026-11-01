@@ -1,6 +1,7 @@
 //! A content mod's `assets/` and `data/` (API 0.2, docs/modpacks.md): the
-//! files it adds to the game's resource tree, and the blocks, items and mob
-//! effects it declares in `data/<id>/horizon/{block,item,mob_effect}/`.
+//! files it adds to the game's resource tree, and the blocks, items, mob
+//! effects, entity types and menu types it declares in
+//! `data/<id>/horizon/{block,item,mob_effect,entity_type,menu}/`.
 //!
 //! Content is data, not code: nothing here runs in the sandbox. What a mod
 //! may add is fenced instead. Its own namespaces (its id and the ones its
@@ -254,6 +255,52 @@ pub struct MobEffect {
     pub color: u32,
 }
 
+/// the vanilla entity types a mod's type may copy: thrown item
+/// projectiles (`ThrowableItemProjectile`).
+pub const ENTITY_TEMPLATES: [&str; 1] = ["minecraft:snowball"];
+
+/// an entity type the mod adds: a copy of a vanilla template's, thrown
+/// from `item` and drawn as it.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EntityType {
+    /// `<mod id>:<path>`.
+    #[serde(skip)]
+    pub id: String,
+    /// one of [`ENTITY_TEMPLATES`].
+    pub template: String,
+    /// one of the mod's own items, which throws it.
+    pub item: String,
+    /// what a hit deals to an entity, as `thrown` damage.
+    #[serde(default)]
+    pub damage: f32,
+}
+
+/// a menu type the mod adds (vanilla's `MenuType`, NeoForge's
+/// `IMenuTypeExtension.create`): its container's slot count, the
+/// `ContainerData` count its menu syncs, and its take-only slots
+/// (`FurnaceResultSlot.mayPlace`). The slots come first in the menu, then the
+/// player's 36, and a mod screen (`native_screen`) places them.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MenuType {
+    /// `<mod id>:<path>`.
+    #[serde(skip)]
+    pub id: String,
+    /// 1 to [`MAX_MENU_SLOTS`].
+    pub slots: u16,
+    /// 0 to [`MAX_MENU_SLOTS`].
+    #[serde(default)]
+    pub data_slots: u16,
+    /// slots a player takes from but never puts into, each below `slots`.
+    #[serde(default)]
+    pub results: Vec<u16>,
+}
+
+/// the most container or data slots a mod menu type has, as many as a mod
+/// container (`native_block_entity_container`) may.
+pub const MAX_MENU_SLOTS: u16 = 256;
+
 #[derive(Debug)]
 enum Source {
     Dir(PathBuf),
@@ -271,6 +318,8 @@ pub struct Content {
     pub effects: Vec<MobEffect>,
     /// Its creative inventory tabs, by id.
     pub creative_tabs: Vec<CreativeTab>,
+    pub entity_types: Vec<EntityType>,
+    pub menu_types: Vec<MenuType>,
     /// The namespaces it owns: the mod id, then the manifest's `namespaces`.
     pub namespaces: Vec<String>,
 }
@@ -359,6 +408,8 @@ impl Content {
             items: Vec::new(),
             effects: Vec::new(),
             creative_tabs: Vec::new(),
+            entity_types: Vec::new(),
+            menu_types: Vec::new(),
             namespaces: manifest.owned_namespaces().map(str::to_owned).collect(),
         };
         content.check(manifest)?;
@@ -403,6 +454,8 @@ impl Content {
         let mut items = Vec::new();
         let mut effects = Vec::new();
         let mut tabs = Vec::new();
+        let mut types = Vec::new();
+        let mut menus = Vec::new();
         for name in &self.files {
             let mut parts = name.splitn(3, '/');
             let (top, namespace, rest) = (
@@ -423,7 +476,7 @@ impl Content {
             }
             if !own && top == "data" && rest.starts_with("horizon/") {
                 return Err(format!(
-                    "{name}: blocks, items and mob effects are declared in data/{id}/horizon/"
+                    "{name}: blocks, items, mob effects, entity types and menu types are declared in data/{id}/horizon/"
                 ));
             }
             let Some(decl) = (own && top == "data")
@@ -447,9 +500,13 @@ impl Content {
                 effects.push((effect, name.clone()));
             } else if let Some(tab) = parse("creative_tab") {
                 tabs.push((tab, name.clone()));
+            } else if let Some(kind) = parse("entity_type") {
+                types.push((kind, name.clone()));
+            } else if let Some(menu) = parse("menu") {
+                menus.push((menu, name.clone()));
             } else {
                 return Err(format!(
-                    "{name}: data/{id}/horizon/ holds block/, item/, mob_effect/ and creative_tab/*.json only"
+                    "{name}: data/{id}/horizon/ holds block/, item/, mob_effect/, creative_tab/, entity_type/ and menu/*.json only"
                 ));
             }
         }
@@ -545,6 +602,55 @@ impl Content {
                 icon: file.icon,
                 items: file.items,
             });
+        }
+        for (kind, name) in types {
+            let file: EntityType =
+                serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
+            if !ENTITY_TEMPLATES.contains(&file.template.as_str()) {
+                return Err(format!(
+                    "{name}: template {:?} is not one of {ENTITY_TEMPLATES:?}",
+                    file.template
+                ));
+            }
+            // its own item, so no vanilla item loses its use to it.
+            if !ids.contains(&file.item) {
+                return Err(format!(
+                    "{name}: item {:?} is not one of this mod's items",
+                    file.item
+                ));
+            }
+            if self.entity_types.iter().any(|t| t.item == file.item) {
+                return Err(format!(
+                    "{name}: item {:?} already throws another entity type",
+                    file.item
+                ));
+            }
+            if !(file.damage.is_finite() && file.damage >= 0.0) {
+                return Err(format!("{name}: damage is 0 or more"));
+            }
+            self.entity_types.push(EntityType { id: kind, ..file });
+        }
+        for (menu, name) in menus {
+            let file: MenuType =
+                serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
+            if !(1..=MAX_MENU_SLOTS).contains(&file.slots) || file.data_slots > MAX_MENU_SLOTS {
+                return Err(format!(
+                    "{name}: slots is 1 to {MAX_MENU_SLOTS}, data_slots 0 to {MAX_MENU_SLOTS}"
+                ));
+            }
+            let mut seen = BTreeSet::new();
+            for &r in &file.results {
+                if r >= file.slots {
+                    return Err(format!(
+                        "{name}: result {r} is past the last slot, {}",
+                        file.slots - 1
+                    ));
+                }
+                if !seen.insert(r) {
+                    return Err(format!("{name}: result {r} is listed twice"));
+                }
+            }
+            self.menu_types.push(MenuType { id: menu, ..file });
         }
         Ok(())
     }
@@ -892,6 +998,124 @@ capabilities = ["registries"]
             let e = hmod(case, MANIFEST_TEXT, files).unwrap_err();
             assert!(e.contains(why), "{case}: {e}");
         }
+    }
+
+    #[test]
+    fn menu_types_take_slots_data_slots_and_results() {
+        let files: &[(&str, &[u8])] = &[
+            (
+                "data/ruby/horizon/menu/press.json",
+                br#"{"slots": 9, "data_slots": 2, "results": [7, 8]}"#,
+            ),
+            ("data/ruby/horizon/menu/bag.json", br#"{"slots": 4}"#),
+        ];
+        let content = hmod("menus", MANIFEST_TEXT, files).unwrap();
+        let menus: Vec<_> = content
+            .menu_types
+            .iter()
+            .map(|m| (m.id.as_str(), m.slots, m.data_slots, m.results.clone()))
+            .collect();
+        assert_eq!(
+            menus,
+            [("ruby:bag", 4, 0, vec![]), ("ruby:press", 9, 2, vec![7, 8])]
+        );
+        for (case, file, why) in [
+            ("menu-empty", r#"{"slots": 0}"#, "slots is 1 to 256"),
+            ("menu-large", r#"{"slots": 257}"#, "slots is 1 to 256"),
+            (
+                "menu-data",
+                r#"{"slots": 1, "data_slots": 257}"#,
+                "data_slots 0 to 256",
+            ),
+            (
+                "menu-result",
+                r#"{"slots": 3, "results": [3]}"#,
+                "result 3 is past the last slot, 2",
+            ),
+            (
+                "menu-twice",
+                r#"{"slots": 3, "results": [1, 1]}"#,
+                "result 1 is listed twice",
+            ),
+            ("menu-key", r#"{"slots": 3, "rows": 1}"#, "unknown field"),
+            ("menu-missing", r#"{"data_slots": 1}"#, "missing field"),
+        ] {
+            let files: &[(&str, &[u8])] = &[("data/ruby/horizon/menu/a.json", file.as_bytes())];
+            let e = hmod(case, MANIFEST_TEXT, files).unwrap_err();
+            assert!(e.contains(why), "{case}: {e}");
+        }
+    }
+
+    #[test]
+    fn entity_types_copy_a_throwable_and_name_its_item() {
+        let files: &[(&str, &[u8])] = &[
+            ("data/ruby/horizon/item/gem.json", ITEM),
+            (
+                "data/ruby/horizon/entity_type/bolt.json",
+                br#"{"template": "minecraft:snowball", "item": "ruby:gem", "damage": 2.5}"#,
+            ),
+            ("data/ruby/horizon/item/dust.json", ITEM),
+            (
+                "data/ruby/horizon/entity_type/puff.json",
+                br#"{"template": "minecraft:snowball", "item": "ruby:dust"}"#,
+            ),
+        ];
+        let content = hmod("types", MANIFEST_TEXT, files).unwrap();
+        let types: Vec<_> = content
+            .entity_types
+            .iter()
+            .map(|t| (t.id.as_str(), t.item.as_str(), t.damage))
+            .collect();
+        assert_eq!(
+            types,
+            [
+                ("ruby:bolt", "ruby:gem", 2.5),
+                ("ruby:puff", "ruby:dust", 0.0)
+            ]
+        );
+        let snowball = |rest: &str| format!(r#"{{"template": "minecraft:snowball"{rest}}}"#);
+        for (case, file, why) in [
+            (
+                "type-template",
+                r#"{"template": "minecraft:egg", "item": "ruby:gem"}"#.to_owned(),
+                "is not one of",
+            ),
+            (
+                "type-vanilla-item",
+                snowball(r#", "item": "minecraft:stick""#),
+                "is not one of this mod's items",
+            ),
+            (
+                "type-unknown-item",
+                snowball(r#", "item": "ruby:none""#),
+                "is not one of this mod's items",
+            ),
+            (
+                "type-damage",
+                snowball(r#", "item": "ruby:gem", "damage": -1"#),
+                "damage is 0 or more",
+            ),
+            (
+                "type-key",
+                snowball(r#", "item": "ruby:gem", "size": 1"#),
+                "unknown field",
+            ),
+        ] {
+            let files: &[(&str, &[u8])] = &[
+                ("data/ruby/horizon/item/gem.json", ITEM),
+                ("data/ruby/horizon/entity_type/a.json", file.as_bytes()),
+            ];
+            let e = hmod(case, MANIFEST_TEXT, files).unwrap_err();
+            assert!(e.contains(why), "{case}: {e}");
+        }
+        let shared = snowball(r#", "item": "ruby:gem""#);
+        let files: &[(&str, &[u8])] = &[
+            ("data/ruby/horizon/item/gem.json", ITEM),
+            ("data/ruby/horizon/entity_type/a.json", shared.as_bytes()),
+            ("data/ruby/horizon/entity_type/b.json", shared.as_bytes()),
+        ];
+        let e = hmod("type-shared", MANIFEST_TEXT, files).unwrap_err();
+        assert!(e.contains("already throws another entity type"), "{e}");
     }
 
     #[test]

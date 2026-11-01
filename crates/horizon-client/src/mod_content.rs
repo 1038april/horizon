@@ -16,7 +16,9 @@
 //! content mod the root is the base root itself.
 use crate::{Result, blocks::MAP_COLORS};
 use horizon_core::geometry::{Aabb, Axis, ShapeOp, Vec3, VoxelShape};
-use horizon_mods::content::{Block, Content, CreativeTab, MobEffect, Rarity, StateProperty};
+use horizon_mods::content::{
+    Block, Content, CreativeTab, EntityType, MenuType, MobEffect, Rarity, StateProperty,
+};
 use horizon_world::nbt::{self, Compound, JavaString, Limits, Tag};
 use serde::{Deserialize, Serialize, de};
 use std::{
@@ -38,6 +40,20 @@ pub fn mob_effects(mods: &[ContentMod]) -> Vec<&MobEffect> {
     let mut effects: Vec<&MobEffect> = mods.iter().flat_map(|m| &m.content.effects).collect();
     effects.sort_by(|a, b| a.id.cmp(&b.id));
     effects
+}
+
+/// the mods' entity types in registry order, by id as effects are.
+pub fn entity_types(mods: &[ContentMod]) -> Vec<&EntityType> {
+    let mut types: Vec<&EntityType> = mods.iter().flat_map(|m| &m.content.entity_types).collect();
+    types.sort_by(|a, b| a.id.cmp(&b.id));
+    types
+}
+
+/// the mods' menu types in registry order, by id as effects are.
+pub fn menu_types(mods: &[ContentMod]) -> Vec<&MenuType> {
+    let mut menus: Vec<&MenuType> = mods.iter().flat_map(|m| &m.content.menu_types).collect();
+    menus.sort_by(|a, b| a.id.cmp(&b.id));
+    menus
 }
 
 /// JSON with its object keys in file order, so a rewritten table differs
@@ -459,6 +475,8 @@ struct Plan<'a> {
     /// Every vanilla item id, including items omitted from the search tab.
     vanilla_items: BTreeSet<String>,
     effects: Vec<&'a MobEffect>,
+    entity_types: Vec<&'a EntityType>,
+    menu_types: Vec<&'a MenuType>,
     /// Vanilla's state count (the tables' length before).
     states: usize,
     /// Each vanilla block's default state.
@@ -574,6 +592,40 @@ fn component_patch(
 
 fn read_json(path: &Path) -> Result<J> {
     Ok(serde_json::from_slice(&fs::read(path)?).map_err(|e| format!("{}: {e}", path.display()))?)
+}
+
+impl Plan<'_> {
+    /// `entity-types.json` with a row for each mod type: its template's, so its
+    /// size, eyes and category are the template's (`execute anchored eyes`,
+    /// spawner checks and the commands' entity type list, `reg.entity_types`).
+    /// The rows are appended as text: parsed and written back, a float such as
+    /// a zombie's `movement_speed` can come back one ulp off.
+    fn entity_types_json(&self, bytes: &[u8]) -> std::result::Result<Vec<u8>, String> {
+        use serde_json::value::RawValue;
+        let rows: BTreeMap<String, Box<RawValue>> =
+            serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+        let mut out = bytes.trim_ascii_end().to_vec();
+        if out.pop() != Some(b'}') {
+            return Err("not an object".into());
+        }
+        let mut empty = rows.is_empty();
+        for t in &self.entity_types {
+            if rows.contains_key(&t.id) {
+                continue;
+            }
+            let Some(row) = rows.get(&t.template) else {
+                continue;
+            };
+            if !std::mem::take(&mut empty) {
+                out.push(b',');
+            }
+            out.extend(serde_json::to_vec(&t.id).map_err(|e| e.to_string())?);
+            out.push(b':');
+            out.extend(row.get().as_bytes());
+        }
+        out.push(b'}');
+        Ok(out)
+    }
 }
 
 impl<'a> Plan<'a> {
@@ -867,6 +919,8 @@ impl<'a> Plan<'a> {
             items,
             vanilla_items,
             effects: mob_effects(mods),
+            entity_types: entity_types(mods),
+            menu_types: menu_types(mods),
             states: names.len(),
             defaults,
             sounds,
@@ -1149,12 +1203,12 @@ impl<'a> Plan<'a> {
             }
             "items.json" => self.items(doc, true)?,
             "registries.json" => {
-                // Network ids: the game and its server map items, blocks and mob
-                // effects through this report, so new ones get the ids after
-                // vanilla's, in plan order. A block entity type for each block too,
-                // named after it: a mod names its types only when one is made
-                // (`native_block_entity`), and the chunk packet carries the type of
-                // each block's entity.
+                // Network ids: the game and its server map items, blocks, mob
+                // effects and entity types through this report, so new ones get
+                // the ids after vanilla's, in plan order. A block entity type for
+                // each block too, named after it: a mod names its types only when
+                // one is made (`native_block_entity`), and the chunk packet
+                // carries the type of each block's entity.
                 let new_items = self.items.iter().map(|i| i.rename.to.clone());
                 let new_blocks: Vec<_> = self.blocks.iter().map(|b| b.decl.id.clone()).collect();
                 let mut registries = vec![
@@ -1165,6 +1219,15 @@ impl<'a> Plan<'a> {
                 if !self.effects.is_empty() {
                     let new_effects = self.effects.iter().map(|e| e.id.clone());
                     registries.push(("minecraft:mob_effect", new_effects.collect()));
+                }
+                if !self.entity_types.is_empty() {
+                    let new_types = self.entity_types.iter().map(|t| t.id.clone());
+                    registries.push(("minecraft:entity_type", new_types.collect()));
+                }
+                // `ClientboundOpenScreenPacket` carries a menu type's id.
+                if !self.menu_types.is_empty() {
+                    let new_menus = self.menu_types.iter().map(|m| m.id.clone());
+                    registries.push(("minecraft:menu", new_menus.collect()));
                 }
                 for (registry, names) in registries {
                     let Some(J::Obj(entries)) =
@@ -1215,6 +1278,14 @@ impl<'a> Plan<'a> {
                 }
                 if let Some(J::Arr(ids)) = doc.at("by_registry/minecraft:mob_effect/ids") {
                     ids.extend(new_effects());
+                }
+                // entity type arguments and `type=` in selectors.
+                let new_types = || self.entity_types.iter().map(|t| J::Str(t.id.clone()));
+                if let Some(J::Arr(ids)) = doc.at("entity_types") {
+                    ids.extend(new_types());
+                }
+                if let Some(J::Arr(ids)) = doc.at("by_registry/minecraft:entity_type/ids") {
+                    ids.extend(new_types());
                 }
             }
             "mob-data.json" => states(doc, "states", false, false)?,
@@ -1394,8 +1465,9 @@ impl<'a> Plan<'a> {
 }
 
 /// The JSON and NBT tables rewritten for new blocks and items.
-const JSON_TABLES: [&str; 15] = [
+const JSON_TABLES: [&str; 16] = [
     "facts.json",
+    "entity-types.json",
     "creative-inventory.json",
     "registries.json",
     "gameplay-facts.json",
@@ -1557,6 +1629,70 @@ impl Addition {
         Ok(())
     }
 }
+
+/// The worldgen loader's bundles of biomes and of placed feature tags.
+const BIOMES: &str = "worldgen/biomes.json";
+const FEATURE_TAGS: &str = "worldgen/feature_tags.json";
+const PLACED_FEATURES: &str = "worldgen/placed_features.json";
+
+/// Rewrites the biome bundle with the mods' biome modifiers. `biome_tags`
+/// and `placed` are the bundles as the mods left them (`None`: the base's).
+fn place_in_biomes(
+    base: &Path,
+    overlay: &Overlay<'_>,
+    modifiers: &[biomes::Modifier],
+    biome_tags: Option<J>,
+    placed: Option<J>,
+    warnings: &mut Vec<String>,
+) -> Result<()> {
+    let bundle = |doc: Option<J>, name: &str| -> Result<BTreeMap<String, String>> {
+        let doc = match doc {
+            Some(doc) => doc,
+            None if base.join(name).exists() => read_json(&base.join(name))?,
+            None => return Ok(BTreeMap::new()),
+        };
+        let J::Obj(entries) = doc else {
+            return Err(format!("{name}: not an object").into());
+        };
+        Ok(entries
+            .into_iter()
+            .filter_map(|(k, v)| match v {
+                J::Str(text) => Some((k, text)),
+                _ => None,
+            })
+            .collect())
+    };
+    if !base.join(BIOMES).exists() {
+        return Err(format!("biome modifiers need {BIOMES}").into());
+    }
+    let mut doc = read_json(&base.join(BIOMES))?;
+    let biome_ids: BTreeSet<String> = match &doc {
+        J::Obj(o) => o.iter().map(|(k, _)| k.clone()).collect(),
+        _ => return Err(format!("{BIOMES}: not an object").into()),
+    };
+    let biome_tags = bundle(biome_tags, BIOME_TAGS)?;
+    let placed: BTreeSet<String> = bundle(placed, PLACED_FEATURES)?.into_keys().collect();
+    let feature_tags = bundle(None, FEATURE_TAGS)?;
+    biomes::apply(
+        &mut doc,
+        modifiers,
+        &biomes::Registry {
+            what: "biome",
+            ids: &biome_ids,
+            tags: &biome_tags,
+        },
+        &biomes::Registry {
+            what: "placed feature",
+            ids: &placed,
+            tags: &feature_tags,
+        },
+        warnings,
+    )?;
+    overlay.write(BIOMES, &serde_json::to_vec(&doc)?)
+}
+
+#[path = "mod_content_biomes.rs"]
+mod biomes;
 
 /// The overlay being written: `out` mirrors `base` through links, and a
 /// directory becomes real only when something inside it is written.
@@ -1811,7 +1947,10 @@ fn tables(base: &Path, plan: &Plan, overlay: &Overlay<'_>) -> Result<()> {
     }
     let table = |name: &str| -> Result<()> {
         let path = base.join(name);
-        let bytes = if JSON_TABLES.contains(&name) {
+        let bytes = if name == "entity-types.json" {
+            plan.entity_types_json(&fs::read(&path)?)
+                .map_err(|e| format!("{name}: {e}"))?
+        } else if JSON_TABLES.contains(&name) {
             let mut doc = read_json(&path)?;
             plan.json(name, &mut doc)
                 .map_err(|e| format!("{name}: {e}"))?;
@@ -1876,6 +2015,7 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
     let mut warnings = Vec::new();
     let mut worldgen: BTreeMap<&str, Vec<(String, String)>> = BTreeMap::new();
     let mut additions: BTreeMap<&str, Vec<Addition>> = BTreeMap::new();
+    let mut modifiers = Vec::new();
     for m in mods {
         let declarations = format!("data/{}/horizon/", m.id);
         let mut reader = m.content.reader()?;
@@ -1894,7 +2034,10 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
                 warnings.extend(merge.add(&m.id, file, replace, shared, values));
             } else if !file.starts_with(&declarations) {
                 overlay.write(file, &bytes)?;
-                if let Some((bundle, id)) = worldgen_entry(file) {
+                if biomes::is_modifier(file) {
+                    let text = String::from_utf8(bytes).map_err(|e| format!("{file}: {e}"))?;
+                    modifiers.extend(biomes::Modifier::read(&m.id, file, &text, &mut warnings)?);
+                } else if let Some((bundle, id)) = worldgen_entry(file) {
                     let text = String::from_utf8(bytes).map_err(|e| format!("{file}: {e}"))?;
                     let entries = worldgen.entry(bundle).or_default();
                     match Addition::read(bundle, &text).map_err(|e| format!("{file}: {e}"))? {
@@ -1965,6 +2108,7 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
             Some((format!("{ns}:{}", path.strip_suffix(".json")?), merge))
         })
         .collect();
+    let mut biome_tag_doc = None;
     if !biome_tags.is_empty() && base.join(BIOME_TAGS).exists() {
         let mut doc = read_json(&base.join(BIOME_TAGS))?;
         for (id, merge) in biome_tags {
@@ -1976,6 +2120,7 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
             doc.set(&id, J::Str(merged));
         }
         overlay.write(BIOME_TAGS, &serde_json::to_vec(&doc)?)?;
+        biome_tag_doc = Some(doc);
     }
     // Structures and the pools, sets, processors and features they use, then
     // what mods add to sets, pools and lists, by priority, then in mod and
@@ -1983,6 +2128,7 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
     for list in additions.values_mut() {
         list.sort_by_key(|a| a.priority);
     }
+    let mut placed_doc = None;
     for (bundle, entries) in &worldgen {
         if !base.join(bundle).exists() {
             continue;
@@ -1997,6 +2143,19 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
                 .map_err(|e| format!("{bundle}: {e}"))?;
         }
         overlay.write(bundle, &serde_json::to_vec(&doc)?)?;
+        if *bundle == PLACED_FEATURES {
+            placed_doc = Some(doc);
+        }
+    }
+    if !modifiers.is_empty() {
+        place_in_biomes(
+            base,
+            &overlay,
+            &modifiers,
+            biome_tag_doc,
+            placed_doc,
+            &mut warnings,
+        )?;
     }
     // The commands suggest ids from `command-registries.json`: add the
     // structures, pools, sets and features the mods bring.
@@ -2044,6 +2203,11 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
         .collect();
     namespaces.sort();
     overlay.write(MARKER, &serde_json::to_vec(&namespaces)?)?;
+    let mod_ids: Vec<&str> = mods.iter().map(|m| m.id.as_str()).collect();
+    overlay.write(
+        horizon_items::content_namespaces::MOD_IDS_MARKER,
+        &serde_json::to_vec(&mod_ids)?,
+    )?;
     let remainders: BTreeMap<&str, &str> = plan
         .items
         .iter()
@@ -2055,9 +2219,14 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
             &serde_json::to_vec(&remainders)?,
         )?;
     }
-    // clients must agree on the block states and the items' and mob effects'
-    // network ids.
-    if !plan.blocks.is_empty() || !plan.items.is_empty() || !plan.effects.is_empty() {
+    // clients must agree on the block states and the items', mob effects',
+    // entity types' and menu types' network ids.
+    if !plan.blocks.is_empty()
+        || !plan.items.is_empty()
+        || !plan.effects.is_empty()
+        || !plan.entity_types.is_empty()
+        || !plan.menu_types.is_empty()
+    {
         overlay.write(crate::content_identity::MARKER, b"1")?;
     }
     overlay.write(WARNINGS, warnings.join("\n").as_bytes())?;
