@@ -81,6 +81,17 @@ step = 0.05
 [[materials]]              # 1024 at most: MaterialInput.material, the first entry that matches
 id = 10                    # 1 to 65535; 0 is a sprite no entry names
 sprites = ["block/*_leaves"]   # sprite names, any number of * each
+[[pages]]                  # optional: the options page's layout, the first the one it opens on
+id = "main"
+name = "Sample"
+items = ["page:colour", ""]   # a button opening a page, an empty slot (or an option's id)
+
+[[pages]]
+id = "colour"
+name = "Colour"            # the page's title and its button's label
+description = "How colourful the picture is."   # optional: the button's tooltip
+columns = 1                # optional: 1 or 2 (default) buttons a row
+items = ["saturation"]
 
 [[tags]]                   # 32 at most: bit i of MaterialInput.tags is the i-th tag
 id = "glass"
@@ -124,6 +135,7 @@ stages.
   roof they have no shadow but what the pack gives them. Only entities the camera's culling keeps
   cast: one off screen or behind a wall leaves the map, and its shadow with it.
 - 2026-11-01: API 0.1 (additions): `[sky] clouds`, `sun` and `stars`: a sky can replace Minecraft's.
+- 2026-11-01: API 0.1 (additions): `[[pages]]`, the layout of a pack's options page.
 - 2026-10-31: API 0.1 (additions): translucent terrain in the shadow pass: `shadow_map_translucent`
   and `shadow_color`, so a pack can tint the light that passes through water and stained glass.
 - 2026-10-31: API 0.1 (additions): `Frame.mods`, eight `vec4<f32>` a native mod hands the pack it bundles each

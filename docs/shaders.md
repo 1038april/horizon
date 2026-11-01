@@ -146,6 +146,25 @@ option's next value, a right click the one before, shift-click its default, and 
 `description`. Each change is saved to `shaderpacks/<pack>.txt` (`id=value` lines, values at their defaults left out) and
 the pack reloads with it within half a second.
 
+The page shows every option two a row, unless the pack lays them out in `[[pages]]`: it opens on the first page, and an
+item `"page:<id>"` is a button opening another, so options can be grouped into categories. `""` leaves a slot empty, and
+`columns = 1` gives a page full-width buttons:
+
+```toml
+[[pages]]
+id = "main"
+name = "My Pack"
+items = ["page:lighting", "page:water"]
+
+[[pages]]
+id = "lighting"
+name = "Lighting"
+description = "Shadows and the light of blocks."   # the tooltip of the button opening it
+items = ["shadow_softness", "block_light"]
+```
+
+Every page has to be reached from the first and every option has to be on a page, or the check refuses the pack.
+
 Each `[[options]]` entry is a WGSL `override` of the same name, set when the game builds the pipeline: no text
 substitution, no recompiling a different program per value.
 
