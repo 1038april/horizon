@@ -18143,7 +18143,7 @@ fn gameplay_tables(
     ))
     .map_err(|e| e.to_string())?;
     let (facts, gameplay_projection) =
-        BlockFacts::load_with_projection(root, assets.registry, &behaviour_json)
+        BlockFacts::load_with_projection(root, assets.registry, &behaviour_json, parallel)
             .map_err(|e| e.to_string())?;
     horizon_client::block_contact::set_mod_blocks(
         facts
