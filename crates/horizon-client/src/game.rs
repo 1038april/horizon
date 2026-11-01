@@ -2246,6 +2246,9 @@ struct Game<'a> {
     /// The glint clock and options, read once at the start of each frame
     /// (game/item_draw.rs).
     glint_frame: horizon_client::item_render::GlintFrame,
+    /// Mod block entities' geometry their mods kept
+    /// (game/native_block_entity_draw.rs).
+    kept_block_entities: std::cell::RefCell<native_block_entity_draw::KeptGeometry>,
     /// `item_level` for one frame, game time, day time and dimension.
     item_level_cache: std::cell::RefCell<
         Option<(
@@ -11768,6 +11771,7 @@ impl Game<'_> {
         self.boss_overlay.reset();
         // GameRenderer.resetData (Minecraft.clearClientLevel).
         self.item_activation.reset();
+        self.kept_block_entities.get_mut().clear();
         self.bosses = Default::default();
         self.streaming.paused = true;
         self.world = World::new(self.res.facts().air, 0);
@@ -17174,6 +17178,7 @@ impl<'a> Game<'a> {
             pad: Default::default(),
             frames: 0,
             glint_frame: Default::default(),
+            kept_block_entities: Default::default(),
             item_level_cache: Default::default(),
             world_frames: 0,
             fps: 0.0,
@@ -18138,7 +18143,7 @@ fn gameplay_tables(
     ))
     .map_err(|e| e.to_string())?;
     let (facts, gameplay_projection) =
-        BlockFacts::load_with_projection(root, assets.registry, &behaviour_json)
+        BlockFacts::load_with_projection(root, assets.registry, &behaviour_json, parallel)
             .map_err(|e| e.to_string())?;
     horizon_client::block_contact::set_mod_blocks(
         facts
