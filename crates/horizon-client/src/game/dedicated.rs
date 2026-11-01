@@ -1586,7 +1586,11 @@ impl Game<'_> {
             _ => {
                 // The game's dispatcher, captured for the console.
                 self.chat_capture = Some(Vec::new());
-                self.as_console(|g| g.run_command(line));
+                // A command a native mod registered goes to the mods first,
+                // looked up by the same first word the match above read.
+                if !self.perform_native_console_command(line.trim()) {
+                    self.as_console(|g| g.run_command(line));
+                }
                 for text in self.chat_capture.take().unwrap_or_default() {
                     self.console_reply(text);
                 }
@@ -1721,6 +1725,55 @@ impl Game<'_> {
                 translatable("multiplayer.disconnect.not_whitelisted", &[]),
             );
         }
+    }
+
+    /// The anticheat bans a player (`HostEvent::Ban`): `banned-players.json` gets it as `/ban` adds it,
+    /// with the anticheat as its source, and the player is sent away with the ban's message.
+    pub(super) fn anticheat_ban(
+        &mut self,
+        hub: &mut horizon_client::lan::hub::Hub,
+        uuid: u128,
+        name: &str,
+        reason: &str,
+    ) {
+        let Some(lists) = &self.server_lists else {
+            // No ban list to add to: the anticheat's kick, so a flagged cheater still doesn't stay.
+            log(
+                "WARN",
+                &format!("Can't ban {name} ({reason}): no ban list; kicked"),
+            );
+            let conns: Vec<u32> = hub
+                .guests
+                .iter()
+                .filter(|g| g.uuid == uuid)
+                .map(|g| g.conn)
+                .collect();
+            for conn in conns {
+                hub.anticheat_kick(conn);
+            }
+            return;
+        };
+        let user = NameAndId {
+            id: uuid,
+            name: name.to_owned(),
+        };
+        lists.lock().unwrap().bans.add(BanEntry::new(
+            user,
+            Some("Horizon anticheat".into()),
+            None,
+            Some(reason.to_owned()),
+        ));
+        log("INFO", &format!("Banned {name}: {reason}"));
+        let conns: Vec<u32> = hub
+            .guests
+            .iter()
+            .filter(|g| g.uuid == uuid)
+            .map(|g| g.conn)
+            .collect();
+        for conn in conns {
+            hub.kick(conn, translatable("multiplayer.disconnect.banned", &[]));
+        }
+        events::record("ban", name, uuid, serde_json::json!({ "reason": reason }));
     }
 
     pub(super) fn kick_uuid(&mut self, uuid: u128, reason: Tag) {

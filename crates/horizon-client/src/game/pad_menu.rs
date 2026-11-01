@@ -211,6 +211,10 @@ impl Game<'_> {
                     }
                 }
                 for (i, t) in self.creative_screen.tabs.iter().enumerate() {
+                    // A tab of another page of mods' tabs isn't drawn: its place is another's.
+                    if !self.creative_screen.on_page(t) {
+                        continue;
+                    }
                     let (x, y) = Creative::tab_position(t);
                     targets.push(Target {
                         rect: [ox + x, oy + y, 26.0, 32.0],
@@ -326,6 +330,14 @@ impl Game<'_> {
         let was = std::mem::replace(&mut self.pad.menu.synthetic, true);
         self.handle_window_event(event_loop, id, event);
         self.pad.menu.synthetic = was;
+    }
+
+    /// The event being handled is one the pad or the keyboard's focus made
+    /// up (`pad_synthetic_event`), not the window's. A controller's click or
+    /// a focused widget's is not the mouse, so the native mods' mouse hooks
+    /// skip it.
+    pub(super) fn pad_synthetic_input(&self) -> bool {
+        self.pad.menu.synthetic
     }
 
     fn pad_click_at(&mut self, event_loop: &dyn EventLoopCtl, at: (f32, f32), right: bool) {
@@ -648,7 +660,7 @@ impl Game<'_> {
     /// order; other screens register their tabs).
     fn pad_tab(&mut self, event_loop: &dyn EventLoopCtl, next: bool) {
         if self.screen == Screen::Creative && self.title.is_none() {
-            self.pad_creative_tab(event_loop, next);
+            self.pad_creative_tab(next);
             return;
         }
         let tabs: Vec<(Rect, bool)> = self
@@ -680,11 +692,10 @@ impl Game<'_> {
         }
     }
 
-    /// Click the next or previous creative tab (wrapping), as a mouse would.
-    fn pad_creative_tab(&mut self, event_loop: &dyn EventLoopCtl, next: bool) {
-        let Some(batch) = self.gui_scale() else {
-            return;
-        };
+    /// Select the next or previous creative tab (wrapping), as clicking it does. A tab on
+    /// another page of mods' tabs shows its page: clicking where it would be would hit the
+    /// tab drawn there on this page.
+    fn pad_creative_tab(&mut self, next: bool) {
         let count = self.creative_screen.tabs.len();
         if count == 0 {
             return;
@@ -695,13 +706,10 @@ impl Game<'_> {
         } else {
             (selected + count - 1) % count
         };
-        let (ox, oy) = Self::creative_origin(&batch);
-        let (x, y) = Creative::tab_position(&self.creative_screen.tabs[tab]);
-        let back = self.pad.menu.pos;
-        self.pad_click_at(event_loop, (ox + x + 13.0, oy + y + 16.0), false);
-        if let Some(at) = back {
-            self.pad_pointer_to(event_loop, at);
-        }
+        super::select_creative_tab(&mut self.creative_screen, &mut self.inv_clicks, tab);
+        self.refresh_saved_hotbars();
+        self.inv_drag = None;
+        self.last_inv_click = None;
     }
 
     /// Once per poll in a menu: the stick moves the cursor (pointer) or
@@ -1175,8 +1183,7 @@ impl Game<'_> {
 
     /// The real mouse, before the screen takes it: where it is, and a press
     /// or a scroll hands it the pointer back from the keyboard, at the
-    /// place the mouse left it (`setLastInputType(MOUSE)`). A left press
-    /// focuses what it lands on, for the next Tab or arrow.
+    /// place the mouse left it (`setLastInputType(MOUSE)`).
     pub(super) fn key_focus_mouse(&mut self, event_loop: &dyn EventLoopCtl, event: &WindowEvent) {
         if self.pad.menu.synthetic {
             return;
@@ -1187,24 +1194,35 @@ impl Game<'_> {
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
-                button,
                 ..
-            } => {
-                self.key_focus_to_mouse(event_loop);
-                if *button == MouseButton::Left && self.pad_in_menu() {
-                    let (cx, cy) = self.cursor;
-                    self.pad.menu.origin = self
-                        .key_targets()
-                        .into_iter()
-                        .find(|t| {
-                            let [x, y, w, h] = t.rect;
-                            cx >= x && cy >= y && cx < x + w && cy < y + h
-                        })
-                        .map(|t| t.rect);
-                }
-            }
+            } => self.key_focus_to_mouse(event_loop),
             WindowEvent::MouseWheel { .. } => self.key_focus_to_mouse(event_loop),
             _ => {}
+        }
+    }
+
+    /// Only a press accepted by ScreenEvent.Pre may focus the widget under it.
+    pub(super) fn key_focus_mouse_press(&mut self, event: &WindowEvent) {
+        if !self.pad.menu.synthetic
+            && self.pad_in_menu()
+            && matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                }
+            )
+        {
+            let (cx, cy) = self.cursor;
+            self.pad.menu.origin = self
+                .key_targets()
+                .into_iter()
+                .find(|t| {
+                    let [x, y, w, h] = t.rect;
+                    cx >= x && cy >= y && cx < x + w && cy < y + h
+                })
+                .map(|t| t.rect);
         }
     }
 
