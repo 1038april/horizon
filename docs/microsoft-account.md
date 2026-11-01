@@ -146,7 +146,9 @@ one is selected. "Sign out" deletes the account's secrets from the keychain.
   of its own, so launcher and CLI processes running at once lose nothing. The lock is never held
   while the keychain is asked (it can wait on an unlock prompt): a file entry the keychain took is
   removed only if it still holds what was read before, so another process's newer write stays and
-  is read first. Once the keychain refuses or doesn't answer (a dismissed prompt), the run stops
+  is read first. Writes to the keychain hold `account-secrets.keychain.lock` instead, with what they
+  write read under it, so a hand-over never puts back a token another process renewed or signed out
+  meanwhile; only keychain writes wait on a prompt, as they would on the keychain itself. Once the keychain refuses or doesn't answer (a dismissed prompt), the run stops
   asking it and keeps new sign-ins in the file, until it finds that another process handed the
   keychain a secret it put there. Every start
   hands the keychain what the file kept, one secret at a time up to the first it refuses; the rest
@@ -155,7 +157,7 @@ one is selected. "Sign out" deletes the account's secrets from the keychain.
   only its line and column, never what it holds. Only sign-ins go there: the Tailscale access token
   (Internet servers) administers the player's whole tailnet, so without a keychain it stays in
   memory for the run (`account::keychain`). MCP's `account_list` says `secrets_file: true` while
-  sign-ins sit in the file.
+  the file holds a sign-in (sign-out marks alone, or a file that can't be read, don't count).
 - No keychain on macOS or Windows, or `HORIZON_NO_KEYCHAIN` (the launcher's own tests): secrets
   stay in memory for the run, and the launcher says "No keychain available: you are signed in until
   the launcher closes".

@@ -613,8 +613,13 @@ impl FileStore {
         format!("{}: {e}", self.path.display())
     }
 
-    /// Runs `f` holding the lock file (`account-secrets.lock`): other processes wait.
+    /// Runs `f` holding the file's lock (`account-secrets.lock`): other processes wait.
     fn locked<T>(&self, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        self.holding("lock", f)
+    }
+
+    /// Runs `f` holding the lock file `account-secrets.<name>`, made if need be.
+    fn holding<T>(&self, name: &str, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
         if let Some(dir) = self.path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| self.shown(e))?;
         }
@@ -622,11 +627,17 @@ impl FileStore {
             .create(true)
             .truncate(false)
             .write(true)
-            .open(self.path.with_extension("lock"))
+            .open(self.path.with_extension(name))
             .map_err(|e| self.shown(e))?;
         lock.lock().map_err(|e| self.shown(e))?;
         // Closing the file releases the lock, after `f` whatever it answers.
         f()
+    }
+
+    /// Whether the file holds a sign-in: not only sign-out marks, and readable.
+    fn holds_secrets(&self) -> bool {
+        self.entries()
+            .is_ok_and(|secrets| secrets.values().any(|secret| secret != SIGNED_OUT))
     }
 
     fn read(&self) -> Result<std::collections::BTreeMap<String, String>, String> {
@@ -1110,8 +1121,11 @@ const KEYCHAIN_AWAY: &str =
 /// is the newer one), writes go to the keychain and to the file only when it refuses.
 ///
 /// The file's lock is never held across a keychain call, which can wait on an unlock prompt: other
-/// processes keep reading and writing the file meanwhile. A file entry is only removed if it still
-/// holds what was read before the keychain call, so another process's newer write stays. And once the
+/// processes keep reading and writing the file meanwhile. Every write to the keychain holds a lock of
+/// its own instead (`account-secrets.keychain.lock`), with what it writes read under it, so a hand-over
+/// never puts back a secret another process renewed or signed out since; only keychain writes wait
+/// on a prompt, as they would on the keychain itself. A file entry is only removed if it still holds
+/// what was read before the keychain call, so another process's newer write stays. And once the
 /// keychain refuses or doesn't answer, this run stops asking it (no prompt after a dismissed
 /// prompt), until another process hands it a secret this run parked in the file.
 pub struct Layered {
@@ -1124,7 +1138,8 @@ pub struct Layered {
 
 impl Layered {
     /// Starts by handing the keychain what the file kept while it was away, one secret at a time,
-    /// up to the first it refuses; sign-outs it missed are done there too.
+    /// up to the first it refuses; sign-outs it missed are done there too. Each is read again under
+    /// the keychain's lock: one another process renewed or signed out meanwhile isn't handed over.
     pub fn new(keychain: Box<dyn SecretStore>, file: FileStore) -> Self {
         let layered = Self {
             keychain,
@@ -1132,19 +1147,27 @@ impl Layered {
             away: Default::default(),
             parked: Default::default(),
         };
-        let mut moved = Vec::new();
-        for (key, secret) in layered.file.entries().unwrap_or_default() {
-            let handed = layered.ask(|keychain| match secret.as_str() {
-                SIGNED_OUT => keychain.delete(&key),
-                _ => keychain.set(&key, &secret),
+        for key in layered.file.entries().unwrap_or_default().into_keys() {
+            let handed = layered.keychain_writes(|| {
+                let Some(secret) = layered.file.entry(&key)? else {
+                    return Ok(());
+                };
+                layered.ask(|keychain| match secret.as_str() {
+                    SIGNED_OUT => keychain.delete(&key),
+                    _ => keychain.set(&key, &secret),
+                })?;
+                layered.file.take_unchanged(&[(key.clone(), secret)])
             });
             if handed.is_err() {
                 break;
             }
-            moved.push((key, secret));
         }
-        let _ = layered.file.take_unchanged(&moved);
         layered
+    }
+
+    /// Runs `f`, a write to the keychain and what it reads first, holding the keychain's lock.
+    fn keychain_writes<T>(&self, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        self.file.holding("keychain.lock", f)
     }
 
     fn is_away(&self) -> bool {
@@ -1198,19 +1221,29 @@ impl SecretStore for Layered {
         self.ask(|keychain| keychain.get(key))
     }
     fn set(&self, key: &str, secret: &str) -> Result<(), String> {
-        let before = self.file.entry(key)?;
-        match self.ask(|keychain| keychain.set(key, secret)) {
-            Ok(()) => self.unpark(key, before),
-            Err(_) => self.park(key, secret),
+        if self.is_away() {
+            return self.park(key, secret);
         }
+        self.keychain_writes(|| {
+            let before = self.file.entry(key)?;
+            match self.ask(|keychain| keychain.set(key, secret)) {
+                Ok(()) => self.unpark(key, before),
+                Err(_) => self.park(key, secret),
+            }
+        })
     }
     fn delete(&self, key: &str) -> Result<(), String> {
-        let before = self.file.entry(key)?;
-        match self.ask(|keychain| keychain.delete(key)) {
-            Ok(()) => self.unpark(key, before),
-            // The keychain may hold a copy: the mark hides it until it can go.
-            Err(_) => self.park(key, SIGNED_OUT),
+        // The keychain may hold a copy: the mark hides it until it can go.
+        if self.is_away() {
+            return self.park(key, SIGNED_OUT);
         }
+        self.keychain_writes(|| {
+            let before = self.file.entry(key)?;
+            match self.ask(|keychain| keychain.delete(key)) {
+                Ok(()) => self.unpark(key, before),
+                Err(_) => self.park(key, SIGNED_OUT),
+            }
+        })
     }
     fn persistent(&self) -> bool {
         true
@@ -1282,11 +1315,12 @@ pub fn keychain() -> &'static dyn SecretStore {
     store()
 }
 
-/// Whether sign-ins sit in the secrets file now, the keychain having refused them (#5095).
+/// Whether sign-ins sit in the secrets file now, the keychain having refused them (#5095): sign-out
+/// marks alone, or a file that can't be read, don't count.
 pub fn in_secrets_file() -> bool {
     cfg!(any(target_os = "linux", target_os = "freebsd"))
         && store().persistent()
-        && FileStore::launcher().path.exists()
+        && FileStore::launcher().holds_secrets()
 }
 
 // ----- Accounts ------------------------------------------------------------------------------------

@@ -1380,6 +1380,80 @@ fn a_keychain_waiting_on_a_prompt_never_holds_the_file_up() {
     remove_secrets_dir(&path);
 }
 
+/// A start handing the file's A to the keychain, held up mid-way by an unlock prompt, while a
+/// launcher already running does `meanwhile` to A. The running one waits for the hand-over instead
+/// of racing it, and goes on once the prompt is answered.
+fn hand_over_racing(
+    name: &str,
+    meanwhile: impl FnOnce(&Layered) + Send + 'static,
+) -> (Arc<Keychain>, PathBuf) {
+    let path = secrets_file(name);
+    let keychain = Arc::new(Keychain::default());
+    // Started before the file had anything: it asked the keychain nothing.
+    let running = launcher_with(&keychain, &path);
+    // A run the keychain missed kept A in the file.
+    FileStore::new(path.clone()).set("A", "old-a").unwrap();
+    let prompt = keychain.prompt.lock().unwrap();
+    let asked = keychain.asked();
+    let starting = {
+        let (keychain, path) = (keychain.clone(), path.clone());
+        std::thread::spawn(move || drop(launcher_with(&keychain, &path)))
+    };
+    while keychain.asked() == asked {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let racing = std::thread::spawn(move || meanwhile(&running));
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(
+        keychain.asked(),
+        asked + 1,
+        "the running launcher reached the keychain during the hand-over"
+    );
+    drop(prompt);
+    starting.join().unwrap();
+    racing.join().unwrap();
+    (keychain, path)
+}
+
+#[test]
+fn a_hand_over_never_brings_back_an_account_signed_out_meanwhile() {
+    let (keychain, path) = hand_over_racing("race-sign-out", |running| {
+        running.delete("A").unwrap();
+    });
+    assert_eq!(keychain.kept.get("A").unwrap(), None);
+    assert_eq!(launcher_with(&keychain, &path).get("A").unwrap(), None);
+    assert!(!path.exists());
+    remove_secrets_dir(&path);
+}
+
+#[test]
+fn a_hand_over_never_writes_over_a_token_renewed_meanwhile() {
+    let (keychain, path) = hand_over_racing("race-renewal", |running| {
+        running.set("A", "renewed-a").unwrap();
+    });
+    assert_eq!(keychain.kept.get("A").unwrap(), Some("renewed-a".into()));
+    assert_eq!(
+        launcher_with(&keychain, &path).get("A").unwrap(),
+        Some("renewed-a".into())
+    );
+    assert!(!path.exists());
+    remove_secrets_dir(&path);
+}
+
+#[test]
+fn the_secrets_file_counts_only_sign_ins() {
+    let path = secrets_file("counts");
+    let file = FileStore::new(path.clone());
+    assert!(!file.holds_secrets());
+    file.put("A", SIGNED_OUT).unwrap();
+    assert!(!file.holds_secrets(), "a sign-out mark alone");
+    file.put("B", "secret-b").unwrap();
+    assert!(file.holds_secrets());
+    std::fs::write(&path, "{\"B\":\"secret-b").unwrap();
+    assert!(!file.holds_secrets(), "a file that can't be read");
+    remove_secrets_dir(&path);
+}
+
 #[test]
 fn a_dismissed_prompt_is_asked_once_a_run() {
     let path = secrets_file("dismissed");
