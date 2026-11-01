@@ -2380,7 +2380,7 @@ pub fn client(tag: &str) -> Result<Command, String> {
     client_as(tag, None)
 }
 
-/// [`client`], playing as `who` for this launch only (`play --account`, `--offline-name`).
+/// [`client`], playing as `who` for this launch only (`play --account`).
 pub fn client_as(tag: &str, who: Option<&account::Player>) -> Result<Command, String> {
     let (session, offline) = match who {
         None => account::session_for_game(&game_home(), false).map_err(|e| e.to_string()),
