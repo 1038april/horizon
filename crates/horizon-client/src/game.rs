@@ -197,6 +197,7 @@ mod native_falling;
 mod native_hooks;
 mod native_lifecycle;
 mod native_menus;
+mod native_mob_draw;
 mod native_mobs;
 mod native_motion;
 mod native_net;

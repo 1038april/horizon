@@ -277,6 +277,7 @@ use super::{
     Game, GameLevel, LevelDimension, Screen,
     execution_role::ExecutionRole,
     native_block_entity_draw::BlockEntityDraw,
+    native_mob_draw::NativeMobRender,
     native_panel_recipes::RecipePage,
     native_server::{NativeCommand, NativeServerPlayer},
 };
@@ -1565,6 +1566,29 @@ impl Game<'_> {
         bounds: &mut [f32; 6],
     ) {
         let _ = (pos, block, state, entity, bounds);
+    }
+    /// Draw the mob `mob` (its id, kind, custom name and the frame's body
+    /// and head turns and walk cycle, `LivingEntityRenderState`) on this
+    /// client with a model of your own, once a frame while it is in view
+    /// (vanilla's `EntityRenderer.submit`), and set `drawn` to leave out its
+    /// vanilla model, armour and held items (NeoForge's `RenderLivingEvent.Pre`,
+    /// cancelled). Add geometry with `native_draw_cube`, `native_draw_quad`,
+    /// `native_draw_block` and `native_draw_item` under `draw`'s pose stack,
+    /// which starts at the mob's feet turned with its body: +z is the way it
+    /// faces, +x its left, +y up, in blocks. `draw` also has the partial tick,
+    /// the game time and the mob's light. Its name tag, shadow, flames and
+    /// glowing outline draw as for any mob. Asked for every mob in view but
+    /// players; a mob your server half spawned (`native_spawn_mob`) is told
+    /// apart by its id, sent with mod messages, or by its custom name.
+    /// A mob is drawn afresh each frame: `draw.keep()` does nothing here.
+    /// API @API:mob_submit@.
+    pub(super) fn native_mob_submit(
+        &self,
+        mob: &NativeMobRender<'_>,
+        draw: &mut BlockEntityDraw,
+        drawn: &mut bool,
+    ) {
+        let _ = (mob, draw, drawn);
     }
     /// A menu opens on this client for block `block`, a mod's: set `screen`
     /// when the block is yours, to lay its screen out (`native_screen_draw`
