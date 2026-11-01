@@ -15861,6 +15861,30 @@ impl Game<'_> {
                 self.physical_buttons.remove(button);
             }
         }
+        let mouse = if !self.pad_synthetic_input()
+            && let WindowEvent::MouseInput { state, button, .. } = &event
+        {
+            Some((
+                glfw_button(*button),
+                *state == ElementState::Pressed,
+                glfw_modifiers(self.modifiers),
+            ))
+        } else {
+            None
+        };
+        if let Some((button, pressed, modifiers)) = mouse {
+            let mut canceled = false;
+            self.native_mouse_button_pre(button, pressed, modifiers, &mut canceled);
+            if canceled {
+                return;
+            }
+        }
+        self.handle_window_event_inner(event_loop, event);
+        if let Some((button, pressed, modifiers)) = mouse {
+            self.native_mouse_button_post(button, pressed, modifiers);
+        }
+    }
+    fn handle_window_event_inner(&mut self, event_loop: &dyn EventLoopCtl, mut event: WindowEvent) {
         if let WindowEvent::Focused(false) = &event {
             self.physical_keys.clear();
             self.physical_buttons.clear();
