@@ -187,6 +187,7 @@ mod moving_pistons;
 mod music;
 mod names;
 mod narrator;
+mod native_biome_colors;
 mod native_block_entity_draw;
 mod native_components;
 mod native_criteria;
