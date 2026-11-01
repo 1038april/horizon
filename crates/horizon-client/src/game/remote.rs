@@ -7429,6 +7429,11 @@ impl Game<'_> {
         let Some(held) = self.with_hand(hand, |g| g.held().cloned()) else {
             return false;
         };
+        // A mod's claimed item is never used on the server; its own use
+        // starts from the main hand only (`mod_use_start`).
+        if self.native_input.claimant(&held.item).is_some() {
+            return false;
+        }
         let seq = self.next_sequence();
         self.send(S::UseItem(play::UseItem {
             hand: hand_id(hand),

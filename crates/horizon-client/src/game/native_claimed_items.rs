@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 pub(crate) struct NativeHeldItem {
     pub(crate) id: String,
     pub(crate) count: u32,
-    /// The inventory slot: 0 to 8 the hotbar, 40 the off hand.
+    /// The inventory slot: 0 to 8, the hotbar (a mod use is the main hand's).
     pub(crate) slot: u32,
     /// `minecraft:custom_name` as SNBT, when the stack has one.
     pub(crate) custom_name: Option<String>,
@@ -72,7 +72,7 @@ impl ModInput {
         self.claims.insert(mod_id.to_owned(), ids);
     }
     /// The mod that claims `item`, the first in id order.
-    fn claimant(&self, item: &str) -> Option<&str> {
+    pub(super) fn claimant(&self, item: &str) -> Option<&str> {
         self.claims
             .iter()
             .find(|(_, ids)| ids.iter().any(|i| i == item))

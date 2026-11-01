@@ -1090,8 +1090,11 @@ it moves only what the player sees, not where they are or aim.
   with nothing in reach.
 - `native_claim_items(mod_id, ids)` claims up to 64 item ids (`minecraft:stick`, a content mod's own item) for mod
   `mod_id`; a later call replaces the list, an empty one gives them up. Two mods claiming one id: the first in id
-  order has it. A right-click with a claimed item in the hand is the mod's alone: the server never hears of it, and
-  the block or entity under the crosshair isn't used.
+  order has it. A right-click with a claimed item in the main hand is the mod's alone: the server never hears of it,
+  and the block or entity under the crosshair isn't used. A claimed item in the off hand does nothing on a
+  right-click. The use slows the player as an item in use does, which the server doesn't know of: on a LAN or
+  dedicated server the anticheat's movement check may log it. A claim wins over `native_use_duration` for the same
+  item.
 - `native_poll(mod_id)` gives the mod's events since its last poll, oldest first, at most 256: `UseStart(item, 0)`
   when the right-click begins the use, and `UseStop(item, ticks)` when it ends, with the ticks it was held. It ends
   when the button comes up, when the hand's item changes or leaves the claim, when the player respawns, and
