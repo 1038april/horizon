@@ -51,6 +51,13 @@ pub struct Over {
     pub at_worst: Option<Played>,
 }
 
+/// Ticks within the tolerance in a row after which a replay that lands off takes the client's
+/// velocity ([`Replay::meet`]): half a second.
+const STEADY: u8 = 10;
+
+/// The most velocity a replay takes from the client at once, in blocks a tick (a jump is 0.42).
+const MOST_MET: f64 = 0.5;
+
 /// Below this the moves agree again after an excuse: within the tolerance is not enough, as the
 /// replay's velocity is still being brought to the client's.
 const AGREED: f64 = 1e-3;
@@ -151,6 +158,12 @@ pub struct Replay {
     /// Ticks the client's jump delay is unknown: under an excuse the replay may have jumped where the
     /// client couldn't (on a block it hadn't received), or the other way round.
     jump_unsure: u8,
+    /// Ticks in a row within the tolerance, at most [`STEADY`].
+    steady: u8,
+    /// The velocity the client's last tick left it with, less the replay's.
+    missed: Vec3,
+    /// The next tick also tries this velocity added ([`Replay::meet`]).
+    meeting: Option<Vec3>,
     /// The last ticks played, oldest first, at most [`KEPT`].
     pub ticks: VecDeque<Played>,
 }
@@ -177,6 +190,9 @@ impl Replay {
             fresh: true,
             using: server.item_use_speed,
             jump_unsure: 0,
+            steady: STEADY,
+            missed: Vec3::ZERO,
+            meeting: None,
             ticks: VecDeque::new(),
         }
     }
@@ -190,6 +206,7 @@ impl Replay {
         body.fall_distance = 0.0;
         (self.said, self.agreed, self.drift) = (at, at, 0);
         (self.played, self.applied, self.fresh) = (restart.ended, restart.changed, true);
+        self.steady = STEADY;
     }
 
     /// Plays the record's ticks it hasn't, each after what the server had changed by then (the
@@ -257,7 +274,17 @@ impl Replay {
                 self.applied += 1;
                 changes.next();
             }
-            let offset = self.play(tick, server, &mut run)?.offset;
+            let played = self.play(tick, server, &mut run)?;
+            let offset = played.offset;
+            // A tick that agrees only with the velocity the last one left: that tick lied, or slipped
+            // (Replay::meet), and the setback point stays before it.
+            let met = played.candidate & 8 != 0;
+            let steady = self.steady;
+            self.steady = if offset <= tolerance {
+                steady.saturating_add(1).min(STEADY)
+            } else {
+                0
+            };
             // The server changed the player's abilities, or something near it, after what the
             // client had seen: the tick had the new ones where the client had the old.
             let unseen = || {
@@ -270,12 +297,12 @@ impl Replay {
                     || record.unseen_near(tick.seen, |block| near(at, block, slack))
             };
             if offset <= AGREED {
-                if !counted {
+                if !counted && !met {
                     self.agreed = self.said;
                 }
                 self.drift = 0;
             } else if offset <= tolerance {
-                if !counted {
+                if !counted && !met {
                     self.agreed = self.said;
                 }
                 self.drift = self.drift.saturating_sub(1);
@@ -292,6 +319,9 @@ impl Replay {
                 }
                 over.worst = over.worst.max(offset);
                 over.weight += (offset / tolerance).min(MOST_WEIGHT) as f32;
+                if steady == STEADY {
+                    self.meet();
+                }
             }
         }
         Some(over)
@@ -301,6 +331,23 @@ impl Replay {
     /// nothing, and neither do the ones after until the moves agree again (at most [`DRIFT`]).
     pub fn excuse(&mut self) {
         (self.agreed, self.drift, self.jump_unsure) = (self.said, DRIFT, DRIFT);
+    }
+
+    /// The first tick off after the moves agreed for a while: the next tick also tries the velocity
+    /// the client was left with (up to [`MOST_MET`], across only), and keeps it if it lands closer. A
+    /// single slip (a hit the replay missed) then counts once, not on every tick its velocity
+    /// takes to die out; a single lie about the position (a blink) leaves the velocity as it was. A
+    /// client that lies on every tick is off on every tick all the same: nothing is tried again until
+    /// the moves have agreed for [`STEADY`] ticks.
+    fn meet(&mut self) {
+        let m = self.missed;
+        let length = (m.x * m.x + m.y * m.y + m.z * m.z).sqrt();
+        let scale = if length > MOST_MET {
+            MOST_MET / length
+        } else {
+            1.0
+        };
+        self.meeting = Some(Vec3::new(m.x * scale, m.y * scale, m.z * scale));
     }
 
     /// Whether an excuse still covers the ticks.
@@ -364,21 +411,23 @@ impl Replay {
             // No move: the client is within 2.0E-4 of where it last said.
             None => (body.position.distance(last) - UNSENT).max(0.0),
         };
+        let meeting = self.meeting.take();
         let jump_unsure = self.jump_unsure > 0 && keys.jump;
         self.jump_unsure = self.jump_unsure.saturating_sub(1);
         let unknown = |candidate: u8| {
             candidate & 1 != 0 && fresh
                 || candidate & 2 != 0 && using != server.item_use_speed
                 || candidate & 4 != 0 && jump_unsure
+                || candidate & 8 != 0 && meeting.is_some()
         };
-        let (offset, candidate) = if ![1, 2, 4].into_iter().any(unknown) {
+        let (offset, candidate) = if ![1, 2, 4, 8].into_iter().any(unknown) {
             // Nothing to try (most ticks): the body itself plays the tick.
             run(&mut self.body, keys, tick.sprinting).ok()?;
             (offset(&self.body), 0)
         } else {
             let mut best: Option<(f64, u8, Box<PlayerMotion>)> = None;
-            for candidate in (0..8u8)
-                .filter(|&c| c == 0 || [1, 2, 4].into_iter().all(|b| c & b == 0 || unknown(b)))
+            for candidate in (0..16u8)
+                .filter(|&c| c == 0 || [1, 2, 4, 8].into_iter().all(|b| c & b == 0 || unknown(b)))
             {
                 let mut body = self.body.clone();
                 if candidate & 1 != 0 {
@@ -389,6 +438,9 @@ impl Replay {
                 }
                 if candidate & 4 != 0 {
                     body.no_jump_delay = i32::from(body.no_jump_delay == 0);
+                }
+                if let Some(met) = meeting.filter(|_| candidate & 8 != 0) {
+                    body.velocity = body.velocity.add_vector(met);
                 }
                 if run(&mut body, keys, tick.sprinting).is_err() {
                     continue;
@@ -413,6 +465,22 @@ impl Replay {
             end.z - body.position.z,
         ];
         let moved = said.map_or(0.0, |p| p.distance(last));
+        // The velocity the client's tick left it with, less the replay's, across: the move it missed,
+        // slowed as the replay's own move was each way (its drag or friction). Not up and down: there
+        // the drag (0.98) is so slight that a client rising a little each tick on its own (a slow
+        // fly) would look like one that slipped once for a second or more.
+        let slowed = |missed: f64, moved: f64, left: f64| {
+            if moved.abs() > 1e-3 {
+                missed * (left / moved).clamp(0.0, 1.0)
+            } else {
+                missed * 0.91
+            }
+        };
+        self.missed = Vec3::new(
+            slowed(off[0], body.position.x - last.x, body.velocity.x),
+            0.0,
+            slowed(off[2], body.position.z - last.z, body.velocity.z),
+        );
         let state = [
             (body.ground.on_ground, Played::GROUND),
             (body.fluids.was_touching_water, Played::WATER),
@@ -523,12 +591,13 @@ mod tests {
         ticks
     }
 
-    /// A velocity the client gets on a tick of the script: whether the server sent it (`heard`;
-    /// else the server excuses the ticks it is off) and whether the client takes it.
+    /// A velocity the client gets on a tick of the script: whether the server sent it (`heard`),
+    /// whether the server excuses the ticks it is off (`excused`), and whether the client takes it.
     struct Push {
         tick: usize,
         velocity: [f64; 3],
         heard: bool,
+        excused: bool,
         taken: bool,
     }
 
@@ -716,7 +785,7 @@ mod tests {
                 replay.restart(&restart);
             }
             let over = replay.catch_up(&record, &server, 0.03, run).unwrap();
-            if over.ticks > 0 && push.as_ref().is_some_and(|p| !p.heard) {
+            if over.ticks > 0 && push.as_ref().is_some_and(|p| p.excused) {
                 replay.excuse();
             }
             played.push(Step {
@@ -828,6 +897,7 @@ mod tests {
             tick: 25,
             velocity: [0.3, 0.42, -0.5],
             heard: true,
+            excused: false,
             taken,
         };
         let Some(honest) = offsets(|_, honest| honest, Some(push(true))) else {
@@ -910,6 +980,7 @@ mod tests {
             tick: 25,
             velocity: [0.3, 0.42, -0.5],
             heard: false,
+            excused: true,
             taken: true,
         };
         let Some(steps) = steps(|_, _, honest| honest, Some(push)) else {
@@ -926,6 +997,66 @@ mod tests {
             "{:?}",
             steps.iter().map(|s| s.played.offset).collect::<Vec<_>>()
         );
+    }
+
+    /// A push across the server never sent and doesn't excuse (a hit the replay missed): the replay
+    /// tries the velocity it left on the next tick, so it counts once, not on each tick it takes to
+    /// die out.
+    #[test]
+    fn a_missed_push_counts_once() {
+        for velocity in [[0.3, 0.0, -0.2], [-0.25, 0.0, 0.1], [0.0, 0.0, 0.4]] {
+            // The client's alone: the record never has it, and nothing excuses it.
+            let push = Push {
+                tick: 25,
+                velocity,
+                heard: false,
+                excused: false,
+                taken: true,
+            };
+            let Some(steps) = steps(|_, _, honest| honest, Some(push)) else {
+                return;
+            };
+            let counted: Vec<usize> = steps
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.over.ticks > 0)
+                .map(|(i, _)| i)
+                .collect();
+            assert_eq!(
+                counted,
+                vec![25],
+                "{velocity:?}: {:?}",
+                steps.iter().map(|s| s.played.offset).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// What the catch-up of [`a_missed_push_counts_once`] costs: a small speed lie kept up on every
+    /// tick of a sprint-jump (a twentieth of a block a tick) goes uncounted only while the velocity
+    /// the replay took from its first tick still hides it; then it counts on every tick.
+    #[test]
+    fn a_small_speed_lie_kept_up_still_counts() {
+        let run = Run {
+            script: vec![(1 | 16 | 64, 0.0); 60],
+            ..Run::walk()
+        };
+        let Some(steps) = steps_in(
+            run,
+            |i, _, honest| honest.add_vector(Vec3::new(0.0, 0.0, if i >= 20 { 0.05 } else { 0.0 })),
+            None,
+        ) else {
+            return;
+        };
+        let counted: Vec<usize> = steps
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.over.ticks > 0)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(counted.first(), Some(&20), "{counted:?}");
+        assert!(counted.iter().all(|&i| i >= 20), "{counted:?}");
+        // Measured: ticks 21 to 25 go uncounted, 35 of the 40 count.
+        assert!(counted.len() >= 30, "{} of 40: {counted:?}", counted.len());
     }
 
     /// An elytra: a jump while falling starts a glide, played again exactly.
