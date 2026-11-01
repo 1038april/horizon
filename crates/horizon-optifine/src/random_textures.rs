@@ -69,7 +69,7 @@ const FOLDERS: [(&str, &str); 5] = [
     ("textures/entity", "textures/entity"),
 ];
 /// The largest `.properties` file read, in bytes.
-const MAX_PROPERTIES: u64 = 256 * 1024;
+const MAX_PROPERTIES: u64 = 64 * 1024;
 
 /// The texture's own folder, last in priority.
 const BESIDE: usize = FOLDERS.len() - 1;
@@ -130,14 +130,16 @@ impl RandomTextures {
                 if let Some(&id) = rules_by_file.get(&file) {
                     return Some(id);
                 }
+                // A real rules file is a few KB, and parsing grows with the square of its size:
+                // a bigger or unreadable one holds no rules, so the texture keeps its default.
                 let path = root.join(&file);
-                // A real rules file is a few KB; parsing grows with the square of its size.
-                if fs::metadata(&path).ok()?.len() > MAX_PROPERTIES {
-                    return None;
-                }
-                let bytes = fs::read(path).ok()?;
-                out.rules
-                    .push(Rules::parse(&Properties::parse(&decode(bytes))));
+                let text = fs::metadata(&path)
+                    .is_ok_and(|m| m.len() <= MAX_PROPERTIES)
+                    .then(|| fs::read(&path).ok())
+                    .flatten()
+                    .map(decode)
+                    .unwrap_or_default();
+                out.rules.push(Rules::parse(&Properties::parse(&text)));
                 rules_by_file.insert(file, out.rules.len() - 1);
                 Some(out.rules.len() - 1)
             });
@@ -488,6 +490,23 @@ mod tests {
             Some("minecraft:optifine/random/entity/wolf/wolf2")
         );
         assert_eq!(wolf.rules, None, "optifine/random's folder holds no rules");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_oversized_rules_file_keeps_the_default() {
+        let big = format!("textures.1=2\n#{}\n", "x".repeat(MAX_PROPERTIES as usize));
+        let (root, t) = pack(&[
+            (&format!("{RANDOM}/wolf/wolf.properties"), &big),
+            (&format!("{RANDOM}/wolf/wolf2.png"), ""),
+        ]);
+        let wolf = t.get("entity/wolf/wolf").unwrap();
+        let rules = t.rules(wolf.rules.expect("rules, empty ones"));
+        assert_eq!(
+            rules.select(&Facts::default(), 1),
+            1,
+            "not textures.1=2, not even"
+        );
         let _ = fs::remove_dir_all(root);
     }
 
