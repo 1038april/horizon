@@ -143,7 +143,12 @@ pub(super) struct PackIds {
 impl Game<'_> {
     /// Loads the pack for the current dimension when it changed, and returns this frame's
     /// inputs to the pack's uniforms.
-    pub(super) fn shader_pack_inputs(&mut self, camera: glam::DVec3, partial: f32) -> PackInputs {
+    pub(super) fn shader_pack_inputs(
+        &mut self,
+        camera: glam::DVec3,
+        partial: f32,
+        sky: &horizon_client::environment::Sky,
+    ) -> PackInputs {
         // A `shaders/` pack lights the faces itself unless `oldLighting=true`: sections mesh
         // without the game's face shading (the pack loaded or dropped below shows next frame).
         let pack_lighting = self.pack_ids.as_ref().is_some_and(|ids| !ids.old_lighting);
@@ -314,6 +319,11 @@ impl Game<'_> {
             logical_height: self.world.shape.logical_height,
             has_skylight: self.world.shape.sky_light,
             has_ceiling: self.dim == Dim::Nether,
+            elytra_flying: self.player.as_ref().is_some_and(|p| p.fall_flying),
+            cloud_height: horizon_client::gfx::pack_uniforms::cloud_height(
+                sky.cloud_color[3],
+                sky.cloud_height,
+            ),
             mod_params: self.native_shader_params_now(partial),
         }
     }
