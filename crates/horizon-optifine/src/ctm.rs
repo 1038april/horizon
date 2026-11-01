@@ -397,7 +397,11 @@ impl Rule {
 
 /// `matchTiles`/`connectTiles` entries as texture resource paths.
 fn sprite_list(value: &str) -> Vec<String> {
-    value.split_whitespace().filter_map(sprite_path).collect()
+    value
+        .split_whitespace()
+        .take(MAX_TILES)
+        .filter_map(sprite_path)
+        .collect()
 }
 
 /// A tile name as the texture's resource path: `dirt` is `textures/block/dirt.png`, and a path
@@ -442,6 +446,10 @@ fn tile_list(props: &str, value: &str) -> Result<Vec<Tile>, String> {
     let too_many = format!("more than {MAX_TILES} tiles");
     let mut out = Vec::new();
     for token in value.split_whitespace() {
+        // Before every token: a file can't grow millions of paths first.
+        if out.len() >= MAX_TILES {
+            return Err(too_many);
+        }
         match token {
             "<skip>" => out.push(Tile::Skip),
             "<default>" => out.push(Tile::Default),
@@ -479,9 +487,6 @@ fn tile_list(props: &str, value: &str) -> Result<Vec<Tile>, String> {
                 ));
             }
         }
-    }
-    if out.len() > MAX_TILES {
-        return Err(too_many);
     }
     Ok(out)
 }
@@ -768,6 +773,15 @@ mod tests {
         assert!(r("tiles=0-2999 3000-5000").is_err());
         assert!(r("tiles=0-4096").is_err());
         assert!(r(&format!("tiles={}0-0", "<skip> ".repeat(4097))).is_err());
+        assert_eq!(
+            r(&format!("tiles={}", "a ".repeat(4096)))
+                .unwrap()
+                .unwrap()
+                .tiles
+                .len(),
+            4096
+        );
+        assert!(r(&format!("tiles={}", "a ".repeat(4097))).is_err());
         // Namespaced tiles stay in the resource root too, and a `\` (written `\\` in the file)
         // is no separator on any platform.
         for bad in ["mymod:../../x", "..:x", r"~/..\\..\\x", r"a\\b"] {
