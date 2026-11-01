@@ -1228,8 +1228,9 @@ impl Game<'_> {
     /// further: no focus move, no Escape-close, no inventory or hotbar key, no
     /// text box, no `native_key`.
     ///
-    /// It fires on the window only, for presses and their repeats (a release
-    /// fires nothing), after the window's own shortcuts have run — the
+    /// It fires for the window's presses and their repeats, and for the
+    /// control socket's `key` (a release fires nothing), after the window's
+    /// own shortcuts have run — the
     /// fullscreen and screenshot keys, the debug keys and the narrator — and
     /// only while a screen of the game's is open (Options and the pack list
     /// opened from the title screen count, with no player and no `menu`). It
@@ -1262,9 +1263,14 @@ impl Game<'_> {
     /// those are keys, and the game reads them as keys, not as text. It fires
     /// even when `native_screen_key_pressed_pre` cancelled the press that
     /// carried the text, as vanilla delivers `charTyped` for a cancelled
-    /// `keyPressed`; cancelling one character drops only that one. Same
+    /// `keyPressed`: the characters left reach the text box without the key's
+    /// own effects. Cancelling one character drops only that one. The control
+    /// socket's `type` fires it too, but not for its `\b` backspace. Same
     /// screens as the key press, and it fires with no text box focused (there
-    /// is nothing to take the character then).
+    /// is nothing to take the character then). The window hands a key's text
+    /// over with the key, so the characters fire before the key acts: a key
+    /// that closes the screen (the inventory key) reports its character on
+    /// the screen it closes, where vanilla's closed screen hears nothing.
     /// API @API:screen_key_input@.
     pub(super) fn native_screen_char_typed_pre(
         &self,

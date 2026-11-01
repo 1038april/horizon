@@ -150,6 +150,55 @@ impl Game<'_> {
         let _ = request.reply.send(reply.to_string());
     }
 
+    /// Text typed at the open screen's text box: the control socket's `type`
+    /// and a key press whose own effects a mod cancelled but whose characters
+    /// it let through. `Err` when no text box of the screen takes it.
+    pub(super) fn type_into_screen(&mut self, text: &str) -> Result<()> {
+        if self.book.is_some() {
+            self.book_type(text);
+            return Ok(());
+        }
+        if self.sign_edit.is_some() {
+            self.sign_input(None, Some(text));
+            return Ok(());
+        }
+        match self.screen {
+            Screen::Chat => self.chat_type(text),
+            Screen::CommandBlock => self.command_block_type(text),
+            Screen::BlockEditor => self.block_editor_type(text),
+            Screen::DebugOptions => self.debug_options_type(text),
+            Screen::Options => self.ui.options.type_text(&self.gui.atlas, text),
+            // The port, or the game rules' search and number boxes.
+            Screen::WorldOptions if text == "\\b" => self.world_options_text(None),
+            Screen::WorldOptions => self.world_options_text(Some(text)),
+            Screen::Inventory if self.mod_browser_typing() => {
+                self.mod_browser_text((text != "\\b").then_some(text), text == "\\b")
+            }
+            Screen::Inventory if self.recipe_search_focused() => {
+                self.recipe_text(Some(text), false)
+            }
+            // The anvil's rename box.
+            Screen::Inventory
+                if self
+                    .station
+                    .as_ref()
+                    .is_some_and(|s| s.kind == super::stations::Kind::Anvil) =>
+            {
+                self.station_text(Some(text), false)
+            }
+            Screen::Creative if self.creative_screen.tab().search => {
+                // As typed: replaces a selected query, keeps the length limit.
+                self.creative_search_edit(Some(text))
+            }
+            _ => {
+                return Err(
+                    "type needs the chat screen (key t tap), a sign or book, the language search, the creative search, the anvil or World Options".into(),
+                );
+            }
+        }
+        Ok(())
+    }
+
     fn control_command(
         &mut self,
         line: &str,
@@ -378,6 +427,7 @@ impl Game<'_> {
                 if action != "up" && self.screen_key_pressed(physical, action == "repeat") {
                     if action == "tap" {
                         self.physical_keys.remove(&physical);
+                        self.native_key_event(physical, false, false);
                     }
                     return ok();
                 }
@@ -688,52 +738,16 @@ impl Game<'_> {
                 // each character before a text box takes it, as the window's
                 // key event fires it. A cancelled character is dropped, so
                 // `type` types the survivors only.
-                let Some(typed) = self.screen_text_typed(text) else {
-                    return ok();
+                // `\b` is the socket's backspace sentinel, not two characters.
+                let typed = if text == "\\b" {
+                    text.to_owned()
+                } else {
+                    let Some(typed) = self.screen_text_typed(text) else {
+                        return ok();
+                    };
+                    typed
                 };
-                let text = typed.as_str();
-                if self.book.is_some() {
-                    self.book_type(text);
-                    return ok();
-                }
-                if self.sign_edit.is_some() {
-                    self.sign_input(None, Some(text));
-                    return ok();
-                }
-                match self.screen {
-                    Screen::Chat => self.chat_type(text),
-                    Screen::CommandBlock => self.command_block_type(text),
-                    Screen::BlockEditor => self.block_editor_type(text),
-                    Screen::DebugOptions => self.debug_options_type(text),
-                    Screen::Options => self.ui.options.type_text(&self.gui.atlas, text),
-                    // The port, or the game rules' search and number boxes.
-                    Screen::WorldOptions if text == "\\b" => self.world_options_text(None),
-                    Screen::WorldOptions => self.world_options_text(Some(text)),
-                    Screen::Inventory if self.mod_browser_typing() => {
-                        self.mod_browser_text((text != "\\b").then_some(text), text == "\\b")
-                    }
-                    Screen::Inventory if self.recipe_search_focused() => {
-                        self.recipe_text(Some(text), false)
-                    }
-                    // The anvil's rename box.
-                    Screen::Inventory
-                        if self
-                            .station
-                            .as_ref()
-                            .is_some_and(|s| s.kind == super::stations::Kind::Anvil) =>
-                    {
-                        self.station_text(Some(text), false)
-                    }
-                    Screen::Creative if self.creative_screen.tab().search => {
-                        // As typed: replaces a selected query, keeps the length limit.
-                        self.creative_search_edit(Some(text))
-                    }
-                    _ => {
-                        return Err(
-                            "type needs the chat screen (key t tap), a sign or book, the language search, the creative search, the anvil or World Options".into(),
-                        );
-                    }
-                }
+                self.type_into_screen(&typed)?;
                 ok()
             }
             "options" => {

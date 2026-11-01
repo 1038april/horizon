@@ -15666,7 +15666,8 @@ impl Game<'_> {
         // screenshot, the debug keys, the narrator) so those keep working with
         // a mod that cancels. The characters fire even when the key was
         // cancelled, as vanilla delivers `charTyped` anyway, and a cancelled
-        // one leaves the event's text; the key's release still comes through.
+        // one leaves the event's text, which a cancelled key hands straight to
+        // the text box; the key's release still comes through.
         if let WindowEvent::KeyboardInput {
             event: key_event, ..
         } = &mut event
@@ -15687,6 +15688,18 @@ impl Game<'_> {
                 }
             }
             if canceled {
+                // charTyped is a separate callback: an uncancelled character
+                // still reaches the text box, without the key's own effects.
+                // Control characters are keys and went with the key.
+                if self.screen_hooks_open()
+                    && let Some(text) = key_event.text.as_deref()
+                {
+                    let text: String = text.chars().filter(|c| !c.is_control()).collect();
+                    if !text.is_empty() {
+                        // Err only says no text box is open to take it.
+                        let _ = self.type_into_screen(&text);
+                    }
+                }
                 return;
             }
         }
