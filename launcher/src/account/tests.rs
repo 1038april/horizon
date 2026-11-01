@@ -1184,6 +1184,8 @@ struct Keychain {
     asked: std::sync::atomic::AtomicUsize,
     /// Run once, right after the next call it didn't answer.
     after_away: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// Run once, while it takes the next secret.
+    while_taking: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl Keychain {
@@ -1218,6 +1220,9 @@ impl SecretStore for Shared {
         self.0.answer()?;
         if self.0.refuses.lock().unwrap().iter().any(|k| k == key) {
             return Err("the keychain is full".into());
+        }
+        if let Some(meanwhile) = self.0.while_taking.lock().unwrap().take() {
+            meanwhile();
         }
         self.0.kept.set(key, secret)
     }
@@ -1332,6 +1337,34 @@ fn a_hand_over_by_another_process_right_after_a_start_missed_the_keychain() {
     let started = launcher_with(&keychain, &path);
     assert!(!path.exists());
     assert_eq!(started.get("A").unwrap(), Some("secret-a".into()));
+    remove_secrets_dir(&path);
+}
+
+#[test]
+fn a_secret_renewed_in_the_file_during_the_hand_over_is_found_after_the_next() {
+    let path = secrets_file("renewed-in-file");
+    let file = FileStore::new(path.clone());
+    file.set("A", "old-a").unwrap();
+    file.set("B", "secret-b").unwrap();
+    let keychain = Arc::new(Keychain::default());
+    // While this start hands A over, a launcher on the file renews A there; then the keychain
+    // refuses B, and this run stops asking it.
+    *keychain.while_taking.lock().unwrap() = Some(Box::new({
+        let path = path.clone();
+        move || FileStore::new(path).set("A", "renewed-a").unwrap()
+    }));
+    keychain.refuses.lock().unwrap().push("B".into());
+    let started = launcher_with(&keychain, &path);
+    assert_eq!(keychain.kept.get("A").unwrap(), Some("old-a".into()));
+    // Another start hands both over: this run, which hasn't read A since, still reads both, the
+    // renewed A.
+    keychain.refuses.lock().unwrap().clear();
+    launcher_with(&keychain, &path);
+    assert!(!path.exists());
+    assert_eq!(
+        (started.get("A").unwrap(), started.get("B").unwrap()),
+        (Some("renewed-a".into()), Some("secret-b".into()))
+    );
     remove_secrets_dir(&path);
 }
 

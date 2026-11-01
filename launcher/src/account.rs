@@ -711,23 +711,21 @@ impl FileStore {
         })
     }
 
-    /// Removes each entry that still holds the value given: one another process wrote since stays.
-    fn take_unchanged(&self, taken: &[(String, String)]) -> Result<(), String> {
-        if taken.is_empty() || !self.path.exists() {
-            return Ok(());
+    /// The keychain took `key`: removes its entry if it still holds `before`, what was read before
+    /// the keychain call. Whether the file still has an entry for it: one another process wrote
+    /// since stays, and is read first.
+    fn settle(&self, key: &str, before: Option<&str>) -> Result<bool, String> {
+        if !self.path.exists() {
+            return Ok(false);
         }
         self.locked(|| {
             let mut secrets = self.read()?;
-            let before = secrets.len();
-            for (key, value) in taken {
-                if secrets.get(key) == Some(value) {
-                    secrets.remove(key);
-                }
+            if before.is_some() && secrets.get(key).map(String::as_str) == before {
+                secrets.remove(key);
+                self.write(&secrets)?;
+                return Ok(false);
             }
-            if secrets.len() == before {
-                return Ok(());
-            }
-            self.write(&secrets)
+            Ok(secrets.contains_key(key))
         })
     }
 }
@@ -1208,12 +1206,17 @@ impl Layered {
     }
 
     /// The keychain took `key`: the file's copy read before goes, unless another process wrote since.
+    /// Still in the file, it stays counted as seen there, so its hand-over by another process is
+    /// noticed.
     fn unpark(&self, key: &str, before: Option<String>) -> Result<(), String> {
-        self.parked.lock().unwrap().remove(key);
-        match before {
-            Some(value) => self.file.take_unchanged(&[(key.into(), value)]),
-            None => Ok(()),
+        let still_there = self.file.settle(key, before.as_deref())?;
+        let mut parked = self.parked.lock().unwrap();
+        if still_there {
+            parked.insert(key.into());
+        } else {
+            parked.remove(key);
         }
+        Ok(())
     }
 }
 
