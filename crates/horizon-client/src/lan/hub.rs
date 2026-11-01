@@ -2756,6 +2756,7 @@ impl Hub {
                 S::PlayerLoaded(_) => {
                     let g = &mut self.guests[i];
                     g.loaded = true;
+                    g.loading = false;
                     g.load_timeout = 0;
                 }
                 // PlayerChunkSender.onChunkBatchReceivedByClient.
@@ -3366,6 +3367,7 @@ impl Hub {
         // restartClientLoadTimerAfterRespawn: the client loads a whole new level before it
         // reports it loaded.
         g.load_timeout = super::guest::CLIENT_LOADED_TIMEOUT;
+        g.loading = true;
         // ServerLevel.removePlayerImmediately: the dead player's
         // Entity.setRemoved (KILLED) stops its riding; the new player rides
         // nothing.
