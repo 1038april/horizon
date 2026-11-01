@@ -92,7 +92,10 @@ impl BlockRegistry {
             collided: BTreeMap::new(),
             defaults: BTreeMap::new(),
         };
-        for (i, state) in states.into_iter().enumerate() {
+        // The states' property names and values: a few hundred strings, shared.
+        let mut strings = crate::block_state_properties::SharedStrings::default();
+        for (i, mut state) in states.into_iter().enumerate() {
+            state.properties.share(&mut strings);
             if result.id(&state).is_some() {
                 return Err(invalid("duplicate block registry state"));
             }
