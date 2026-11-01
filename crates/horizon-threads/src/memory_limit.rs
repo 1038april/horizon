@@ -70,7 +70,9 @@ pub fn set(limit: Option<u64>, exceeded: fn(u64, u64)) {
                     loop {
                         std::thread::sleep(EVERY);
                         let per_second = faults.per_second();
-                        if let Some(limit) = get() {
+                        let limit = get();
+                        over.follow(limit);
+                        if let Some(limit) = limit {
                             check(&mut over, per_second, limit, exceeded);
                         }
                     }
@@ -153,9 +155,18 @@ pub fn system_enforced() -> bool {
 #[derive(Default)]
 struct Over {
     since: Option<Instant>,
+    /// The cap the grace is counted against.
+    limit: Option<u64>,
 }
 
 impl Over {
+    /// A cap turned off, or set to another value, starts its grace again.
+    fn follow(&mut self, limit: Option<u64>) {
+        if limit != self.limit {
+            self.since = None;
+            self.limit = limit;
+        }
+    }
     /// Whether this reading ends the game.
     fn gave_up(&mut self, now: Instant, over: bool, can_shrink: bool) -> bool {
         if !over || can_shrink {
@@ -416,6 +427,18 @@ mod tests {
         assert!(!over.gave_up(start, true, false));
         assert!(!over.gave_up(later(GRACE * 5), true, true));
         assert!(!over.gave_up(later(GRACE * 6), true, false));
+
+        // A cap turned off, then on again, or changed, gets its whole grace again.
+        let mut over = Over::default();
+        over.follow(Some(1 << 30));
+        assert!(!over.gave_up(start, true, false));
+        over.follow(None);
+        over.follow(Some(1 << 30));
+        assert!(!over.gave_up(later(GRACE), true, false));
+        over.follow(Some(1 << 29));
+        assert!(!over.gave_up(later(GRACE * 2), true, false));
+        over.follow(Some(1 << 29));
+        assert!(over.gave_up(later(GRACE * 3), true, false));
     }
 
     #[test]
