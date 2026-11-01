@@ -7052,19 +7052,20 @@ impl Game<'_> {
     /// key. A mapping rebound away from its modifier is left alone too: the
     /// modifier says nothing about it.
     ///
-    /// `physical_keys` and the plain keys go by the same rule, and are the
-    /// worse bug: `Screen.hasShiftDown` and `hasControlDown` read the physical
-    /// state (vanilla's `InputConstants.isKeyDown`), so a Shift no one is
-    /// holding makes every inventory click a shift-click and every throw a
-    /// whole-stack drop. Those do not care what sneak and sprint are bound to.
-    /// A modifier says nothing about which side is down, so one being up means
-    /// both Shifts, or both Controls, are.
+    /// Only `physical_keys` is cleared directly here; the logical `self.keys`
+    /// entries for sneak and sprint are left to the toggle loop below, because
+    /// they stand for the mapping and not the physical Shift or Control.
+    /// `Screen.hasShiftDown` and `hasControlDown` read the physical state
+    /// (vanilla's `InputConstants.isKeyDown`), so a Shift no one is holding
+    /// makes every inventory click a shift-click and every throw a whole-stack
+    /// drop. Those do not care what sneak and sprint are bound to. A modifier
+    /// says nothing about which side is down, so one being up means both
+    /// Shifts, or both Controls, are.
     fn heal_hold_latches(&mut self) {
         let (shift, control) = (self.modifiers.shift_key(), self.modifiers.control_key());
         if !shift {
             for key in [KeyCode::ShiftLeft, KeyCode::ShiftRight] {
                 self.physical_keys.remove(&key);
-                self.keys.remove(&key);
             }
         }
         if !control {
