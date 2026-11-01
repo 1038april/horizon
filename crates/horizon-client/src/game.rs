@@ -8076,11 +8076,12 @@ impl Game<'_> {
     /// `native_screen_render_post` (`ScreenEvent.Render.Post`) for the open
     /// screen, once a frame; the Win and Options screens call this on their
     /// own path. Reads `self.screen`, the one `hud_layers` drew. Not while
-    /// playing with no screen. Client only, read-only: what a mod draws is
-    /// its own.
+    /// playing with no screen, nor while the server pack prompt hides the
+    /// open screen (`hud_layers` draws `Playing` then). Client only,
+    /// read-only: what a mod draws is its own.
     fn fire_screen_render_post(&self, batch: &mut HudBatch) {
         let screen = self.screen;
-        if screen == Screen::Playing {
+        if screen == Screen::Playing || self.server_packs.prompt.is_some() {
             return;
         }
         // slot_count mirrors slots() without allocating; keep them in step.
