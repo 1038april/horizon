@@ -4212,7 +4212,11 @@ mod tests {
         // From its doc comment's last line, so an attribute above it counts.
         let hook = source.find("pub fn native_loot_table_load(").unwrap();
         let start = source[..hook].rfind("///").unwrap();
-        let body = &source[start..start + source[start..].find("\n}\n").unwrap()];
+        let end = source[start..]
+            .find("\n}\n")
+            .or_else(|| source[start..].find("\r\n}\r\n"))
+            .unwrap();
+        let body = &source[start..start + end];
         for line in body.lines() {
             assert!(
                 !line.contains("cfg"),
