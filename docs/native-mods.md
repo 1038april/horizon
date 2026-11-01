@@ -1078,6 +1078,27 @@ that to 0% sees no shake), bounds it to 10 degrees and half a block on each axis
 after the hurt tilt and view bobbing. A mod keeps its own shake's time and decay, from `partial` and its tick hooks;
 it moves only what the player sees, not where they are or aim.
 
+### A client mod's view and items
+
+`crates/horizon-client/src/game/native_claimed_items.rs`: helpers for client mods, for the player's own view and hands.
+
+- `native_view_hit()` gives the first block along the view within 1024 blocks and how far it is, and
+  `native_raycast(distance)` the same within `distance` (cut to 0 to 1024). Past the loaded chunks the ray goes on over
+  the distant terrain, a block at a time, and meets its ground: a target far off can be aimed at before its chunks
+  load. `NativeHit` holds the block, where the ray met it and the block's id. Both answer `None` with no player, or
+  with nothing in reach.
+- `native_claim_items(mod_id, ids)` claims up to 64 item ids (`minecraft:stick`, a content mod's own item) for mod
+  `mod_id`; a later call replaces the list, an empty one gives them up. Two mods claiming one id: the first in id
+  order has it. A right-click with a claimed item in the hand is the mod's alone: the server never hears of it, and
+  the block or entity under the crosshair isn't used.
+- `native_poll(mod_id)` gives the mod's events since its last poll, oldest first, at most 256: `UseStart(item, 0)`
+  when the right-click begins the use, and `UseStop(item, ticks)` when it ends, with the ticks it was held. It ends
+  when the button comes up, when the hand's item changes or leaves the claim, when the player respawns, and
+  when the game joins a server, so every `UseStart` has its `UseStop`. `NativeHeldItem` holds the stack's id, count,
+  slot, and its `minecraft:custom_name` and `minecraft:custom_data` as SNBT: items told apart by custom data (a
+  stick named "Designator") are told apart here. Poll from a client tick hook.
+- The stack in the main hand at any time is `native_held()` (API 9), on a client the player's own.
+
 ### Values for a mod's shader pack
 
 `native_shader_params(partial, params)` (client) asks every frame, while a Horizon shader pack is on, for eight

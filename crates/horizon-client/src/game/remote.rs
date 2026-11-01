@@ -880,6 +880,7 @@ impl Game<'_> {
         self.container = None;
         self.carried = None;
         self.using = None;
+        self.end_mod_use();
         self.clicks.miss_time = 0;
         // A new LocalPlayer has no effects: the server sends what it has
         // (ClientboundUpdateMobEffectPacket on placement).
@@ -2904,6 +2905,7 @@ impl Game<'_> {
                 // again) and with no item in use.
                 self.potions.effects.clear();
                 self.using = None;
+                self.end_mod_use();
                 // After a death (no KEEP_ENTITY_DATA) the new LocalPlayer
                 // rides nothing: the server pairs a vehicle again with its
                 // passengers. A dimension change keeps the vehicle it travels in.
@@ -7677,6 +7679,8 @@ impl Game<'_> {
     /// stack, its hunger and the sounds.
     fn remote_tick_using(&mut self) {
         let Some((slot, ticks)) = self.using else {
+            // A mod's use the game reset (the server stopping the use...).
+            self.end_mod_use();
             return;
         };
         let stack = self.stack_in(slot).cloned();
@@ -7688,6 +7692,7 @@ impl Game<'_> {
                 r.use_item = item;
             } else if r.use_item != item {
                 self.using = None;
+                self.end_mod_use();
                 return;
             }
         }
