@@ -98,6 +98,7 @@ const KEYS: &[&str] = &[
     "skins",
     "weights",
     "seedOffset",
+    "seedSource",
     "biomes",
     "heights",
     "minHeight",
@@ -167,17 +168,18 @@ impl Rule {
     /// `None` when the rule lists no textures, or holds a condition that doesn't parse or isn't
     /// supported: such a rule never matches, instead of matching every entity.
     fn parse(props: &Properties, n: u32) -> Option<Self> {
+        // `nbt.<n>.<path>` (a path may end in a list index: `nbt.2.Tags.1`), or `<key>.<n>`.
         let unsupported = props.entries.iter().any(|(key, _)| {
-            key.strip_prefix("nbt.")
-                .is_some_and(|rest| rest.split('.').next() == Some(&n.to_string()))
-                || key
-                    .rsplit_once('.')
-                    .is_some_and(|(k, i)| i.parse::<u32>() == Ok(n) && !KEYS.contains(&k))
+            let mut parts = key.splitn(3, '.');
+            let (head, index) = (parts.next(), parts.next());
+            index.is_some_and(|i| i.parse::<u32>() == Ok(n))
+                && head.is_some_and(|k| k == "nbt" || !KEYS.contains(&k))
         });
-        if unsupported {
+        let get = |key: &str| props.get(&format!("{key}.{n}"));
+        // ETF's `seedSource`: only the entity's own seed is read.
+        if unsupported || get("seedSource").is_some_and(|v| v != "entity") {
             return None;
         }
-        let get = |key: &str| props.get(&format!("{key}.{n}"));
         // `Some(None)` for a missing key, `None` for one that doesn't parse.
         fn read<T>(
             value: Option<&str>,
@@ -265,8 +267,11 @@ impl Rule {
             .is_none_or(|l| f.biome.is_some_and(|b| l.matches(b)))
             && ranged(&self.heights, f.y)
             && (self.names.is_empty()
-                || f.name
-                    .is_some_and(|name| included(&self.names, |n| n.matches(name))))
+                || match f.name {
+                    Some(name) => included(&self.names, |n| n.matches(name)),
+                    // An unnamed entity is no listed name: it passes only `!` entries.
+                    None => self.names.iter().all(|(_, negated)| *negated),
+                })
             && (self.professions.is_empty()
                 || f.profession.is_some_and(|(p, level)| {
                     let p = namespaced(p);
@@ -282,7 +287,7 @@ impl Rule {
             && self.health.as_ref().is_none_or(|(l, percent)| {
                 f.health.is_some_and(|(health, max)| {
                     let value = if *percent {
-                        health / max.max(f32::MIN_POSITIVE) * 100.0
+                        health * 100.0 / max.max(f32::MIN_POSITIVE)
                     } else {
                         health
                     };
@@ -363,7 +368,7 @@ fn parse_bool(value: &str) -> Option<bool> {
 }
 
 /// Words split on spaces, a `"double quoted"` group kept as one word (ETF's `names`), each
-/// with whether it starts with `!` (before or inside the quotes' group: `!"Blue Team"`).
+/// with whether it starts with `!` (`!Bob`, `!"Blue Team"`).
 fn quoted_words(value: &str) -> impl Iterator<Item = (&str, bool)> {
     let mut rest = value.trim_start();
     std::iter::from_fn(move || {
@@ -497,6 +502,12 @@ mod tests {
         assert!(!check("textures.1=2\nhealth.1=0-50%", hurt(21.0)));
         assert!(check("textures.1=2\nhealth.1=5-8 10-12", hurt(11.5)));
         assert!(!check("textures.1=2\nhealth.1=5-8 10-12", hurt(9.0)));
+        // 53 of 100 is 53%, though 53 / 100 * 100 is 52.999996 in f32.
+        let golem = Facts {
+            health: Some((53.0, 100.0)),
+            ..Default::default()
+        };
+        assert!(check("textures.1=2\nhealth.1=53-100%", golem));
 
         let colored = |c| Facts {
             color: Some(c),
@@ -564,9 +575,13 @@ mod tests {
         assert_eq!(pick(Some("Bob")), 1, "negated entries exclude");
         assert_eq!(pick(Some("Blue Team")), 1);
         assert_eq!(pick(Some("Green")), 2);
-        assert_eq!(pick(None), 1, "an unnamed entity has no name to match");
+        assert_eq!(pick(None), 2, "an unnamed entity is neither");
         let r = rules("textures.1=2\nname.1=pattern:*");
-        assert_eq!(r.select(&Facts::default(), 0), 1);
+        assert_eq!(
+            r.select(&Facts::default(), 0),
+            1,
+            "an unnamed entity has no name"
+        );
     }
 
     #[test]
@@ -634,10 +649,13 @@ mod tests {
              textures.9=2000000000\n",
         );
         assert_eq!(r.rules.len(), 3, "rules 1 and 9 list no usable textures");
-        assert!(r.rules[0].weights.is_empty(), "one weight for two textures");
         assert_eq!(r.rules[1].textures.len(), MAX_TEXTURES);
-        assert!(r.rules[2].weights.is_empty(), "only zero weights");
         assert!(r.max_texture() <= MAX_INDEX);
+        // One weight for two textures, or only zeros: an even choice.
+        for weights in ["5", "0 0"] {
+            let r = rules(&format!("textures.1=2 3\nweights.1={weights}"));
+            assert_eq!(r.select(&Facts::default(), 1), 3, "{weights}");
+        }
     }
 
     #[test]
@@ -655,6 +673,7 @@ mod tests {
             "minHeight.1=low",
             "nbt.1.CustomName=Bob",
             "teams.1=red",
+            "seedSource.1=vehicle",
         ] {
             let r = rules(&format!("textures.1=2\n{rule}\ntextures.2=3"));
             assert_eq!(r.select(&Facts::default(), 0), 3, "{rule}");
@@ -669,6 +688,9 @@ mod tests {
             rules("textures.1=2\nbaby.1=TRUE\nweather.1=Rain").select(&baby, 0),
             2
         );
+        // Another rule's nbt path ending in a list index leaves rule 1 alone.
+        let r = rules("textures.1=2\nseedSource.1=entity\ntextures.2=3\nnbt.2.Tags.1=foo");
+        assert_eq!(r.select(&Facts::default(), 0), 2);
     }
 
     #[test]
