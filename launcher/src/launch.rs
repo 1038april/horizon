@@ -34,14 +34,11 @@ pub struct Launch {
     /// Environment variables for the game (and the two commands above).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
-    /// The most RAM Horizon may hold that the player chose, in MiB; none:
-    /// [`DEFAULT_MEMORY_LIMIT_MB`]. Read it with [`Launch::memory_limit`]. A Java instance has
-    /// `-Xmx` instead (`instances::Java::memory_mb`).
+    /// The most RAM Horizon may hold that the player chose, in MiB; none (the default): no
+    /// limit, so big worlds and modpacks keep their render distance. Read it with
+    /// [`Launch::memory_limit`]. A Java instance has `-Xmx` instead (`instances::Java::memory_mb`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_limit_mb: Option<u32>,
-    /// The player chose no limit at all.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub no_memory_limit: bool,
     /// Linux: run the game through Feral's GameMode (`gamemoderun`), when it is installed.
     #[serde(default, skip_serializing_if = "is_false")]
     pub gamemode: bool,
@@ -56,9 +53,6 @@ pub struct Launch {
 fn is_false(b: &bool) -> bool {
     !*b
 }
-
-/// The limit on Horizon's RAM until the player chooses another, in MiB.
-pub const DEFAULT_MEMORY_LIMIT_MB: u32 = 2048;
 
 /// Tells the game its limit (`HORIZON_MEMORY_LIMIT_MB`). Horizon's only: a Java instance has `-Xmx`.
 /// Before [`wrap`], so the player's own variable wins.
@@ -248,13 +242,12 @@ pub fn switch_env(launch: &Launch, found: &Found) -> Vec<(&'static str, &'static
 impl Launch {
     /// The most RAM Horizon may hold, in MiB; none: no limit.
     pub fn memory_limit(&self) -> Option<u32> {
-        (!self.no_memory_limit).then(|| self.memory_limit_mb.unwrap_or(DEFAULT_MEMORY_LIMIT_MB))
+        self.memory_limit_mb
     }
 
     /// Keeps the player's choice; none: no limit.
     pub fn set_memory_limit(&mut self, limit: Option<u32>) {
         self.memory_limit_mb = limit;
-        self.no_memory_limit = limit.is_none();
     }
 
     pub fn is_empty(&self) -> bool {

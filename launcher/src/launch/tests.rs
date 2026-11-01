@@ -58,26 +58,21 @@ fn memory_variable(launch: &Launch) -> Option<String> {
 }
 
 #[test]
-fn the_game_gets_the_default_limit_until_the_player_chooses() {
+fn the_game_has_no_limit_until_the_player_chooses_one() {
     let mut launch = Launch::default();
-    assert_eq!(launch.memory_limit(), Some(2048));
-    assert_eq!(memory_variable(&launch).as_deref(), Some("2048"));
+    assert_eq!(launch.memory_limit(), None);
+    assert_eq!(memory_variable(&launch), None);
 
     launch.set_memory_limit(Some(1024));
     assert_eq!(memory_variable(&launch).as_deref(), Some("1024"));
-
-    // No limit is a choice of its own, kept across a save, not the default again.
-    launch.set_memory_limit(None);
-    assert_eq!(memory_variable(&launch), None);
     let saved = serde_json::to_string(&launch).unwrap();
     let loaded: Launch = serde_json::from_str(&saved).unwrap();
-    assert_eq!(loaded.memory_limit(), None);
+    assert_eq!(loaded.memory_limit(), Some(1024));
 
-    // What older launchers saved reads as it did, or as the default.
-    let old: Launch = serde_json::from_str(r#"{"memory_limit_mb": 3840}"#).unwrap();
-    assert_eq!(old.memory_limit(), Some(3840));
+    launch.set_memory_limit(None);
+    assert_eq!(memory_variable(&launch), None);
     let none: Launch = serde_json::from_str("{}").unwrap();
-    assert_eq!(none.memory_limit(), Some(2048));
+    assert_eq!(none.memory_limit(), None);
 }
 
 #[test]

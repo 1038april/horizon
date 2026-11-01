@@ -115,7 +115,7 @@ The opening, then Play ([clip](docs/opening.webm)):
   and the world rows keep taking their own drops. A note in the corner says what happened.
   `horizon-launcher instance import <file>`.
 - **Maximum memory**: a row on Home, per instance: a slider and a box that takes `4096`, `4gb`, or nothing
-  for no limit, saved at once. Horizon's default is 2048 MB and goes to the game as
+  for no limit (the default), saved at once. For Horizon it goes to the game as
   `HORIZON_MEMORY_LIMIT_MB` ([what it does](../docs/native-client.md#ram-limit)); a Java instance's sets `-Xmx`.
 - **Launch options**: Home's Instance row has **Launch…**: per instance, a shell command run in its
   folder before the game (the game starts only if it succeeds), a wrapper the game runs through
