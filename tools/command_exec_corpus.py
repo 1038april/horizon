@@ -1406,6 +1406,37 @@ def experience_orb_fall():
     ]
 
 
+def creative_shulker_drops():
+    """ShulkerBoxBlock.playerWillDestroy: Creative keeps a filled box as one item,
+    even with block_drops off. Empty boxes and survival use the ordinary drop rules."""
+    colors = ('white orange magenta light_blue yellow lime pink gray light_gray cyan '
+              'purple blue brown green red black').split()
+    blocks = ['shulker_box', *(f'{color}_shulker_box' for color in colors)]
+    item = '@e[type=minecraft:item,limit=1]'
+    contents = ('Items:[{Slot:0b,id:"minecraft:diamond_sword",count:1,components:{'
+                '"minecraft:custom_name":"Blade","minecraft:enchantments":{"minecraft:sharpness":5}}},'
+                '{Slot:26b,id:"minecraft:apple",count:16}],')
+    out = []
+    for block in blocks:
+        for mode, filled, drops in [('creative', True, True), ('creative', False, True),
+                                    ('creative', True, False), ('survival', True, True),
+                                    ('survival', False, True), ('survival', True, False)]:
+            out += setup('/kill @e[type=minecraft:item]', f'/gamemode {mode}',
+                         f'/gamerule block_drops {str(drops).lower()}',
+                         f'/setblock 4 210 4 minecraft:{block}'
+                         '{' + (contents if filled else '') + 'TestOnly:7}')
+            out += [{'op': 'break', 'pos': [4, 210, 4]},
+                    cmd('/execute if block 4 210 4 minecraft:air'),
+                    cmd('/execute if entity @e[type=minecraft:item]')]
+            if (mode == 'creative' and filled) or (mode == 'survival' and drops):
+                out += [cmd(f'/data get entity {item} Item'),
+                        cmd(f'/execute if data entity {item} Item.components."minecraft:block_entity_data"')]
+                if mode == 'creative':
+                    out += [cmd(f'/data get entity {item} Pos'), cmd(f'/data get entity {item} PickupDelay')]
+    out += setup('/kill @e[type=minecraft:item]', '/gamemode creative', '/gamerule block_drops true')
+    return out
+
+
 def groups():
     return [
         ('setup', group_setup()),
@@ -1433,6 +1464,7 @@ def groups():
         ('test', test_command()),
         ('wither breaks', wither_breaks()),
         ('tnt minecart rails', tnt_minecart_rails()),
+        ('creative shulker drops', creative_shulker_drops()),
         ('ender dragon', ender_dragon()),
         ('place structure', place_structure()),
         ('tame wolf kills', tame_wolf_kills()),

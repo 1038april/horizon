@@ -6,8 +6,9 @@
 //! system message it produced, as styled spans, with the results reported to
 //! the player's `CommandResultCallback`; `tick` advances the game; `settle`
 //! waits until the terrain and entities around the player are loaded;
-//! `portal` sends the player through the nether portal it stands in;
-//! `falling` counts physical falling blocks by dimension, block and gravity.
+//! `break` destroys a block as the server player; `portal` sends the player
+//! through the nether portal it stands in; `falling` counts physical falling
+//! blocks by dimension, block and gravity.
 use super::Game;
 use horizon_client::{Result, text::Text};
 use serde_json::{Value, json};
@@ -244,6 +245,10 @@ impl Game<'_> {
                         std::thread::sleep(Duration::from_millis(2));
                     }
                     self.harness_owner(|g| g.harness_settle(deadline))?;
+                }
+                "break" => {
+                    let pos = std::array::from_fn(|i| op["pos"][i].as_i64().unwrap_or(0) as i32);
+                    self.harness_owner(|g| g.break_block(pos))?;
                 }
                 "portal" => self.harness_portal()?,
                 "falling" => {

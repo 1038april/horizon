@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.function.BooleanSupplier;
+import net.minecraft.core.BlockPos;
 import net.minecraft.SharedConstants;
 import net.minecraft.SystemReport;
 import net.minecraft.commands.Commands;
@@ -222,6 +223,10 @@ public final class VanillaCommandExecOracle {
                         }
                     }
                     case "settle" -> settle();
+                    case "break" -> {
+                        JsonArray pos = op.getAsJsonArray("pos");
+                        player.gameMode.destroyBlock(new BlockPos(pos.get(0).getAsInt(), pos.get(1).getAsInt(), pos.get(2).getAsInt()));
+                    }
                     case "portal" -> portal();
                     case "falling" -> {
                         String dimension = op.get("dimension").getAsString();
