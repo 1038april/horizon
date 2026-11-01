@@ -896,7 +896,7 @@ pub(crate) struct NativePlayer {
 pub(crate) struct NativeClock {
     /// Ticks since the world was created (`Level.getGameTime`).
     pub(crate) game_time: i64,
-    /// The time of day in ticks (`Level.getDayTime`): 0 at sunrise, 24000 a
+    /// The time of day in ticks (`Level.getOverworldClockTime`): 0 at sunrise, 24000 a
     /// day. It keeps counting past 24000 (`/time add`, days going by), so take
     /// it modulo 24000 for the hour; `/time set` can make it negative.
     pub(crate) day_time: i64,
@@ -2708,19 +2708,29 @@ impl Game<'_> {
     /// The light at `pos` in the world in place, as `(block, sky)`, each 0 to
     /// 15 (`Level.getBrightness` for `LightLayer.BLOCK` and `LightLayer.SKY`).
     /// A solar panel checks for full sky light above it, a lamp or a mob farm
-    /// for darkness. 0 for unloaded chunks. API @API:native_world_state@.
+    /// for darkness. `(0, 0)` in a chunk that isn't loaded. Like the other
+    /// reads here it reads the world this game holds: the level in place on
+    /// a server, the server's copy on a client. API @API:native_world_state@.
     pub(super) fn native_light(&self, pos: [i32; 3]) -> (u8, u8) {
+        if !self.world.loaded(pos[0], pos[2]) {
+            return (0, 0);
+        }
         let light = self.world.light(pos[0], pos[1], pos[2]);
         (light & 15, light >> 4)
     }
     /// The rain and thunder levels of the world in place, each 0.0 to 1.0
     /// (`Level.getRainLevel` and `Level.getThunderLevel`): what a solar panel
-    /// or a wind turbine reads. API @API:native_world_state@.
+    /// or a wind turbine reads. Both 0 in the Nether and the End, which have
+    /// no weather (`Level.canHaveWeather`). API @API:native_world_state@.
     pub(super) fn native_weather(&self) -> (f32, f32) {
+        if self.dim != super::Dim::Overworld {
+            return (0.0, 0.0);
+        }
         self.world.weather.levels(1.0)
     }
-    /// The world's time of day in ticks (`Level.getDayTime`); it keeps counting
-    /// past 24000, so take it modulo 24000 for the hour. API @API:native_world_state@.
+    /// The world's time of day in ticks (`Level.getOverworldClockTime`), the
+    /// same as `native_clock`'s `day_time`; it keeps counting past 24000, so
+    /// take it modulo 24000 for the hour. API @API:native_world_state@.
     pub(super) fn native_day_time(&self) -> i64 {
         self.world.day_time
     }
