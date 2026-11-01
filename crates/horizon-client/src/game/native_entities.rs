@@ -166,10 +166,16 @@ impl Game<'_> {
         let root = root.map(|id| super::lan_entities::assign_entity_id(&mut self.next_entity, id));
         self.native_mobs_joined(from, false);
         // Otherwise the root is the first entity spawned, also for kinds no
-        // command target stands for (experience orbs). An id handed out to an
+        // command target stands for (experience orbs, end crystals, cushions). An id handed out to an
         // entity a mod then kept out is not given back, so the root must be
         // there.
-        root.or_else(|| root_id(target, first, |id| self.orbs.iter().any(|o| o.id == id)))
+        root.or_else(|| {
+            root_id(target, first, |id| {
+                self.orbs.iter().any(|o| o.id == id)
+                    || self.crystals.iter().any(|c| c.id == id)
+                    || self.cushions.iter().any(|c| c.id == id)
+            })
+        })
     }
     /// Moves entity `id`, one Horizon keeps without simulating (a display, a
     /// marker, an interaction), to `pos` facing `yaw` and `pitch` in degrees;
