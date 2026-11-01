@@ -1266,6 +1266,27 @@ mod tests {
         );
     }
 
+    /// `gl_FogFragCoord` travels from the vertex stage to the fragment stage as a float (MakeUp,
+    /// E-LITE, VanillAA).
+    #[test]
+    fn fog_frag_coord_is_a_varying() {
+        let vsh = "#version 120\nvarying vec2 texcoord;\nvoid main() {\n    gl_Position = ftransform();\n    \
+                   texcoord = gl_MultiTexCoord0.xy;\n    gl_FogFragCoord = length((gl_ModelViewMatrix * gl_Vertex).xyz);\n}\n";
+        let fsh = "#version 120\nvarying vec2 texcoord;\n\
+                   void main() { gl_FragColor = vec4(vec3(texcoord, gl_FogFragCoord * 0.01), 1.0); }\n";
+        let p = program(
+            &[("composite.vsh", vsh), ("composite.fsh", fsh)],
+            Target::Buffers,
+        );
+        assert!(p.is_ok(), "{:?}", p.err());
+        // Read by the fragment stage without the vertex stage writing it: still declared.
+        let p = program(
+            &[("composite.vsh", VSH_120), ("composite.fsh", fsh)],
+            Target::Buffers,
+        );
+        assert!(p.is_ok(), "{:?}", p.err());
+    }
+
     #[test]
     fn frag_coord_is_set_for_every_target() {
         let fsh = "#version 120\nvoid main() { gl_FragColor = vec4(gl_FragCoord.x); }\n";
