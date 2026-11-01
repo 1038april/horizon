@@ -163,7 +163,11 @@ impl Mesher {
                         // As the mesher marks them: opaque leaves and faces over opaque
                         // texels skip the cutout and draw in the opaque pass.
                         layer: face.layer as u16
-                            | if leaves || face.opaque { OPAQUE_LAYER } else { 0 },
+                            | if leaves || face.opaque {
+                                OPAQUE_LAYER
+                            } else {
+                                0
+                            },
                         tint: if face.quad.tint_index >= 0 {
                             tint
                         } else {

@@ -3143,16 +3143,7 @@ impl Renderer {
                 min_sections,
                 |layout, label, vertex, fragment, blend, cull| {
                     pipeline_in(
-                        layout,
-                        label,
-                        vertex,
-                        fragment,
-                        &buffers,
-                        tri,
-                        cull,
-                        true,
-                        true,
-                        blend,
+                        layout, label, vertex, fragment, &buffers, tri, cull, true, true, blend,
                     )
                 },
             )
