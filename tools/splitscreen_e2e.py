@@ -177,11 +177,11 @@ def scenario_alone():
         check('P1 has its whole window', (w, h), (2 * WIDTH, 2 * HEIGHT) if w > WIDTH else (WIDTH, HEIGHT))
         check('P1 plays', g.ctl(1, 'state').get('player') is not None, True)
         g.ctl(1, 'options', 'horizon')
-        for _ in range(3):
-            g.ctl(1, 'key', 'esc', 'tap')
-        saved = g.home / 'horizon-extras.txt'
-        g.wait(lambda: saved.exists(), 'settings saved')
-        check('testing override does not save the switch', 'splitscreen:false' in saved.read_text(), True)
+        labels = lambda: [w['label'] for w in g.ctl(1, 'ui')['widgets']]
+        g.wait(lambda: 'Splitscreen...' in labels(), 'Horizon Settings')
+        g.ctl(1, 'click-button', 'Splitscreen...')
+        g.wait(lambda: any(s.startswith('Splitscreen: ') for s in labels()), 'saved switch')
+        check('testing override leaves the saved switch off', 'Splitscreen: Off' in labels(), True)
     finally:
         g.quit()
 

@@ -153,7 +153,7 @@ fn pause_icon_focus_ids(friends: bool) -> Vec<u8> {
         .map(|i| if i == FRIENDS_ICON { 10 } else { 12 + i as u8 })
         .collect()
 }
-const SPLIT_SETTINGS: &str = "horizon.pages.split_setup";
+const SPLIT_SETTINGS: &str = "horizon.pages.split_settings";
 fn pause_icons(
     w: f32,
     h: f32,
