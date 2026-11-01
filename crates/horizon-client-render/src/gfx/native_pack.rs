@@ -44,7 +44,7 @@ impl NativePack {
             .shadow
             .as_ref()
             .map(|settings| super::native_shadow::fitted(device, settings));
-        let mut frame = NativeFrame::new(device, settings.as_ref(), textures, lights);
+        let mut frame = NativeFrame::new(device, settings.as_ref(), textures, lights, terrain.pbr);
         let shadow = report
             .shadow
             .as_ref()

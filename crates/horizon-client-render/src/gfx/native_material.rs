@@ -87,8 +87,33 @@ fn horizon_material_vertex(position: vec3<f32>, uv: vec2<f32>, layer: u32, color
     return horizon_material_vertex(position, horizon_terrain_terrain_uv(uv, origin.w), layer,
         color, light, origin.xyz);
 }
+// The prelude's `block_normal_map` and `block_specular_map`: the resource packs' LabPBR maps
+// in the pack's frame group (3), one array each, a blank 1x1 without them.
+@group(3) @binding(12) var horizon_pbr_normals: texture_2d_array<f32>;
+@group(3) @binding(13) var horizon_pbr_specular: texture_2d_array<f32>;
+fn horizon_block_pbr_present() -> bool {
+    return textureDimensions(horizon_pbr_normals).x > 1u;
+}
+fn horizon_block_pbr_size() -> vec2<f32> {
+    return vec2<f32>(textureDimensions(horizon_pbr_normals).xy);
+}
+fn horizon_block_pbr(uv: vec2<f32>, layer: u32, lod: f32, map: u32) -> vec4<f32> {
+    if !horizon_block_pbr_present() || layer >= textureNumLayers(horizon_pbr_normals) {
+        return select(vec4<f32>(0.5, 0.5, 1.0, 1.0), vec4<f32>(0.0), map == 1u);
+    }
+    let s = horizon_terrain_sprite_sampler;
+    if map == 0u {
+        return textureSampleLevel(horizon_pbr_normals, s, uv, i32(layer), lod);
+    }
+    return textureSampleLevel(horizon_pbr_specular, s, uv, i32(layer), lod);
+}
 fn horizon_material_color(in: HorizonMaterialOut, translucent: bool) -> vec4<f32> {
     let albedo = horizon_terrain_sprite(in.uv, in.layer & 0x7fffu);
+    horizon_block_layer = in.layer & 0x7fffu;
+    // The mip level of this point in the maps: their own texels, as the sampler would pick.
+    let texels = in.uv * horizon_block_pbr_size();
+    let footprint = max(dot(dpdx(texels), dpdx(texels)), dot(dpdy(texels), dpdy(texels)));
+    horizon_block_lod = max(0.5 * log2(max(footprint, 1e-8)), 0.0);
     // Water draws translucent and lava solid, so the pass resolves the fluid kind.
     let fluid = select(0u, select(2u, 1u, translucent), in.fluid_quad != 0u);
     let normal = horizon_material_normal(in.position);
@@ -132,6 +157,8 @@ pub struct TerrainShape<'a> {
     /// The weather's groups 0 and 1 (the entities' atlas, the fall clock), for the weather
     /// stage.
     pub weather_groups: [&'a wgpu::BindGroupLayout; 2],
+    /// The resource packs' LabPBR maps (normals, specular), when they ship any.
+    pub pbr: Option<&'a [wgpu::Texture; 2]>,
 }
 
 /// The pack's terrain pipelines: solid (with the cutout test) and translucent, for the

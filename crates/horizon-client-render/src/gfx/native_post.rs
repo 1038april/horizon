@@ -63,6 +63,9 @@ pub struct NativeFrame {
     /// The world's colour before translucent terrain (`opaque_color`, binding 11), copied
     /// with it; 1×1 while the world draws straight to the window.
     pub opaque_color: wgpu::Texture,
+    /// The resource packs' LabPBR maps (bindings 12 and 13: normals, specular), a blank 1x1
+    /// without them.
+    pbr: [wgpu::TextureView; 2],
     /// The material stage's `reflection` (binding 1): this frame's water mirror, else
     /// `blank`; and its sampler (binding 2).
     reflection: wgpu::TextureView,
@@ -164,6 +167,7 @@ impl NativeFrame {
         shadow: Option<&horizon_shader_api::manifest::Shadow>,
         textures: Vec<(wgpu::TextureView, wgpu::Sampler)>,
         lights: super::block_light::LightTable,
+        pbr: Option<&[wgpu::Texture; 2]>,
     ) -> Self {
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Native shader pack frame"),
@@ -181,6 +185,8 @@ impl NativeFrame {
             texture_entry(7, wgpu::TextureSampleType::Depth),
             texture_entry(8, wgpu::TextureSampleType::Float { filterable: true }),
             texture_entry(11, wgpu::TextureSampleType::Float { filterable: false }),
+            pbr_entry(12),
+            pbr_entry(13),
         ];
         let block_light_entries = [
             wgpu::BindGroupLayoutEntry {
@@ -227,20 +233,48 @@ impl NativeFrame {
         });
         let shadow_map = super::native_shadow::ShadowMap::new(device, shadow);
         let block_light = super::block_light::BlockLight::new(device, lights);
+        let array_view = |texture: &wgpu::Texture| {
+            texture.create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                ..Default::default()
+            })
+        };
+        let pbr = match pbr {
+            Some(maps) => maps.each_ref().map(array_view),
+            None => {
+                // Two layers: one would make a 2D texture on the OpenGL backend.
+                let blank = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("Native shader pack LabPBR (none)"),
+                    size: wgpu::Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: 2,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                });
+                [array_view(&blank), array_view(&blank)]
+            }
+        };
         let group = Self::group(
             device,
             &layout,
             &buffer,
             (&blank, &reflection_sampler),
             &shadow_map,
-            &opaque_depth,
-            &opaque_color,
+            (&opaque_depth, &opaque_color),
             &textures,
             &block_light,
+            &pbr,
         );
         Self {
             textures,
             block_light,
+            pbr,
             buffer,
             layout,
             group,
@@ -280,10 +314,10 @@ impl NativeFrame {
         buffer: &wgpu::Buffer,
         (reflection, sampler): (&wgpu::TextureView, &wgpu::Sampler),
         shadow: &super::native_shadow::ShadowMap,
-        opaque_depth: &wgpu::Texture,
-        opaque_color: &wgpu::Texture,
+        (opaque_depth, opaque_color): (&wgpu::Texture, &wgpu::Texture),
         textures: &[(wgpu::TextureView, wgpu::Sampler)],
         block_light: &super::block_light::BlockLight,
+        pbr: &[wgpu::TextureView; 2],
     ) -> wgpu::BindGroup {
         let opaque_depth = opaque_depth.create_view(&Default::default());
         let opaque_color = opaque_color.create_view(&Default::default());
@@ -323,6 +357,14 @@ impl NativeFrame {
             wgpu::BindGroupEntry {
                 binding: 11,
                 resource: wgpu::BindingResource::TextureView(&opaque_color),
+            },
+            wgpu::BindGroupEntry {
+                binding: 12,
+                resource: wgpu::BindingResource::TextureView(&pbr[0]),
+            },
+            wgpu::BindGroupEntry {
+                binding: 13,
+                resource: wgpu::BindingResource::TextureView(&pbr[1]),
             },
         ];
         entries.extend([
@@ -389,10 +431,10 @@ impl NativeFrame {
             &self.buffer,
             (&self.reflection, &self.reflection_sampler),
             &self.shadow_map,
-            &self.opaque_depth,
-            &self.opaque_color,
+            (&self.opaque_depth, &self.opaque_color),
             &self.textures,
             &self.block_light,
+            &self.pbr,
         );
     }
 
@@ -484,6 +526,20 @@ fn texture_entry(binding: u32, sample_type: wgpu::TextureSampleType) -> wgpu::Bi
         ty: wgpu::BindingType::Texture {
             sample_type,
             view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        },
+        count: None,
+    }
+}
+
+/// A LabPBR map's array, read by the material entries (`native_material.rs`).
+fn pbr_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2Array,
             multisampled: false,
         },
         count: None,
@@ -1095,7 +1151,7 @@ mod tests {
             .into();
         let report = check(&Pack::from_files(files).unwrap()).unwrap();
         let format = wgpu::TextureFormat::Rgba8Unorm;
-        let frame = NativeFrame::new(&device, None, Vec::new(), Default::default());
+        let frame = NativeFrame::new(&device, None, Vec::new(), Default::default(), None);
         queue.write_buffer(
             &frame.buffer,
             0,
@@ -1214,7 +1270,7 @@ file = \"b.wgsl\"
             .into();
         let report = check(&Pack::from_files(files).unwrap()).unwrap();
         let format = wgpu::TextureFormat::Rgba8Unorm;
-        let frame = NativeFrame::new(&device, None, Vec::new(), Default::default());
+        let frame = NativeFrame::new(&device, None, Vec::new(), Default::default(), None);
         let mut post = NativePost::new(&device, report.stages, &[], format, &frame).unwrap();
         let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
         let color = texture(&device, format, usage).create_view(&Default::default());

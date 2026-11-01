@@ -220,9 +220,14 @@ pub fn check_stage(pack: &Pack, kind: StageKind, file: &str) -> Result<CheckedSt
     let mut own = compose(pack, kind, file);
     let entries = own.parts.pop().expect("entries are the last part");
     own.text.truncate(entries.1.start);
+    // The material prelude's LabPBR functions call into the renderer: a stand-in here.
+    if kind == StageKind::Material {
+        own.text += crate::stages::PBR_STUB;
+    }
     let module = parse(&own)?;
+    own.text.truncate(entries.1.start);
     let mut problems = signature(&module, kind, file);
-    problems.extend(api_rules(&module, &own));
+    problems.extend(api_rules(&module, kind, &own));
     problems.extend(options(&module, &pack.manifest.options, file));
     if !problems.is_empty() {
         return Err(problems);
@@ -371,10 +376,14 @@ fn names(module: &naga::Module) -> HashSet<String> {
 
 /// A pack's files declare no bindings, no entry points and no `horizon_`
 /// names: what the prelude doesn't define is the pack's.
-fn api_rules(module: &naga::Module, own: &Composed) -> Vec<Problem> {
-    // The prelude as composed: the stage's own, with the pack's `[[textures]]`.
-    let text = &own.text[own.parts[0].1.clone()];
-    let prelude = naga::front::wgsl::parse_str(text).expect("the prelude parses");
+fn api_rules(module: &naga::Module, kind: StageKind, own: &Composed) -> Vec<Problem> {
+    // The prelude as composed: the stage's own, with the pack's `[[textures]]`. The material
+    // prelude's LabPBR functions call into the renderer: its stand-in is ours too.
+    let mut text = own.text[own.parts[0].1.clone()].to_owned();
+    if kind == StageKind::Material {
+        text += crate::stages::PBR_STUB;
+    }
+    let prelude = naga::front::wgsl::parse_str(&text).expect("the prelude parses");
     let ours = names(&prelude);
     let file = &own.parts[own.parts.len() - 1].0;
     let mut problems = Vec::new();

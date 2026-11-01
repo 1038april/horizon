@@ -18224,6 +18224,7 @@ fn load_resources(
 ) -> Result<Loaded> {
     let threads = settings.horizon.worker_threads();
     horizon_client::sprites::set_texture_budget(settings.horizon.texture_budget_mib);
+    horizon_client::sprites::set_labpbr_maps(shader_packs::picks_native_pack(settings));
     // Stage A: the menu bundle (atlas and panorama). With a loading screen it is
     // published at once so the title screen can appear while the world bundle
     // loads; the synchronous launch instead carries it in `Loaded`.
@@ -18572,6 +18573,12 @@ fn prepare_renderer_textures(pack: &PackResources) -> horizon_client::gfx::Prepa
         &assets.sprite_mips,
         (&pack.forcefield.2, pack.forcefield.0),
     )
+    .with_pbr(
+        &assets.pbr_normals,
+        &assets.pbr_specular,
+        assets.pbr_size,
+        assets.texture_layers,
+    )
 }
 
 /// Upload pack textures and create the renderer on the window's device.
@@ -18594,6 +18601,8 @@ fn build_renderer(
     // Chinese and Japanese menu labels go blank when the loading screen hands
     // over to the game.
     atlas.font.reset_cache();
+    // Made here when the worker did not: the renderer's own fallback has no LabPBR maps.
+    let prepared = Some(prepared.unwrap_or_else(|| prepare_renderer_textures(pack)));
     let mut renderer = pollster::block_on(Renderer::new(
         window,
         offscreen,
