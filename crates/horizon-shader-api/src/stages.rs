@@ -40,7 +40,7 @@ const fn shadow_map(binding: u32) -> Resource {
         binding,
         name: "shadow_map",
         ty: "var shadow_map: texture_depth_2d",
-        doc: "This frame's shadow map: the depth of the solid terrain the light sees, 0 at the light, 1 away from it (and where nothing is), stored at `shadow_position`'s mapping. Valid while `frame.has_shadow` is 1 (the pack asks for it with `[shadow]`), else a 1×1 map that lights everything.",
+        doc: "This frame's shadow map: the depth of the solid terrain and entities the light sees, 0 at the light, 1 away from it (and where nothing is), stored at `shadow_position`'s mapping. Valid while `frame.has_shadow` is 1 (the pack asks for it with `[shadow]`), else a 1×1 map that lights everything.",
     }
 }
 
