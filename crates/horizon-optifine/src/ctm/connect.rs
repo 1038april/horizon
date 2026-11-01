@@ -428,7 +428,7 @@ mod tests {
         assert_eq!(ctm_index(R | DR | D), 13);
         assert_eq!(ctm_index(U | UR | DR | DL | UL), 36);
         // One missing corner of a full square.
-        assert_eq!(ctm_index(255 & !UR), 44);
+        assert_eq!(ctm_index(!UR), 44);
     }
 
     #[test]
