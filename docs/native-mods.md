@@ -913,6 +913,12 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   `number`, `boolean`, `player`, `item`, `block_pos`. The usages of one command merge into one tree, which every
   player receives after vanilla's (filtered by their level, as vanilla's is), so their chat box completes and colours
   it. A name vanilla has, or a usage that doesn't parse, is left out with a warning in the log.
+- **`native_player_command(player, name, command, canceled, replies)`**: any command a player typed (without the
+  slash), vanilla's too and commands the player may not run, heard before anything looks at it, and each line of a
+  quiet command batch. Set `canceled` and nothing runs; push lines to `replies` and the player gets them as system chat
+  (a quiet batch drops them). The player's state is not swapped in, and `native_tell` and the other helpers that take a
+  UUID reach nobody inside this hook: answer through `replies`. Commands may carry secrets (`/msg`, a login plugin's
+  password), so don't log them carelessly.
 - **`native_perform_command(player, command, ran)`**: a player typed a registered command (without its slash) and
   their level allows it, whether the world allows commands or not. The mod parses the line and sets `ran`. The
   player's state is swapped in for the call, as for their other actions, so `native_player` reads them; a
