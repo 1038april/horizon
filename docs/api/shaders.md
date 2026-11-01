@@ -68,6 +68,18 @@ min = 0.0
 max = 2.0
 step = 0.05
 
+[[pages]]                  # optional: the options page's layout, the first the one it opens on
+id = "main"
+name = "Sample"
+items = ["page:colour", ""]   # a button opening a page, an empty slot (or an option's id)
+
+[[pages]]
+id = "colour"
+name = "Colour"            # the page's title and its button's label
+description = "How colourful the picture is."   # optional: the button's tooltip
+columns = 1                # optional: 1 or 2 (default) buttons a row
+items = ["saturation"]
+
 [[tags]]                   # 32 at most: bit i of MaterialInput.tags is the i-th tag
 id = "glass"
 sprites = ["block/glass", "block/*_stained_glass"]   # sprite names, at most one * each
@@ -103,6 +115,7 @@ stages.
 
 ## Changelog
 
+- 2026-11-01: API 0.1 (additions): `[[pages]]`, the layout of a pack's options page.
 - 2026-10-30: API 0.1 (additions): the manifest's `[reflection] option`, which draws the water
   mirror only while that option is on, and the mirror's own eye in facing culling.
 - 2026-10-30: API 0.1 (additions): the material stage's `reflection` and

@@ -12,6 +12,9 @@ pub const API: &str = "0.1";
 pub const MAX_POST_PASSES: usize = 8;
 /// Options a pack may declare.
 pub const MAX_OPTIONS: usize = 64;
+/// Settings pages a pack may declare, and the items one page may hold.
+pub const MAX_PAGES: usize = 32;
+pub const MAX_PAGE_ITEMS: usize = 64;
 /// The most GPU time a pack may declare for itself, in milliseconds.
 pub const MAX_GPU_MS: f32 = 16.0;
 /// Sprite tags a pack may declare: the bits of `MaterialInput.tags`.
@@ -36,6 +39,9 @@ pub struct Manifest {
     /// Full-screen passes, in the order they run.
     pub post: Vec<Stage>,
     pub options: Vec<PackOption>,
+    /// How the settings page lays the options out; the first page is the one it opens on.
+    /// Empty: one page with every option.
+    pub pages: Vec<OptionPage>,
     /// Sprite tags the material stage reads, in bit order.
     pub tags: Vec<SpriteTag>,
     pub budget: Budget,
@@ -124,6 +130,31 @@ pub enum OptionKind {
     Choice { values: Vec<String>, default: u32 },
 }
 
+/// `[[pages]]`: a page of the pack's settings screen.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OptionPage {
+    /// What `page:<id>` items link to.
+    pub id: String,
+    /// The page's title, and the label of the buttons linking to it.
+    pub name: String,
+    /// The tooltip of the buttons linking to it.
+    pub description: String,
+    /// 1 or 2: full-width buttons, or two a row.
+    pub columns: u8,
+    pub items: Vec<PageItem>,
+}
+
+/// What a page shows in one slot, in order: left to right, then down.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PageItem {
+    /// `"<id>"`: the option of that id.
+    Option(usize),
+    /// `"page:<id>"`: a button opening `Manifest::pages[i]`.
+    Page(usize),
+    /// `""`: an empty slot.
+    Empty,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Budget {
     /// The GPU time the pack aims to add to a frame, in milliseconds; the
@@ -152,6 +183,8 @@ struct Raw {
     post: Vec<Stage>,
     #[serde(default)]
     options: Vec<RawOption>,
+    #[serde(default)]
+    pages: Vec<RawPage>,
     #[serde(default)]
     tags: Vec<SpriteTag>,
     #[serde(default)]
@@ -266,6 +299,7 @@ impl Manifest {
                 )));
             }
         }
+        let pages = check_pages(raw.pages, &options).map_err(err)?;
         let gpu_ms = match raw.budget.gpu_ms {
             Some(ms) if !(ms > 0.0 && ms <= f64::from(MAX_GPU_MS)) => {
                 return Err(err(format!(
@@ -297,6 +331,7 @@ impl Manifest {
             material: raw.material,
             post: raw.post,
             options,
+            pages,
             tags: raw.tags,
             budget: Budget { gpu_ms },
             reflection: raw.reflection,
@@ -347,6 +382,131 @@ pub fn pack_identifier(name: &str) -> bool {
         && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
         && name.len() <= 64
         && !name.starts_with("horizon_")
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPage {
+    id: String,
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default = "default_columns")]
+    columns: u8,
+    items: Vec<String>,
+}
+
+fn default_columns() -> u8 {
+    2
+}
+
+/// `[[pages]]` checked against the options: known ids, each page's own id once, links to
+/// other pages only, and every page and option reached from the first page.
+fn check_pages(raw: Vec<RawPage>, options: &[PackOption]) -> Result<Vec<OptionPage>, String> {
+    let pages = read_pages(&raw, options)?;
+    if pages.is_empty() {
+        return Ok(pages);
+    }
+    let (mut seen, mut next, mut shown) = (
+        vec![false; pages.len()],
+        vec![0],
+        vec![false; options.len()],
+    );
+    seen[0] = true;
+    while let Some(at) = next.pop() {
+        for item in &pages[at].items {
+            match *item {
+                PageItem::Option(i) => shown[i] = true,
+                PageItem::Page(i) if !seen[i] => {
+                    seen[i] = true;
+                    next.push(i);
+                }
+                _ => {}
+            }
+        }
+    }
+    if let Some(i) = seen.iter().position(|s| !s) {
+        return Err(format!(
+            "page {:?} can't be reached from the first page, {:?}",
+            pages[i].id, pages[0].id
+        ));
+    }
+    if let Some(i) = shown.iter().position(|s| !s) {
+        return Err(format!(
+            "option {:?} is on no page the settings reach",
+            options[i].id
+        ));
+    }
+    Ok(pages)
+}
+
+fn read_pages(raw: &[RawPage], options: &[PackOption]) -> Result<Vec<OptionPage>, String> {
+    if raw.len() > MAX_PAGES {
+        return Err(format!(
+            "{} pages; a pack may declare {MAX_PAGES}",
+            raw.len()
+        ));
+    }
+    for (i, page) in raw.iter().enumerate() {
+        if !pack_identifier(&page.id) {
+            return Err(format!(
+                "page {:?}: the id must be a letter, then letters, digits or _, up to 64",
+                page.id
+            ));
+        }
+        if raw[..i].iter().any(|p| p.id == page.id) {
+            return Err(format!("page {:?} is declared twice", page.id));
+        }
+    }
+    raw.iter()
+        .enumerate()
+        .map(|(at, page)| {
+            let fail = |e: String| format!("page {:?}: {e}", page.id);
+            if page.name.trim().is_empty() {
+                return Err(fail("needs a name".into()));
+            }
+            if !(1..=2).contains(&page.columns) {
+                return Err(fail(format!("columns = {}; 1 or 2", page.columns)));
+            }
+            if page.items.len() > MAX_PAGE_ITEMS {
+                return Err(fail(format!(
+                    "{} items; a page may hold {MAX_PAGE_ITEMS}",
+                    page.items.len()
+                )));
+            }
+            let mut items = Vec::with_capacity(page.items.len());
+            for item in &page.items {
+                let item = if item.is_empty() {
+                    PageItem::Empty
+                } else if let Some(link) = item.strip_prefix("page:") {
+                    match raw.iter().position(|p| p.id == link) {
+                        Some(i) if i == at => return Err(fail("links to itself".into())),
+                        Some(i) => PageItem::Page(i),
+                        None => return Err(fail(format!("no page {link:?} to link to"))),
+                    }
+                } else {
+                    match options.iter().position(|o| o.id == *item) {
+                        Some(i) => PageItem::Option(i),
+                        None => return Err(fail(format!("no option {item:?}"))),
+                    }
+                };
+                if item != PageItem::Empty && items.contains(&item) {
+                    return Err(fail(format!(
+                        "{:?} is on the page twice",
+                        page.items[items.len()]
+                    )));
+                }
+                items.push(item);
+            }
+            Ok(OptionPage {
+                id: page.id.clone(),
+                name: page.name.clone(),
+                description: page.description.clone(),
+                columns: page.columns,
+                items,
+            })
+        })
+        .collect()
 }
 
 impl RawOption {

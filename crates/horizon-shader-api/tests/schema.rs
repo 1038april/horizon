@@ -1,5 +1,5 @@
 //! Schema 1 of `horizon-shaders.toml` and the `.hshader` package.
-use horizon_shader_api::{MANIFEST, Manifest, OptionKind, Pack};
+use horizon_shader_api::{MANIFEST, Manifest, OptionKind, Pack, PageItem};
 use std::{collections::BTreeMap, path::Path};
 
 fn sample_dir() -> &'static Path {
@@ -284,4 +284,67 @@ fn refuses_files_a_pack_does_not_use() {
             .unwrap_err()
             .contains("missing at the pack's root")
     );
+}
+
+#[test]
+fn reads_settings_pages_and_refuses_broken_links() {
+    let pages = "[[pages]]\nid = \"main\"\nname = \"Sample\"\nitems = [\"saturation\", \"\", \"page:more\"]\n\
+                 [[pages]]\nid = \"more\"\nname = \"More\"\ndescription = \"The rest.\"\ncolumns = 1\n\
+                 items = [\"tonemap\", \"samples\", \"vignette\", \"reflections\"]\n";
+    let m = Manifest::parse(&format!("{}{pages}", sample_text())).unwrap();
+    assert_eq!(m.pages.len(), 2);
+    assert_eq!(
+        m.pages[0].items,
+        [PageItem::Option(0), PageItem::Empty, PageItem::Page(1)]
+    );
+    assert_eq!(
+        (m.pages[1].columns, m.pages[1].description.as_str()),
+        (1, "The rest.")
+    );
+    assert_eq!(
+        m.pages[1].items,
+        [
+            PageItem::Option(4),
+            PageItem::Option(3),
+            PageItem::Option(2),
+            PageItem::Option(1)
+        ]
+    );
+    // Without pages, the settings show every option on one.
+    assert!(Manifest::parse(&sample_text()).unwrap().pages.is_empty());
+    let cases = [
+        (
+            pages.replace("\"page:more\"", "\"page:less\""),
+            "no page \"less\"",
+        ),
+        (
+            pages.replace("\"page:more\"", "\"page:main\""),
+            "links to itself",
+        ),
+        (
+            pages.replace("\"tonemap\"", "\"tone\""),
+            "no option \"tone\"",
+        ),
+        (
+            pages.replace("\"samples\",", "\"tonemap\","),
+            "on the page twice",
+        ),
+        (pages.replace("columns = 1", "columns = 3"), "1 or 2"),
+        (
+            pages.replace("id = \"more\"", "id = \"main\""),
+            "declared twice",
+        ),
+        (
+            pages.replace(", \"reflections\"]", "]"),
+            "option \"reflections\" is on no page",
+        ),
+        (
+            pages.replace("\"page:more\"", "\"\""),
+            "page \"more\" can't be reached",
+        ),
+    ];
+    for (pages, needle) in cases {
+        let e = refused(&format!("{}{pages}", sample_text()));
+        assert!(e.contains(needle), "{needle:?} not in {e:?}");
+    }
 }
