@@ -3788,7 +3788,7 @@ impl Game<'_> {
             }
             ArrowEvent::Block { pos, reaction } => match reaction {
                 BlockReaction::PrimeTnt => {
-                    self.spawn_primed_tnt(pos, false);
+                    self.spawn_primed_tnt(pos, false, None, None);
                     self.with_level(|b, level, ticks| b.remove_block(level, ticks, pos, false));
                     let _ = self.process_level_events();
                 }
