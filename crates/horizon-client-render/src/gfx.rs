@@ -88,6 +88,7 @@ mod frame_gen;
 mod hdr;
 mod hdr_stats;
 pub use hdr::Calibration as HdrCalibration;
+pub mod block_light;
 pub mod lightning;
 mod lod;
 mod native_material;
@@ -704,6 +705,9 @@ pub struct Renderer {
     section_uploaded: crate::fast_hash::FxHashMap<SectionKey, std::time::Instant>,
     /// Changes whenever `block_entities` does (unique across renderers).
     block_entity_revision: u64,
+    /// The light sources of each section and their revision, for `block_light`.
+    light_blocks: crate::fast_hash::FxHashMap<SectionKey, Vec<([i32; 3], u32)>>,
+    light_revision: u64,
     /// VisGraph face connectivity per meshed section (cave culling).
     occlusion: occlusion::Occlusion,
     /// The column `occlusion`, `sections` and `detail_columns` count in: the
@@ -3230,6 +3234,8 @@ impl Renderer {
             block_entities: Default::default(),
             section_uploaded: Default::default(),
             block_entity_revision: next_block_entity_revision(),
+            light_blocks: Default::default(),
+            light_revision: 0,
             occlusion: occlusion::Occlusion::new(crate::chunk::MIN_Y, crate::chunk::HEIGHT / 16),
             layout: crate::chunk::ColumnLayout::VANILLA,
             world_post,
@@ -3514,6 +3520,15 @@ impl Renderer {
         };
         if changed {
             self.block_entity_revision = next_block_entity_revision();
+        }
+        let lights_changed = if mesh.lights.is_empty() {
+            self.light_blocks.remove(&key).is_some()
+        } else {
+            let old = self.light_blocks.insert(key, mesh.lights.clone());
+            old.as_deref() != Some(&mesh.lights[..])
+        };
+        if lights_changed {
+            self.light_revision += 1;
         }
         if !self.lod_retiring.is_empty() {
             self.lod_retiring.remove(&key);
@@ -3894,6 +3909,9 @@ impl Renderer {
             for sy in 0..self.layout.sections() as i32 {
                 let key = (x, sy, z);
                 block_entities |= self.block_entities.remove(&key).is_some();
+                if self.light_blocks.remove(&key).is_some() {
+                    self.light_revision += 1;
+                }
                 self.section_uploaded.remove(&key);
                 if retiring {
                     // Distant tiles still leave its column out: drawn until they don't.
@@ -4194,9 +4212,10 @@ impl Renderer {
             Vec<(String, f64)>,
             Vec<(u32, u32)>,
             Vec<(u32, u32)>,
+            block_light::LightTable,
         )>,
     ) -> std::result::Result<Vec<String>, String> {
-        let Some((report, constants, sprite_tags, sprite_materials)) = pack else {
+        let Some((report, constants, sprite_tags, sprite_materials, lights)) = pack else {
             self.native = None;
             return Ok(Vec::new());
         };
@@ -4210,8 +4229,14 @@ impl Renderer {
             entities: &self.entity_bindings,
             weather_groups: [&self.weather.entity_layout, &self.weather.time_layout],
         };
-        let (pack, labels) =
-            native_pack::NativePack::new(&self.device, &self.queue, &terrain, report, &constants)?;
+        let (pack, labels) = native_pack::NativePack::new(
+            &self.device,
+            &self.queue,
+            &terrain,
+            report,
+            &constants,
+            lights,
+        )?;
         self.native = pack.draws().then_some(pack);
         if self.native.is_some() {
             self.pack_post = None;
@@ -5878,6 +5903,12 @@ impl Renderer {
                 .filter(|_| scaled.is_some())
                 .unwrap_or([self.config.width, self.config.height]);
             native.frame.write(&self.queue, frame, size);
+            native.frame.block_light.update(
+                &self.queue,
+                frame.camera,
+                &self.light_blocks,
+                self.light_revision,
+            );
             if let Some(t) = &mut native.timing {
                 t.begin(&self.device, &self.queue);
                 native_sky_pass =

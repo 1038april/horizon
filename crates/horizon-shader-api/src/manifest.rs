@@ -22,6 +22,8 @@ pub const MAX_MATERIALS: usize = 1024;
 /// `[[textures]]` a pack may declare, and the side of the largest.
 pub const MAX_TEXTURES: usize = 8;
 pub const MAX_TEXTURE_SIZE: u32 = 2048;
+/// `[[lights]]` entries a manifest may declare.
+pub const MAX_LIGHTS: usize = 256;
 /// Sprite tags a pack may declare: the bits of `MaterialInput.tags`.
 pub const MAX_TAGS: usize = 32;
 
@@ -55,6 +57,9 @@ pub struct Manifest {
     pub materials: Vec<Material>,
     /// Images every stage reads, in order (`TEXTURE_BINDING` + their index).
     pub textures: Vec<PackTexture>,
+    /// The colour of block light by the block giving it off: the first entry with a matching
+    /// pattern wins (`Manifest::light_of`).
+    pub lights: Vec<LightColor>,
     pub budget: Budget,
     /// When the material stage's water mirror (`reflection`) is drawn.
     pub reflection: Option<Reflection>,
@@ -116,6 +121,18 @@ pub struct PackTexture {
     pub repeat: bool,
 }
 
+/// `[[lights]]`: the colour of the block light from some blocks, as the material stage reads
+/// it through `block_light_color`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct LightColor {
+    /// Each channel 0 to 4.
+    pub color: [f32; 3],
+    /// Block names such as `minecraft:soul_torch` (the namespace defaults to `minecraft`),
+    /// each with any number of `*` matching any run of characters.
+    pub blocks: Vec<String>,
+}
+
 /// A set of block sprites the material stage can tell apart: its bit in
 /// `MaterialInput.tags` is its index in the manifest.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -154,7 +171,8 @@ impl Material {
     }
 }
 
-/// Whether the sprite `name` (`namespace:path`) fits `pattern`.
+/// Whether the sprite or block `name` (`namespace:path`) fits `pattern`: the namespace
+/// defaults to `minecraft`, and each `*` matches any run of characters.
 fn sprite_matches(pattern: &str, name: &str) -> bool {
     let pattern = match pattern.contains(':') {
         true => std::borrow::Cow::Borrowed(pattern),
@@ -296,6 +314,8 @@ struct Raw {
     materials: Vec<Material>,
     #[serde(default)]
     textures: Vec<RawTexture>,
+    #[serde(default)]
+    lights: Vec<LightColor>,
     #[serde(default)]
     budget: RawBudget,
     reflection: Option<Reflection>,
@@ -498,6 +518,34 @@ impl Manifest {
                 repeat,
             });
         }
+        if !raw.lights.is_empty() && raw.material.is_none() {
+            return Err(err(
+                "lights are read by the material stage: give it a [material]".into(),
+            ));
+        }
+        if raw.lights.len() > MAX_LIGHTS {
+            return Err(err(format!(
+                "{} [[lights]]; a pack may declare {MAX_LIGHTS}",
+                raw.lights.len()
+            )));
+        }
+        if let Some(l) = raw
+            .lights
+            .iter()
+            .find(|l| l.color.iter().any(|c| !(0.0..=4.0).contains(c)))
+        {
+            return Err(err(format!(
+                "light color {:?} is not in 0..=4 per channel",
+                l.color
+            )));
+        }
+        if raw
+            .lights
+            .iter()
+            .any(|l| l.blocks.is_empty() || l.blocks.iter().any(String::is_empty))
+        {
+            return Err(err("a [[lights]] entry needs blocks".into()));
+        }
         let gpu_ms = match raw.budget.gpu_ms {
             Some(ms) if !(ms > 0.0 && ms <= f64::from(MAX_GPU_MS)) => {
                 return Err(err(format!(
@@ -551,6 +599,7 @@ impl Manifest {
             tags: raw.tags,
             materials: raw.materials,
             textures,
+            lights: raw.lights,
             budget: Budget { gpu_ms },
             reflection: raw.reflection,
             shadow: raw.shadow,
@@ -599,6 +648,15 @@ impl Manifest {
             .into_iter()
             .map(|(layer, entry)| (layer, self.materials[entry].id))
             .collect()
+    }
+
+    /// The `[[lights]]` colour of the block `name` (`namespace:path`): the first entry with a
+    /// matching pattern.
+    pub fn light_of(&self, name: &str) -> Option<[f32; 3]> {
+        self.lights
+            .iter()
+            .find(|l| l.blocks.iter().any(|pattern| sprite_matches(pattern, name)))
+            .map(|l| l.color)
     }
 
     /// Every WGSL file the manifest names, shared files first, each once.
