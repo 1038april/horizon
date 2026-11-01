@@ -17,7 +17,7 @@
 use crate::{Result, blocks::MAP_COLORS};
 use horizon_core::geometry::{Aabb, Axis, ShapeOp, Vec3, VoxelShape};
 use horizon_mods::content::{
-    Block, Content, CreativeTab, EntityType, MobEffect, Rarity, StateProperty,
+    Block, Content, CreativeTab, EntityType, MenuType, MobEffect, Rarity, StateProperty,
 };
 use horizon_world::nbt::{self, Compound, JavaString, Limits, Tag};
 use serde::{Deserialize, Serialize, de};
@@ -47,6 +47,13 @@ pub fn entity_types(mods: &[ContentMod]) -> Vec<&EntityType> {
     let mut types: Vec<&EntityType> = mods.iter().flat_map(|m| &m.content.entity_types).collect();
     types.sort_by(|a, b| a.id.cmp(&b.id));
     types
+}
+
+/// the mods' menu types in registry order, by id as effects are.
+pub fn menu_types(mods: &[ContentMod]) -> Vec<&MenuType> {
+    let mut menus: Vec<&MenuType> = mods.iter().flat_map(|m| &m.content.menu_types).collect();
+    menus.sort_by(|a, b| a.id.cmp(&b.id));
+    menus
 }
 
 /// JSON with its object keys in file order, so a rewritten table differs
@@ -469,6 +476,7 @@ struct Plan<'a> {
     vanilla_items: BTreeSet<String>,
     effects: Vec<&'a MobEffect>,
     entity_types: Vec<&'a EntityType>,
+    menu_types: Vec<&'a MenuType>,
     /// Vanilla's state count (the tables' length before).
     states: usize,
     /// Each vanilla block's default state.
@@ -878,6 +886,7 @@ impl<'a> Plan<'a> {
             vanilla_items,
             effects: mob_effects(mods),
             entity_types: entity_types(mods),
+            menu_types: menu_types(mods),
             states: names.len(),
             defaults,
             sounds,
@@ -1180,6 +1189,11 @@ impl<'a> Plan<'a> {
                 if !self.entity_types.is_empty() {
                     let new_types = self.entity_types.iter().map(|t| t.id.clone());
                     registries.push(("minecraft:entity_type", new_types.collect()));
+                }
+                // `ClientboundOpenScreenPacket` carries a menu type's id.
+                if !self.menu_types.is_empty() {
+                    let new_menus = self.menu_types.iter().map(|m| m.id.clone());
+                    registries.push(("minecraft:menu", new_menus.collect()));
                 }
                 for (registry, names) in registries {
                     let Some(J::Obj(entries)) =
@@ -2178,12 +2192,13 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
             &serde_json::to_vec(&remainders)?,
         )?;
     }
-    // clients must agree on the block states and the items', mob effects' and
-    // entity types' network ids.
+    // clients must agree on the block states and the items', mob effects',
+    // entity types' and menu types' network ids.
     if !plan.blocks.is_empty()
         || !plan.items.is_empty()
         || !plan.effects.is_empty()
         || !plan.entity_types.is_empty()
+        || !plan.menu_types.is_empty()
     {
         overlay.write(crate::content_identity::MARKER, b"1")?;
     }
