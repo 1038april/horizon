@@ -16506,8 +16506,6 @@ impl Game<'_> {
             event_loop.exit();
         }
     }
-    /// winit's `about_to_wait`: what happens between frames (stop requests, the closing
-    /// save, world entry, the control socket, pads), then the next frame.
     /// The loop ended: close the pads' output, save the world, write the perf report.
     pub(super) fn shut_down(&mut self) {
         self.pad_close_output();
@@ -16516,6 +16514,8 @@ impl Game<'_> {
         }
         self.finish_perf();
     }
+    /// winit's `about_to_wait`: what happens between frames (stop requests, the closing
+    /// save, world entry, the control socket, pads), then the next frame.
     pub(super) fn idle(&mut self, event_loop: &dyn EventLoopCtl) {
         if horizon_threads::stop_requests() > 0
             && self.pending_save.as_ref().is_none_or(|save| !save.quit)
@@ -18489,6 +18489,8 @@ fn run_event_loop(mut game: Game<'_>) -> Result<()> {
     if game.options.headless {
         // No display to open winit's loop on: the game's own loop.
         game.run_headless();
+        // narrator::start ran for it too (options.txt's narrator setting).
+        narrator::stop();
         write_report(&game)?;
         return game.error.take().map_or(Ok(()), Err);
     }
