@@ -7,7 +7,7 @@
 //! for the 1.21 component rules); where OptiFine and CIT Resewn differ, CIT Resewn is followed.
 
 use crate::matchers::{IdList, Name, RangeList, namespaced};
-use crate::paths::resolve;
+use crate::paths::{resolve, valid};
 use crate::properties::Properties;
 
 /// What a rule changes (`type`).
@@ -69,7 +69,8 @@ pub enum Source {
 #[derive(Clone, Debug)]
 pub struct ComponentTest {
     pub source: Source,
-    /// Compound keys and list indexes; `*` is any key or element, `count` a list's length.
+    /// Compound keys and list indexes; `*` is any key or element, `count` a list's length. The
+    /// tag walked decides which a segment is: `0` is an index in a list, a key in a compound.
     pub path: Vec<String>,
     pub value: ValueTest,
     /// A leading `!`: the test passes when the value does not match.
@@ -146,12 +147,23 @@ impl ComponentTest {
         if segments.iter().any(String::is_empty) {
             return None;
         }
-        let (source, path) = if legacy {
+        let (source, mut path) = if legacy {
             legacy_source(segments)
         } else {
             let id = namespaced(&segments.remove(0));
             (Source::Component(id), segments)
         };
+        // Enchantments were `{levels: {id: level}}` until 1.21.5 and are the bare map since, as
+        // OptiFine's doc still writes them (`components.enchantments.levels.~thorns`).
+        if let Source::Component(id) = &source {
+            if matches!(
+                &**id,
+                "minecraft:enchantments" | "minecraft:stored_enchantments"
+            ) && path.first().is_some_and(|s| s == "levels")
+            {
+                path.remove(0);
+            }
+        }
         let (value, negate) = ValueTest::parse(value)?;
         Some(Self {
             source,
@@ -242,10 +254,6 @@ impl Rule {
             .next()?
             .strip_suffix(".properties")
             .unwrap_or_default();
-        let namespace = path
-            .strip_prefix("assets/")
-            .and_then(|p| p.split('/').next())
-            .unwrap_or("minecraft");
         let mut items: Vec<String> = props
             .get("items")
             .or_else(|| props.get("matchItems"))
@@ -254,25 +262,35 @@ impl Rule {
         if kind == Kind::Elytra {
             items = vec!["minecraft:elytra".to_owned()];
         } else if items.is_empty() && kind != Kind::Enchantment {
-            // CIT Resewn: a rule named after an item is for that item.
-            items.push(namespaced(&format!("{namespace}:{stem}")));
+            // CIT Resewn: a rule named after an item is for that item (a bare id, so a
+            // `minecraft:` one whatever the rule's namespace).
+            items.push(namespaced(stem));
         }
-        let int = |key: &str| props.get(key).map(|v| v.trim().parse::<i32>().ok());
-        let ranges = |key: &str| props.get(key).map(RangeList::parse);
+        // An optional key: `Some(None)` when absent, `None` (dropping the rule) when malformed.
+        let optional = |key: &str, parse: &dyn Fn(&str) -> Option<i32>| match props.get(key) {
+            Some(v) => parse(v).map(Some),
+            None => Some(None),
+        };
+        let int = |v: &str| v.parse::<i32>().ok();
+        let ranges = |key: &str| match props.get(key) {
+            Some(v) => RangeList::parse(v).map(Some),
+            None => Some(None),
+        };
         let damage = match props.get("damage") {
             Some(v) => Some(Damage {
                 ranges: RangeList::parse(&v.replace('%', ""))?,
                 percent: v.contains('%'),
-                mask: int("damageMask").flatten(),
+                mask: optional("damageMask", &int)?,
             }),
             None => None,
         };
         let enchantments = props
             .get("enchantments")
             .or_else(|| props.get("enchantmentIDs"))
-            .map(|v| v.split_whitespace().filter_map(enchantment_id).collect())
+            .map(|v| v.split_whitespace().map(enchantment_id).collect())
             .unwrap_or_default();
         let mut components = Vec::new();
+        // `component.` is CIT Resewn's alias of `components.`.
         for (legacy, prefix) in [
             (true, "nbt."),
             (false, "components."),
@@ -294,7 +312,10 @@ impl Rule {
             .with_prefix("model.")
             .filter_map(|(name, v)| Some((name.to_owned(), model_at(v)?)))
             .collect();
-        if texture.is_none() && model.is_none() && textures.is_empty() && models.is_empty() {
+        let named = ["texture", "model"].iter().any(|k| props.get(k).is_some())
+            || props.with_prefix("texture.").next().is_some()
+            || props.with_prefix("model.").next().is_some();
+        if !named {
             // Neither named: a model, then a texture, named after the file beside it.
             let dir = path.rsplit_once('/').map_or("", |(d, _)| d);
             let beside = |ext: &str| {
@@ -314,18 +335,18 @@ impl Rule {
         Some(Self {
             path: path.to_owned(),
             kind,
-            weight: int("weight").unwrap_or(Some(0))?,
+            weight: optional("weight", &int)?.unwrap_or(0),
             items,
-            stack_size: ranges("stackSize").map_or(Some(None), |r| r.map(Some))?,
+            stack_size: ranges("stackSize")?,
             damage,
-            hand: match props.get("hand").map(str::trim) {
+            hand: match props.get("hand") {
                 None | Some("any") => Hand::Any,
                 Some("main") => Hand::Main,
                 Some("off") => Hand::Off,
                 Some(_) => return None,
             },
             enchantments,
-            enchantment_levels: ranges("enchantmentLevels").map_or(Some(None), |r| r.map(Some))?,
+            enchantment_levels: ranges("enchantmentLevels")?,
             components,
             texture,
             textures,
@@ -334,17 +355,17 @@ impl Rule {
         })
     }
 
-    /// Whether `self` is chosen over `other` when both match: the higher weight, then the
-    /// path that sorts first.
-    pub fn before(&self, other: &Self) -> bool {
-        (other.weight, &self.path) < (self.weight, &other.path)
+    /// Which of two matching rules is chosen: `Less` for the one that wins, the higher weight,
+    /// then the path that sorts first.
+    pub fn priority(&self, other: &Self) -> std::cmp::Ordering {
+        (other.weight, &self.path).cmp(&(self.weight, &other.path))
     }
 }
 
-/// A `texture`/`model` value as a resource path to an existing `.ext` file: as written (OptiFine
-/// and CIT Resewn paths, see `paths::resolve`, plus CIT Resewn's `./../x` up from the rule's
-/// folder), as a full `assets/...` path, or in the namespace's typed folder (`item/x` →
-/// `textures/item/x.png`, `models/item/x.json`).
+/// A `texture`/`model` value as a resource path to an existing `.ext` file, trying what CIT
+/// Resewn tries in its order: as written (OptiFine's paths, see `paths::resolve`, or a full
+/// `assets/...` path), in the namespace's typed folder (`item/x` → `textures/item/x.png`), then
+/// beside the rule (`sub/x`, and `./../x` up from its folder).
 fn asset(
     props: &str,
     value: &str,
@@ -352,52 +373,66 @@ fn asset(
     typed: &str,
     exists: &impl Fn(&str) -> bool,
 ) -> Option<String> {
-    let value = value.trim();
     let last = value.rsplit('/').next().unwrap_or(value);
     let value = if last.ends_with(&format!(".{ext}")) {
         value.to_owned()
     } else {
         format!("{value}.{ext}")
     };
-    let resolved = if value.starts_with("assets/") {
-        // Already from the root; `resolve` only vets its segments.
-        resolve(props, &value).map(|_| value.clone())
-    } else if value.split('/').any(|s| s == "..") {
-        up_from(props, &value)
-    } else {
-        resolve(props, &value)
-    }?;
-    let typed_path = resolved
-        .strip_prefix("assets/")
-        .and_then(|p| p.split_once('/'))
-        .filter(|(_, rest)| value.contains(['/', ':']) && !rest.starts_with(&format!("{typed}/")))
-        .map(|(ns, rest)| format!("assets/{ns}/{typed}/{rest}"));
-    std::iter::once(resolved)
-        .chain(typed_path)
-        .find(|p| exists(p))
+    let dir = props.rsplit_once('/').map_or("", |(d, _)| d);
+    let mut candidates = Vec::new();
+    if value.split('/').any(|s| s == "..") {
+        // Only up from the rule's folder: `~/` and `ns:` paths name their folder outright.
+        if !value.starts_with("~/") && !value.contains(':') {
+            candidates.extend(up_from(dir, &value));
+        }
+    } else if value.starts_with("assets/") {
+        candidates.extend(valid(&value).then(|| value.clone()));
+    } else if let Some(resolved) = resolve(props, &value) {
+        let plain = !value.starts_with("~/") && !value.starts_with("./");
+        if plain && value.contains(['/', ':']) {
+            if let Some((ns, rest)) = resolved
+                .strip_prefix("assets/")
+                .and_then(|p| p.split_once('/'))
+            {
+                if !rest.starts_with(&format!("{typed}/")) {
+                    candidates.push(format!("assets/{ns}/{typed}/{rest}"));
+                }
+            }
+            if !value.contains(':') {
+                candidates.push(format!("{dir}/{value}"));
+            }
+        }
+        candidates.insert(0, resolved);
+    }
+    candidates.into_iter().find(|p| exists(p))
 }
 
-/// `value` (`./../x`, `../x`) beside the file at `props`, with each `..` taking a folder off;
-/// `None` when it would climb out of the file's `assets/<namespace>/`.
-fn up_from(props: &str, value: &str) -> Option<String> {
-    let mut out: Vec<&str> = props.split('/').collect();
-    out.pop();
+/// `value` (`./../x`, `../x`) in the folder `dir`, each `..` taking a folder off; `None` when it
+/// would climb out of `assets/<namespace>/`.
+fn up_from(dir: &str, value: &str) -> Option<String> {
+    let mut out: Vec<&str> = dir.split('/').collect();
     for segment in value.strip_prefix("./").unwrap_or(value).split('/') {
         match segment {
             ".." if out.len() > 2 => {
                 out.pop();
             }
-            "" | "." | ".." => return None,
+            ".." => return None,
             s => out.push(s),
         }
     }
-    (out.len() > 2 && out[0] == "assets").then(|| out.join("/"))
+    let path = out.join("/");
+    (out.len() > 2 && out[0] == "assets" && valid(&path)).then_some(path)
 }
 
-/// An `enchantments` entry: an id (`flame`, `minecraft:flame`) or a pre-1.13 numeric id.
-fn enchantment_id(token: &str) -> Option<String> {
+/// An `enchantments` entry: an id (`flame`, `minecraft:flame`) or a pre-1.13 numeric id. An
+/// unknown number stays an id no enchantment has, as in CIT Resewn, so its rule never matches.
+fn enchantment_id(token: &str) -> String {
+    if token.eq_ignore_ascii_case("sweeping") || token.eq_ignore_ascii_case("minecraft:sweeping") {
+        return "minecraft:sweeping_edge".to_owned();
+    }
     let Ok(n) = token.parse::<u32>() else {
-        return Some(namespaced(token));
+        return namespaced(token);
     };
     let name = match n {
         0 => "protection",
@@ -430,9 +465,9 @@ fn enchantment_id(token: &str) -> Option<String> {
         62 => "lure",
         70 => "mending",
         71 => "vanishing_curse",
-        _ => return None,
+        _ => return namespaced(token),
     };
-    Some(format!("minecraft:{name}"))
+    format!("minecraft:{name}")
 }
 
 #[cfg(test)]
@@ -463,6 +498,8 @@ mod tests {
         );
         assert_eq!(r.weight, 5);
         assert_eq!(r.hand, Hand::Off);
+        let stack = r.stack_size.as_ref().unwrap();
+        assert!(stack.contains(1) && !stack.contains(2));
         assert_eq!(
             r.enchantments,
             ["minecraft:fire_aspect", "minecraft:sharpness"]
@@ -538,13 +575,29 @@ mod tests {
         assert_eq!(tex("~/cit/shared/glow"), at(files[2]));
         assert_eq!(tex("./sub/x"), at(files[3]));
         assert_eq!(tex("./../swords/sub/x"), at(files[3]));
-        assert_eq!(
-            tex("../../../../../x"),
-            None,
-            "never above assets/<namespace>/"
-        );
+        assert_eq!(tex("sub/x"), at(files[3]), "beside the rule, last");
+        assert_eq!(tex("~/cit/../cit/shared/glow"), None);
         let model = rule(SWORD, "items=stick\nmodel=item/excalibur", &files).unwrap();
         assert_eq!(model.model.as_deref(), Some(files[1]));
+    }
+
+    #[test]
+    fn climbing_stops_at_the_namespace() {
+        // Files at every folder a climb could reach: only the namespace's own are found.
+        let files = ["assets/x.png", "x.png", "assets/minecraft/x.png"];
+        let tex = |v: &str| rule(SWORD, &format!("items=stick\ntexture={v}"), &files)?.texture;
+        assert_eq!(tex("../../../x").as_deref(), Some("assets/minecraft/x.png"));
+        assert_eq!(tex("../../../../x"), None);
+        assert_eq!(tex("../../../../../x"), None);
+        assert_eq!(tex("..\\..\\..\\x"), None, "a Windows separator");
+    }
+
+    #[test]
+    fn a_named_asset_that_is_missing_drops_the_rule() {
+        // flame.png sits beside flame.properties, but the rule names another texture.
+        let beside = ["assets/minecraft/optifine/cit/swords/flame.png"];
+        assert!(rule(SWORD, "items=stick\ntexture=typo", &beside).is_none());
+        assert!(rule(SWORD, "items=stick", &beside).is_some());
     }
 
     #[test]
@@ -577,6 +630,16 @@ mod tests {
         assert_eq!(
             armor.textures[1],
             ("diamond_layer_2".into(), files[3].clone())
+        );
+        let glint = rule(
+            &format!("{dir}/glint.properties"),
+            "type=enchantment\ntexture=a0",
+            &refs,
+        )
+        .unwrap();
+        assert!(
+            glint.items.is_empty(),
+            "an enchantment rule without items is for every item"
         );
         // Elytra rules are always for the elytra.
         let elytra = rule(
@@ -621,9 +684,12 @@ mod tests {
         assert_eq!(ench.source, Source::LegacyEnchantments { stored: true });
         assert_eq!(ench.path, s(&["0", "id"]));
         // `~` is the minecraft namespace; a bare component id is in it too.
+        // Since 1.21.5 the enchantments component has no `levels` level.
         let c = ComponentTest::parse(false, "enchantments.levels.~thorns", "3").unwrap();
         assert_eq!(c.source, Source::Component("minecraft:enchantments".into()));
-        assert_eq!(c.path, s(&["levels", "minecraft:thorns"]));
+        assert_eq!(c.path, s(&["minecraft:thorns"]));
+        let c = ComponentTest::parse(false, "custom_data.levels", "3").unwrap();
+        assert_eq!(c.path, s(&["levels"]));
         assert!(ComponentTest::parse(false, "lore..0", "x").is_none());
     }
 
@@ -634,6 +700,14 @@ mod tests {
             panic!()
         };
         assert_eq!(l.int, Some(0xff99cc));
+        let (ValueTest::Literal(l), false) = v("0x1F") else {
+            panic!()
+        };
+        assert_eq!(l.int, Some(31));
+        let (ValueTest::Literal(l), false) = v("1.5") else {
+            panic!()
+        };
+        assert_eq!((l.int, l.float), (None, Some(1.5)));
         let (ValueTest::Literal(l), false) = v("53") else {
             panic!()
         };
@@ -659,14 +733,23 @@ mod tests {
     }
 
     #[test]
+    fn unknown_enchantment_ids_never_match_instead_of_matching_all() {
+        let files = ["assets/minecraft/optifine/cit/swords/flame.png"];
+        let r = rule(SWORD, "items=stick\nenchantmentIDs=99 sweeping", &files).unwrap();
+        assert_eq!(r.enchantments, ["minecraft:99", "minecraft:sweeping_edge"]);
+    }
+
+    #[test]
     fn malformed_conditions_drop_the_rule() {
         let files = ["assets/minecraft/optifine/cit/swords/flame.png"];
         for bad in [
             "damage=lots",
+            "damage=3\ndamageMask=abc",
             "stackSize=1-x",
             "hand=left",
             "weight=heavy",
             "type=hat",
+            "nbt.display.Name=regex:(",
         ] {
             assert!(
                 rule(SWORD, &format!("items=stick\n{bad}\n"), &files).is_none(),
@@ -689,7 +772,12 @@ mod tests {
         let a = at("assets/minecraft/optifine/cit/a.properties", 0);
         let b = at("assets/minecraft/optifine/cit/b.properties", 0);
         let heavy = at("assets/minecraft/optifine/cit/c.properties", 3);
-        assert!(a.before(&b) && !b.before(&a));
-        assert!(heavy.before(&a));
+        let mut rules = [b, heavy, a];
+        rules.sort_by(Rule::priority);
+        let order: Vec<_> = rules
+            .iter()
+            .map(|r| r.path.rsplit('/').next().unwrap())
+            .collect();
+        assert_eq!(order, ["c.properties", "a.properties", "b.properties"]);
     }
 }

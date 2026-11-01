@@ -15,13 +15,19 @@ use std::path::{Path, PathBuf};
 /// The extension is the caller's: OptiFine adds `.png` to textures that have none.
 ///
 /// `None` when the path would leave the resource root or is malformed: a `..` or `.` segment, an
-/// empty one (`a//b`, a leading `/`), as vanilla's resource paths refuse them. Callers join the
-/// result onto the overlay root, so a pack must never name a file outside it.
+/// empty one (`a//b`, a leading `/`), as vanilla's resource paths refuse them, or a `\` (see
+/// `valid`). Callers join the result onto the overlay root, so a pack must never name a file
+/// outside it.
 pub fn resolve(props: &str, value: &str) -> Option<String> {
     let path = resolve_unchecked(props, value);
+    valid(&path).then_some(path)
+}
+
+/// Whether a resource path stays in the root: no `.`, `..` or empty segment, and no `\` (a
+/// separator on Windows, where `..\..` would climb).
+pub fn valid(path: &str) -> bool {
     path.split('/')
-        .all(|segment| !matches!(segment, "" | "." | ".."))
-        .then_some(path)
+        .all(|segment| !matches!(segment, "" | "." | "..") && !segment.contains('\\'))
 }
 
 fn resolve_unchecked(props: &str, value: &str) -> String {
@@ -130,6 +136,7 @@ mod tests {
             "a//b",
             "/etc/passwd",
             "a/./b",
+            "..\\..\\x.png",
         ] {
             assert_eq!(resolve(props, bad), None, "{bad}");
         }
