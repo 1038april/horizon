@@ -1,6 +1,6 @@
 # Horizon extras
 
-Optional conveniences built into the client: fullbright, dynamic lights, your own name tag, auto-reconnect,
+Optional conveniences built into the client: fullbright, dynamic lights, your own name tag, hiding block-break particles, auto-reconnect,
 Mouse Tweaks-style inventory controls and inventory sorting. **Every one is off by default**: a fresh
 install looks and behaves exactly like vanilla 26.3, and turning an extra off
 again restores vanilla's behaviour completely.
