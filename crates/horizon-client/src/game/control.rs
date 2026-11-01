@@ -150,10 +150,32 @@ impl Game<'_> {
         let _ = request.reply.send(reply.to_string());
     }
 
-    /// Text typed at the open screen's text box: the control socket's `type`
-    /// and a key press whose own effects a mod cancelled but whose characters
-    /// it let through. `Err` when no text box of the screen takes it.
+    /// Text typed at the open screen's text box by the control socket's
+    /// `type`: its `\b` is a backspace sentinel for the boxes that have always
+    /// taken one, not the characters `\` and `b`. `Err` when no text box of
+    /// the screen takes it.
     pub(super) fn type_into_screen(&mut self, text: &str) -> Result<()> {
+        if text == "\\b" {
+            match self.screen {
+                Screen::WorldOptions => {
+                    self.world_options_text(None);
+                    return Ok(());
+                }
+                Screen::Inventory if self.mod_browser_typing() => {
+                    self.mod_browser_text(None, true);
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+        self.type_chars_into_screen(text)
+    }
+
+    /// Characters the open screen's focused text box takes: the control
+    /// socket's `type` and a key press's surviving characters (`charTyped`).
+    /// Nothing here is a key — the caller drops control characters. `Err` when
+    /// no text box of the screen takes them.
+    pub(super) fn type_chars_into_screen(&mut self, text: &str) -> Result<()> {
         if self.book.is_some() {
             self.book_type(text);
             return Ok(());
@@ -169,23 +191,15 @@ impl Game<'_> {
             Screen::DebugOptions => self.debug_options_type(text),
             Screen::Options => self.ui.options.type_text(&self.gui.atlas, text),
             // The port, or the game rules' search and number boxes.
-            Screen::WorldOptions if text == "\\b" => self.world_options_text(None),
             Screen::WorldOptions => self.world_options_text(Some(text)),
             Screen::Inventory if self.mod_browser_typing() => {
-                self.mod_browser_text((text != "\\b").then_some(text), text == "\\b")
+                self.mod_browser_text(Some(text), false)
             }
             Screen::Inventory if self.recipe_search_focused() => {
                 self.recipe_text(Some(text), false)
             }
-            // The anvil's rename box.
-            Screen::Inventory
-                if self
-                    .station
-                    .as_ref()
-                    .is_some_and(|s| s.kind == super::stations::Kind::Anvil) =>
-            {
-                self.station_text(Some(text), false)
-            }
+            // The anvil's rename box, while it has an input to name.
+            Screen::Inventory if self.station_typing() => self.station_text(Some(text), false),
             Screen::Creative if self.creative_screen.tab().search => {
                 // As typed: replaces a selected query, keeps the length limit.
                 self.creative_search_edit(Some(text))

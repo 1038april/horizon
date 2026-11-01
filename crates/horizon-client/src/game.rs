@@ -15859,46 +15859,58 @@ impl Game<'_> {
             }
             return;
         }
-        // ScreenEvent.KeyPressed.Pre / CharacterTyped.Pre: the open screen
-        // hears of the key and of each character it types before it acts on
-        // either, and a cancelled press goes no further — no focus move, no
-        // Escape-close, no inventory or hotbar key, no text box, no
-        // `native_key`. It fires after the window's own shortcuts (fullscreen,
-        // screenshot, the debug keys, the narrator) so those keep working with
-        // a mod that cancels. The characters fire even when the key was
-        // cancelled, as vanilla delivers `charTyped` anyway, and a cancelled
-        // one leaves the event's text, which a cancelled key hands straight to
-        // the text box; the key's release still comes through.
+        // ScreenEvent.KeyPressed.Pre: the open screen hears of the key before
+        // it acts on it, and a cancelled press goes no further — no focus
+        // move, no Escape-close, no inventory or hotbar key, no typing by the
+        // key itself, no `native_key`. It fires after the window's own
+        // shortcuts (fullscreen, screenshot, the debug keys, the narrator) so
+        // those keep working with a mod that cancels; the key's release still
+        // comes through.
+        //
+        // A key's characters are a separate callback of GLFW's, and it comes
+        // after the key callback (`KeyboardHandler.charTyped`): they are taken
+        // off the key here and dispatched once the screen has acted on it, on
+        // the screen that is open then (`ScreenEvent.CharacterTyped.Pre`).
+        // Options keeps its text on the key: its own key path routes a key's
+        // text between its boxes and its key-bind capture, and no key that
+        // carries text closes that screen or moves its focus.
+        let mut typed: Option<String> = None;
         if let WindowEvent::KeyboardInput {
             event: key_event, ..
         } = &mut event
             && key_event.state == ElementState::Pressed
         {
+            if self.screen_hooks_open() && self.screen != Screen::Options {
+                typed = key_event.text.take().map(|text| text.to_string());
+            }
             let canceled = match key_event.physical_key {
                 PhysicalKey::Code(key) => self.screen_key_pressed(key, key_event.repeat),
                 PhysicalKey::Unidentified(_) => false,
             };
-            // Only a screen's own text is filtered: the gate first, so a key
-            // press in play or on the title screen copies nothing.
-            if self.screen_hooks_open()
-                && let Some(text) = key_event.text.as_deref()
-            {
-                let left = self.screen_text_typed(text);
-                if left.as_deref() != Some(text) {
-                    key_event.text = left.map(Into::into);
+            if self.screen == Screen::Options && self.screen_hooks_open() {
+                // The hook after the key's own, then the text the key path
+                // types in place (its own routing keeps it).
+                if let Some(text) = key_event.text.as_deref() {
+                    let left = self.screen_text_typed(text);
+                    if left.as_deref() != Some(text) {
+                        key_event.text = left.map(Into::into);
+                    }
                 }
             }
             if canceled {
-                // charTyped is a separate callback: an uncancelled character
-                // still reaches the text box, without the key's own effects.
-                // Control characters are keys and went with the key.
-                if self.screen_hooks_open()
+                // charTyped is a separate callback: the characters still
+                // reach the text box, without the key's own effects. Options'
+                // characters already passed the hook in place.
+                if let Some(text) = typed.as_deref() {
+                    self.screen_chars_typed(Some(text));
+                } else if self.screen == Screen::Options
                     && let Some(text) = key_event.text.as_deref()
+                    && self.types_text()
                 {
                     let text: String = text.chars().filter(|c| !c.is_control()).collect();
                     if !text.is_empty() {
-                        // Err only says no text box is open to take it.
-                        let _ = self.type_into_screen(&text);
+                        // Err only says no box of the screen takes it.
+                        let _ = self.type_chars_into_screen(&text);
                     }
                 }
                 return;
@@ -15913,6 +15925,9 @@ impl Game<'_> {
             && let PhysicalKey::Code(key) = key_event.physical_key
             && self.key_focus_key(event_loop, key)
         {
+            // The keyboard's focus took the key; its characters are a separate
+            // callback and still come (`KeyboardHandler.charTyped`).
+            self.screen_chars_typed(typed.as_deref());
             return;
         }
         let result: Result<()> = (|| {
@@ -16919,6 +16934,10 @@ impl Game<'_> {
 
             Ok(())
         })();
+        // ScreenEvent.CharacterTyped.Pre: GLFW's char callback comes after its
+        // key callback, so a key's characters reach the screen the key left
+        // open, after the key's own effects (`KeyboardHandler.charTyped`).
+        self.screen_chars_typed(typed.as_deref());
         if let Err(e) = result {
             self.error = Some(e);
             self.exit_on_error(event_loop);

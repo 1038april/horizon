@@ -1096,6 +1096,16 @@ fn screen_text_hooked(text: &str, mut canceled: impl FnMut(char) -> bool) -> Opt
     Some(left)
 }
 
+/// What a key press's characters leave for a text box after the
+/// `ScreenEvent.CharacterTyped.Pre` hook: the characters no mod cancelled,
+/// control ones gone (the key's own handling takes those, and vanilla fires
+/// no `charTyped` for them). `None` when nothing is left to type.
+fn chars_to_type(text: &str, canceled: impl FnMut(char) -> bool) -> Option<String> {
+    let left = screen_text_hooked(text, canceled)?;
+    let text: String = left.chars().filter(|c| !c.is_control()).collect();
+    (!text.is_empty()).then_some(text)
+}
+
 /// The hook points. Each does nothing in Horizon.
 impl Game<'_> {
     /// Once a frame, in a world or not, after Horizon's extras.
@@ -1585,20 +1595,21 @@ impl Game<'_> {
     /// folds repeats into the event), and `modifiers` GLFW's bits (shift 1,
     /// control 2, alt 4, super 8). Set `canceled` and the press goes no
     /// further: no focus move, no Escape-close, no inventory or hotbar key, no
-    /// text box, no `native_key`.
+    /// typing by the key itself, no `native_key`.
     ///
     /// It fires for the window's presses and their repeats, and for the
     /// control socket's `key` (a release fires nothing), after the window's
-    /// own shortcuts have run — the
-    /// fullscreen and screenshot keys, the debug keys and the narrator — and
-    /// only while a screen of the game's is open (Options and the pack list
-    /// opened from the title screen count, with no player and no `menu`). It
-    /// does not fire on the title screen itself, the connect and loading
-    /// screens, nor for a server dialog, the server pack, link and
-    /// code-of-conduct prompts, a book or a sign editor drawn over gameplay,
-    /// nor while a world loads or saves: the key there stays the game's own.
-    /// A cancelled press's release still runs, so a `native_key` listener sees
-    /// that release without its press.
+    /// own shortcuts have run — the fullscreen and screenshot keys, the debug
+    /// keys and the narrator — and only while a screen of the game's is open
+    /// (Options and the pack list opened from the title screen count, with no
+    /// player and no `menu`). It does not fire on the title screen itself, the
+    /// connect and loading screens, nor for a server dialog, the server pack,
+    /// link and code-of-conduct prompts, a book or a sign editor drawn over
+    /// gameplay, nor while a world loads or saves: the key there stays the
+    /// game's own. A cancelled press's release still runs, so a `native_key`
+    /// listener sees that release without its press, and its characters are
+    /// GLFW's separate char callback and still come; see
+    /// `native_screen_char_typed_pre`.
     /// API @API:screen_key_input@.
     pub(super) fn native_screen_key_pressed_pre(
         &self,
@@ -1616,20 +1627,22 @@ impl Game<'_> {
     /// bits (shift 1, control 2, alt 4, super 8). Set `canceled` and that one
     /// character never reaches a text box.
     ///
-    /// It fires once per printable character of the key press's text and once
+    /// It fires once per printable character of a key press's text and once
     /// per character of the input method's committed text, never for a control
     /// character (Enter, Backspace, Tab, Delete, Escape, a Control letter):
-    /// those are keys, and the game reads them as keys, not as text. It fires
-    /// even when `native_screen_key_pressed_pre` cancelled the press that
-    /// carried the text, as vanilla delivers `charTyped` for a cancelled
-    /// `keyPressed`: the characters left reach the text box without the key's
-    /// own effects. Cancelling one character drops only that one. The control
-    /// socket's `type` fires it too, but not for its `\b` backspace. Same
-    /// screens as the key press, and it fires with no text box focused (there
-    /// is nothing to take the character then). The window hands a key's text
-    /// over with the key, so the characters fire before the key acts: a key
-    /// that closes the screen (the inventory key) reports its character on
-    /// the screen it closes, where vanilla's closed screen hears nothing.
+    /// those are keys, and the game reads them as keys, not as text. A key's
+    /// characters fire after the key has acted, as GLFW's char callback comes
+    /// after its key callback (`KeyboardHandler.charTyped`): `screen` is the
+    /// screen open then, so a key that closes the screen (the inventory key)
+    /// leaves none to hear its character, where vanilla's closed screen hears
+    /// nothing, and one that moves the focus types into the box it moved to.
+    /// They fire even when `native_screen_key_pressed_pre` cancelled the press
+    /// that carried the text, as NeoForge delivers `CharacterTyped.Pre` for a
+    /// cancelled `KeyPressed.Pre`: the characters left reach the text box
+    /// without the key's own effects. Cancelling one character drops only that
+    /// one. The control socket's `type` fires it too, but not for its `\b`
+    /// backspace. Same screens as the key press, and it fires with no text box
+    /// focused (there is nothing to take the character then).
     /// API @API:screen_key_input@.
     pub(super) fn native_screen_char_typed_pre(
         &self,
@@ -1720,8 +1733,7 @@ impl Game<'_> {
         );
         canceled
     }
-    /// The text of a key press, or of an input method's commit, after the
-    /// open screen's character hooks
+    /// Text on its way to a text box after the open screen's character hooks
     /// (`native_screen_char_typed_pre` per printable character): the cancelled
     /// characters are gone and every other one stays, control characters
     /// included (a text box reads Backspace, Delete and the like as keys).
@@ -1736,6 +1748,36 @@ impl Game<'_> {
             self.native_screen_char_typed_pre(&screen, c, modifiers, &mut canceled);
             canceled
         })
+    }
+    /// A key press's characters (`ScreenEvent.CharacterTyped.Pre`, vanilla's
+    /// `KeyboardHandler.charTyped`), dispatched once the screen has acted on
+    /// the key: GLFW's char callback comes after its key callback, so the
+    /// characters go to the screen that is open now — a key that closed the
+    /// screen leaves none to hear them, as vanilla's closed screen hears
+    /// nothing, and one that moved the focus types into the box it moved to.
+    /// Each printable one is offered to `native_screen_char_typed_pre`; the
+    /// survivors go to the focused text box, control characters (keys) gone.
+    pub(super) fn screen_chars_typed(&mut self, text: Option<&str>) {
+        let Some(text) = text else {
+            return;
+        };
+        let Some(screen) = self.screen_view_now() else {
+            return;
+        };
+        let modifiers = super::glfw_modifiers(self.modifiers);
+        let Some(text) = chars_to_type(text, |c| {
+            let mut canceled = false;
+            self.native_screen_char_typed_pre(&screen, c, modifiers, &mut canceled);
+            canceled
+        }) else {
+            return;
+        };
+        // A held edit modifier makes a shortcut of the key, not text.
+        if !self.types_text() {
+            return;
+        }
+        // `Err` only says no text box of the screen takes the characters.
+        let _ = self.type_chars_into_screen(&text);
     }
     /// A left or right (`right`) press at `at` (GUI pixels from the screen's
     /// top left, so outside it too) on block `block`'s screen, a mod's, over
@@ -4186,6 +4228,27 @@ mod tests {
             super::screen_text_hooked("hello", |_| false).as_deref(),
             Some("hello")
         );
+    }
+
+    /// The window's key path: a key whose press a mod cancelled still types
+    /// the characters no mod cancelled (vanilla's separate `charTyped`), while
+    /// the key characters never reach the text box.
+    #[test]
+    fn a_cancelled_key_still_types_the_characters_left() {
+        // `axb` with 'x' cancelled: the key went no further, `ab` still types.
+        assert_eq!(
+            super::chars_to_type("axb", |c| c == 'x').as_deref(),
+            Some("ab")
+        );
+        // Backspace, Escape and the like are keys, not text.
+        assert_eq!(
+            super::chars_to_type("a\u{7f}\u{1b}b", |_| false).as_deref(),
+            Some("ab")
+        );
+        // Every character cancelled: the box takes none of them.
+        assert_eq!(super::chars_to_type("ab", |_| true), None);
+        // Nothing typed: nothing to hand over.
+        assert_eq!(super::chars_to_type("", |_| false), None);
     }
 
     /// A shake is scaled by Distortion Effects, bounded on each axis, and a
