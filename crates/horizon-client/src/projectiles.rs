@@ -470,7 +470,6 @@ impl Projectile {
                 },
             self.velocity.z + source_velocity.z,
         );
-        self.update_rotation();
     }
     /// AbstractHurtingProjectile: movement along the direction at the acceleration power.
     pub fn fireball(

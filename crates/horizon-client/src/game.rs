@@ -12865,14 +12865,7 @@ impl Game<'_> {
             a.ignite_for_seconds(seconds);
         }
         let (velocity, on_ground) = self.player.as_ref().map_or((Vec3::ZERO, true), |pl| {
-            (
-                if pl.ground.on_ground {
-                    Vec3::ZERO
-                } else {
-                    self.known_player_movement()
-                },
-                pl.ground.on_ground,
-            )
+            (self.known_player_movement(), pl.ground.on_ground)
         });
         arrow.shoot_from_rotation(
             &mut self.world.random,
