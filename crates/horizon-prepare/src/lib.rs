@@ -751,12 +751,13 @@ fn arg(path: &Path) -> String {
 /// The manifest entries a lane works out, by key.
 type Entries = Vec<(&'static str, Value)>;
 
-/// The exporters, the data generator and the asset copy, on four lanes that run at once:
+/// The exporters, the data generator and the asset copy, on four lanes (five with the split
+/// below) that run at once unless `pool::jobs` is 1:
 /// the server exporter JVM's steps in a fixed order (they share its state), the client
 /// exporter JVM's then the command registries' JVM, the data generator's then the creative
 /// inventory's, and the copying, which needs no Java. At most three JVMs run at a time, four
 /// with the split below.
-/// From this many cores (`pool::jobs`) the generator's block behaviour gets its own server JVM.
+/// From this many processors (`pool::jobs`) the generator's block behaviour gets its own server JVM.
 /// It pays a second Bootstrap and ~400 MB, which only pays off when the other lanes leave cores
 /// idle: a 6-core laptop finished its other JVMs 20 s before the server lane.
 const SPLIT_BLOCKS_JOBS: usize = 6;
@@ -1541,7 +1542,7 @@ fn stamp_matches(stamp: &Path, inputs: &Value, outputs: &[PathBuf]) -> bool {
         return false;
     };
     recorded.get("inputs") == Some(inputs)
-        && recorded.get("outputs") == stamp_outputs(outputs).ok().as_ref()
+        && stamp_outputs(outputs).is_ok_and(|outputs| recorded.get("outputs") == Some(&outputs))
 }
 
 fn stamp_outputs(outputs: &[PathBuf]) -> Result<Value, String> {
@@ -1804,6 +1805,13 @@ mod tests {
         assert!(!stamp_matches(&stamp, &inputs, &outputs), "output missing");
         write(&stamp, b"{not json").unwrap();
         assert!(!stamp_matches(&stamp, &inputs, &outputs));
+        // A stamp that records no outputs never vouches for a missing one.
+        write_json(
+            &stamp,
+            &Value::Object(vec![("inputs".into(), inputs.clone())]),
+        )
+        .unwrap();
+        assert!(!stamp_matches(&stamp, &inputs, &outputs), "no outputs");
         fs::remove_dir_all(dir).unwrap();
     }
 

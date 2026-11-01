@@ -25,7 +25,7 @@ pinned dependency checksums and compiler settings. Class checksums detect missin
 outputs. Compilation happens in a private staging folder before publishing a complete cache
 entry. Sources and paths are normalized so one release bundle works on all three platforms.
 
-Compatible exporters run through one server JVM (two with 6 cores or more, below) and one
+Compatible exporters run through one server JVM (two with 6 processors or more, below) and one
 client JVM, each worker's exporters in a fixed order, the workers side by side. They keep
 Minecraft's initialized built-in registries. Every task restores the original registry tags
 before replying; failures stop preparation. Collision exports share the first generated
@@ -38,24 +38,26 @@ components as well as tags. The data generator also remains separate. Inspection
 its providers. Calling it inside a worker would shut down shared executors; incorporating
 its providers directly needs a separate comparison of registry and executor lifetimes.
 Fresh release preparation therefore starts five exporter/data-generator JVMs, down from 18
-(six with 6 cores or more, below), and invokes no compiler. `HORIZON_PREPARE_ISOLATED=1`
+(six with 6 processors or more, below), and invokes no compiler. `HORIZON_PREPARE_ISOLATED=1`
 retains separate exporter JVMs for output comparisons and diagnosis.
 
-Those JVMs run on four lanes at once, so at most three run at a time (four with the split
-below): the server worker's steps in their fixed order; the client worker's, then the command
-registries'; the data generator, then the creative tabs'; and the Rust-only copying (client
-assets and data, the world generator's bundle), spread over several threads. The world
-generator's tables, which need the block facts and the reports, and the manifest come after
-all four. A worker stops when its lane is done. The two sides compile at once too. Imports and
-checks hash the pinned files on several threads; every file is still checked in full.
+Those JVMs run on four lanes at once, so at most three run at a time (five lanes and four JVMs
+with the split below): the server worker's steps in their fixed order; the client worker's,
+then the command registries'; the data generator, then the creative tabs'; and the Rust-only
+copying (client assets and data, the world generator's bundle), spread over several threads.
+The world generator's tables, which need the block facts and the reports, and the manifest
+come after every lane. A worker stops when its lane is done. The two sides compile at once
+too. Imports and checks hash the pinned files on several threads; every file is still checked
+in full.
 
-`HORIZON_PREPARE_JOBS` is how many things run at once: the processors by default, at most 8.
-`1` runs it all one step after another (for a machine short on memory). From 6, the world
-generator's block behaviour and structure blocks, a quarter of the server lane, run on a fifth
-lane in a second server JVM: it costs a second Bootstrap and ~400 MB, and only pays off when
-the other lanes would leave cores idle. On a 6-core laptop they finished ~20 s before the server
-lane; the split itself is not yet timed on such a machine (on 3 cores it is slower, 44.9 s
-against 40.5 s, so it stays off there). The release check prepares both ways.
+`HORIZON_PREPARE_JOBS` is how many threads copy and hash at once: the logical processors by
+default, at most 8. `1` also runs the lanes one after another (for a machine short on memory);
+any other number runs them all at once. From 6, the world generator's block behaviour and
+structure blocks, a quarter of the server lane, run on a fifth lane in a second server JVM: it
+costs a second Bootstrap and ~400 MB, and only pays off when the other lanes would leave
+processors idle. On a 6-core laptop they finished ~20 s before the server lane; the split
+itself is not yet timed on such a machine (on 3 cores it is slower, 44.9 s against 40.5 s, so
+it stays off there). The release check prepares both ways.
 
 Every JVM preparing starts (javac too, through `-J`) runs with `-XX:TieredStopAtLevel=1
 -XX:+UseSerialGC`: short batch jobs side by side lose more CPU to the C2 compiler than it wins

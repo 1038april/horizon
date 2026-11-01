@@ -17,8 +17,9 @@ const TIMEOUT: Duration = Duration::from_secs(3600);
 /// Options for every JVM preparing starts (the exporters, the data generator, javac with `-J`).
 /// They are short batch jobs that run side by side: the C2 compiler's background work costs
 /// more CPU than it wins back, and the serial collector keeps their heaps small. Measured on the
-/// pinned jars, a fresh preparation took 105 s with the defaults and 63-66 s with these, its
-/// JVMs together at most 1.25 GB (2 GB with the parallel collector, as fast), same output.
+/// pinned jars, a fresh preparation took 105 s with the defaults and 63-66 s with these, same
+/// output; the serial collector was as fast as the parallel one and its JVMs together took
+/// 1.25 GB instead of 2 GB.
 pub(crate) const BATCH_OPTIONS: [&str; 2] = ["-XX:TieredStopAtLevel=1", "-XX:+UseSerialGC"];
 
 /// Exporters and JDK probes write to pipes or log files: on Windows they open no terminal.
