@@ -597,19 +597,14 @@ mod tests {
             .validate(&module)
             .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&text)));
         }
-        assert!(shadow_solid(&[(3, 7), (4, 8), (9, 7)], &[7]).contains("case 3u, 9u:"));
     }
 
     #[test]
-    fn a_pack_without_solid_materials_keeps_every_cutout() {
-        let text = shader_source(&shadow_solid(&[(3, 7)], &[]));
-        let module = naga::front::wgsl::parse_str(&text).unwrap();
-        naga::valid::Validator::new(
-            naga::valid::ValidationFlags::all(),
-            naga::valid::Capabilities::all(),
-        )
-        .validate(&module)
-        .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&text)));
+    fn only_the_layers_of_solid_ids_lose_their_cutouts() {
+        let materials = [(3, 7), (4, 8), (9, 7)];
+        assert!(shadow_solid(&materials, &[7]).contains("case 3u, 9u: { return true; }"));
+        assert!(!shadow_solid(&materials, &[]).contains("case"));
+        assert!(!shadow_solid(&materials, &[5]).contains("case"));
     }
 
     #[test]

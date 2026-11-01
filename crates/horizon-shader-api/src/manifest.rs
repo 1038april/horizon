@@ -333,9 +333,12 @@ impl Manifest {
                 )));
             }
         }
-        if !raw.materials.is_empty() && raw.material.is_none() {
+        let solid_ids = raw.shadow.iter().any(|s| !s.solid_materials.is_empty());
+        if !raw.materials.is_empty() && raw.material.is_none() && !solid_ids {
             return Err(err(
-                "materials are read by the material stage: give it a [material]".into(),
+                "materials are read by the material stage and shadow.solid_materials: \
+                 give it a [material] or use them there"
+                    .into(),
             ));
         }
         if raw.materials.len() > MAX_MATERIALS {

@@ -158,6 +158,21 @@ fn material_ids_go_by_the_first_entry_and_may_cut_shadows_whole() {
         "[shadow]\nsolid_materials = [3]\n",
         "no [[materials]] entry",
     );
+
+    // Without a material stage, only the shadow pass can read the ids.
+    let post_only = |rest: &str| {
+        Manifest::parse(&format!(
+            "schema = 1\nid = \"a\"\nname = \"A\"\nversion = \"1\"\napi = \"0.1\"\n\
+             [[post]]\nfile = \"p.wgsl\"\n[[materials]]\nid = 7\nsprites = [\"a\"]\n{rest}"
+        ))
+    };
+    assert!(post_only("[shadow]\nsolid_materials = [7]\n").is_ok());
+    assert!(
+        post_only("")
+            .unwrap_err()
+            .to_string()
+            .contains("materials are read")
+    );
 }
 
 #[test]
