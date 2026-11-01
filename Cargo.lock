@@ -1510,6 +1510,7 @@ dependencies = [
 name = "horizon-optifine"
 version = "0.1.0"
 dependencies = [
+ "horizon-bench",
  "regex",
  "serde_json",
 ]
