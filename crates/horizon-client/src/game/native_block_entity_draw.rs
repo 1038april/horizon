@@ -99,9 +99,11 @@ impl BlockEntityDraw {
     /// `native_block_entity_render_bounding_box` called, until its state,
     /// its block entity (what the server sent), its light or the resource
     /// packs change. Call it only when what you drew reads none of
-    /// `partial`, `game_time` or anything else of yours, and moves nothing
-    /// by itself (an enchanted item's glint stands still): an idle machine,
-    /// not a turning shaft. API @API:block_entity_keep@.
+    /// `partial`, `game_time`, the blocks around it or anything else of
+    /// yours, and moves nothing by itself: an idle machine, not a turning
+    /// shaft. Kept geometry stands still: an enchanted item's glint, and an
+    /// item drawn with `native_draw_item` whose model reads the time (a clock,
+    /// a compass), stop where they were. API @API:block_entity_keep@.
     pub fn keep(&mut self) {
         self.kept = true;
     }

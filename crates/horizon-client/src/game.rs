@@ -11771,6 +11771,7 @@ impl Game<'_> {
         self.boss_overlay.reset();
         // GameRenderer.resetData (Minecraft.clearClientLevel).
         self.item_activation.reset();
+        self.kept_block_entities.get_mut().clear();
         self.bosses = Default::default();
         self.streaming.paused = true;
         self.world = World::new(self.res.facts().air, 0);
