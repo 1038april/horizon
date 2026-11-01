@@ -50,6 +50,7 @@ pub mod illager;
 pub mod illusioner;
 pub mod item_break;
 pub mod keyframes;
+pub mod landing;
 pub mod leash;
 pub mod living;
 pub mod llama;
@@ -2344,6 +2345,8 @@ pub struct MobWorld<'a> {
     pub thundering: bool,
     pub nether: bool,
     pub block_tags: &'a HashMap<String, std::collections::HashSet<String>>,
+    /// Each block's `fallOn` rule (the player's landing registry).
+    pub landing: &'a horizon_world::block_landing::BlockLandingRegistry,
     pub biomes: &'a crate::biome::Biomes,
     /// The `mob_griefing` game rule.
     pub mob_griefing: bool,
