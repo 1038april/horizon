@@ -376,6 +376,11 @@ impl Game<'_> {
                 Event::ShaderPack => self.settings.save(&Self::options_path()),
                 Event::OpenShaderOptions => self.open_shader_options(),
                 Event::ShaderOptions => self.save_shader_options(),
+                Event::NativePackOptions(i) => {
+                    if let Some(pack) = self.settings.shader_packs.get(i) {
+                        pack.save_values(&Self::shader_packs_dir());
+                    }
+                }
                 Event::OpenShaderPackFolder => {
                     let dir = Self::shader_packs_dir();
                     let _ = std::fs::create_dir_all(&dir);
