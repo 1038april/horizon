@@ -314,6 +314,13 @@ impl Game<'_> {
                 && (hit.point[2] - box_.position.z).abs() <= half
                 && hit.point[1] >= box_.position.y - 1.0e-6
                 && hit.point[1] <= box_.position.y + box_.height + 1.0e-6
+                // The knot is an entity: a hit on it counts only within the
+                // entity interaction range (`filterHitResult`), shorter than
+                // the block range the fence was hit at.
+                && self.eye_position().is_some_and(|eye| {
+                    let d = [0, 1, 2].map(|i| hit.point[i] - eye[i]);
+                    d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= self.entity_reach * self.entity_reach
+                })
         };
         let held_item = self.held().map(|s| s.item.to_string());
         let sneaking = self.keys.contains(&winit::keyboard::KeyCode::ShiftLeft);

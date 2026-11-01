@@ -6150,8 +6150,11 @@ impl Game<'_> {
                     .filter(|(feet, _)| distance(feet) < 64.0)
                     .min_by(|a, b| distance(&a.0).total_cmp(&distance(&b.0)))
                     .map(|(_, target)| *target);
-                // Entity.commonTick: LinearInterpolationHandler.doInterpolate
-                // moves 1/remaining of the way to the server's position first.
+                // Entity.commonTick: setOldPosAndRot, then
+                // LinearInterpolationHandler.doInterpolate moves 1/remaining of
+                // the way to the server's position, so the frame draws the step
+                // from the old position.
+                let old = o.position;
                 if let Some(l) = lerps.get_mut(&(o.id as i32)).filter(|l| l.steps > 0) {
                     let alpha = 1.0 / f64::from(l.steps);
                     o.position = Vec3::new(
@@ -6163,6 +6166,9 @@ impl Game<'_> {
                 }
                 let before = o.position;
                 let kept = o.tick(world, facts, collision, target, &mut next_float);
+                // `tick` set `previous` to the stepped position: keep the
+                // pre-step one, as `xo` is in vanilla.
+                o.previous = old;
                 // AbstractInterpolationHandler.applyPredictedMovement: the orb's
                 // own move carries the target along (vanilla also checks the
                 // moved target for collisions; that check is left out here).
