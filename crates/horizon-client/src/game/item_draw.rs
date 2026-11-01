@@ -272,7 +272,9 @@ impl Game<'_> {
             self.native_use_duration(stack, &mut duration);
             owner.using_this_item = true;
             owner.use_duration = duration;
-            owner.use_item_remaining_ticks = duration - ticks as i32;
+            // getUseItemRemainingTicks: the duration the use started with,
+            // as LivingEntityUseItemEvent.Start left it (`start_using_item`).
+            owner.use_item_remaining_ticks = self.use_duration - ticks as i32;
             owner.crossbow_charge_duration = Self::charge_ticks(stack).max(1) as i32;
         }
         owner.fishing_cast_with_this_item = stack

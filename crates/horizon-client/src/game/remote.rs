@@ -3451,6 +3451,14 @@ impl Game<'_> {
                                 self.using = synced_local_use(using, *flags, selected, |slot| {
                                     self.stack_in(slot).is_some()
                                 });
+                                // onSyncedDataUpdated's useItemRemaining: getUseDuration,
+                                // without startUsingItem's event.
+                                if using.is_none()
+                                    && let Some((slot, _)) = self.using
+                                    && let Some(stack) = self.stack_in(slot).cloned()
+                                {
+                                    self.use_duration = self.use_duration(&stack);
+                                }
                             }
                             _ => {}
                         }
@@ -7768,7 +7776,8 @@ impl Game<'_> {
         // Consumable.shouldEmitParticlesAndSounds, as in tick_used_item. The
         // countdown goes on past zero (LivingEntity.updateUsingItem completes
         // only on the server) until the server's USE_ITEM_COMPLETE.
-        let remaining = consumable.ticks() - ticks as i32;
+        // getUseItemRemainingTicks: the duration this use started with.
+        let remaining = self.use_duration - ticks as i32;
         if consumable.should_emit(remaining) {
             // `emit_consume` plays the eat sound and spawns the bites (when the
             // item has consume particles), as `tick_used_item` does on the
