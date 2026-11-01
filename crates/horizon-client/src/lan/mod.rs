@@ -728,14 +728,19 @@ impl Shared {
     /// most and no connection that waits could be closed to make room ([`Shared::make_room`]).
     fn count(self: &Arc<Self>, ip: IpAddr) -> Option<Counted> {
         let most = self.max_players().saturating_add(SPARE_CONNECTIONS);
-        let mut by = self.by_address.lock().unwrap_or_else(|e| e.into_inner());
-        let here = by.get(&ip).copied().unwrap_or(0);
-        if here >= PER_ADDRESS && !shared_address(ip)
-            || self.connections.load(Ordering::Acquire) >= most && !self.make_room()
-        {
+        let here = |by: &HashMap<IpAddr, usize>| by.get(&ip).copied().unwrap_or(0);
+        let by = self.by_address.lock().unwrap_or_else(|e| e.into_inner());
+        if here(&by) >= PER_ADDRESS && !shared_address(ip) {
             return None;
         }
-        by.insert(ip, here + 1);
+        // make_room logs, which reads by_address: never call it holding that lock.
+        drop(by);
+        if self.connections.load(Ordering::Acquire) >= most && !self.make_room() {
+            return None;
+        }
+        let mut by = self.by_address.lock().unwrap_or_else(|e| e.into_inner());
+        let n = here(&by) + 1;
+        by.insert(ip, n);
         self.connections.fetch_add(1, Ordering::AcqRel);
         let id = self.next_connection.fetch_add(1, Ordering::Relaxed);
         Some(Counted(self.clone(), ip, id))
