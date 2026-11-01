@@ -3202,11 +3202,22 @@ impl Game<'_> {
     /// screen has the `NativeScreenView.id` `mod`, so a mod's screen hooks
     /// check `native_mod_screen()` is its own before drawing. It doesn't pause
     /// a single-player game (as the inventory doesn't). True when it is open:
-    /// false while another screen is (or another mod's), or on the title
-    /// screen. API @API:native_mod_screen@.
+    /// false while another screen is (or another mod's), over the title
+    /// screen, a book, a sign editor, a dialog or a prompt, while the world
+    /// loads, and anywhere but the window's own client (the server thread, a
+    /// dedicated server). A gamepad can close it (B, Start) but not click on
+    /// it: its clicks don't reach the mouse hooks. API @API:native_mod_screen@.
     pub(super) fn native_mod_screen_open(&mut self, mod_id: &str) -> bool {
+        // What `screen_hooks_open` would refuse over the world: the mod's
+        // screen would be up with no hook to draw or click it.
+        let blocked = self.title.is_some()
+            || self.renderer.is_none()
+            || self.lan_acting.is_some()
+            || self.player.is_none()
+            || self.screen_over_playing()
+            || self.remote_loading();
         let owner = self.native_mod_screen();
-        if let Some(open) = mod_screen_opens(self.screen, self.title.is_some(), owner, mod_id) {
+        if let Some(open) = mod_screen_opens(self.screen, blocked, owner, mod_id) {
             return open;
         }
         self.native_mod_screen = Some(mod_id.to_owned());
@@ -4423,19 +4434,20 @@ fn box_meets(b: &horizon_core::geometry::Aabb, min: [f64; 3], max: [f64; 3]) -> 
         && hi.z > min[2]
 }
 
-/// What `native_mod_screen_open(mod_id)` does over `screen` (the title screen
-/// up or not, `owner`'s own screen open): `None` opens it, `Some` answers
-/// without changing anything (true: `mod_id`'s is already open).
+/// What `native_mod_screen_open(mod_id)` does over `screen` (`blocked`: an
+/// overlay, the title screen, no window or no player; `owner`'s own screen
+/// open): `None` opens it, `Some` answers without changing anything (true:
+/// `mod_id`'s is already open).
 fn mod_screen_opens(
     screen: Screen,
-    title: bool,
+    blocked: bool,
     owner: Option<&str>,
     mod_id: &str,
 ) -> Option<bool> {
     if screen == Screen::Mod {
         return Some(owner == Some(mod_id));
     }
-    if screen != Screen::Playing || title {
+    if screen != Screen::Playing || blocked {
         return Some(false);
     }
     None
@@ -4445,7 +4457,8 @@ fn mod_screen_opens(
 mod tests {
 
     /// A mod's own screen opens only over the world, never over another
-    /// screen, the title screen or another mod's; opening it again is a no-op.
+    /// screen, an overlay (the title screen, a book, loading, no window) or
+    /// another mod's; opening it again is a no-op.
     #[test]
     fn a_mod_screen_opens_only_over_the_world() {
         use super::{Screen, mod_screen_opens};
