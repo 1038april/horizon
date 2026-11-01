@@ -46,6 +46,7 @@ hardcore = false             # one life: a player who dies becomes a spectator
 path = ""                    # the game program; empty: the one installed beside horizon-server
 resources = ""               # the prepared game files; empty: resources/ here, else the usual places
 restart_on_crash = true      # start the game again when it crashes
+low_memory = false           # true: no transparent huge pages, ~60 MB less idle for ~1 % more tick time
 
 [backups]
 every = "6h"                 # automatic backups while the server runs: 30m, 6h, 1d...; "0" turns them off
@@ -69,8 +70,9 @@ webhook = ""                 # the channel's webhook URL (a secret: anyone with 
 events = ["chat", "join", "leave", "death"]   # what is posted; "kick" too if you like
 enabled = true               # false pauses it and keeps the webhook
 
-# Horizon's anticheat (docs/anticheat.md) is on: `combat` drops and kicks attacks no vanilla client sends;
-# timer, ground and prediction only write logs/anticheat.log until they're trusted. To change it:
+# Horizon's anticheat (docs/anticheat.md) is on: `combat` drops attacks no vanilla client sends and
+# `ground` the false ground claims of a no-fall or a walk on water; both kick, and ban at the second kick.
+# timer and prediction only write logs/anticheat.log until they're trusted. To change it:
 # [anticheat]
 # enabled = true             # false: the server checks only what vanilla's checks
 # alerts = true              # tell online operators (alert_level = 2) in their chat; the console always is
@@ -81,6 +83,7 @@ enabled = true               # false pauses it and keeps the webhook
 # alert = 5
 # kick = 20
 # decay = 0.02               # violation level lost each second
+# ban_after = 0              # the kick (counting this check's earlier ones) that bans instead; 0: never
 
 # The chat filter (docs/chat-filter.md) is on: a message, sign, anvil name or book title with a hate slur reaches
 # nobody, the sender is told, and logs/chat-filter.log keeps it for operators. To change it:
@@ -191,6 +194,8 @@ pub struct Engine {
     pub path: String,
     pub resources: String,
     pub restart_on_crash: bool,
+    /// The game without transparent huge pages (docs/hosting.md): less memory, slightly slower ticks.
+    pub low_memory: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -337,6 +342,7 @@ impl Default for Engine {
             path: String::new(),
             resources: String::new(),
             restart_on_crash: true,
+            low_memory: false,
         }
     }
 }
@@ -504,6 +510,7 @@ pub fn render(config: &Config) -> String {
         ("engine", "path"),
         ("engine", "resources"),
         ("engine", "restart_on_crash"),
+        ("engine", "low_memory"),
         ("backups", "every"),
         ("backups", "keep"),
         ("updates", "keep"),
