@@ -227,7 +227,7 @@ impl ShadowMap {
         label: &str,
         timing: Option<&mut super::pack_timing::PassTiming>,
     ) -> wgpu::RenderPass<'e> {
-        self.depth_pass(encoder, label, wgpu::LoadOp::Clear(1.0))
+        self.depth_pass(encoder, label, wgpu::LoadOp::Clear(1.0), timing)
     }
 
     /// A depth pass that adds to the map. Entities draw here, after the translucent map was
@@ -237,7 +237,7 @@ impl ShadowMap {
         encoder: &'e mut wgpu::CommandEncoder,
         label: &str,
     ) -> wgpu::RenderPass<'e> {
-        self.depth_pass(encoder, label, wgpu::LoadOp::Load)
+        self.depth_pass(encoder, label, wgpu::LoadOp::Load, None)
     }
 
     fn depth_pass<'e>(
@@ -245,6 +245,7 @@ impl ShadowMap {
         encoder: &'e mut wgpu::CommandEncoder,
         label: &str,
         load: wgpu::LoadOp<f32>,
+        timing: Option<&mut super::pack_timing::PassTiming>,
     ) -> wgpu::RenderPass<'e> {
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some(label),
