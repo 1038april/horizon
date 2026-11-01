@@ -1179,8 +1179,7 @@ impl Game<'_> {
             return false;
         }
         // ServerPlayer.openMenu closes the menu that was open.
-        self.guest_container_closed(host, conn);
-        self.lan_station_closed(host, conn, None);
+        self.guest_close_all(host, conn);
         let hidden = self.native_hidden_slots(pos, items.len());
         host.hub
             .open_container(conn, menu, title, pos, slots, items);
@@ -1228,8 +1227,7 @@ impl Game<'_> {
             return false;
         };
         // ServerPlayer.openMenu closes the menu that was open.
-        self.guest_container_closed(host, conn);
-        self.lan_station_closed(host, conn, None);
+        self.guest_close_all(host, conn);
         host.hub
             .open_container(conn, menu, title, pos, slots, items);
         true

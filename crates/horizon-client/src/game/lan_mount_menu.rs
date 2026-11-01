@@ -31,10 +31,8 @@ impl Game<'_> {
             return;
         };
         let columns = super::mount_menu::mount_columns(&self.mobs[index]);
-        self.lan_mount_closed(host, conn, None);
-        self.lan_station_closed(host, conn, None);
-        self.lan_crafting_closed(host, conn, None);
-        self.guest_container_closed(host, conn);
+        // ServerPlayer.openMenu closes the menu that was open.
+        self.guest_close_all(host, conn);
         let Some(window) = host.hub.open_mount_window(conn, columns as i32, mob as i32) else {
             return;
         };
