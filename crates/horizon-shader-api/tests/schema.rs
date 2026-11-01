@@ -476,3 +476,60 @@ fn a_weather_stage_is_a_stage_of_its_own() {
     assert_eq!(m.weather.as_ref().unwrap().file, "w.wgsl");
     assert_eq!(m.files(), ["w.wgsl"]);
 }
+
+fn png_bytes() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut encoder = png::Encoder::new(&mut bytes, 2, 1);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().unwrap();
+    writer.write_image_data(&[255, 0, 0, 0, 255, 0]).unwrap();
+    writer.finish().unwrap();
+    bytes
+}
+
+#[test]
+fn a_pack_texture_is_declared_for_every_stage_and_decoded() {
+    let head = "schema = 1\nid = \"a\"\nname = \"A\"\nversion = \"1\"\napi = \"0.1\"\n\
+                [sky]\nfile = \"s.wgsl\"\n";
+    let texture = "[[textures]]\nid = \"noise\"\nfile = \"noise.png\"\nwrap = \"clamp\"\n";
+    let dir = std::env::temp_dir().join(format!("horizon-pack-texture-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(MANIFEST), format!("{head}{texture}")).unwrap();
+    std::fs::write(
+        dir.join("s.wgsl"),
+        "fn sky(input: SkyInput) -> vec4<f32> {\n    \
+         return textureSampleLevel(noise, noise_sampler, input.direction.xy, 0.0);\n}\n",
+    )
+    .unwrap();
+    // Named but missing, then present.
+    assert!(Pack::read(&dir).unwrap_err().contains("noise.png"));
+    std::fs::write(dir.join("noise.png"), png_bytes()).unwrap();
+    let pack = Pack::read(&dir).unwrap();
+    let t = &pack.manifest.textures[0];
+    assert!(t.linear && !t.repeat);
+    let report = horizon_shader_api::check(&pack).unwrap();
+    let image = &report.textures[0].1;
+    assert_eq!((image.width, image.height), (2, 1));
+    assert_eq!(image.rgba, [255, 0, 0, 255, 0, 255, 0, 255]);
+    // A file that is no PNG is the check's refusal, not a panic.
+    std::fs::write(dir.join("noise.png"), b"nope").unwrap();
+    let pack = Pack::read(&dir).unwrap();
+    assert!(horizon_shader_api::check(&pack).is_err());
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    let refused = |rest: &str, needle: &str| {
+        let e = Manifest::parse(&format!("{head}{rest}"))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains(needle), "{e}");
+    };
+    refused(&texture.replace("noise.png", "noise.jpg"), ".png");
+    refused(&format!("{texture}{texture}"), "declared twice");
+    refused(&texture.replace("clamp", "mirror"), "repeat or clamp");
+    refused(
+        &format!("{texture}filter = \"cubic\"\n"),
+        "linear or nearest",
+    );
+}

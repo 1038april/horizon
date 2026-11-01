@@ -140,6 +140,22 @@ sprites = ["block/*_leaves"]
 solid_materials = [10]   # these cast whole shadows: their cutouts are ignored in the shadow map
 ```
 
+## Textures
+
+Each `[[textures]]` entry is a PNG in the pack that every stage reads under the name of its `id`, with a sampler named
+`<id>_sampler`. Eight at most, without mipmaps; `filter` is `linear` (the default) or `nearest`, `wrap` is `repeat` (the
+default) or `clamp`:
+
+```toml
+[[textures]]
+id = "noise"
+file = "noise.png"
+```
+
+```wgsl
+let n = textureSample(noise, noise_sampler, input.uv);
+```
+
 ## Options
 
 A picked pack with options gets a Shader Options... button at the top of the Shader Packs page. A click picks an

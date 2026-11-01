@@ -4211,7 +4211,7 @@ impl Renderer {
             weather_groups: [&self.weather.entity_layout, &self.weather.time_layout],
         };
         let (pack, labels) =
-            native_pack::NativePack::new(&self.device, &terrain, report, &constants)?;
+            native_pack::NativePack::new(&self.device, &self.queue, &terrain, report, &constants)?;
         self.native = pack.draws().then_some(pack);
         if self.native.is_some() {
             self.pack_post = None;
