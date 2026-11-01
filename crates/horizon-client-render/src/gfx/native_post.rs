@@ -821,6 +821,7 @@ pub fn frame_inputs(
         water_plane: frame.water_plane.unwrap_or(0.0),
         has_reflection: u32::from(frame.water_plane.is_some()),
         reflection_resolution: reflection_size(size).map(|s| s as f32),
+        mods: pack.mod_params,
         light_direction: match shadow {
             Some(s) => super::pack_uniforms::shadow_light(frame, s),
             None => Vec3::Y,

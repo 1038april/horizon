@@ -107,6 +107,8 @@ stages.
 
 ## Changelog
 
+- 2026-10-31: API 0.1 (additions): `Frame.mods`, eight `vec4<f32>` a native mod hands the pack it bundles each
+  frame (`native_shader_params` in docs/native-mods.md), all 0 when no mod sets them.
 - 2026-10-31: API 0.1 (additions): `[shadow]`: the engine draws the solid terrain the light sees
   into a distorted depth map each frame, which the material and post stages read as `shadow_map`
   with `shadow_sampler` and the prelude's `shadow_position`; the frame's `light_direction`,

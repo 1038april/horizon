@@ -715,6 +715,61 @@ pub(crate) struct NativeZoom {
     pub(crate) turn: f32,
 }
 
+/// The camera shake native mods ask for (`native_camera_shake`): turns in
+/// degrees, and an offset in blocks along the camera's right, up and back.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct NativeShake {
+    pub(crate) pitch: f32,
+    pub(crate) yaw: f32,
+    pub(crate) roll: f32,
+    pub(crate) offset: [f32; 3],
+}
+
+/// The largest turn a shake gives, in degrees, on each axis.
+const SHAKE_MAX_DEGREES: f32 = 10.0;
+/// The largest offset a shake gives, in blocks, along each axis.
+const SHAKE_MAX_OFFSET: f32 = 0.5;
+
+/// `shake` scaled by `scale` (Distortion Effects) and bounded on each axis;
+/// a value that isn't finite counts as none.
+fn bounded_shake(shake: NativeShake, scale: f32) -> NativeShake {
+    let scale = if scale.is_finite() {
+        scale.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let turn = |v: f32| {
+        if v.is_finite() {
+            (v * scale).clamp(-SHAKE_MAX_DEGREES, SHAKE_MAX_DEGREES)
+        } else {
+            0.0
+        }
+    };
+    let shift = |v: f32| {
+        if v.is_finite() {
+            (v * scale).clamp(-SHAKE_MAX_OFFSET, SHAKE_MAX_OFFSET)
+        } else {
+            0.0
+        }
+    };
+    NativeShake {
+        pitch: turn(shake.pitch),
+        yaw: turn(shake.yaw),
+        roll: turn(shake.roll),
+        offset: shake.offset.map(shift),
+    }
+}
+
+/// The pose a bounded shake multiplies into the projection, after the view
+/// bobbing: the offset, then roll, pitch and yaw.
+fn shake_pose(shake: NativeShake) -> glam::Mat4 {
+    let [x, y, z] = shake.offset;
+    glam::Mat4::from_translation(glam::Vec3::new(-x, -y, -z))
+        * glam::Mat4::from_rotation_z(shake.roll.to_radians())
+        * glam::Mat4::from_rotation_x(shake.pitch.to_radians())
+        * glam::Mat4::from_rotation_y(shake.yaw.to_radians())
+}
+
 /// The minimap a native mod shows (`native_minimap`), drawn by Horizon's
 /// minimap: its corner, its side in GUI pixels, blocks per map pixel,
 /// turning with the player or north up, round or square.
@@ -1186,6 +1241,26 @@ impl Game<'_> {
     /// own view wins): set `zoom` when it is none yet.
     pub(super) fn native_zoom(&self, zoom: &mut Option<NativeZoom>) {
         let _ = zoom;
+    }
+    /// The camera shake native mods ask for in this frame, `partial` ticks
+    /// past the last tick (0 to 1): add your pitch, yaw and roll in degrees
+    /// and your offset in blocks, along the camera's right, up and back, to
+    /// `shake`, so several mods' shakes add up. Read while playing only;
+    /// Horizon scales the sum by Distortion Effects and bounds it
+    /// (`native_shake_matrix`). API @API:native_camera_shake@.
+    pub(super) fn native_camera_shake(&self, partial: f32, shake: &mut NativeShake) {
+        let _ = (partial, shake);
+    }
+
+    /// The values native mods hand their shader packs in this frame,
+    /// `partial` ticks past the last tick (0 to 1): a pack's WGSL reads
+    /// them as `frame.mods` (eight `vec4<f32>`). Write the slots your own
+    /// pack reads; a mod that bundles its pack as `native-<mod id>` is the
+    /// one that pack is for. Asked once a frame while a pack is on; a value
+    /// that isn't finite reads as 0 (`native_shader_params_now`). API
+    /// @API:native_shader_params@.
+    pub(super) fn native_shader_params(&self, partial: f32, params: &mut [[f32; 4]; 8]) {
+        let _ = (partial, params);
     }
     /// The minimap a native mod shows: set `minimap` when it is none yet.
     pub(super) fn native_minimap(&self, minimap: &mut Option<NativeMinimap>) {
@@ -2677,6 +2752,29 @@ impl Game<'_> {
     pub(super) fn native_window(&self) -> bool {
         self.options.execution_role == ExecutionRole::Client
     }
+    /// Plays sound event `sound` (`minecraft:entity.generic.explode`, or a
+    /// mod's own from its `assets/<id>/sounds.json`) at `at` for this
+    /// player only, `delay` ticks from now (0 to 1200, a minute): a client
+    /// mod's sound that waits, as thunder heard after the flash or a blast
+    /// heard when its shock wave arrives. `volume` past 1 carries farther,
+    /// as vanilla's attenuation does (16 blocks times the volume). False, with
+    /// nothing played, on a server or for a value out of range; an event the
+    /// resources don't have plays nothing, as vanilla's. API
+    /// @API:native_local_sound@.
+    pub(super) fn native_play_local_sound(
+        &mut self,
+        sound: &str,
+        at: [f64; 3],
+        volume: f32,
+        pitch: f32,
+        delay: i32,
+    ) -> bool {
+        if !self.native_window() || !local_sound_ok(sound, at, volume, pitch, delay) {
+            return false;
+        }
+        self.audio.play_after(sound, at, volume, pitch, delay);
+        true
+    }
     /// Whether a box in `corner` shows: F3's debug screen takes both top
     /// corners (its left and right columns), and a bottom corner while one
     /// of its charts is drawn there.
@@ -3768,6 +3866,27 @@ impl Game<'_> {
             },
         })
     }
+    /// The pose of native mods' camera shake in this frame (`native_camera_shake`),
+    /// none while not playing.
+    pub(super) fn native_shake_matrix(&self, partial: f32) -> glam::Mat4 {
+        if !self.native_playing() {
+            return glam::Mat4::IDENTITY;
+        }
+        let mut shake = NativeShake::default();
+        self.native_camera_shake(partial, &mut shake);
+        if shake == NativeShake::default() {
+            return glam::Mat4::IDENTITY;
+        }
+        shake_pose(bounded_shake(shake, self.screen_effect_scale()))
+    }
+
+    /// What native mods hand shader packs in this frame (`native_shader_params`),
+    /// with values that aren't finite as 0.
+    pub(super) fn native_shader_params_now(&self, partial: f32) -> [[f32; 4]; 8] {
+        let mut params = [[0.0; 4]; 8];
+        self.native_shader_params(partial, &mut params);
+        finite_params(params)
+    }
     /// The minimap a native mod shows.
     pub(super) fn native_minimap_now(&self) -> Option<NativeMinimap> {
         let mut minimap = None;
@@ -3835,6 +3954,25 @@ fn config_dir(options: &Path) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// `params` with each value that isn't finite as 0, so a mod's mistake can't
+/// put a NaN in every pixel of a pack's picture.
+fn finite_params(params: [[f32; 4]; 8]) -> [[f32; 4]; 8] {
+    params.map(|v| v.map(|x| if x.is_finite() { x } else { 0.0 }))
+}
+
+/// Whether `native_play_local_sound` takes these values: a sound event's id
+/// (`sound_id`, as `native_play_sound` takes), a finite position, a volume
+/// and pitch at or above 0, and a delay of a minute at most.
+fn local_sound_ok(sound: &str, at: [f64; 3], volume: f32, pitch: f32, delay: i32) -> bool {
+    sound_id(sound)
+        && at.iter().all(|v| v.is_finite() && v.abs() <= 30_000_000.0)
+        && volume.is_finite()
+        && volume >= 0.0
+        && pitch.is_finite()
+        && pitch >= 0.0
+        && (0..=1200).contains(&delay)
+}
+
 /// `v` within `lo..=hi`; `lo` when it is not a number.
 fn finite(v: f32, lo: f32, hi: f32) -> f32 {
     if v.is_finite() { v.clamp(lo, hi) } else { lo }
@@ -3867,6 +4005,70 @@ fn box_meets(b: &horizon_core::geometry::Aabb, min: [f64; 3], max: [f64; 3]) -> 
 
 #[cfg(test)]
 mod tests {
+
+    /// A shake is scaled by Distortion Effects, bounded on each axis, and a
+    /// value that isn't finite is none.
+    #[test]
+    fn a_shake_is_scaled_and_bounded() {
+        use super::{NativeShake, bounded_shake, shake_pose};
+        let shake = NativeShake {
+            pitch: 4.0,
+            yaw: -30.0,
+            roll: f32::NAN,
+            offset: [0.2, 2.0, f32::INFINITY],
+        };
+        assert_eq!(
+            bounded_shake(shake, 1.0),
+            NativeShake {
+                pitch: 4.0,
+                yaw: -10.0,
+                roll: 0.0,
+                offset: [0.2, 0.5, 0.0],
+            }
+        );
+        assert_eq!(bounded_shake(shake, 0.5).pitch, 2.0);
+        assert_eq!(bounded_shake(shake, 0.0), NativeShake::default());
+        assert_eq!(shake_pose(NativeShake::default()), glam::Mat4::IDENTITY);
+    }
+
+    /// A mod's shader values that aren't finite read as 0.
+    #[test]
+    fn shader_params_that_arent_finite_read_as_zero() {
+        let mut params = [[1.0; 4]; 8];
+        params[0] = [f32::NAN, 2.0, f32::INFINITY, -3.0];
+        let out = super::finite_params(params);
+        assert_eq!(out[0], [0.0, 2.0, 0.0, -3.0]);
+        assert_eq!(out[7], [1.0; 4]);
+    }
+
+    /// A client mod's sound needs a namespaced event, finite values and a
+    /// delay of a minute at most.
+    #[test]
+    fn a_local_sound_is_checked() {
+        use super::local_sound_ok;
+        let at = [0.5, 64.0, 0.5];
+        assert!(local_sound_ok("ironfall:boom_far", at, 8.0, 1.0, 140));
+        assert!(local_sound_ok(
+            "minecraft:entity.generic.explode",
+            at,
+            1.0,
+            1.0,
+            0
+        ));
+        assert!(!local_sound_ok("boom", at, 1.0, 1.0, 0));
+        assert!(!local_sound_ok("ironfall:", at, 1.0, 1.0, 0));
+        assert!(!local_sound_ok("Ironfall:Boom", at, 1.0, 1.0, 0));
+        assert!(!local_sound_ok(
+            "ironfall:boom",
+            [f64::NAN, 0.0, 0.0],
+            1.0,
+            1.0,
+            0
+        ));
+        assert!(!local_sound_ok("ironfall:boom", at, -1.0, 1.0, 0));
+        assert!(!local_sound_ok("ironfall:boom", at, 1.0, 1.0, 1201));
+        assert!(!local_sound_ok("ironfall:boom", at, 1.0, 1.0, -1));
+    }
 
     /// `native_play_sound` takes vanilla's and mods' sound ids, nothing else.
     #[test]
