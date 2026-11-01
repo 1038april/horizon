@@ -182,4 +182,4 @@ without the pack.
 
 ## Next
 
-The overlay, lighting and shadow stages, and option values other than the defaults.
+The overlay and lighting stages, and option values other than the defaults.

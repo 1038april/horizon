@@ -606,6 +606,15 @@ impl Game<'_> {
         }
         Some(v)
     }
+    /// How many slots `station_slots` lists, counted without building it
+    /// (`Game::slot_count` asks every frame): same branches, same order.
+    pub(super) fn station_slot_count(&self) -> Option<usize> {
+        if self.brewing_open() {
+            return Some(36 + 5);
+        }
+        let s = self.station.as_ref()?;
+        Some(36 + s.inputs.len() + usize::from(s.kind.result_pos().is_some()))
+    }
     pub(super) fn station_slot_position(&self, i: usize) -> Option<(f32, f32)> {
         if self.brewing_open() && (300..305).contains(&i) {
             return Some(
@@ -2459,7 +2468,7 @@ impl Game<'_> {
                     "item.durability",
                     &[
                         horizon_client::text::Text::literal(
-                            (info.max_damage - stack.damage).to_string(),
+                            info.max_damage.saturating_sub(stack.damage).to_string(),
                         ),
                         horizon_client::text::Text::literal(info.max_damage.to_string()),
                     ],
