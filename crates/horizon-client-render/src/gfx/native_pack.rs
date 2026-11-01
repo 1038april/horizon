@@ -18,6 +18,7 @@ pub struct NativePack {
     pub vanilla_clouds: bool,
     pub vanilla_sun: bool,
     pub vanilla_stars: bool,
+    pub weather: Option<wgpu::RenderPipeline>,
     /// The draw of the shadow map the stages read, if the pack asks for one.
     pub shadow: Option<NativeShadow>,
     /// GPU time of each pass, while the renderer asks for it (`pack_timing.rs`).
@@ -66,6 +67,27 @@ impl NativePack {
         let vanilla_clouds = keeps(|s| s.clouds);
         let vanilla_sun = keeps(|s| s.sun);
         let vanilla_stars = keeps(|s| s.stars);
+        let weather = report
+            .stages
+            .iter()
+            .find(|s| s.kind == StageKind::Weather)
+            .map(|stage| {
+                super::weather::native_pipeline(
+                    device,
+                    format,
+                    terrain.weather_groups[0],
+                    terrain.weather_groups[1],
+                    &frame,
+                    stage,
+                    constants,
+                )
+            })
+            .transpose()?;
+        let weather_label = report
+            .stages
+            .iter()
+            .find(|s| s.kind == StageKind::Weather)
+            .map(|s| s.label.clone());
         let (post, others): (Vec<_>, Vec<_>) = report
             .stages
             .into_iter()
@@ -90,6 +112,7 @@ impl NativePack {
                 .filter(|s| material.is_some() && s.kind == StageKind::Material)
                 .map(|s| s.label.clone()),
         );
+        labels.extend(weather_label);
         if let Some(post) = &post {
             labels.extend(post.labels().into_iter().map(str::to_owned));
         }
@@ -101,6 +124,7 @@ impl NativePack {
             vanilla_clouds,
             vanilla_sun,
             vanilla_stars,
+            weather,
             shadow,
             timing: None,
         };
@@ -109,6 +133,9 @@ impl NativePack {
 
     /// Whether the pack draws anything the game runs today.
     pub fn draws(&self) -> bool {
-        self.sky.is_some() || self.material.is_some() || self.post.is_some()
+        self.sky.is_some()
+            || self.material.is_some()
+            || self.weather.is_some()
+            || self.post.is_some()
     }
 }

@@ -129,6 +129,9 @@ pub struct TerrainShape<'a> {
     pub sprite_materials: &'a [(u32, u32)],
     /// The entities' group 0 (their atlas), for the shadow pass's entity draw.
     pub entities: &'a wgpu::BindGroupLayout,
+    /// The weather's groups 0 and 1 (the entities' atlas, the fall clock), for the weather
+    /// stage.
+    pub weather_groups: [&'a wgpu::BindGroupLayout; 2],
 }
 
 /// The pack's terrain pipelines: solid (with the cutout test) and translucent, for the

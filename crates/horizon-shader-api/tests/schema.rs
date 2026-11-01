@@ -465,3 +465,14 @@ fn reads_settings_pages_and_refuses_broken_links() {
         assert!(e.contains(needle), "{needle:?} not in {e:?}");
     }
 }
+
+#[test]
+fn a_weather_stage_is_a_stage_of_its_own() {
+    let m = Manifest::parse(
+        "schema = 1\nid = \"a\"\nname = \"A\"\nversion = \"1\"\napi = \"0.1\"\n\
+         [weather]\nfile = \"w.wgsl\"\n",
+    )
+    .unwrap();
+    assert_eq!(m.weather.as_ref().unwrap().file, "w.wgsl");
+    assert_eq!(m.files(), ["w.wgsl"]);
+}

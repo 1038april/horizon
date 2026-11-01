@@ -60,6 +60,8 @@ file = "material.wgsl"
 files = ["pbr.wgsl"]       # optional, on any stage: WGSL put after `shared`, before this stage's file
 fog = false                # optional: the pack fogs its surfaces itself (Horizon does when absent or true)
 
+[weather]                  # the colour of rain and snow streaks
+file = "weather.wgsl"
 [shadow]                   # optional, needs [material] or [[post]]: a shadow map from the sun (the moon by night)
 resolution = 2048          # its side in texels, 256 to 8192
 distance = 128.0           # half the side of the square it covers, in blocks, 32 to 512
@@ -136,6 +138,8 @@ stages.
   cast: one off screen or behind a wall leaves the map, and its shadow with it.
 - 2026-11-01: API 0.1 (additions): `[sky] clouds`, `sun` and `stars`: a sky can replace Minecraft's.
 - 2026-11-01: API 0.1 (additions): `[[pages]]`, the layout of a pack's options page.
+- 2026-11-01: API 0.1 (additions): the `[weather]` stage
+  (`fn weather(input: WeatherInput) -> vec4<f32>`) colours rain and snow streaks.
 - 2026-10-31: API 0.1 (additions): translucent terrain in the shadow pass: `shadow_map_translucent`
   and `shadow_color`, so a pack can tint the light that passes through water and stained glass.
 - 2026-10-31: API 0.1 (additions): `Frame.mods`, eight `vec4<f32>` a native mod hands the pack it bundles each

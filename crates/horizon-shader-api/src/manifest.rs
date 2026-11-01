@@ -38,6 +38,8 @@ pub struct Manifest {
     pub shared: Vec<String>,
     pub sky: Option<Stage>,
     pub material: Option<Stage>,
+    /// The colour of rain and snow streaks (Minecraft's own when absent).
+    pub weather: Option<Stage>,
     /// Full-screen passes, in the order they run.
     pub post: Vec<Stage>,
     pub options: Vec<PackOption>,
@@ -263,6 +265,8 @@ struct Raw {
     sky: Option<Stage>,
     material: Option<Stage>,
     #[serde(default)]
+    weather: Option<Stage>,
+    #[serde(default)]
     post: Vec<Stage>,
     #[serde(default)]
     options: Vec<RawOption>,
@@ -327,9 +331,13 @@ impl Manifest {
         if raw.name.trim().is_empty() || raw.version.trim().is_empty() {
             return Err(err("name and version can't be empty".into()));
         }
-        if raw.sky.is_none() && raw.material.is_none() && raw.post.is_empty() {
+        if raw.sky.is_none()
+            && raw.material.is_none()
+            && raw.weather.is_none()
+            && raw.post.is_empty()
+        {
             return Err(err(
-                "no stage: give it a [sky], a [material] or a [[post]]".into()
+                "no stage: give it a [sky], a [material], a [weather] or a [[post]]".into(),
             ));
         }
         if raw.sky.iter().chain(&raw.post).any(|s| s.fog.is_some()) {
@@ -341,7 +349,12 @@ impl Manifest {
                 raw.post.len()
             )));
         }
-        let stages = raw.sky.iter().chain(&raw.material).chain(&raw.post);
+        let stages = raw
+            .sky
+            .iter()
+            .chain(&raw.material)
+            .chain(&raw.weather)
+            .chain(&raw.post);
         for file in raw
             .shared
             .iter()
@@ -474,6 +487,7 @@ impl Manifest {
             shared: raw.shared,
             sky: raw.sky,
             material: raw.material,
+            weather: raw.weather,
             post: raw.post,
             options,
             pages,
@@ -532,7 +546,12 @@ impl Manifest {
     /// Every WGSL file the manifest names, shared files first, each once.
     pub fn files(&self) -> Vec<&str> {
         let mut files: Vec<&str> = Vec::new();
-        let stages = self.sky.iter().chain(&self.material).chain(&self.post);
+        let stages = self
+            .sky
+            .iter()
+            .chain(&self.material)
+            .chain(&self.weather)
+            .chain(&self.post);
         for file in self
             .shared
             .iter()
