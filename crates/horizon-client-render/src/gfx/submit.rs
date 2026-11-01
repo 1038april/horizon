@@ -10,6 +10,18 @@ use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, mpsc};
 
+/// Whether frames go to the submit thread, unless `HORIZON_SUBMIT_THREAD` says (`0` off, `1` on):
+/// on Linux, where it was measured faster (+32% FPS in a CPU-bound view on Vulkan, #5779). On
+/// macOS's Metal it stalled: offscreen at render distance 12, a tenth to a half of the frame rate
+/// with 20-180 ms p99 frames, against the same binary without it. Windows is not measured yet.
+pub fn wanted() -> bool {
+    match std::env::var("HORIZON_SUBMIT_THREAD").as_deref() {
+        Ok("0") => false,
+        Ok("1") => true,
+        _ => cfg!(target_os = "linux"),
+    }
+}
+
 /// Work to start right after a frame's submission (a readback's `map_async`).
 pub type AfterSubmit = Box<dyn FnOnce() + Send>;
 
@@ -41,9 +53,8 @@ pub struct Queue {
 }
 
 impl Queue {
-    /// `threaded`: frames may go to a submit thread (`HORIZON_SUBMIT_THREAD=0` turns it off).
+    /// `threaded`: frames may go to a submit thread (the renderer asks [`wanted`]).
     pub fn new(queue: wgpu::Queue, threaded: bool) -> Self {
-        let threaded = threaded && std::env::var("HORIZON_SUBMIT_THREAD").as_deref() != Ok("0");
         let mut this = Self {
             queue,
             thread: None,

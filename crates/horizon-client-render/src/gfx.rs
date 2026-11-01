@@ -3259,7 +3259,7 @@ impl Renderer {
             last_encode: std::time::Duration::ZERO,
             window,
             device,
-            queue: submit::Queue::new(queue, true),
+            queue: submit::Queue::new(queue, submit::wanted()),
             deferred: None,
             device_lost,
             config,
