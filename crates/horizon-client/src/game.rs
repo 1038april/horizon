@@ -353,10 +353,11 @@ use horizon_world::{
     block_collision::BlockCollisionRegistry,
     collision_context::{CollisionContext, CollisionEntity, CollisionItem},
     entity_obstruction::{EntityIdentity, EntityObstructionWorld, ObstructionEntity},
+    fluid::FluidState,
     level::{
         Behaviours, BucketContent, Dimension as LevelDimension, EntityQuery, Landing, LevelAccess,
-        LevelEvent, PlaceContext, PlaceOutcome, PlayerContext, PlayerEffect, Ticks,
-        flags as level_flags,
+        LevelEvent, PlaceContext, PlaceOutcome, PlacementContext, PlayerContext, PlayerEffect,
+        Ticks, flags as level_flags,
     },
     registry::BlockStateId,
 };
@@ -1202,6 +1203,18 @@ impl LevelAccess for GameLevel<'_> {
                 neighbour,
                 new,
             );
+        }
+    }
+    #[allow(clippy::option_option)]
+    fn before_state_for_placement(
+        &self,
+        state: BlockStateId,
+        context: &PlacementContext,
+        fluid: FluidState,
+        answer: &mut Option<Option<BlockStateId>>,
+    ) {
+        if self.native_authoritative {
+            self.native_state_for_placement(self.dimension, state, context, fluid, answer);
         }
     }
     fn before_can_survive(&self, pos: BlockPos, state: BlockStateId, survives: &mut Option<bool>) {
