@@ -866,10 +866,10 @@ Changing loot a mod didn't make, as NeoForge's `LootTableLoadEvent` and global l
 `LootTableEvents.MODIFY` and `MODIFY_DROPS` do. A mod's own loot function and condition kinds are #5451.
 
 - **`horizon_world::loot::native_loot_table_load(id, table)`**: each table's JSON as it loads, after the data packs'. Push a pool
-  onto `table["pools"]` or an entry onto a pool's `entries`; chests, block and mob drops, fishing and the rest then roll the changed
-  table. It runs wherever tables load, a client too, so make the same change each time; a `/reload` may keep the tables already
-  loaded. It is a free function in `crates/horizon-world/src/loot.rs`, so a helper injected there compiles inside `horizon-world`,
-  without `crate::game`.
+  onto `table["pools"]` or an entry onto a pool's `entries`; chests, block and mob drops, fishing and the rest then roll the
+  changed table. Keep a replaced table's `random_sequence`: a mob's table without one drops nothing. It runs wherever tables load,
+  a client too, so make the same change each time; a `/reload` may keep the tables already loaded. It is a free function in
+  `crates/horizon-world/src/loot.rs`, so a helper injected there compiles inside `horizon-world`, without `crate::game`.
 - **`native_loot_drops(context, drops)`**: the items a broken block or a dead mob is about to drop, after its table rolled (a
   mob's worn and held items too, not an enderman's carried block). Add, change or take out stacks; empty ones don't drop.
   `NativeLootDrops` says what dropped them: the table rolled (empty when none did), the dimension, the origin, the block's position
