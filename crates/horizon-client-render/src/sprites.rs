@@ -384,7 +384,7 @@ impl Sprites {
             .as_deref()
             .map(AnimationMetadata::from_json)
             .transpose()?;
-        let (png_width, png_height, pixels) = read_rgba(&path)?;
+        let (png_width, png_height, pixels) = read_rgba(path)?;
         let (width, height) = if let Some(animation) = &animation {
             let [width, height] =
                 animation.frame_size(i32::try_from(png_width)?, i32::try_from(png_height)?);
