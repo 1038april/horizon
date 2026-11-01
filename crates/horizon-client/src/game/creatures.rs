@@ -5808,6 +5808,7 @@ impl Game<'_> {
         self.rendered_mobs.set(0);
         for mob in &self.mobs {
             let entity_start = out.len();
+            self.mark_motion(entity_start, (1 << 32) | u64::from(mob.id));
             let outline = self.mob_outline(mob);
             // Entity.DATA_SHARED_FLAGS_ID invisible: only the name tag draws (and
             // the outline of a glowing mob, LivingEntityRenderer.getRenderType).
@@ -5982,6 +5983,8 @@ impl Game<'_> {
                 );
             }
         }
+        // What follows isn't a tracked mob: close the last one's span.
+        self.mark_motion(out.len(), 0);
         self.elder_apparition_geometry(alpha, out);
         self.spawner_geometry(camera, alpha, out);
         // Projectiles: the baked vanilla arrow model, the rest as item billboards.

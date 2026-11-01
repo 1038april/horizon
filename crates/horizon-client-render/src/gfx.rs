@@ -392,6 +392,9 @@ pub struct Frame<'a> {
     pub nether_lighting: bool,
     /// Camera-relative entity geometry textured from the shared atlas.
     pub entities: &'a [Vertex],
+    /// Which entity `entities`' vertices belong to: (first vertex, entity id), each run up
+    /// to the next; id 0 for none. Frame generation follows these entities' own motion.
+    pub entity_motion: &'a [(u32, u64)],
     /// The glowing entities' silhouettes in their team colours (`OutlineBufferSource`),
     /// outlined through walls after the hand.
     pub glowing: &'a [Vertex],
