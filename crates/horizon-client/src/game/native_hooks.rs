@@ -1251,6 +1251,17 @@ impl Game<'_> {
     pub(super) fn native_camera_shake(&self, partial: f32, shake: &mut NativeShake) {
         let _ = (partial, shake);
     }
+
+    /// The values native mods hand their shader packs in this frame,
+    /// `partial` ticks past the last tick (0 to 1): a pack's WGSL reads
+    /// them as `frame.mods` (eight `vec4<f32>`). Write the slots your own
+    /// pack reads; a mod that bundles its pack as `native-<mod id>` is the
+    /// one that pack is for. Asked once a frame while a pack is on; a value
+    /// that isn't finite reads as 0 (`native_shader_params_now`). API
+    /// @API:native_shader_params@.
+    pub(super) fn native_shader_params(&self, partial: f32, params: &mut [[f32; 4]; 8]) {
+        let _ = (partial, params);
+    }
     /// The minimap a native mod shows: set `minimap` when it is none yet.
     pub(super) fn native_minimap(&self, minimap: &mut Option<NativeMinimap>) {
         let _ = minimap;
@@ -2741,6 +2752,29 @@ impl Game<'_> {
     pub(super) fn native_window(&self) -> bool {
         self.options.execution_role == ExecutionRole::Client
     }
+    /// Plays sound event `sound` (`minecraft:entity.generic.explode`, or a
+    /// mod's own from its `assets/<id>/sounds.json`) at `at` for this
+    /// player only, `delay` ticks from now (0 to 1200, a minute): a client
+    /// mod's sound that waits, as thunder heard after the flash or a blast
+    /// heard when its shock wave arrives. `volume` past 1 carries farther,
+    /// as vanilla's attenuation does (16 blocks times the volume). False, with
+    /// nothing played, on a server or for a value out of range; an event the
+    /// resources don't have plays nothing, as vanilla's. API
+    /// @API:native_local_sound@.
+    pub(super) fn native_play_local_sound(
+        &mut self,
+        sound: &str,
+        at: [f64; 3],
+        volume: f32,
+        pitch: f32,
+        delay: i32,
+    ) -> bool {
+        if !self.native_window() || !local_sound_ok(sound, at, volume, pitch, delay) {
+            return false;
+        }
+        self.audio.play_after(sound, at, volume, pitch, delay);
+        true
+    }
     /// Whether a box in `corner` shows: F3's debug screen takes both top
     /// corners (its left and right columns), and a bottom corner while one
     /// of its charts is drawn there.
@@ -3845,6 +3879,14 @@ impl Game<'_> {
         }
         shake_pose(bounded_shake(shake, self.screen_effect_scale()))
     }
+
+    /// What native mods hand shader packs in this frame (`native_shader_params`),
+    /// with values that aren't finite as 0.
+    pub(super) fn native_shader_params_now(&self, partial: f32) -> [[f32; 4]; 8] {
+        let mut params = [[0.0; 4]; 8];
+        self.native_shader_params(partial, &mut params);
+        finite_params(params)
+    }
     /// The minimap a native mod shows.
     pub(super) fn native_minimap_now(&self) -> Option<NativeMinimap> {
         let mut minimap = None;
@@ -3912,6 +3954,25 @@ fn config_dir(options: &Path) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// `params` with each value that isn't finite as 0, so a mod's mistake can't
+/// put a NaN in every pixel of a pack's picture.
+fn finite_params(params: [[f32; 4]; 8]) -> [[f32; 4]; 8] {
+    params.map(|v| v.map(|x| if x.is_finite() { x } else { 0.0 }))
+}
+
+/// Whether `native_play_local_sound` takes these values: a sound event's id
+/// (`sound_id`, as `native_play_sound` takes), a finite position, a volume
+/// and pitch at or above 0, and a delay of a minute at most.
+fn local_sound_ok(sound: &str, at: [f64; 3], volume: f32, pitch: f32, delay: i32) -> bool {
+    sound_id(sound)
+        && at.iter().all(|v| v.is_finite() && v.abs() <= 30_000_000.0)
+        && volume.is_finite()
+        && volume >= 0.0
+        && pitch.is_finite()
+        && pitch >= 0.0
+        && (0..=1200).contains(&delay)
+}
+
 /// `v` within `lo..=hi`; `lo` when it is not a number.
 fn finite(v: f32, lo: f32, hi: f32) -> f32 {
     if v.is_finite() { v.clamp(lo, hi) } else { lo }
@@ -3968,6 +4029,45 @@ mod tests {
         assert_eq!(bounded_shake(shake, 0.5).pitch, 2.0);
         assert_eq!(bounded_shake(shake, 0.0), NativeShake::default());
         assert_eq!(shake_pose(NativeShake::default()), glam::Mat4::IDENTITY);
+    }
+
+    /// A mod's shader values that aren't finite read as 0.
+    #[test]
+    fn shader_params_that_arent_finite_read_as_zero() {
+        let mut params = [[1.0; 4]; 8];
+        params[0] = [f32::NAN, 2.0, f32::INFINITY, -3.0];
+        let out = super::finite_params(params);
+        assert_eq!(out[0], [0.0, 2.0, 0.0, -3.0]);
+        assert_eq!(out[7], [1.0; 4]);
+    }
+
+    /// A client mod's sound needs a namespaced event, finite values and a
+    /// delay of a minute at most.
+    #[test]
+    fn a_local_sound_is_checked() {
+        use super::local_sound_ok;
+        let at = [0.5, 64.0, 0.5];
+        assert!(local_sound_ok("ironfall:boom_far", at, 8.0, 1.0, 140));
+        assert!(local_sound_ok(
+            "minecraft:entity.generic.explode",
+            at,
+            1.0,
+            1.0,
+            0
+        ));
+        assert!(!local_sound_ok("boom", at, 1.0, 1.0, 0));
+        assert!(!local_sound_ok("ironfall:", at, 1.0, 1.0, 0));
+        assert!(!local_sound_ok("Ironfall:Boom", at, 1.0, 1.0, 0));
+        assert!(!local_sound_ok(
+            "ironfall:boom",
+            [f64::NAN, 0.0, 0.0],
+            1.0,
+            1.0,
+            0
+        ));
+        assert!(!local_sound_ok("ironfall:boom", at, -1.0, 1.0, 0));
+        assert!(!local_sound_ok("ironfall:boom", at, 1.0, 1.0, 1201));
+        assert!(!local_sound_ok("ironfall:boom", at, 1.0, 1.0, -1));
     }
 
     /// `native_play_sound` takes vanilla's and mods' sound ids, nothing else.
