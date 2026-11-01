@@ -18619,7 +18619,10 @@ fn load_world_rest(
             .into_iter()
             .map(|(k, v)| (k, Arc::new(v)))
             .collect();
-        let mob_data = horizon_client::mobs::MobData::load(root, facts);
+        let mut mob_data = horizon_client::mobs::MobData::load(root, facts);
+        mob_data.cem = std::sync::RwLock::new(Arc::new(
+            horizon_client::mobs::cem::CemModels::load(root, &mob_types),
+        ));
         horizon_client::mobs::trial_spawner::load_registry(root);
         Ok((mob_types, mob_data))
     };
