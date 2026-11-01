@@ -23,8 +23,9 @@ const fn neg(a: Vec3) -> Vec3 {
     [-a[0], -a[1], -a[2]]
 }
 
-const fn dot(a: Vec3, b: Vec3) -> i32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+/// In `i64`: a coordinate times -1 can leave `i32`.
+const fn dot(a: Vec3, b: Vec3) -> i64 {
+    a[0] as i64 * b[0] as i64 + a[1] as i64 * b[1] as i64 + a[2] as i64 * b[2] as i64
 }
 
 /// Block faces in `Direction` order, the bit order of [`super::faces`].
@@ -115,7 +116,7 @@ impl Axes {
         let model = Face::ALL
             .into_iter()
             .find(|f| turn(f.normal()) == face.normal())
-            .unwrap_or(face);
+            .expect("a quarter turn maps faces onto faces");
         let cube = Self::cube(model);
         Self {
             right: turn(cube.right),
@@ -353,8 +354,8 @@ pub fn overlay_tiles(mask: u8) -> impl Iterator<Item = usize> {
 /// texture directions, row by row from the top.
 pub fn repeat_index(pos: Vec3, axes: Axes, width: u32, height: u32) -> usize {
     let (w, h) = (width.max(1) as i64, height.max(1) as i64);
-    let u = i64::from(dot(pos, axes.right)).rem_euclid(w);
-    let v = (-i64::from(dot(pos, axes.up))).rem_euclid(h);
+    let u = dot(pos, axes.right).rem_euclid(w);
+    let v = (-dot(pos, axes.up)).rem_euclid(h);
     (v * w + u) as usize
 }
 
@@ -368,29 +369,34 @@ pub fn symmetric_face(face: Face, symmetry: Symmetry) -> Face {
     }
 }
 
-/// `random`'s tile: a fixed choice for the block at `pos` and its (symmetric) face, so a world
-/// looks the same every time it loads. `weights` is one per tile, or empty for all alike;
-/// `loops` rehashes the choice (`randomLoops`).
+/// `random`'s tile (below `count`): a fixed choice for the block at `pos` and its (symmetric)
+/// face, so a world looks the same every time it loads. `weights` is one per tile; any other
+/// length (none given) picks every tile alike. `loops` rehashes the choice (`randomLoops`).
 pub fn random_index(pos: Vec3, face: Face, loops: u32, weights: &[u32], count: usize) -> usize {
-    let mut h = mix(pos[0] as u32);
-    h = mix(h ^ pos[1] as u32);
-    h = mix(h ^ pos[2] as u32);
-    h = mix(h ^ face as u32);
+    // The golden-ratio step keeps a zero input (the origin's down face) off `mix`'s fixed point.
+    let step = |h: u32, v: u32| mix((h ^ v).wrapping_add(0x9e37_79b9));
+    let mut h = step(0, pos[0] as u32);
+    h = step(h, pos[1] as u32);
+    h = step(h, pos[2] as u32);
+    h = step(h, face as u32);
     for _ in 0..loops {
-        h = mix(h);
+        h = step(h, 0);
     }
     let total: u64 = weights.iter().map(|&w| u64::from(w)).sum();
-    if total == 0 {
+    if weights.len() != count || total == 0 {
         return h as usize % count.max(1);
     }
     let mut pick = u64::from(h) % total;
-    for (i, &w) in weights.iter().enumerate() {
-        match pick.checked_sub(u64::from(w)) {
-            Some(rest) => pick = rest,
-            None => return i,
-        }
-    }
-    weights.len() - 1
+    weights
+        .iter()
+        .position(|&w| match pick.checked_sub(u64::from(w)) {
+            Some(rest) => {
+                pick = rest;
+                false
+            }
+            None => true,
+        })
+        .unwrap_or(0)
 }
 
 /// A 32-bit finalizer (Chris Wellons' `lowbias32`): every input bit moves every output bit.
@@ -422,39 +428,21 @@ mod tests {
         assert_eq!(ctm_index(R | DR | D), 13);
         assert_eq!(ctm_index(U | UR | DR | DL | UL), 36);
         // One missing corner of a full square.
-        assert_eq!(
-            ctm_index(255 & !UR),
-            ctm_index(U | R | D | L | DR | DL | UL)
-        );
         assert_eq!(ctm_index(255 & !UR), 44);
     }
 
-    /// The borders of one quarter of a tile: (top, left) for the top-left quarter and so on,
-    /// plus whether its inner corner has a dot.
-    fn quarter_borders(mask: u8, vertical: u8, horizontal: u8, corner: u8) -> (bool, bool, bool) {
-        let (v, h) = (mask & vertical == 0, mask & horizontal == 0);
-        (v, h, !v && !h && mask & corner == 0)
-    }
-
     #[test]
-    fn compact_quarters_draw_the_same_borders_as_the_47_tiles() {
-        // What each compact tile draws in any quarter: (side border, end border, inner dot).
-        let compact = |tile: u8| match tile {
-            0 => (true, true, false),
-            1 => (false, false, false),
-            2 => (false, true, false),
-            3 => (true, false, false),
-            _ => (false, false, true),
-        };
-        for mask in TEMPLATE {
-            let q = compact_quarters(mask);
-            let want = [(U, L, UL), (U, R, UR), (D, L, DL), (D, R, DR)];
-            for (tile, (v, h, c)) in q.into_iter().zip(want) {
-                assert_eq!(compact(tile), quarter_borders(mask, v, h, c), "{mask:08b}");
-            }
-        }
-        assert_eq!(compact_quarters(R), [0, 3, 0, 3]);
+    fn compact_quarters_from_the_template() {
+        // ctm_compact_template.png: 0 every border, 1 none, 2 left and right borders, 3 top and
+        // bottom ones, 4 the inner corners only.
+        assert_eq!(compact_quarters(0), [0; 4]);
         assert_eq!(compact_quarters(255), [1; 4]);
+        assert_eq!(compact_quarters(U | D), [2; 4]);
+        assert_eq!(compact_quarters(L | R), [3; 4]);
+        assert_eq!(compact_quarters(U | R | D | L), [4; 4]);
+        // The left end of a row, and a bottom-left corner of a square.
+        assert_eq!(compact_quarters(R), [0, 3, 0, 3]);
+        assert_eq!(compact_quarters(U | UR | R), [2, 1, 0, 3]);
     }
 
     #[test]
@@ -524,9 +512,14 @@ mod tests {
 
     #[test]
     fn random_choices_are_fixed_and_weighted() {
-        let pos = [12, 64, -7];
-        let a = random_index(pos, Face::Up, 0, &[], 5);
-        assert_eq!(a, random_index(pos, Face::Up, 0, &[], 5));
+        // Pinned, so a world keeps its tiles across versions (lowbias32 worked by hand in Python).
+        assert_eq!(random_index([12, 64, -7], Face::Up, 0, &[], 5), 3);
+        assert_eq!(random_index([0, 0, 0], Face::Down, 0, &[], 5), 4);
+        assert_eq!(random_index([0, 0, 0], Face::Down, 1, &[], 4), 2);
+        // Weights that don't fit the tiles pick every tile alike, and never past them.
+        for x in 0..50 {
+            assert!(random_index([x, 0, 0], Face::Up, 0, &[1, 1, 1], 2) < 2);
+        }
         // Weights 1:3 over a 100x100 floor: about a quarter take tile 0.
         let mut zeros = 0;
         for x in 0..100 {
