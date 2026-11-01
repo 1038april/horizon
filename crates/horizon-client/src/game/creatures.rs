@@ -1066,7 +1066,14 @@ impl Game<'_> {
             bindings.retain(|id, _| live.contains(id));
             host.mob_players = bindings;
         }
-        self.mobs.append(&mut mobs);
+        // The mobs added during the tick (into the emptied `self.mobs`) come
+        // first, as `append` put them; with none, the ticked list goes back
+        // as it is instead of being copied into a new one, every mob a tick.
+        if self.mobs.is_empty() {
+            self.mobs = mobs;
+        } else {
+            self.mobs.append(&mut mobs);
+        }
         self.died = died;
         // ... and entity event 60 goes out as it is: the poof.
         for (id, at, width, height) in gone {
@@ -2673,7 +2680,7 @@ impl Game<'_> {
         &mut self,
         feet: [f64; 3],
         conn: Option<u32>,
-        bindings: &std::collections::HashMap<u32, u32>,
+        bindings: &horizon_client::fast_hash::FxHashMap<u32, u32>,
     ) {
         // A client of someone else's world has the server's mobs only to show.
         if self.remote.is_some() || !self.ui.rules.bool("forgive_dead_players") {
