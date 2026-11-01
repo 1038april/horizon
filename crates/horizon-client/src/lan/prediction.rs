@@ -95,6 +95,12 @@ pub struct Played {
     pub moved: f64,
     /// What the replayed body was doing when the tick ended ([`Played::state`]).
     pub state: u8,
+    /// The tick's keys (ServerboundPlayerInputPacket's flags).
+    pub input: u8,
+    /// Where the client said it ended the tick.
+    pub at: [f64; 3],
+    /// The replay's velocity at the end of the tick, in blocks a tick.
+    pub velocity: [f64; 3],
 }
 
 impl Played {
@@ -108,7 +114,9 @@ impl Played {
     pub const FLYING: u8 = 64;
     pub const RIDING: u8 = 128;
 
-    /// What a log line says of the tick: `off +0.000 +0.173 +0.000, moved 0.281, air sprinting`.
+    /// What a log line says of the tick, so a flag can be found again in the world and played:
+    /// `off +0.000 +0.173 +0.000, moved 0.281, air sprinting, keys forward jump, at 12.30 64.00
+    /// -5.50, velocity +0.000 -0.078 +0.000`.
     pub fn describe(&self) -> String {
         let names = [
             (Self::WATER, "water"),
@@ -131,8 +139,24 @@ impl Played {
             }
         }
         let [x, y, z] = self.off;
+        let keys = [
+            "forward", "backward", "left", "right", "jump", "shift", "sprint",
+        ]
+        .into_iter()
+        .enumerate()
+        .filter(|&(bit, _)| self.input & (1 << bit) != 0)
+        .map(|(_, name)| name)
+        .collect::<Vec<_>>();
+        let keys = if keys.is_empty() {
+            "none".to_owned()
+        } else {
+            keys.join(" ")
+        };
+        let [ax, ay, az] = self.at;
+        let [vx, vy, vz] = self.velocity;
         format!(
-            "off {x:+.3} {y:+.3} {z:+.3}, moved {:.3}, {state}",
+            "off {x:+.3} {y:+.3} {z:+.3}, moved {:.3}, {state}, keys {keys}, at {ax:.2} {ay:.2} \
+             {az:.2}, velocity {vx:+.3} {vy:+.3} {vz:+.3}",
             self.moved
         )
     }
@@ -462,6 +486,8 @@ impl Replay {
         };
         let body = &mut self.body;
         let end = said.unwrap_or(last);
+        // The replay's own velocity, before an excuse brings it to the client's.
+        let velocity = body.velocity;
         let off = [
             end.x - body.position.x,
             end.y - body.position.y,
@@ -517,6 +543,7 @@ impl Replay {
         let ground = tick
             .flags
             .is_none_or(|f| (f & 1 != 0) == self.body.ground.on_ground);
+        let velocity = [velocity.x, velocity.y, velocity.z];
         let played = Played {
             offset,
             candidate,
@@ -524,6 +551,9 @@ impl Replay {
             off,
             moved,
             state,
+            input: tick.input,
+            at: [end.x, end.y, end.z],
+            velocity,
         };
         if self.ticks.len() == KEPT {
             self.ticks.pop_front();
@@ -838,10 +868,14 @@ mod tests {
             off: [0.0, 0.1729, -0.001],
             moved: 0.2806,
             state: Played::SPRINTING | Played::WATER,
+            input: 1 | 16 | 64,
+            at: [12.3, 63.004, -5.5],
+            velocity: [0.0, 0.0412, -0.25],
         };
         assert_eq!(
             played.describe(),
-            "off +0.000 +0.173 -0.001, moved 0.281, air water sprinting"
+            "off +0.000 +0.173 -0.001, moved 0.281, air water sprinting, keys forward jump sprint, \
+             at 12.30 63.00 -5.50, velocity +0.000 +0.041 -0.250"
         );
     }
 
