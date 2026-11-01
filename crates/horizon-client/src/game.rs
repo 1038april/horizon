@@ -11409,6 +11409,9 @@ impl Game<'_> {
             &self.options.resources,
             &pack_files(&self.world_tables),
         );
+        // TagsUpdatedEvent (SERVER_DATA_LOAD): the world's data is in, before
+        // its chunks and players are.
+        self.native_server_data_loaded(false);
         self.bosses = Default::default();
         reset_world_progress(&mut self.adv, &mut self.stats);
         self.prefetch_advancement_tree();
@@ -18058,6 +18061,7 @@ impl Game<'_> {
             &overlay,
         ));
         self.adv.reset_tree();
+        self.native_server_data_loaded(true);
     }
 
     fn join_world_rest(&mut self) -> Result<()> {
