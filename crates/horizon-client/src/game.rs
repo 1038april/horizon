@@ -135,6 +135,7 @@ mod glowing;
 mod golems;
 mod growth;
 mod hand;
+mod headless;
 mod ime;
 mod initial_spawn;
 mod integrated;
@@ -412,6 +413,11 @@ struct Options {
     /// GPU the display cannot present from can still be benchmarked. The
     /// window stays hidden and never grabs the system pointer.
     offscreen: bool,
+    /// `--headless` (#4951): no display, no window and no renderer. The game runs its own
+    /// loop (`game/headless.rs`) instead of winit's, so it starts where no display server
+    /// is (an SSH session, a server). It counts as `offscreen` for everything else (an
+    /// automated run that never shows a window or grabs the pointer).
+    headless: bool,
     /// `--width` and `--height` (vanilla's own arguments): the window's
     /// starting size, 1280x720 by default.
     window_size: [u32; 2],
@@ -553,6 +559,7 @@ impl Options {
             no_pause: false,
             control: None,
             offscreen: false,
+            headless: false,
             window_size: [1280, 720],
             spikes: std::env::var("HORIZON_SPIKES")
                 .ok()
@@ -602,6 +609,10 @@ impl Options {
                 "--test-terrain" => o.test_terrain = true,
                 "--no-pause" => o.no_pause = true,
                 "--offscreen" => o.offscreen = true,
+                "--headless" => {
+                    o.headless = true;
+                    o.offscreen = true;
+                }
                 "--control" => o.control = Some(horizon_client::control::default_path()),
                 "--server-thread" => o.server_thread = true,
                 "--in-frame" | "--no-server-thread" => {
@@ -15075,6 +15086,11 @@ impl Game<'_> {
         self.streaming.loading =
             self.options.execution_role.is_client() && self.loading_reason().is_some();
         self.tick_pregen();
+        // A headless game has nothing to draw sections with: like a server's, they aren't
+        // meshed while it has no renderer.
+        if self.options.headless {
+            self.streaming.mesh = self.renderer.is_some();
+        }
         let areas = self.streaming.extra.len();
         let waiting = std::mem::take(&mut self.spawn_wait);
         self.streaming
@@ -15319,11 +15335,7 @@ impl ApplicationHandler for Game<'_> {
     /// applicationWillTerminate without a CloseRequested; vanilla's GLFW
     /// window turns it into a window close, so Minecraft.stop saves the world.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
-        self.pad_close_output();
-        if let Err(e) = self.save_for_exit() {
-            log::warn!("Horizon: failed to save the world on exit: {e}");
-        }
-        self.finish_perf();
+        self.shut_down();
     }
 }
 
@@ -15338,7 +15350,13 @@ impl Game<'_> {
         id: WindowId,
         mut event: WindowEvent,
     ) {
-        if self.window.as_ref().is_none_or(|w| w.id() != id) {
+        // A headless game has no window: its events (the frame, the control socket's input)
+        // carry `WindowId::dummy()`.
+        let ours = match &self.window {
+            Some(w) => w.id() == id,
+            None => self.options.headless,
+        };
+        if !ours {
             return;
         }
         follow_keymap(&mut event);
@@ -16534,6 +16552,14 @@ impl Game<'_> {
             event_loop.exit();
         }
     }
+    /// The loop ended: close the pads' output, save the world, write the perf report.
+    pub(super) fn shut_down(&mut self) {
+        self.pad_close_output();
+        if let Err(e) = self.save_for_exit() {
+            log::warn!("Horizon: failed to save the world on exit: {e}");
+        }
+        self.finish_perf();
+    }
     /// winit's `about_to_wait`: what happens between frames (stop requests, the closing
     /// save, world entry, the control socket, pads), then the next frame.
     pub(super) fn idle(&mut self, event_loop: &dyn EventLoopCtl) {
@@ -16600,6 +16626,10 @@ impl Game<'_> {
             } else {
                 w.request_redraw();
             }
+        } else if self.options.headless {
+            // The headless loop paces the frames itself (`run_headless`).
+            self.handle_window_event(event_loop, WindowId::dummy(), WindowEvent::RedrawRequested);
+            return;
         }
         event_loop.set_control_flow(ControlFlow::Poll);
     }
@@ -17573,7 +17603,9 @@ impl Progress {
 /// Harness and dedicated runs keep the fully-synchronous startup so their
 /// output stays byte-identical; only an ordinary launch shows the window first.
 fn synchronous_startup(options: &Options) -> bool {
-    options.frames.is_some()
+    // A headless game has no window for the loading screen.
+    options.headless
+        || options.frames.is_some()
         || options.world_frames.is_some()
         || options.benchmark.is_some()
         || options.control.is_some()
@@ -18500,6 +18532,14 @@ fn leave_fullscreen_after(
 }
 
 fn run_event_loop(mut game: Game<'_>) -> Result<()> {
+    if game.options.headless {
+        // No display to open winit's loop on: the game's own loop.
+        game.run_headless();
+        // narrator::start ran for it too (options.txt's narrator setting).
+        narrator::stop();
+        write_report(&game)?;
+        return game.error.take().map_or(Ok(()), Err);
+    }
     let result = EventLoop::new()?.run_app(&mut game);
     narrator::stop();
     leave_fullscreen_after(&result, &mut game.settings);
@@ -19052,7 +19092,7 @@ pub fn run() -> Result<()> {
     )?;
     let gui = loaded.gui.ok_or("missing menu bundle")?;
     options.resources = loaded.root.clone();
-    let audio = if !options.execution_role.is_client() {
+    let audio = if !options.execution_role.is_client() || options.headless {
         Audio::silent(&options.resources)
     } else {
         Audio::with_device(&options.resources, &early_settings.sound_device)
