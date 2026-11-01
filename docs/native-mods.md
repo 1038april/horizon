@@ -356,6 +356,15 @@ horizon-mixins failed (exit status: 1). The end of its output, the whole of it i
 E_CRATE_DEPENDENCY: crate_lock needs rand ^0.9, which isn't in Horizon's Cargo.lock (…/horizon-mixin.toml)
 ```
 
+### A mod's own enchantment effect kinds
+
+A `minecraft:post_attack` entry with `enchanted` attacker and `affected` victim whose `effect.type` is in a
+namespace outside `minecraft:` — where the game used to skip it silently — reaches
+`native_enchant_effect(enchantment, kind, data, level, victim)` when a player's weapon hits a mob and the entry's
+`requirements` pass. `victim` is the mob's id, and the acting player is the one holding the weapon. A bare type
+name is minecraft's own. Other components and pairs, a hit on a player, and an entry inside `minecraft:all_of`
+aren't told yet. An unclaimed kind does nothing.
+
 ### A mod's own consume effects
 
 A consumable's `on_consume_effects` entry of a type in a namespace of its own — where the old loader
