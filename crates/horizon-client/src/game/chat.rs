@@ -1430,6 +1430,7 @@ impl Game<'_> {
         renderer.screenshot = Some(horizon_client::gfx::ScreenshotRequest {
             path: path.clone(),
             size: None,
+            scaled: true,
         });
         self.ui.screenshot_message = Some(path);
     }
