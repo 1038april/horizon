@@ -6,6 +6,64 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 80 adds the open screen hears of a mouse button going down or up before it acts
+//! (`native_screen_mouse_button_pressed_pre`, `native_screen_mouse_button_released_pre`, the
+//! `ScreenEvent.MouseButtonPressed.Pre` and `.MouseButtonReleased.Pre` points, with the screen, the
+//! GLFW button and the modifiers), and the helpers the input hooks share (`screen_view_now`,
+//! `screen_hooks_open`).
+//!
+//! API 79 adds items' default components (`native_modify_default_components`, in `horizon-world`'s
+//! `item_defaults.rs`): set or remove a component of any item, vanilla's included, as the game reads its defaults.
+//!
+//! API 78 adds `native_screen_render_post` (`ScreenEvent.Render.Post`: draw over the open
+//! screen, given its id, menu type, title, container panel, slot count, mouse
+//! and partial tick).
+//!
+//! API 77 adds a `minecraft:post_attack` enchantment effect of a mod's own kind
+//! (`native_enchant_effect`, told the enchantment, the kind, the JSON, the level and
+//! the mob hit).
+//!
+//! API 76 adds a mod block's placement state (`native_state_for_placement`) and the state it is built from
+//! (`native_state_with_property`): what a block that faces the player, sits on the clicked face or comes waterlogged needs.
+//!
+//! API 75 adds changing vanilla's loot tables and drops: `native_loot_table_load` (in
+//! `horizon-world`'s `loot.rs`: each table's JSON as it loads) and `native_loot_drops` (a broken
+//! block's or a dead mob's items, with what dropped them).
+//!
+//! API 74 adds a consumable's effect of a mod's own kind
+//! (`native_consume_effect`, which the unknown `on_consume_effects` type reaches with
+//! the kind and the JSON the file wrote).
+//!
+//! API 73 adds mod-block entity contacts (`native_block_step_on`, `native_block_entity_inside`, `native_block_fall_on`), including mutable landing damage.
+//!
+//! API 72 adds bone meal on a mod block (`native_is_valid_bonemeal_target`, `native_is_bonemeal_success`,
+//! `native_perform_bonemeal`), and the level's random a world hook draws from (`native_level_random`).
+//!
+//! API 71 adds drawing mod block entities on the client (`native_block_entity_submit`,
+//! vanilla's `BlockEntityRenderer.submit`, culled by `native_block_entity_render_bounding_box`,
+//! NeoForge's `getRenderBoundingBox`), with a pose stack (`BlockEntityDraw`) and the
+//! helpers `native_draw_quad`, `native_draw_cube` and `native_draw_block`.
+//!
+//! API 70 adds a mod block's own `canSurvive` (`native_can_survive`), and the blocks a mod plant
+//! can stand on (`native_may_place_on`, `VegetationBlock.mayPlaceOn`).
+//!
+//! API 69 adds a mod's own advancement criteria triggers (`native_trigger_criterion`,
+//! in `native_criteria.rs`).
+//!
+//! API 68 adds stack-dependent image tooltip components, measured with `native_tooltip_component` and rendered with `native_tooltip_component_draw`.
+//!
+//! API 67 adds dispenser item behaviours (`native_dispense_item`) and `native_dispense_default` for a plain drop.
+//!
+//! API 66 adds explosions for server mods (`native_explode`, in
+//! `native_explosions.rs`).
+//!
+//! API 65 adds native item component type registration (`native_component_types`) and opaque NBT component helpers.
+//!
+//! API 64 adds comparator output from a mod's block (`native_has_analog_output`,
+//! `native_analog_output`, and the helper `native_update_output_neighbors`).
+//!
+//! API 63 adds context-free tag lookups for server hooks (`native_server_block_in_tag`, `native_server_item_in_tag`).
+//!
 //! API 62 adds nicknames for server mods: `native_set_nickname` shows a name in place of a player's in chat and
 //! the Tab list (the real one on hover), and `native_text_allowed` asks the server's chat filter, in
 //! `native_server.rs`.
@@ -269,7 +327,7 @@ pub(super) use horizon_world::level::flags;
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 62;
+pub(crate) const NATIVE_HOOKS_API: u32 = 80;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -369,7 +427,7 @@ impl GameLevel<'_> {
     /// that comparators read (how full or far along it is, as a composter's
     /// level), so they ask `native_analog_output`. Asked from inside the
     /// level's update: answer from `state` alone. Authoritative servers only.
-    /// API @API:analog_output@.
+    /// API 64.
     #[inline(always)]
     pub(super) fn native_has_analog_output(&self, state: BlockStateId, output: &mut bool) {
         let _ = (state, output);
@@ -385,7 +443,7 @@ impl GameLevel<'_> {
     /// `native_update_output_neighbors`; a change of state through
     /// `native_set_block` or `native_set_block_property` (neighbour updates
     /// on) tells the comparators itself, as vanilla's `Level.setBlock` does.
-    /// Authoritative servers only. API @API:analog_output@.
+    /// Authoritative servers only. API 64.
     #[inline(always)]
     pub(super) fn native_analog_output(
         &self,
@@ -465,7 +523,7 @@ impl GameLevel<'_> {
     /// be in the world yet, so decide from `state`. Answer only for your own
     /// blocks: `Some(false)` refuses the spot, `Some(true)` allows it, and
     /// the block's own rule doesn't run. The level is read-only. Asked on
-    /// every shape update of such a block: keep it short. API @API:can_survive@.
+    /// every shape update of such a block: keep it short. API 70.
     #[inline(always)]
     pub(super) fn native_can_survive(
         &self,
@@ -483,7 +541,7 @@ impl GameLevel<'_> {
     /// such as a crop) can stand on. Its template's `canSurvive` asks it, so
     /// the plant is refused there and pops off when its ground changes to
     /// one it can't stand on. Answer only for your own blocks. The level is
-    /// read-only. API @API:can_survive@.
+    /// read-only. API 70.
     #[inline(always)]
     pub(super) fn native_may_place_on(
         &self,
@@ -530,7 +588,7 @@ impl GameLevel<'_> {
     /// through vanilla's placement (a player's `BlockItem.place`, a
     /// dispenser's `DirectionalPlaceContext`), and the answer still takes its
     /// survival and entity obstruction checks. Authoritative servers only.
-    /// @API:placement_state@.
+    /// 76.
     #[inline(always)]
     #[allow(clippy::option_option)]
     pub(super) fn native_state_for_placement(
@@ -557,7 +615,7 @@ impl GameLevel<'_> {
     /// whose template takes it (vanilla's `growCrop` then keeps the meal);
     /// left `None`, the block keeps the `BonemealableBlock` its template gives
     /// it, or takes no bone meal.
-    /// @API:bonemeal@.
+    /// 72.
     #[inline(always)]
     pub(super) fn native_is_valid_bonemeal_target(
         &self,
@@ -574,7 +632,7 @@ impl GameLevel<'_> {
     /// it this time. Vanilla draws the level's random here
     /// (`isBonemealSuccess(Level, RandomSource, BlockPos, BlockState)`), so
     /// draw from `native_level_random` to keep vanilla's order.
-    /// Authoritative servers only. @API:bonemeal@.
+    /// Authoritative servers only. 72.
     #[inline(always)]
     pub(super) fn native_is_bonemeal_success(
         &mut self,
@@ -591,7 +649,7 @@ impl GameLevel<'_> {
     /// said yes: grow it here, `state` its state at `pos`. The meal is used up
     /// either way. Change the block with the level's
     /// `native_set_block_property`, and schedule with `native_schedule_block_tick`
-    /// (`ticks` is the hook's). Authoritative servers only. @API:bonemeal@.
+    /// (`ticks` is the hook's). Authoritative servers only. 72.
     #[inline(always)]
     pub(super) fn native_perform_bonemeal(
         &mut self,
@@ -689,9 +747,10 @@ pub struct NativeScreen {
     pub own_labels: bool,
 }
 
-/// The open screen, for `native_screen_render_post` (`ScreenEvent.Render.Post`):
-/// what it is, its menu and title, where its container panel is, how many
-/// slots its menu has, and where the mouse and the frame's partial tick are.
+/// The open screen, for the screen hooks (`native_screen_render_post`,
+/// `native_screen_mouse_button_pressed_pre`, `..._released_pre`): what it is,
+/// its menu and title, where its container panel is, how many slots its menu
+/// has, and where the mouse and the frame's partial tick are.
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub struct NativeScreenView<'a> {
@@ -1181,7 +1240,7 @@ impl Game<'_> {
     /// acting player is the one whose weapon carries the enchantment. Each
     /// such entry is told once a hit, and once for each mob a sweep lands on.
     /// A hit on a player, and an entry inside `minecraft:all_of`, aren't told
-    /// yet. An unclaimed kind does nothing. API @API:enchant_effect@.
+    /// yet. An unclaimed kind does nothing. API 77.
     pub(super) fn native_enchant_effect(
         &mut self,
         enchantment: &str,
@@ -1239,7 +1298,7 @@ impl Game<'_> {
     /// for this call. The kind and the JSON the file wrote are here; the acting
     /// player is the one consuming, and the game's own effects,
     /// sounds, teleports and drops are open. An unclaimed kind does
-    /// nothing. API @API:consume_effect@.
+    /// nothing. API 74.
     pub(super) fn native_consume_effect(&mut self, kind: &str, data: &serde_json::Value) {
         let _ = (kind, data);
     }
@@ -1268,7 +1327,7 @@ impl Game<'_> {
     /// `native_draw_quad`, `native_draw_cube`, `native_draw_block` and
     /// `native_draw_item` under `draw`'s pose stack, which starts at the
     /// block's lower north-west corner, in blocks; `draw` also has the partial
-    /// tick, the game time and the block's light. API @API:block_entity_submit@.
+    /// tick, the game time and the block's light. API 71.
     pub(super) fn native_block_entity_submit(
         &self,
         pos: [i32; 3],
@@ -1285,7 +1344,7 @@ impl Game<'_> {
     /// as the block with a block of margin around it; widen it when your
     /// `native_block_entity_submit` draws further (a tall shaft, a beam), or
     /// set an infinite value for one never culled. Asked once a frame for each
-    /// within 64 blocks whose chunk is drawn. API @API:block_entity_submit@.
+    /// within 64 blocks whose chunk is drawn. API 71.
     pub(super) fn native_block_entity_render_bounding_box(
         &self,
         pos: [i32; 3],
@@ -1332,13 +1391,64 @@ impl Game<'_> {
     /// server pack, link and code-of-conduct prompts, a book, a sign editor):
     /// those keep `Screen::Playing`, which it skips, and draw over what it
     /// drew, while vanilla's `ScreenEvent.Render.Post` fires for them.
-    /// API @API:screen_render_post@.
+    /// API 78.
     pub(super) fn native_screen_render_post(
         &self,
         batch: &mut HudBatch,
         screen: &NativeScreenView<'_>,
     ) {
         let _ = (batch, screen);
+    }
+    /// A mouse button went down over the open screen
+    /// (`ScreenEvent.MouseButtonPressed.Pre`, vanilla's
+    /// `Screen.mouseClicked`): `screen` is the screen it is, `screen.mouse`
+    /// where the pointer is (so there is no position of its own), `button` the
+    /// button's GLFW index (0 left, 1 right, 2 middle, 3 back, 4 forward; a
+    /// button past those is the platform's own number, which differs between
+    /// systems) and `modifiers` GLFW's bits (shift 1, control 2,
+    /// alt 4, super 8). Set `canceled` and the press goes no further: no slot,
+    /// no screen button, no drag, no hotbar key, no sort or header button.
+    ///
+    /// It fires before anything the screen does with the press, on the window
+    /// only, and only while a screen of the game's is open (Options and the
+    /// pack list opened from the title screen count, with no player and no
+    /// `menu`). It does not fire on the title screen itself, the connect and
+    /// loading screens, nor for a server
+    /// dialog, the server pack, link and code-of-conduct prompts, a book or a
+    /// sign editor drawn over gameplay, nor while a world loads or saves: the
+    /// click there stays the game's own. A gamepad click or a click the
+    /// keyboard's focus sends is not the mouse and fires nothing.
+    /// API 80.
+    pub(super) fn native_screen_mouse_button_pressed_pre(
+        &self,
+        screen: &NativeScreenView<'_>,
+        button: i32,
+        modifiers: u32,
+        canceled: &mut bool,
+    ) {
+        let _ = (screen, button, modifiers, canceled);
+    }
+    /// A mouse button went up over the open screen
+    /// (`ScreenEvent.MouseButtonReleased.Pre`, vanilla's
+    /// `Screen.mouseReleased`), with the same `screen`, `button` and
+    /// `modifiers` as `native_screen_mouse_button_pressed_pre` and fired at
+    /// the same point. Set `canceled` and the release goes no further: a
+    /// pressed slot keeps what it took and no drag, slider or scrollbar lets
+    /// go.
+    ///
+    /// Cancel a release only when the press it ends was cancelled too: a
+    /// release the screen took ends the drag or the scroll it began, as it
+    /// does in vanilla, and no guard here un-cancels it. Same screens as the
+    /// press; a press that opened another screen ends on that one.
+    /// API 80.
+    pub(super) fn native_screen_mouse_button_released_pre(
+        &self,
+        screen: &NativeScreenView<'_>,
+        button: i32,
+        modifiers: u32,
+        canceled: &mut bool,
+    ) {
+        let _ = (screen, button, modifiers, canceled);
     }
     /// The open screen as a native mod sees it (`NativeScreenView`): its id,
     /// the open menu's type and title, its slot count, and its panel's
@@ -1372,6 +1482,31 @@ impl Game<'_> {
             image.width as f32,
             image.height as f32,
         ]
+    }
+    /// A screen the native mods' input hooks are for is open: the window has a
+    /// renderer, `Screen::Playing` is behind it (so not the title screen, nor a
+    /// book, a sign editor, a server dialog or a prompt drawn over gameplay)
+    /// and no connect or world load is in progress. The one gate they all ask
+    /// before they fire.
+    pub(super) fn screen_hooks_open(&self) -> bool {
+        self.renderer.is_some()
+            && self.screen != Screen::Playing
+            && !self.screen_over_playing()
+            && !self.remote_loading()
+    }
+    /// The open screen as an input hook sees it (`NativeScreenView`), or None
+    /// when `screen_hooks_open` says no screen is. `screen.mouse` is the
+    /// pointer the hook's event is at, so a hook takes no position, and
+    /// `partial_tick` is the clock's fraction at this event, not a frame's.
+    /// The `HudBatch` built here is only what `screen.rect` needs: the
+    /// window's GUI scale, no allocation.
+    pub(super) fn screen_view_now(&self) -> Option<NativeScreenView<'_>> {
+        if !self.screen_hooks_open() {
+            return None;
+        }
+        let renderer = self.renderer.as_ref()?;
+        let batch = HudBatch::new([renderer.config.width, renderer.config.height]);
+        Some(self.screen_view(&batch, self.screen))
     }
     /// A left or right (`right`) press at `at` (GUI pixels from the screen's
     /// top left, so outside it too) on block `block`'s screen, a mod's, over
@@ -1529,7 +1664,7 @@ impl Game<'_> {
     /// level event the dispenser plays with its smoke: 1000 the click, 1001 the
     /// fail sound (`OptionalDispenseItemBehavior` without success), or 0 for
     /// nothing at all (`DispenseItemBehavior.NOOP`). To drop one normally,
-    /// answer `(native_dispense_default(..), 1000)`. API @API:dispenser_behaviour@.
+    /// answer `(native_dispense_default(..), 1000)`. API 67.
     pub(super) fn native_dispense_item(
         &mut self,
         dimension: &str,
@@ -1759,7 +1894,7 @@ impl Game<'_> {
     /// a torch losing its wall, a piston, `/setblock ... destroy`), nor a
     /// creative break or a tool that can't harvest the block, nor experience.
     /// Server-side, for every player. API
-    /// @API:loot_tables@.
+    /// 75.
     pub(super) fn native_loot_drops(
         &mut self,
         context: &NativeLootDrops<'_>,
@@ -2123,6 +2258,7 @@ impl GameLevel<'_> {
                 spread,
                 speed,
                 count,
+                randomization: 0,
             });
         true
     }
@@ -2207,7 +2343,7 @@ impl GameLevel<'_> {
     /// properties (`state_properties` in its block file) are set the same way.
     /// `state` itself when the property already has that value; None when the
     /// block has no such property, or the property no such value. API
-    /// @API:placement_state@.
+    /// 76.
     pub(super) fn native_state_with_property(
         &self,
         state: BlockStateId,
@@ -2220,7 +2356,7 @@ impl GameLevel<'_> {
     /// `native_level_random(dimension)` hands a server hook, for a world hook
     /// that draws as a vanilla block does (`isBonemealSuccess`), so the mod's
     /// draws shift vanilla's as a Java mod's would. `None` where this level
-    /// isn't the server's copy. API @API:bonemeal@.
+    /// isn't the server's copy. API 72.
     pub(super) fn native_level_random(
         &mut self,
     ) -> Option<&mut horizon_core::random::LegacyRandom> {
@@ -2439,7 +2575,7 @@ impl Game<'_> {
     /// beside it, or behind a conductor there, read it again
     /// (`Level.updateNeighbourForOutputSignal`). Acts on the level in place:
     /// false (and nothing happens) when `dimension` is another, or this
-    /// window isn't a server. API @API:analog_output@.
+    /// window isn't a server. API 64.
     pub(super) fn native_update_output_neighbors(
         &mut self,
         dimension: &str,
