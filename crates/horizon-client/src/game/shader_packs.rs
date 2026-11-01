@@ -68,6 +68,26 @@ pub(super) fn write_shader_options(options: &ShaderOptions) {
     }
 }
 
+/// The pack that runs over the world ("": none): `HORIZON_SHADER_PACK`, else the pick
+/// (`active_pack`).
+fn picked_pack(settings: &horizon_client::settings::Settings) -> &str {
+    static DEV_PACK: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    let dev = DEV_PACK.get_or_init(|| std::env::var("HORIZON_SHADER_PACK").ok());
+    active_pack(
+        dev.as_deref().unwrap_or(&settings.horizon.shader_pack),
+        &settings.mods,
+    )
+}
+
+/// Whether the pack picked (`picked_pack`) is a `shaders/` pack rather than one of Horizon's
+/// own: a renderer made now lays the sections out for its terrain before the first world
+/// frame loads it (`Renderer::new`).
+pub(super) fn shaders_pack_picked(settings: &horizon_client::settings::Settings) -> bool {
+    let picked = picked_pack(settings);
+    !picked.is_empty()
+        && !horizon_shader_api::package::is_pack(&Game::shader_packs_dir().join(picked))
+}
+
 // A native mod can bundle a pack as `native-<mod-id>`; its Mods toggle controls it too.
 fn active_pack<'a>(picked: &'a str, mods: &horizon_client::mod_list::ModList) -> &'a str {
     if picked.strip_prefix("native-").is_some_and(|id| {
@@ -124,12 +144,7 @@ impl Game<'_> {
             self.streaming.shader_pack_lighting = pack_lighting;
             self.all_sections_changed();
         }
-        static DEV_PACK: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-        let dev = DEV_PACK.get_or_init(|| std::env::var("HORIZON_SHADER_PACK").ok());
-        let picked = active_pack(
-            dev.as_deref().unwrap_or(&self.settings.horizon.shader_pack),
-            &self.settings.mods,
-        );
+        let picked = picked_pack(&self.settings);
         if self.native_shaders.picked != picked {
             // Another pack, or none: drop what ran.
             self.native_shaders = super::native_shaders::NativeShaders::picking(picked);

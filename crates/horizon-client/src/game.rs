@@ -13260,6 +13260,8 @@ impl Game<'_> {
             self.renderer.as_ref(),
             None,
             self.settings.horizon.api,
+            self.settings.horizon.translucent_batching,
+            shader_packs::shaders_pack_picked(&self.settings),
         )
     }
     fn apply_settings(&mut self) {
@@ -15451,6 +15453,16 @@ impl Game<'_> {
     fn update_world(&mut self) {
         if let Err(e) = self.poll_remote() {
             log::warn!("Horizon: {e}");
+        }
+        // The renderer laid translucent quads out again (a shader pack's flat terrain came
+        // or went) and dropped every section and far tile: meshed again, as for a new one.
+        if self
+            .renderer
+            .as_mut()
+            .is_some_and(Renderer::take_dropped_sections)
+        {
+            self.clear_lod();
+            self.all_sections_changed();
         }
         self.prepare_lod();
         if self.lod.is_some() {
@@ -18689,6 +18701,8 @@ fn build_renderer(
     previous: Option<&Renderer>,
     prepared: Option<horizon_client::gfx::PreparedTextures>,
     api: horizon_client::graphics::GraphicsApi,
+    translucent_batching: bool,
+    shader_pack: bool,
 ) -> Result<Renderer> {
     let assets = &pack.render;
     let atlas = &gui.atlas;
@@ -18723,6 +18737,8 @@ fn build_renderer(
         prepared,
         previous,
         api,
+        translucent_batching,
+        shader_pack,
     ))?;
     renderer.hud.sprite_animations = atlas
         .sprite_animations
@@ -18784,6 +18800,9 @@ fn loading_renderer(
         None,
         previous,
         api,
+        // It draws no terrain.
+        false,
+        false,
     ))?;
     if let Some(atlas) = atlas {
         renderer.hud.sprite_animations = atlas
@@ -19325,6 +19344,8 @@ impl Loading {
             self.renderer.as_ref(),
             loaded.renderer_cpu,
             self.settings.horizon.api,
+            self.settings.horizon.translucent_batching,
+            shader_packs::shaders_pack_picked(&self.settings),
         )?;
         log::info!(
             "Horizon: world renderer ready after {} ms",
