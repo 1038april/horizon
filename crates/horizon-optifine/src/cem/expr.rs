@@ -55,7 +55,7 @@ enum Op {
     Slot(u32),
     Neg,
     Bin(Bin),
-    Call(Func, u8),
+    Call(Func, u16),
     /// Pops; jumps when the value is 0 (not when it is NaN).
     JumpIfZero(u32),
     Jump(u32),
@@ -205,7 +205,10 @@ impl Func {
             Min | Max if a.iter().any(|v| v.is_nan()) => f32::NAN,
             Min => a.iter().copied().fold(f32::INFINITY, f32::min),
             Max => a.iter().copied().fold(f32::NEG_INFINITY, f32::max),
-            Clamp => a[0].max(a[1]).min(a[2]),
+            // Java's `x < lo ? lo : Math.min(x, hi)`: a NaN `x` stays NaN.
+            Clamp if a[0] < a[1] => a[1],
+            Clamp if a[0].is_nan() || a[2].is_nan() => f32::NAN,
+            Clamp => a[0].min(a[2]),
             Abs => a[0].abs(),
             Floor => a[0].floor(),
             Ceil => a[0].ceil(),
@@ -215,10 +218,11 @@ impl Func {
             Pow => a[0].powf(a[1]),
             Random => random(a.first().copied()),
             Randomb => t(random(a.first().copied()) >= 0.5),
-            // Java's `Math.round`: halves go up. `x - floor(x)` is exact, `x + 0.5` isn't.
+            // Java's `Math.round(float)`, an `int`: halves go up, NaN is 0 and the rest saturates
+            // at the `int`'s ends. `x - floor(x)` is exact, `x + 0.5` isn't.
             Round => {
                 let f = a[0].floor();
-                if a[0] - f >= 0.5 { f + 1.0 } else { f }
+                (if a[0] - f >= 0.5 { f + 1.0 } else { f }) as i32 as f32
             }
             Signum if a[0] == 0.0 || a[0].is_nan() => a[0],
             Signum => a[0].signum(),
@@ -518,7 +522,7 @@ impl<'a> Parser<'a, '_> {
         let Some((f, min, max)) = Func::named(name) else {
             return err(format!("unknown function {name}"), at);
         };
-        if args.len() < min || args.len() > max.min(u8::MAX as usize) {
+        if args.len() < min || args.len() > max.min(u16::MAX as usize) {
             return err(format!("wrong number of arguments to {name}"), at);
         }
         Ok(Node::Call(f, args))
@@ -631,7 +635,7 @@ impl Emit {
                 for a in args {
                     self.node(a);
                 }
-                self.push(Op::Call(*f, args.len() as u8), 1 - args.len() as isize);
+                self.push(Op::Call(*f, args.len() as u16), 1 - args.len() as isize);
             }
         }
     }
@@ -788,13 +792,13 @@ mod tests {
         RANDOM.with(|s| s.set(12345));
         let first = value("random()");
         RANDOM.with(|s| s.set(12345));
-        for (src, slots) in [
-            ("if(a, random(), b)", [0.0, 5.0]),
-            ("if(a > 1, random(), b > 1, random(), 4)", [0.0, 0.0]),
-            ("a && random()", [0.0, 0.0]),
-            ("b || random()", [0.0, 1.0]),
+        for (src, slots, want) in [
+            ("if(a, random(), b)", [0.0, 5.0], 5.0),
+            ("if(a > 1, random(), b > 1, random(), 4)", [0.0, 0.0], 4.0),
+            ("a && random()", [0.0, 0.0], 0.0),
+            ("b || random()", [0.0, 1.0], 1.0),
         ] {
-            expr(src).eval(&slots);
+            assert_eq!(expr(src).eval(&slots), want, "{src}");
         }
         assert_eq!(value("random()"), first);
         // Each condition in order, then the else.
@@ -819,6 +823,11 @@ mod tests {
         assert!(value("min(nan, 1)").is_nan());
         assert!(eval("max(1, a)", &[f32::NAN]).is_nan());
         assert_eq!(value("clamp(5, 0, 2)"), 2.0);
+        assert_eq!(value("clamp(-1, 0, 2)"), 0.0);
+        assert_eq!(value("clamp(1 / 0, 0, 2)"), 2.0);
+        assert_eq!(value("clamp(-1 / 0, 0, 2)"), 0.0);
+        assert!(value("clamp(nan, 0, 2)").is_nan());
+        assert!(eval("clamp(a, 0, 2)", &[f32::NAN]).is_nan());
         assert_eq!(value("-7 % 3"), -1.0);
         assert_eq!(value("fmod(-7, 3)"), 2.0);
         assert_eq!(value("frac(-1.25)"), 0.75);
@@ -826,6 +835,13 @@ mod tests {
         assert_eq!(value("round(-2.5)"), -2.0);
         assert_eq!(value("round(0.49999997)"), 0.0);
         assert_eq!(value("round(16777215)"), 16_777_215.0);
+        // An `int`: NaN is 0, the rest stops at its ends.
+        assert_eq!(value("round(nan)"), 0.0);
+        assert_eq!(eval("round(a)", &[f32::NAN]), 0.0);
+        assert_eq!(value("round(1 / 0)"), 2_147_483_648.0);
+        assert_eq!(value("round(-1 / 0)"), -2_147_483_648.0);
+        assert_eq!(value("round(10000000000)"), 2_147_483_648.0);
+        assert_eq!(eval("round(a)", &[-1e10]), -2_147_483_648.0);
         assert_eq!(value("signum(-3) + signum(0)"), -1.0);
         assert!(close(value("torad(180)"), pi));
         assert!(close(value("todeg(pi / 2)"), 90.0));
@@ -873,11 +889,13 @@ mod tests {
         // The loop goes from the last frame back to the first.
         assert_eq!(at(2.5, "keyframeloop"), 12.5);
         assert_eq!(at(3.5, "keyframeloop"), 7.5);
-        // A long track: frames 0 to 69, deeper than the fixed stack.
-        let frames: Vec<String> = (0..70).map(|i| i.to_string()).collect();
+        // A long track: frames 0 to 299, deeper than the fixed stack, more arguments than a byte
+        // counts.
+        let frames: Vec<String> = (0..300).map(|i| i.to_string()).collect();
         let track = expr(&format!("keyframe(a, {})", frames.join(", ")));
-        assert_eq!(track.eval(&[68.5]), 68.5);
+        assert_eq!(track.eval(&[298.5]), 298.5);
         assert_eq!(track.eval(&[3.0]), 3.0);
+        assert_eq!(track.eval(&[1000.0]), 299.0);
         // Ends of every curve are its two values.
         for f in [
             "easeinoutexpo",
@@ -951,8 +969,14 @@ mod tests {
         assert!(e(&format!("{}a", "-".repeat(65))).message.contains("deep"));
         let calls = format!("{}a{}", "abs(".repeat(65), ")".repeat(65));
         assert_eq!(e(&calls).offset, 64 * 4 + 3);
-        // A long chain fails instead of folding thousands deep.
+        // A long chain fails instead of folding thousands deep: `a+a...` is 2n - 1 nodes, so the
+        // `+` after the 513th `a` makes the 1025th.
         let long = ["a"; 2000].join("+");
         assert!(e(&long).message.contains("long"));
+        assert_eq!(e(&long).offset, 512 * 2 + 1);
+        // Just under the cap, 999 nodes, it compiles and runs on a shallow stack.
+        let under = expr(&["a"; 500].join("+"));
+        assert_eq!(under.eval(&[1.0]), 500.0);
+        assert!(under.depth <= STACK);
     }
 }
