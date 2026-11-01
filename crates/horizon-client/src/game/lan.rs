@@ -1482,6 +1482,25 @@ impl Game<'_> {
     /// `PlayerList.removeAll`: every guest leaves in turn, the vehicle it
     /// alone rides with it (`PlayerList.remove`), and is saved.
     pub(super) fn save_leaving_guests(&mut self, host: &mut LanHost) {
+        // Every open menu closes first, in its guest's level
+        // (`ServerPlayer.disconnect` -> `doCloseContainer`), so the cursor,
+        // the trade and the inputs are back in the file that is saved.
+        let back = self.dim;
+        let open: Vec<(u32, super::Dim)> = host
+            .hub
+            .guests
+            .iter()
+            .filter(|g| g.placed)
+            .map(|g| (g.conn, super::Dim::from_id(&g.dimension)))
+            .collect();
+        for (conn, dim) in open {
+            if self.enter_level(Some(host), dim).is_ok() {
+                self.guest_close_all(host, conn);
+            }
+        }
+        if let Err(e) = self.enter_level(Some(host), back) {
+            log::error!("could not reopen {}: {e}", back.id());
+        }
         for i in 0..host.hub.guests.len() {
             let mut g = host.hub.guests.remove(i);
             self.take_parent_vehicle(host, &mut g);
@@ -1979,15 +1998,17 @@ impl Game<'_> {
                     }
                 }
                 HostEvent::Left(mut guest) => {
-                    // The container they had open loses an opener.
-                    if let Some(pos) = guest.menu.as_ref().and_then(|m| m.pos)
-                        && !guest.spectator()
-                    {
-                        // In the level they were in.
+                    // The menu they had open closes, in the level they were in
+                    // (`ServerPlayer.disconnect` -> `doCloseContainer`).
+                    if guest.placed {
                         let back = self.dim;
                         let theirs = super::Dim::from_id(&guest.dimension);
                         if self.enter_level(Some(&mut host), theirs).is_ok() {
-                            self.container_openers_changed(pos, false);
+                            let conn = guest.conn;
+                            let at = host.hub.guests.len();
+                            host.hub.guests.push(*guest);
+                            self.guest_close_all(&mut host, conn);
+                            *guest = host.hub.guests.remove(at);
                         }
                         if let Err(e) = self.enter_level(Some(&mut host), back) {
                             log::error!("could not reopen {}: {e}", back.id());
