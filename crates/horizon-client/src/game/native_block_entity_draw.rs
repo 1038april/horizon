@@ -52,6 +52,8 @@ pub struct BlockEntityDraw {
     /// (`LevelRenderer.getLightCoords`), 16 times sky light in bits 0..8 and
     /// 16 times block light in bits 8..16; set it to light a part otherwise.
     pub light: u32,
+    /// The block drawn, for `native_draw_item`'s owner.
+    block: [i32; 3],
     poses: Vec<Mat4>,
     lights: (Vec3, Vec3),
     vertices: Vec<Vertex>,
@@ -160,6 +162,7 @@ impl Game<'_> {
             partial,
             game_time: self.world.game_time,
             light: 0,
+            block: [0; 3],
             poses: Vec::new(),
             lights: diffuse_lights(self.dim == Dim::Nether),
             vertices: std::mem::take(out),
@@ -185,6 +188,7 @@ impl Game<'_> {
             }
             let start = draw.vertices.len();
             self.mark_block_entity(start, state);
+            draw.block = pos;
             draw.poses.clear();
             draw.poses.push(Mat4::from_translation(origin));
             draw.light = vertex_light(self.world.light(pos[0], pos[1], pos[2]));
@@ -298,16 +302,27 @@ impl Game<'_> {
     /// pose's origin, in its model's `display` transform: `Fixed` as a
     /// campfire's or an item frame's, `Ground` as a dropped item's. `seed`
     /// picks among random models (a campfire passes its slot plus its
-    /// position's hash). False for an empty stack or one with no model.
+    /// position's hash). `owner_yaw` makes the block entity the item's
+    /// owner (`ItemOwner`), at the block's centre and turned that many
+    /// degrees (`getVisualRotationYInDegrees`), as a shelf is: a compass on
+    /// it points to its target from there. None draws it with no owner, as
+    /// a campfire does. False for an empty stack or one with no model. The
+    /// client's copy of a block entity has no item slots (`entity.items` is
+    /// empty there): send the stacks you draw in
+    /// `native_block_entity_update_tag` and read them from `entity.nbt`.
     /// API @API:block_entity_draw_item@.
     pub(super) fn native_draw_item(
         &self,
         draw: &mut BlockEntityDraw,
         stack: &ItemStack,
         display: DisplayContext,
+        owner_yaw: Option<f32>,
         seed: i32,
     ) -> bool {
-        let item = self.resolve_item(stack, display, None, seed);
+        // ShelfBlockEntity.position(): Vec3.atCenterOf(getBlockPos()).
+        let owner = owner_yaw
+            .map(|yaw| super::item_draw::owner_at(draw.block.map(|c| f64::from(c) + 0.5), yaw, ""));
+        let item = self.resolve_item(stack, display, owner.as_ref(), seed);
         if item.is_empty() {
             return false;
         }
@@ -343,6 +358,7 @@ mod tests {
             partial: 0.0,
             game_time: 0,
             light: 0xF0F0,
+            block: [0; 3],
             poses: vec![Mat4::from_translation(Vec3::new(10.0, 0.0, 0.0))],
             lights: diffuse_lights(false),
             vertices: Vec::new(),
