@@ -69,8 +69,8 @@ impl Method {
         self >= Method::Overlay
     }
 
-    /// The tile count the method needs (`None`: any, at least one). `ctm_compact` takes extra
-    /// tiles for its `ctm.N` replacements; `repeat` needs `width * height`.
+    /// The fewest tiles the method takes, and the exact count when it needs one. `ctm_compact`
+    /// takes extra tiles for its `ctm.N` replacements; `repeat` needs `width * height`.
     fn tiles_needed(self, width: u32, height: u32) -> (usize, Option<usize>) {
         use Method::*;
         let n = |n| (n, Some(n));
@@ -174,7 +174,7 @@ pub struct Rule {
     /// ... or these blocks.
     pub connect_blocks: Vec<BlockMatch>,
     pub inner_seams: bool,
-    /// One per tile (`random`).
+    /// One per tile (`random`); empty when every tile counts the same.
     pub weights: Vec<u32>,
     pub random_loops: u32,
     pub symmetry: Symmetry,
@@ -216,7 +216,7 @@ pub fn load(root: &Path) -> Vec<Rule> {
     rules
 }
 
-pub fn sort(rules: &mut [Rule]) {
+fn sort(rules: &mut [Rule]) {
     rules.sort_by(|a, b| (b.prioritize, b.weight, &a.path).cmp(&(a.prioritize, a.weight, &b.path)));
 }
 
@@ -405,6 +405,8 @@ fn sprite_list(value: &str) -> Vec<String> {
 /// `block/` and `item/` sprites in `textures/`) or, after `ns:`, in `ns:textures/` (Continuity).
 pub fn sprite_path(name: &str) -> Option<String> {
     let (ns, path, namespaced) = match name.split_once(':') {
+        // `Identifier`: an empty namespace is `minecraft`.
+        Some(("", path)) => ("minecraft", path, true),
         Some((ns, path)) => (ns, path, true),
         None => ("minecraft", name, false),
     };
@@ -424,7 +426,8 @@ pub fn sprite_path(name: &str) -> Option<String> {
 /// millions of textures.
 const MAX_TILES: usize = 4096;
 
-/// `tiles`: `0-3 5 name name.png <skip> <default> path/x.png ~/x ns:path`. Numbers and bare
+/// `tiles`: `0-3 5 name name.png <skip> <default> path/x.png ~/x /x assets/minecraft/x ns:path`
+/// (`/` is `~/`). Numbers and bare
 /// names are beside the properties file; ranges count up (or down). A tile outside the resource
 /// root fails the list (weights pair with tiles by position), as does a list past [`MAX_TILES`].
 fn tile_list(props: &str, value: &str) -> Result<Vec<Tile>, String> {
@@ -467,12 +470,12 @@ fn tile_list(props: &str, value: &str) -> Result<Vec<Tile>, String> {
                     continue;
                 }
                 // A leading `/` is OptiFine's folder, as `~/` is.
-                let t = match t.strip_prefix('/') {
+                let path = match t.strip_prefix('/') {
                     Some(rest) => format!("~/{rest}"),
                     None => t.to_owned(),
                 };
                 out.push(Tile::Texture(
-                    crate::resolve(props, &png(&t)).ok_or(bad(&t))?,
+                    crate::resolve(props, &png(&path)).ok_or(bad(t))?,
                 ));
             }
         }
@@ -642,6 +645,15 @@ mod tests {
         .unwrap();
         assert!(r.matches_tile("assets/mymod/textures/blocks/marble.png"));
         assert!(r.matches_tile("assets/mymod/optifine/ctm/x.png"));
+        assert!(
+            rule(
+                "a.properties",
+                "matchTiles=:glass\nmethod=fixed\ntiles=:dirt"
+            )
+            .unwrap()
+            .unwrap()
+            .matches_tile("assets/minecraft/textures/block/glass.png")
+        );
         // Without a namespace, a path is in minecraft as written.
         assert!(r.matches_tile("assets/minecraft/blocks/marble.png"));
     }
@@ -772,6 +784,17 @@ mod tests {
         let w = r("tiles=0-2\nweights=10 x 4294967295").unwrap().unwrap();
         assert_eq!(w.weights, [10, 1, 1]);
         assert!(r("tiles=a ../b c\nweights=1 2 3").is_err());
+        assert_eq!(
+            r("tiles=0-2\nweights=-5 2 x").unwrap().unwrap().weights,
+            [0, 2, 1]
+        );
+        assert!(
+            r("tiles=0-1\nweights=-1 0")
+                .unwrap()
+                .unwrap()
+                .weights
+                .is_empty()
+        );
         assert!(
             r("tiles=0-2\nweights=0 0 0")
                 .unwrap()
