@@ -813,6 +813,10 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   the 36 inventory slots and the off hand, never the armour, and only at **plain** stacks: no damage and no
   component (name, enchantment...), so a shop never takes a worn or enchanted item for a new one. Each returns how
   many it counted, took or gave; the player's screen follows as for any change to their inventory.
+- `native_give_stack(uuid, stack)`, a whole stack (damage, name, enchantments... kept) to any player from any server
+  hook, as `Inventory.add` places it (onto equal stacks, then empty inventory slots); what did not fit comes back, all
+  of it for a player not here, dead, or swapped out by another player's hook. Nothing is dropped: an auto-pickup
+  leaves the rest on the ground, a machine keeps it.
 - API 21: `native_acting_player()`, the player whose state is swapped in (inside `native_perform_command`,
   `native_right_click_block`, `native_use_item_on`, `native_destroy_block`...; None elsewhere);
   `native_run_command(line)`, a command run as the server's console (level 4, no output), only where no player is
