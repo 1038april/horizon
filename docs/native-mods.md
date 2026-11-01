@@ -943,6 +943,14 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   hook, as `Inventory.add` places it (onto equal stacks, then empty inventory slots); what did not fit comes back, all
   of it for a player not here, dead, or swapped out by another player's hook. Nothing is dropped: an auto-pickup
   leaves the rest on the ground, a machine keeps it.
+- Experience: `native_experience_orbs(dimension, min, max)`, the orbs in a box (id, position, `value`, and `count`
+  for merged orbs), read before a mod cancels an orb in `native_entity_join_level`; and `native_give_experience(uuid,
+  points)`, points given to any player as touching an orb gives them: Mending repairs their damaged items first, the
+  rest goes to their experience, with the level-up sound; and `native_give_levels(uuid, levels)`, levels added or,
+  negative, taken off (`Player.giveExperienceLevels`, as the anvil and the enchanting table charge; below 0 the level
+  and points are 0; no level-up sound). Both return false for a player not here, dead, or swapped out by another
+  player's hook, and where the server's player list is busy (some world ticks hold it): give first, and cancel the orb
+  only when the give returned true. A merged orb is worth `value` × `count`.
 - API 21: `native_acting_player()`, the player whose state is swapped in (inside `native_perform_command`,
   `native_right_click_block`, `native_use_item_on`, `native_destroy_block`...; None elsewhere);
   `native_run_command(line)`, a command run as the server's console (level 4, no output), only where no player is
