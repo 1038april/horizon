@@ -124,6 +124,7 @@ pub struct Guest {
     /// The bed (its head) the player sleeps in (`LivingEntity.getSleepingPos`),
     /// `Player.sleepCounter`, and the bed last told to the player itself.
     pub bed: Option<[i32; 3]>,
+    pub woke_from: Option<[i32; 3]>,
     pub sleep_timer: u32,
     pub sent_bed: Option<[i32; 3]>,
     /// Where the player respawns (a bed's spot; `ServerPlayer.respawnConfig`),
@@ -347,6 +348,7 @@ impl Guest {
             stuck: (0, 0),
             shoulders: [None; 2],
             bed: None,
+            woke_from: None,
             sleep_timer: 0,
             sent_bed: None,
             spawn: None,
@@ -457,9 +459,21 @@ impl Guest {
                 Some(k) => Change::Knockback(k),
                 None => return,
             },
-            C::UpdateAttributes(p) if own(p.id) => Change::State,
-            C::UpdateMobEffect(p) if own(p.id) => Change::State,
-            C::RemoveMobEffect(p) if own(p.id) => Change::State,
+            C::UpdateAttributes(p) if own(p.id) => {
+                let speed = self.motion.as_ref().and_then(|m| {
+                    m.attributes
+                        .key("minecraft:movement_speed")
+                        .map(|k| k.attribute().registry_id())
+                });
+                let sprint = p
+                    .values
+                    .iter()
+                    .find(|a| Some(a.attribute) == speed)
+                    .map(|a| a.modifiers.iter().any(|m| m.id == "minecraft:sprinting"));
+                Change::Attributes { sprint }
+            }
+            C::UpdateMobEffect(p) if own(p.id) => Change::Effects,
+            C::RemoveMobEffect(p) if own(p.id) => Change::Effects,
             C::PlayerAbilities(_) => Change::Abilities,
             // The chest slot (InventoryMenu's slot 6): a glider.
             C::ContainerSetSlot(p) if p.container == 0 && p.slot == 6 => Change::Abilities,
@@ -722,6 +736,25 @@ fn network_stack(
         ));
     }
     if let Some(d) = s.data() {
+        for (name, value) in &d.other {
+            let (removed, kind) = match name.strip_prefix('!') {
+                Some(kind) => (true, kind),
+                None => (false, name.as_str()),
+            };
+            if horizon_protocol::item::custom::id(kind).is_some() {
+                if let Some(id) = synced_id("minecraft:data_component_type", kind) {
+                    if removed {
+                        stack.removed.push(id);
+                    } else {
+                        stack
+                            .added
+                            .push((id, horizon_protocol::item::Component::Nbt(value.clone())));
+                    }
+                } else {
+                    log::warn!("Cannot send custom component {kind} to this peer");
+                }
+            }
+        }
         if let Some(rgb) = d.dyed_color {
             stack.added.push((
                 horizon_protocol::item::component::DYED_COLOR,
@@ -990,6 +1023,16 @@ fn network_stack(
         stack.added.push((
             horizon_protocol::item::component::ITEM_MODEL,
             horizon_protocol::item::Component::Ident(model),
+        ));
+    }
+    // Arbitrary NBT other mods and item models read back client-side
+    // (`item_model.rs`'s `custom_data_at`), as vanilla's DataComponentPatch does.
+    if let Some(tag @ horizon_world::nbt::Tag::Compound(_)) =
+        s.data().and_then(|d| d.other("minecraft:custom_data"))
+    {
+        stack.added.push((
+            horizon_protocol::item::component::CUSTOM_DATA,
+            horizon_protocol::item::Component::Nbt(tag.clone()),
         ));
     }
     if let Some(t) = s
