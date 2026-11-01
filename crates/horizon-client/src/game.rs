@@ -12410,6 +12410,7 @@ impl Game<'_> {
                 self.res.facts(),
                 self.collision,
                 target,
+                self.remote.is_none(),
                 &mut next_float,
             )
         });

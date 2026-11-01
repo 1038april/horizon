@@ -6141,7 +6141,7 @@ impl Game<'_> {
                     .filter(|(feet, _)| distance(feet) < 64.0)
                     .min_by(|a, b| distance(&a.0).total_cmp(&distance(&b.0)))
                     .map(|(_, target)| *target);
-                o.tick(world, facts, collision, target, &mut next_float)
+                o.tick(world, facts, collision, target, false, &mut next_float)
             });
         }
         // ItemEntity.tick runs on a client too: gravity, collisions and
