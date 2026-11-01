@@ -2451,7 +2451,14 @@ impl Launcher {
         match &self.self_update {
             SelfUpdate::Downloading(version, f) => {
                 foot = foot.child(
-                    update(format!("Launcher {version}  {:.0}%", f * 100.)).child(
+                    update(trf(
+                        "Launcher {version}  {percent}%",
+                        &[
+                            ("version", version),
+                            ("percent", &format!("{:.0}", f * 100.)),
+                        ],
+                    ))
+                    .child(
                         div()
                             .relative()
                             .flex()
@@ -2460,16 +2467,20 @@ impl Launcher {
                 )
             }
             SelfUpdate::Ready(version) => {
-                foot = foot.child(update(format!("Launcher updated to {version}")).child(
-                    div().relative().flex().child(
+                foot = foot.child(
+                    update(trf(
+                        "Launcher updated to {version}",
+                        &[("version", version)],
+                    ))
+                    .child(div().relative().flex().child(
                         button("restart", "Restart", Kind::Primary, &t).on_click(cx.listener(
                             |this, _: &ClickEvent, _, cx| {
                                 this.self_update = SelfUpdate::Failed(backend::restart());
                                 cx.notify();
                             },
                         )),
-                    ),
-                ))
+                    )),
+                )
             }
             _ => {}
         }
@@ -2530,7 +2541,7 @@ impl Launcher {
                 .id("launcher-version")
                 .px(px(8.))
                 .pt(px(6.))
-                .child(format!("Launcher {}", backend::VERSION))
+                .child(trf("Launcher {version}", &[("version", backend::VERSION)]))
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     this.version_clicked();
                     cx.notify();
@@ -2577,7 +2588,7 @@ impl Launcher {
         let t = self.theme;
         // "Nightly · ba6344a", a release's tag: the menu lists the full tags.
         let label = self.selected().map_or_else(
-            || "No version".into(),
+            || tr("No version").into(),
             |tag| horizon_launcher::nightly::label(tag).unwrap_or_else(|| tag.clone()),
         );
         // As tall as Play: "Version" over the tag, and a chevron.
@@ -2663,7 +2674,7 @@ impl Launcher {
                                 .items_center()
                                 .gap(px(8.))
                                 .when(latest, |d| {
-                                    d.child(caps("follows updates").text_color(t.muted))
+                                    d.child(caps(tr("follows updates")).text_color(t.muted))
                                 })
                                 .when(selected, |d| {
                                     d.child(div().size(px(6.)).rounded_full().bg(t.accent))
@@ -2688,7 +2699,7 @@ impl Launcher {
                     .text_color(t.muted)
                     .cursor_pointer()
                     .hover(move |s| s.bg(t.plate_soft).text_color(t.ink))
-                    .child("Manage versions")
+                    .child(tr("Manage versions"))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         this.go(Page::Versions);
                         this.picker_open = false;
@@ -3767,7 +3778,9 @@ impl Launcher {
                         .text_color(t.ink)
                         .child(code.user_code.clone()),
                 ),
-            Some(SignInState::Done(Ok(a))) => div().child(format!("Signed in as {}.", a.name)),
+            Some(SignInState::Done(Ok(a))) => {
+                div().child(trf("Signed in as {name}.", &[("name", &a.name)]))
+            }
             Some(SignInState::Done(Err(e))) => div().text_color(t.danger).child(e.clone()),
             None if self.accounts.accounts.is_empty() => div().child(tr(
                 "Horizon needs a Microsoft account that owns Minecraft: Java Edition, like other launchers. It also plays online servers with your name and skin.",
@@ -3947,17 +3960,19 @@ impl Launcher {
         let releases = match &self.releases {
             Load::Loading => return page.child(centered(tr("Loading releases…"), &t)),
             Load::Failed(e) => {
-                return page.child(centered(&format!("Couldn't load releases. {e}"), &t).child(
-                    button("retry", "Try again", Kind::Secondary, &t).on_click(cx.listener(
-                        |this, _: &ClickEvent, _, cx| {
-                            this.fetch_releases();
-                            cx.notify();
-                        },
-                    )),
-                ))
+                return page.child(
+                    centered(&trf("Couldn't load releases. {error}", &[("error", e)]), &t).child(
+                        button("retry", "Try again", Kind::Secondary, &t).on_click(cx.listener(
+                            |this, _: &ClickEvent, _, cx| {
+                                this.fetch_releases();
+                                cx.notify();
+                            },
+                        )),
+                    ),
+                )
             }
             Load::Ready(r) if r.is_empty() => {
-                return page.child(centered(tr("No releases yet."), &t))
+                return page.child(centered(tr("No releases yet."), &t));
             }
             Load::Ready(r) => r,
         };
@@ -4065,7 +4080,7 @@ impl Launcher {
                 } else if release.asset.is_none() {
                     text(theme::CAPTION)
                         .text_color(t.muted)
-                        .child("No build for this platform")
+                        .child(tr("No build for this platform"))
                         .into_any_element()
                 } else {
                     let mut b = button(format!("install-{tag}"), "Install", Kind::Secondary, &t);
@@ -4199,7 +4214,11 @@ impl Launcher {
             Load::Loading => return page.child(centered(tr("Loading patch notes…"), &t)),
             Load::Failed(e) => {
                 return page.child(
-                    centered(&format!("Couldn't load patch notes. {e}"), &t).child(
+                    centered(
+                        &trf("Couldn't load patch notes. {error}", &[("error", e)]),
+                        &t,
+                    )
+                    .child(
                         button("retry-notes", "Try again", Kind::Secondary, &t).on_click(
                             cx.listener(|this, _: &ClickEvent, _, cx| {
                                 this.fetch_releases();
@@ -4259,7 +4278,7 @@ impl Launcher {
                             .child(if release.body.trim().is_empty() {
                                 text(theme::UI)
                                     .text_color(t.muted)
-                                    .child("No notes for this release.")
+                                    .child(tr("No notes for this release."))
                                     .into_any_element()
                             } else {
                                 markdown::render(&release.body, &t)
