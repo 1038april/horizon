@@ -6037,6 +6037,10 @@ impl Game<'_> {
                 });
                 self.audio.play(sound, at, 1.0, 1.0);
             }
+            // A mod's own kind: the owning mod's hook answers.
+            ConsumeEffect::Native { kind, data } => {
+                self.native_consume_effect(kind, data);
+            }
         }
     }
     fn consume_held(&mut self) {
