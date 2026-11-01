@@ -244,10 +244,26 @@ impl Sprites {
         };
         self.register(name, decoded)
     }
+    /// The layer of a texture outside `textures/` (an OptiFine pack's connected-texture tile),
+    /// named by its resource path and added on first use. Unlike [`Sprites::insert`], a texture
+    /// that does not load is an error: the caller drops what needed it. Such files bypass the
+    /// disk cache, whose fingerprint covers only `textures/`.
+    pub fn insert_file(&mut self, root: &Path, resource: &str) -> Result<u32> {
+        if let Some(layer) = self.layers.get(resource) {
+            return Ok(*layer);
+        }
+        let decoded = Self::decode_file(&root.join(resource), resource)?;
+        self.register(resource, decoded)
+    }
     /// Read and decode one texture and its `.mcmeta`.
     fn decode(root: &Path, name: &str) -> Result<crate::sprite_cache::Decoded> {
         let (namespace, path) = name.split_once(':').ok_or("invalid sprite identifier")?;
-        let path = root.join(format!("assets/{namespace}/textures/{path}.png"));
+        Self::decode_file(
+            &root.join(format!("assets/{namespace}/textures/{path}.png")),
+            name,
+        )
+    }
+    fn decode_file(path: &Path, name: &str) -> Result<crate::sprite_cache::Decoded> {
         let metadata = match fs::read_to_string(path.with_extension("png.mcmeta")) {
             Ok(text) => Some(serde_json::from_str::<
                 BTreeMap<String, Box<serde_json::value::RawValue>>,
