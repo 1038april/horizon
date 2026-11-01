@@ -2442,6 +2442,83 @@ impl Game<'_> {
         batch.scale_since(start, at[0], at[1], size / 16.0, size / 16.0);
         true
     }
+    /// Item `item`'s icon drawn with model `model` (`minecraft:paper` as
+    /// `mymod:wheel_icon`, an `item_model` of a content mod's), as `native_item`
+    /// draws one; false for an unknown item. API @API:native_mod_screen@.
+    pub(super) fn native_item_model(
+        &self,
+        batch: &mut HudBatch,
+        item: &str,
+        model: &str,
+        at: [f32; 2],
+        size: f32,
+    ) -> bool {
+        if self.res.items().get(item).is_none() {
+            return false;
+        }
+        let mut stack = ItemStack::new(item, 1);
+        let mut data = horizon_client::item_data::StackData::default();
+        data.set_other(
+            "minecraft:item_model",
+            Some(horizon_world::nbt::Tag::String(model.into())),
+        );
+        stack.extra = Some(Box::new(data));
+        let start = batch.vertices.len();
+        self.draw_item_model(batch, &stack, at[0], at[1]);
+        batch.scale_since(start, at[0], at[1], size / 16.0, size / 16.0);
+        true
+    }
+    /// A quad of corners `points` (in order round it) in GUI pixels, `argb`:
+    /// a wedge, a slanted bar, what `native_fill`'s rectangles can't draw.
+    /// API @API:native_mod_screen@.
+    pub(super) fn native_quad(&self, batch: &mut HudBatch, points: [[f32; 2]; 4], argb: u32) {
+        let [a, r, g, b] = argb.to_be_bytes();
+        let uv = horizon_client::gfx::lightning::white_uv(&self.gui.atlas.font.white());
+        batch.quad(points, [uv; 4], rgba(r, g, b, a));
+    }
+    /// Opens a screen of mod `mod_id`'s own over the world: the screen hooks
+    /// fire over it as over any other (its `NativeScreenView.id` is `mod`), so
+    /// the mod draws it in `native_screen_render_post` and takes its clicks,
+    /// scroll, keys and typing there; the mouse is freed, and Escape closes it.
+    /// True when it is open: false while another screen is (or another mod's).
+    /// API @API:native_mod_screen@.
+    pub(super) fn native_mod_screen_open(&mut self, mod_id: &str) -> bool {
+        if self.screen == Screen::Mod {
+            return self.native_mod_screen.as_deref() == Some(mod_id);
+        }
+        if self.screen != Screen::Playing || self.title.is_some() {
+            return false;
+        }
+        self.native_mod_screen = Some(mod_id.to_owned());
+        self.screen = Screen::Mod;
+        self.keys.clear();
+        self.left = false;
+        self.right = false;
+        self.mining = None;
+        self.capture(false);
+        true
+    }
+    /// Closes mod `mod_id`'s own screen, if it is open. API @API:native_mod_screen@.
+    pub(super) fn native_mod_screen_close(&mut self, mod_id: &str) {
+        if self.native_mod_screen().is_some_and(|id| id == mod_id) {
+            self.close_mod_screen();
+        }
+    }
+    /// The mod whose own screen is open, if one is (Escape, or another screen
+    /// replacing it, closes it). API @API:native_mod_screen@.
+    pub(super) fn native_mod_screen(&self) -> Option<&str> {
+        self.native_mod_screen
+            .as_deref()
+            .filter(|_| self.screen == Screen::Mod)
+    }
+    /// A mod's own screen closes (Escape, or `native_mod_screen_close`).
+    pub(super) fn close_mod_screen(&mut self) {
+        self.native_mod_screen = None;
+        if self.screen == Screen::Mod {
+            self.screen = Screen::Playing;
+            self.capture(true);
+        }
+    }
     /// The open menu's title (the block's name, or the one it was given),
     /// as plain text. API 20.
     pub(super) fn native_screen_title(&self) -> Option<String> {

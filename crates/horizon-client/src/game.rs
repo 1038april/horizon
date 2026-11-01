@@ -734,6 +734,9 @@ enum Screen {
     Win,
     /// DebugOptionsScreen, F3+F6 (game/debug_options.rs).
     DebugOptions,
+    /// A screen of a native mod's own (`native_mod_screen_open`): it draws and
+    /// takes its input through the screen hooks.
+    Mod,
 }
 impl Screen {
     /// The id native mods see for this screen (`NativeScreenView.id`, the
@@ -760,6 +763,7 @@ impl Screen {
             Screen::DialogWarning => "dialog_warning",
             Screen::Win => "win",
             Screen::DebugOptions => "debug_options",
+            Screen::Mod => "mod",
         }
     }
 }
@@ -2513,6 +2517,8 @@ struct Game<'a> {
     panel: native_panel::Panel,
     /// Horizon's own shader pack, while one is picked (`game/native_shaders.rs`).
     native_shaders: native_shaders::NativeShaders,
+    /// The mod whose own screen is open (`Screen::Mod`).
+    native_mod_screen: Option<String>,
     /// The native lifecycle bookkeeping.
     native_lifecycle: native_lifecycle::NativeLifecycle,
     /// Native mods' messages waiting (`game/native_net.rs`).
@@ -7923,6 +7929,7 @@ impl Game<'_> {
             Screen::Dead => self.draw_death_screen(&mut batch),
             Screen::Stats => self.draw_stats(&mut batch),
             Screen::Advancements => self.draw_advancements(&mut batch),
+            Screen::Mod => {}
             Screen::WorldOptions => self.draw_world_options(&mut batch),
             Screen::Friends => self.draw_friends_screen(&mut batch),
             Screen::ServerLinks => self.draw_server_links(&mut batch),
@@ -14872,6 +14879,7 @@ impl Game<'_> {
                 Screen::Chat => self.close_chat(chat::ChatExit::Intentional),
                 Screen::Win => self.close_win_screen()?,
                 Screen::DebugOptions => self.close_debug_options(),
+                Screen::Mod => self.close_mod_screen(),
             },
             KeyCode::Digit1
             | KeyCode::Digit2
@@ -17178,6 +17186,7 @@ impl<'a> Game<'a> {
             recipe_tables: Default::default(),
             panel: Default::default(),
             native_shaders: Default::default(),
+            native_mod_screen: None,
             native_lifecycle: Default::default(),
             native_net: Default::default(),
             sky_darken_memo: Default::default(),
