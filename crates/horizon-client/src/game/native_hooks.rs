@@ -574,6 +574,32 @@ impl GameLevel<'_> {
     }
 }
 
+/// What dropped the items [`Game::native_loot_drops`] hears.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct NativeLootDrops<'a> {
+    /// The block's or mob's own loot table (`minecraft:blocks/stone`, `minecraft:entities/zombie`);
+    /// empty when none rolled: the block or mob has none, the `mob_drops` rule is off, a baby
+    /// animal. A mob's drops may hold more: a charged creeper's head, a fox's mouth item.
+    pub(crate) table: &'a str,
+    /// The level they drop in (`minecraft:overworld`).
+    pub(crate) dimension: &'a str,
+    /// `LootContextParams.ORIGIN`: a broken block's centre, a mob's position.
+    pub(crate) origin: [f64; 3],
+    /// The block broken: its position and state.
+    pub(crate) block: Option<([i32; 3], BlockStateId)>,
+    /// The mob that died: its entity ID and type (`minecraft:zombie`).
+    pub(crate) entity: Option<(u32, &'a str)>,
+    /// The player who broke the block or killed the mob, when known. A mob
+    /// names one only while it remembers the player's hit (100 ticks), so one
+    /// that dies to lava long after names none.
+    pub(crate) player: Option<u128>,
+    /// What broke the block (`LootContextParams.TOOL`).
+    pub(crate) tool: Option<&'a ItemStack>,
+    /// The radius of the explosion that broke the block.
+    pub(crate) explosion: Option<f32>,
+}
+
 /// A depth-tested outline of the client's block selection shape.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct NativeBlockRim {
@@ -1571,6 +1597,29 @@ impl Game<'_> {
     /// API 40.
     pub(super) fn native_mob_killed(&mut self, player: u128, entity: u32, kind: &str) {
         let _ = (player, entity, kind);
+    }
+    /// A block broke or a mob died, and `drops` are the items about to drop, in
+    /// the order they drop: what the loot tables rolled (after
+    /// `native_loot_table_load`'s changes), and for a mob what it wore, held or
+    /// carried (a fox's mouth item, an allay's, piglin's or horse's inventory),
+    /// but not an enderman's carried block or a copper golem's preserved
+    /// equipment, which drop after. A charged creeper's head and a fox's mouth
+    /// item come before the mob's own table. A block's stacks get its block
+    /// entity's data (a shulker box's items) after this. Add, change or take out
+    /// stacks; empty ones don't drop (NeoForge's global loot modifiers, Fabric's
+    /// `LootTableEvents.MODIFY_DROPS`); `context` says what dropped them and
+    /// how, and it is called even when `drops` is empty. It hears blocks that a
+    /// player, an explosion or a mob breaks, not other breaks (leaves decaying,
+    /// a torch losing its wall, a piston, `/setblock ... destroy`), nor a
+    /// creative break or a tool that can't harvest the block, nor experience.
+    /// Server-side, for every player. API
+    /// @API:loot_tables@.
+    pub(super) fn native_loot_drops(
+        &mut self,
+        context: &NativeLootDrops<'_>,
+        drops: &mut Vec<ItemStack>,
+    ) {
+        let _ = (context, drops);
     }
     /// `player` threw `count` of `item` (`Player.drop`: the drop key, a
     /// menu's throw...), not what scatters when they die. It only hears.
@@ -2678,6 +2727,34 @@ impl Game<'_> {
     pub(super) fn native_acting_id(&mut self) -> u128 {
         horizon_client::lan::playerdata::ints_uuid(self.acting_player_uuid())
     }
+    /// The mods' say on a broken block's drops (`native_loot_drops`).
+    pub(super) fn native_block_drops(
+        &mut self,
+        pos: [i32; 3],
+        state: BlockStateId,
+        player: Option<u128>,
+        tool: Option<&ItemStack>,
+        explosion: Option<f32>,
+        drops: &mut Vec<ItemStack>,
+    ) {
+        let items = match &self.world_tables {
+            Some(tables) => &tables.items,
+            None => self.res.items(),
+        };
+        let table = items.block_loot_table(self.pack.assets.registry, state);
+        let context = NativeLootDrops {
+            table: table.as_deref().unwrap_or_default(),
+            dimension: self.dim.id(),
+            origin: pos.map(|c| f64::from(c) + 0.5),
+            block: Some((pos, state)),
+            entity: None,
+            player,
+            tool,
+            explosion,
+        };
+        self.native_loot_drops(&context, drops);
+        drops.retain(|stack| stack.count > 0 && &*stack.item != "minecraft:air");
+    }
     /// Whether a native mod keeps the acting player from taking `stack`.
     pub(super) fn native_pickup_refused(&mut self, stack: &ItemStack) -> bool {
         let player = self.native_acting_id();
@@ -3595,6 +3672,27 @@ mod tests {
     }
 
     #[test]
+    fn loot_table_load_stays_hookable() {
+        let source = include_str!("../../../horizon-world/src/loot.rs");
+        // From its doc comment's last line, so an attribute above it counts.
+        let hook = source.find("pub fn native_loot_table_load(").unwrap();
+        let start = source[..hook].rfind("///").unwrap();
+        let body = &source[start..start + source[start..].find("\n}\n").unwrap()];
+        for line in body.lines() {
+            assert!(
+                !line.contains("cfg"),
+                "a cfg in the loot hook point: {line}"
+            );
+            for mac in ["!(", "![", "! {", "!{"] {
+                assert!(
+                    !line.contains(mac),
+                    "a macro in the loot hook point: {line}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn lifecycle_source_stays_hookable() {
         let source = include_str!("native_lifecycle.rs");
         let code = source.split("#[cfg(test)]").next().unwrap_or_default();
@@ -3658,6 +3756,11 @@ mod tests {
                 .lines()
                 .filter_map(|line| line.strip_prefix("pub fn native_")?.split('(').next())
                 .collect();
+        // The loot tables' hook point (`horizon_world::loot`).
+        let loot_hooks: BTreeSet<_> = include_str!("../../../horizon-world/src/loot.rs")
+            .lines()
+            .filter_map(|line| line.strip_prefix("pub fn native_")?.split('(').next())
+            .collect();
         let declared: BTreeSet<_> = section
             .lines()
             .chain(level_section.lines())
@@ -3668,6 +3771,7 @@ mod tests {
                     .next()
             })
             .chain(render_hooks.iter().copied())
+            .chain(loot_hooks.iter().copied())
             .collect();
         let mut names = BTreeSet::new();
         let mut contracts = BTreeSet::new();
@@ -3681,6 +3785,8 @@ mod tests {
             names.insert(name);
             let target = if render_hooks.contains(name) {
                 format!("horizon_client_render::gfx::native_render::native_{name}")
+            } else if loot_hooks.contains(name) {
+                format!("horizon_world::loot::native_{name}")
             } else if level_hooks.contains(name) {
                 format!("horizon_client::game::native_hooks::GameLevel<'_>::native_{name}")
             } else {
