@@ -117,7 +117,6 @@ impl Game<'_> {
     pub(super) fn after_block(
         &mut self,
         outcome: BlockOutcome,
-        damage: f32,
         attacker: Option<u32>,
         projectile: bool,
     ) {
@@ -181,12 +180,12 @@ impl Game<'_> {
         let Some(id) = attacker else {
             // Another player's melee hit has no mob behind it.
             if let Some((from, disable)) = self.combat.player_attacker {
-                let fully = outcome.blocked >= damage;
+                let fully = outcome.fully_blocked;
                 self.blocked_by_attacker(&component, [from[0], from[2]], fully, disable, at);
             }
             return;
         };
-        let fully = outcome.blocked >= damage;
+        let fully = outcome.fully_blocked;
         let Some(m) = self.mobs.iter().find(|m| m.id == id) else {
             return;
         };
