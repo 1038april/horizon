@@ -172,6 +172,8 @@ address. The script then checks, from both sides, what a guest's game used to ge
              (armour 15, LivingEntity.getDamageAfterArmorAbsorb), and the full 10 without it.
 - plates:    a stone pressure plate the guest steps on is pressed on both sides, and comes up once
              the guest steps off (#848).
+- plate-projectiles: a guest's thrown trident, a firework rocket and a guest's fishing bobber press a wooden
+             pressure plate; a trident leaves a stone plate up, which senses only players and mobs (#5896).
 - swings:    each side sees the other's arm swing while it mines a block, and the guest sees its own
              swing when its hoe tills dirt (the server's use) (#848).
 - cracks:    each side sees the other player's crack on the block they mine grow, and go once it breaks
@@ -367,7 +369,7 @@ CHECKS = ['tab', 'self', 'armour', 'nametags', 'walls', 'chest', 'menu-transfer'
           'commands', 'recipes', 'machines', 'brewing', 'loom', 'stonecutter', 'grindstone', 'anvil', 'smithing',
           'enchanting', 'beacon', 'crafter', 'lectern', 'cartography', 'trials', 'clicks', 'shift-double-click', 'recipe-shift', 'shift-drag', 'modifier-release', 'wheel', 'sleep', 'sleep-villager', 'bed-occupied', 'sleep-reload', 'predict', 'push',
           'piston-push', 'piston-slime', 'eat', 'eat-on-block', 'eating', 'xp', 'objects', 'projectiles', 'thrown', 'sparks', 'hud', 'sidebar', 'border', 'particles',
-          'worn', 'blast', 'barter', 'deflect', 'fireball', 'light', 'time', 'swings', 'cracks', 'plates', 'effects',
+          'worn', 'blast', 'barter', 'deflect', 'fireball', 'light', 'time', 'swings', 'cracks', 'plates', 'plate-projectiles', 'effects',
           'portals', 'distance', 'growth', 'doors', 'flight', 'ladder', 'boats', 'boat_shoved', 'minecarts', 'frames', 'hands',
           'lightning', 'riding', 'occupied_horse', 'mounts', 'worldspawn', 'beds', 'shield', 'deathmining', 'contacts', 'absorption',
           'breath', 'lava', 'levels', 'drops', 'underwater', 'fireworks', 'rocket-walls', 'rocket-ceilings', 'tag-query']
@@ -3501,6 +3503,52 @@ def check_plates(host, guest, out):
     return detail
 
 
+def check_plate_projectiles(host, guest, out):
+    guest('command', command='gamemode creative')
+    x, y, z = (int(v // 1) for v in pos_of(guest))
+
+    def press(block, dx, entity, nbt):
+        plate = (x + dx, y, z + 5)
+        guest('command', command=f'setblock {plate[0]} {plate[1]} {plate[2]} minecraft:{block}')
+        guest.wait(5)
+        at = f'{plate[0] + 0.5} {plate[1] + 0.05} {plate[2] + 0.5}'
+        guest('command', command=f'summon minecraft:{entity} {at} {nbt}')
+        state = wait_state(host, plate, 'powered', 'true', 15)
+        guest('command', command=f'kill @e[type=minecraft:{entity}]')
+        guest('command', command=f'setblock {plate[0]} {plate[1]} {plate[2]} minecraft:air')
+        return state
+
+    detail = {'rocket': press('oak_pressure_plate', 0, 'firework_rocket', '{LifeTime:60}')}
+    # A field of plates under the cast, so the bobber lands on one wherever it falls.
+    field = (x - 4, y, z + 2, x + 4, y, z + 7)
+    guest('command', command='fill {} {} {} {} {} {} minecraft:oak_pressure_plate'.format(*field))
+    guest('command', command='item replace entity @s weapon.mainhand with minecraft:fishing_rod')
+    guest('command', command=f'tp @s {x + 0.5} {y} {z + 0.5} 0 25')
+    guest.wait(10)
+    guest('use_item')
+    guest.wait(40)
+    detail['bobber'] = sum('powered=true' in b[3] for b in host.raw('blocks', *field)['blocks'])
+    guest('use_item')
+    # A real throw on each kind of plate: a stone plate senses only players and mobs.
+    for block, key in (('oak_pressure_plate', 'trident'), ('stone_pressure_plate', 'stone')):
+        guest('command', command='fill {} {} {} {} {} {} minecraft:air'.format(*field))
+        guest.wait(30)
+        guest('command', command='fill {} {} {} {} {} {} minecraft:{}'.format(*field, block))
+        guest('command', command='item replace entity @s weapon.mainhand with minecraft:trident')
+        guest('command', command=f'tp @s {x + 0.5} {y} {z + 0.5} 0 30')
+        guest.wait(10)
+        guest('use_item', hold=1)
+        guest.wait(30)
+        detail[key] = sum('powered=true' in b[3] for b in host.raw('blocks', *field)['blocks'])
+        guest('command', command='kill @e[type=minecraft:trident]')
+    guest('command', command='fill {} {} {} {} {} {} minecraft:air'.format(*field))
+    assert detail['rocket'] == 'true', f'a rocket on a wooden plate: {detail}'
+    assert detail['bobber'] > 0, f'no plate under the bobber: {detail}'
+    assert detail['trident'] > 0, f'no plate under the trident: {detail}'
+    assert detail['stone'] == 0, f'a stone plate senses no trident: {detail}'
+    return detail
+
+
 def check_trials(host, guest, out):
     # The host watches as a spectator, whom neither block detects: only the guest can wake them.
     hx, hy, hz = pos_of(host)
@@ -6417,7 +6465,7 @@ CHECK_FNS = {'tab': check_tab, 'self': check_self, 'armour': check_armour,
              'piston-slime': check_piston_slime,
              'eat': check_eat, 'eat-on-block': check_eat_on_block, 'eating': check_eating, 'xp': check_xp,
              'objects': check_objects, 'projectiles': check_projectiles, 'blast': check_blast,
-             'light': check_light, 'plates': check_plates, 'swings': check_swings,
+             'light': check_light, 'plates': check_plates, 'plate-projectiles': check_plate_projectiles, 'swings': check_swings,
              'cracks': check_cracks, 'time': check_time, 'growth': check_growth, 'doors': check_doors,
              'flight': check_flight, 'fireball': check_fireball, 'deflect': check_deflect,
              'barter': check_barter, 'worn': check_worn, 'kills': check_kills, 'looting': check_looting, 'leave': check_leave,
