@@ -431,9 +431,6 @@ fn tile_list(props: &str, value: &str) -> Option<Vec<Tile>> {
     };
     let mut out = Vec::new();
     for token in value.split_whitespace() {
-        if out.len() > MAX_TILES {
-            return None;
-        }
         match token {
             "<skip>" => out.push(Tile::Skip),
             "<default>" => out.push(Tile::Default),
