@@ -736,7 +736,7 @@ impl Game<'_> {
         let info = self
             .settings
             .client_information(client_view_distance(self.settings.render_distance));
-        if local.is_none() {
+        if local.is_none() && !self.options.split_guest {
             horizon_client::crash::set_detail(
                 "Server",
                 horizon_client::net::shown_address(address),
@@ -1035,7 +1035,10 @@ impl Game<'_> {
             }
             None => false,
         };
-        horizon_client::crash::clear_detail("Server");
+        // A splitscreen player leaving says nothing of where P1 plays.
+        if !self.options.split_guest {
+            horizon_client::crash::clear_detail("Server");
+        }
         self.clock = Default::default();
         self.adv = Default::default();
         self.stats = Default::default();
@@ -1932,6 +1935,7 @@ impl Game<'_> {
         r.predictions.clear();
         self.set_mode_id(spawn.game_type);
         self.dim = Dim::from_id(&spawn.dimension);
+        self.audio.set_world(&spawn.dimension);
         // ClientPacketListener.handleLogin / handleRespawn: the server's
         // Player.getLastDeathLocation, for the recovery compass.
         self.level.last_death = spawn
@@ -2513,11 +2517,20 @@ impl Game<'_> {
                 t.on_ground = on_ground;
                 return;
             }
-            // ExperienceOrb has the same NO_OP handler; `ExperienceOrb.tick`
-            // moves it on between updates (`tick_remote_entities`).
+            // ExperienceOrb.createInterpolationHandler is a
+            // LinearInterpolationHandler: the correction is spread over 3
+            // ticks (`tick_remote_entities`), while `ExperienceOrb.tick` keeps
+            // moving it.
             if let Some(o) = self.orbs.iter_mut().find(|o| o.id == id as u32) {
-                o.position = at;
                 o.on_ground = on_ground;
+                r.lerps.insert(
+                    id,
+                    Lerp {
+                        target: position,
+                        rotation: None,
+                        steps: 3,
+                    },
+                );
                 return;
             }
             if r.cart_lerps.contains_key(&id) {
@@ -6144,7 +6157,34 @@ impl Game<'_> {
                     .filter(|(feet, _)| distance(feet) < 64.0)
                     .min_by(|a, b| distance(&a.0).total_cmp(&distance(&b.0)))
                     .map(|(_, target)| *target);
-                o.tick(world, facts, collision, target, false, &mut next_float)
+                // Entity.commonTick: setOldPosAndRot, then
+                // LinearInterpolationHandler.doInterpolate moves 1/remaining of
+                // the way to the server's position, so the frame draws the step
+                // from the old position.
+                let old = o.position;
+                if let Some(l) = lerps.get_mut(&(o.id as i32)).filter(|l| l.steps > 0) {
+                    let alpha = 1.0 / f64::from(l.steps);
+                    o.position = Vec3::new(
+                        o.position.x + (l.target[0] - o.position.x) * alpha,
+                        o.position.y + (l.target[1] - o.position.y) * alpha,
+                        o.position.z + (l.target[2] - o.position.z) * alpha,
+                    );
+                    l.steps -= 1;
+                }
+                let before = o.position;
+                let kept = o.tick(world, facts, collision, target, false, &mut next_float);
+                // `tick` set `previous` to the stepped position: keep the
+                // pre-step one, as `xo` is in vanilla.
+                o.previous = old;
+                // AbstractInterpolationHandler.applyPredictedMovement: the orb's
+                // own move carries the target along (vanilla also checks the
+                // moved target for collisions; that check is left out here).
+                if let Some(l) = lerps.get_mut(&(o.id as i32)).filter(|l| l.steps > 0) {
+                    l.target[0] += o.position.x - before.x;
+                    l.target[1] += o.position.y - before.y;
+                    l.target[2] += o.position.z - before.z;
+                }
+                kept
             });
         }
         // ItemEntity.tick runs on a client too: gravity, collisions and
@@ -9142,6 +9182,16 @@ impl horizon_world::level::LevelAccess for DryLevel<'_> {
     }
     fn random(&mut self) -> &mut horizon_core::random::LegacyRandom {
         &mut self.random
+    }
+    /// A mod's bone meal answer is read, never grown here: the preview asks
+    /// the level it stands in for, as `isValidBonemealTarget` is read on both
+    /// sides.
+    fn is_valid_bonemeal_target(
+        &self,
+        pos: horizon_core::position::BlockPos,
+        state: BlockStateId,
+    ) -> Option<bool> {
+        self.base.is_valid_bonemeal_target(pos, state)
     }
     fn game_time(&self) -> i64 {
         self.base.game_time()

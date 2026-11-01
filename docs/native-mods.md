@@ -357,6 +357,13 @@ horizon-mixins failed (exit status: 1). The end of its output, the whole of it i
 E_CRATE_DEPENDENCY: crate_lock needs rand ^0.9, which isn't in Horizon's Cargo.lock (…/horizon-mixin.toml)
 ```
 
+### A mod's own consume effects
+
+A consumable's `on_consume_effects` entry of a type in a namespace of its own — where the old loader
+dropped it silently — reaches `native_consume_effect(kind, data)` when the item is consumed, on the server
+thread, for the acting player. The kind and the JSON the file wrote are there; the game's own effects,
+sounds, teleports and drops are open to the hook. An unclaimed kind does nothing.
+
 ### Data files
 
 A bundle's `data/` folder (any files) is staged as `native-data/<mod>/` at the root of the workspace. A helper or
@@ -891,6 +898,37 @@ names the level it means by its `dimension` (`minecraft:overworld`), as `native_
 A model that moves (a turning gun barrel, a thrown projectile) is an `item_display` showing an item whose model comes from
 the mod's `.hmod` assets: summon it once, then move and pose it from a tick hook. Easing between ticks happens on each
 client, so a call a tick looks smooth.
+
+### Advancement triggers
+
+`crates/horizon-client/src/game/native_criteria.rs`: a mod's own criteria triggers, as a NeoForge mod registers a
+`CriterionTrigger` and calls its `SimpleCriterionTrigger.trigger`. The advancement is an ordinary file of a content mod
+or a world's data pack (`data/mymod/advancement/connect_a_pipe.json`) whose criterion names the mod's trigger and
+whatever conditions the mod reads:
+
+```json
+{
+  "criteria": {
+    "copper_pipe": {
+      "trigger": "mymod:pipe_connected",
+      "conditions": {"pipe": {"items": "#c:ingots/copper"}}
+    }
+  }
+}
+```
+
+- `native_trigger_criterion(uuid, trigger, test)` fires it for one player, on a server only. Each criterion with that
+  trigger the player hasn't been granted, of an advancement not done yet, goes to `test`, then to its `player`
+  predicate, as vanilla tests one. Those that pass are granted; an advancement they complete is awarded as by the game's
+  own triggers: the toast, the chat line, the rewards and the player's saved progress.
+- `test` gets a `NativeCriterion`: its `conditions` (`Null` when it has none), and `item(key, stack)`, which tests
+  `stack` against the item predicate under `key` as the game's own triggers read one: `items` (an id, a list or a
+  `#tag`), `count`, the `potion_contents` and `damage` components, and the `enchantments` and `damage` predicates.
+  Other components and predicates aren't checked. A missing key passes.
+- It reaches the acting player inside their hook, and any player on the server, in their own level, only where no
+  player is swapped in (`native_tick`, a menu hook), as `native_run_command`. True means the player was reached, not
+  that anything was granted. It returns false otherwise, when the player isn't on, and for a `minecraft:` trigger or a
+  name without a namespace: the game fires vanilla's triggers from its own events.
 
 ### Explosions
 

@@ -522,7 +522,9 @@ impl Game<'_> {
         let slot = match &held {
             Some(h) => {
                 let slot = self.equipment_slot(h);
-                if slot < 2 && !a.show_arms {
+                // ArmorStand.interactAt: a disabled slot, or a hand without
+                // arms, is FAIL.
+                if a.is_disabled(slot) {
                     return true;
                 }
                 slot
@@ -550,6 +552,18 @@ impl Game<'_> {
                 }
             }
         };
+        // An empty hand takes from the main hand when the clicked slot is
+        // disabled (`isDisabled(clickedSlot) ? slot : clickedSlot`).
+        let slot = if held.is_none() && a.is_disabled(slot) {
+            0
+        } else {
+            slot
+        };
+        // ArmorStand.swapItem: taking from a filled slot or putting into an
+        // empty one can be disabled; the click then passes.
+        if a.swap_locked(slot) {
+            return false;
+        }
         let current = self.armor_stands[i].equipment[slot].clone();
         if held.is_none() && current.is_none() {
             return false;
@@ -1320,6 +1334,26 @@ mod swap_tests {
     use super::*;
     fn stack(item: &str, count: u32) -> ItemStack {
         ItemStack::new(item, count)
+    }
+    #[test]
+    fn disabled_slots_lock_by_filter_flag() {
+        let mut a = ArmorStand::new(1, horizon_core::geometry::Vec3::ZERO, 0.0);
+        // Hands need arms.
+        assert!(a.is_disabled(0) && a.is_disabled(1));
+        a.show_arms = true;
+        assert!(!a.is_disabled(0) && !a.is_disabled(1));
+        // Bit 4 locks the head (equipment index 5), bit 5 the off hand (1).
+        a.disabled_slots = (1 << 4) | (1 << 5);
+        assert!(a.is_disabled(5) && a.is_disabled(1));
+        assert!(!a.is_disabled(4) && !a.is_disabled(0));
+        // Taking (+8) from a filled slot and putting (+16) into an empty one.
+        a.disabled_slots = (1 << (3 + 8)) | (1 << (1 + 16));
+        assert!(!a.swap_locked(4), "an empty chest slot is not take-locked");
+        a.equipment[4] = Some(stack("minecraft:iron_chestplate", 1));
+        assert!(a.swap_locked(4));
+        assert!(a.swap_locked(2), "an empty feet slot is put-locked");
+        a.equipment[2] = Some(stack("minecraft:iron_boots", 1));
+        assert!(!a.swap_locked(2));
     }
     #[test]
     fn creative_swap_gives_the_worn_piece_to_the_hand() {

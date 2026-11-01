@@ -58,6 +58,93 @@ pub enum ConsumeEffect {
     /// `TeleportRandomlyConsumeEffect`.
     TeleportRandomly(horizon_world::teleport_consume::TeleportConsume),
     PlaySound(String),
+    /// A mod's own kind, kept as the file wrote it (the loader used to drop
+    /// it silently): the game hands it to `native_consume_effect`.
+    /// API @API:consume_effect@
+    Native {
+        kind: String,
+        data: serde_json::Value,
+    },
+}
+
+/// One `on_consume_effects` entry. A bare type name is minecraft's own, as
+/// a bare item id is: `apply_effects` and `:apply_effects` are
+/// `minecraft:apply_effects`. A
+/// namespaced kind outside `minecraft:` is the mod's own, kept whole for
+/// the hook. An unknown `minecraft:` kind and a missing type are dropped.
+fn parse_consume_effect(effect: &serde_json::Value) -> Option<ConsumeEffect> {
+    let kind = effect.get("type")?.as_str()?;
+    // `Identifier.bySeparator`: no namespace, or an empty one (`:clear_all_effects`), is minecraft's.
+    let kind = match kind.split_once(':') {
+        Some(("", path)) => format!("minecraft:{path}"),
+        Some(_) => kind.to_owned(),
+        None => format!("minecraft:{kind}"),
+    };
+    match kind.as_str() {
+        "minecraft:apply_effects" => {
+            let probability = effect
+                .get("probability")
+                .and_then(|p| p.as_f64())
+                .map_or(1.0, |p| p as f32);
+            let mut specs = Vec::new();
+            if let Some(list) = effect.get("effects").and_then(|l| l.as_array()) {
+                for e in list {
+                    if let Some(id) = e.get("id").and_then(|i| i.as_str()) {
+                        let duration =
+                            e.get("duration").and_then(|d| d.as_i64()).unwrap_or(0) as i32;
+                        let amplifier =
+                            e.get("amplifier").and_then(|a| a.as_i64()).unwrap_or(0) as i32;
+                        specs.push(ConsumeEffectSpec {
+                            id: id.to_string(),
+                            duration,
+                            amplifier,
+                        });
+                    }
+                }
+            }
+            Some(ConsumeEffect::ApplyEffects {
+                effects: specs,
+                probability,
+            })
+        }
+        "minecraft:clear_all_effects" => Some(ConsumeEffect::ClearAllEffects),
+        "minecraft:remove_effects" => {
+            let mut targets = Vec::new();
+            if let Some(eff) = effect.get("effects") {
+                if let Some(s) = eff.as_str() {
+                    targets.push(s.to_string());
+                } else if let Some(arr) = eff.as_array() {
+                    for item in arr {
+                        if let Some(s) = item.as_str() {
+                            targets.push(s.to_string());
+                        }
+                    }
+                }
+            }
+            Some(ConsumeEffect::RemoveEffects(targets))
+        }
+        "minecraft:teleport_randomly" => Some(ConsumeEffect::TeleportRandomly(
+            horizon_world::teleport_consume::TeleportConsume {
+                diameter: effect
+                    .get("diameter")
+                    .and_then(serde_json::Value::as_f64)
+                    .map_or(16.0, |d| d as f32),
+                directional_particles: effect
+                    .get("directional_particles")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true),
+            },
+        )),
+        "minecraft:play_sound" => effect
+            .get("sound")
+            .and_then(|s| s.as_str())
+            .map(|s| ConsumeEffect::PlaySound(s.to_string())),
+        k if !k.starts_with("minecraft:") => Some(ConsumeEffect::Native {
+            kind: k.to_owned(),
+            data: effect.clone(),
+        }),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -657,75 +744,8 @@ impl Items {
                 .and_then(|e| e.as_array())
             {
                 for effect in effects {
-                    match effect.get("type").and_then(|t| t.as_str()) {
-                        Some("minecraft:apply_effects") => {
-                            let probability = effect
-                                .get("probability")
-                                .and_then(|p| p.as_f64())
-                                .map_or(1.0, |p| p as f32);
-                            let mut specs = Vec::new();
-                            if let Some(list) = effect.get("effects").and_then(|l| l.as_array()) {
-                                for e in list {
-                                    if let Some(id) = e.get("id").and_then(|i| i.as_str()) {
-                                        let duration =
-                                            e.get("duration").and_then(|d| d.as_i64()).unwrap_or(0)
-                                                as i32;
-                                        let amplifier = e
-                                            .get("amplifier")
-                                            .and_then(|a| a.as_i64())
-                                            .unwrap_or(0)
-                                            as i32;
-                                        specs.push(ConsumeEffectSpec {
-                                            id: id.to_string(),
-                                            duration,
-                                            amplifier,
-                                        });
-                                    }
-                                }
-                            }
-                            consume_effects.push(ConsumeEffect::ApplyEffects {
-                                effects: specs,
-                                probability,
-                            });
-                        }
-                        Some("minecraft:clear_all_effects") => {
-                            consume_effects.push(ConsumeEffect::ClearAllEffects);
-                        }
-                        Some("minecraft:remove_effects") => {
-                            let mut targets = Vec::new();
-                            if let Some(eff) = effect.get("effects") {
-                                if let Some(s) = eff.as_str() {
-                                    targets.push(s.to_string());
-                                } else if let Some(arr) = eff.as_array() {
-                                    for item in arr {
-                                        if let Some(s) = item.as_str() {
-                                            targets.push(s.to_string());
-                                        }
-                                    }
-                                }
-                            }
-                            consume_effects.push(ConsumeEffect::RemoveEffects(targets));
-                        }
-                        Some("minecraft:teleport_randomly") => {
-                            consume_effects.push(ConsumeEffect::TeleportRandomly(
-                                horizon_world::teleport_consume::TeleportConsume {
-                                    diameter: effect
-                                        .get("diameter")
-                                        .and_then(Value::as_f64)
-                                        .map_or(16.0, |d| d as f32),
-                                    directional_particles: effect
-                                        .get("directional_particles")
-                                        .and_then(Value::as_bool)
-                                        .unwrap_or(true),
-                                },
-                            ));
-                        }
-                        Some("minecraft:play_sound") => {
-                            if let Some(sound) = effect.get("sound").and_then(|s| s.as_str()) {
-                                consume_effects.push(ConsumeEffect::PlaySound(sound.to_string()));
-                            }
-                        }
-                        _ => {}
+                    if let Some(parsed) = parse_consume_effect(effect) {
+                        consume_effects.push(parsed);
                     }
                 }
             }
@@ -1930,6 +1950,37 @@ pub(crate) fn prepared_items() -> Option<Items> {
             .ok()?;
     let facts = BlockFacts::load(&root, &registry).ok()?;
     Items::load(&root, &registry, &facts, &PackOverlay::NONE).ok()
+}
+
+#[cfg(test)]
+mod consume_effect_tests {
+    use super::*;
+
+    #[test]
+    fn a_mods_own_consume_effect_kind_is_kept() {
+        let v = |s: &str| serde_json::from_str::<serde_json::Value>(s).unwrap();
+        // A mod's own kind: Native with its JSON.
+        let native =
+            parse_consume_effect(&v(r#"{"type":"mymod:energy_boost","amount":42}"#)).unwrap();
+        assert!(matches!(&native, ConsumeEffect::Native { kind, data }
+            if kind == "mymod:energy_boost" && data["amount"] == 42));
+        // A bare vanilla name and its namespaced form are the same kind.
+        let bare = parse_consume_effect(&v(
+            r#"{"type":"apply_effects","effects":[{"id":"minecraft:speed","duration":100}]}"#,
+        ))
+        .unwrap();
+        assert!(matches!(bare, ConsumeEffect::ApplyEffects { .. }));
+        let named = parse_consume_effect(
+            &v(r#"{"type":"minecraft:apply_effects","effects":[{"id":"minecraft:speed","duration":100}]}"#),
+        ).unwrap();
+        assert!(matches!(named, ConsumeEffect::ApplyEffects { .. }));
+        // An empty namespace is minecraft's too (`Identifier.bySeparator`).
+        let empty = parse_consume_effect(&v(r#"{"type":":clear_all_effects"}"#)).unwrap();
+        assert!(matches!(empty, ConsumeEffect::ClearAllEffects));
+        // An unknown minecraft: kind and a missing type are dropped.
+        assert!(parse_consume_effect(&v(r#"{"type":"minecraft:future"}"#)).is_none());
+        assert!(parse_consume_effect(&v(r#"{"amount":42}"#)).is_none());
+    }
 }
 
 #[cfg(test)]

@@ -1941,11 +1941,15 @@ impl Game<'_> {
             Target::Boat(id) => {
                 // AbstractBoat.remove: a killed boat drops its lead.
                 if let Some(i) = self.boats.iter().position(|b| b.id == id) {
+                    self.release_vehicle_container(id);
                     let b = self.boats.remove(i);
                     self.boat_removed(&b);
                 }
             }
-            Target::Cart(id) => self.carts.retain(|c| c.id != id),
+            Target::Cart(id) => {
+                self.release_vehicle_container(id);
+                self.carts.retain(|c| c.id != id);
+            }
             Target::Other(id) => self.others.retain(|o| o.id != id),
             Target::Crystal(id) => self.kill_crystal(id),
             Target::Dragon(id) => self.kill_dragon(id),

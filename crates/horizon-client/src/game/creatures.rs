@@ -89,6 +89,12 @@ pub(super) struct ProjWorld<'a, 'w> {
     pub targets: Vec<(Who, Aabb)>,
 }
 impl ProjectileWorld for ProjWorld<'_, '_> {
+    fn block_contacts(&self, entity: i32, kind: &str, from: Vec3, to: Vec3, bounds: Aabb) {
+        horizon_client::block_contact::swept_inside(entity, kind, from, to, bounds, |p| {
+            let state = self.w.world.block(p.x, p.y, p.z);
+            (state, &self.w.facts.get(state).name)
+        });
+    }
     fn clip(&self, from: Vec3, to: Vec3) -> Option<(Vec3, [i32; 3], [i32; 3])> {
         let mut scene = SceneCollisions {
             world: self.w.world,
@@ -1419,6 +1425,9 @@ impl Game<'_> {
                     // the orbs' merge ids and block ticks read next).
                     self.spawn_item(item, pos, dispenser::new_item_motion(), 10);
                 }
+                drops::Drop::Stack(item) => {
+                    self.spawn_item(item, pos, dispenser::new_item_motion(), 10);
+                }
                 drops::Drop::CarriedBlock(state) => {
                     // Enderman.dropCustomDeathLoot: spawnAtLocation for each
                     // of the carried block's silk-touch drops.
@@ -1598,6 +1607,15 @@ impl Game<'_> {
         if p.id == 0 {
             self.next_entity += 1;
             p.id = self.next_entity;
+        }
+        // Projectile.setOwner: the acting player's or the mob's UUID, which
+        // its save keeps even once the owner is gone.
+        if p.owner_uuid.is_none() {
+            p.owner_uuid = match p.owner {
+                Some(Who::Player) => Some(self.acting_player_uuid()),
+                Some(Who::Mob(id)) => Some(self.uuid_for(id)),
+                None => None,
+            };
         }
         self.creatures.projectiles.push(p);
     }
@@ -3411,9 +3429,10 @@ impl Game<'_> {
                 } = hit
                     && let Some(j) = wind_charge_hit(id)
                 {
-                    let (owner, guest) = (p.owner, p.guest);
+                    let (owner, owner_uuid, guest) = (p.owner, p.owner_uuid, p.guest);
                     let look = self.owner_look(owner, guest);
-                    super::deflect::aim_deflect(&mut projectiles[j], look, owner, guest);
+                    let wind = &mut projectiles[j];
+                    super::deflect::aim_deflect(wind, look, owner, owner_uuid, guest);
                 }
             }
             let mut idx = 0;
