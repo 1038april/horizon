@@ -1211,8 +1211,16 @@ impl ParticleEngine {
                     a.iter()
                         .filter_map(|t| t.as_str())
                         .map(|t| {
-                            let t = t.trim_start_matches("minecraft:");
-                            self.intern(&format!("particle/{t}"))
+                            // A texture is `<ns>:<path>` (bare means
+                            // `minecraft:`), and the atlas names a sprite
+                            // `<ns>:particle/<path>` — `minecraft`'s own
+                            // without its namespace.
+                            let name = match t.split_once(':') {
+                                Some(("minecraft", path)) => format!("particle/{path}"),
+                                Some((ns, path)) => format!("{ns}:particle/{path}"),
+                                None => format!("particle/{t}"),
+                            };
+                            self.intern(&name)
                         })
                         .collect()
                 })

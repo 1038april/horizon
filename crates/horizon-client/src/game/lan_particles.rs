@@ -28,6 +28,7 @@ fn send_native_nearby(
     host: &LanHost,
     dimension: &str,
     packet: Vec<u8>,
+    horizon_only: bool,
     within_range: impl Fn([f64; 3]) -> bool,
 ) {
     for guest in host
@@ -36,8 +37,20 @@ fn send_native_nearby(
         .iter()
         .filter(|g| g.placed && g.dimension == dimension && within_range(g.position))
     {
+        // A vanilla client cannot decode a native mod's particle id; see
+        // `mod_particle_only_for_horizon`.
+        if horizon_only && guest.brand != "horizon" {
+            continue;
+        }
         guest.sender.send(packet.clone());
     }
+}
+
+/// A native mod's particle travels as `MOD_PARTICLE_ID` (-1) plus its name.
+/// Vanilla reads the id with `IdMap.byIdOrThrow`, which throws on -1 and
+/// drops the connection, so such a particle may only go to Horizon clients.
+fn mod_particle_only_for_horizon(particle: &Particle) -> bool {
+    matches!(particle.data, Some(ParticleData::Mod(_)))
 }
 
 /// One of a packet's `count` particles (`handleParticleEvent`): its position
@@ -152,6 +165,7 @@ impl Game<'_> {
         else {
             return;
         };
+        let horizon_only = mod_particle_only_for_horizon(&particle);
         let packet = C::LevelParticles(play::LevelParticles {
             particle,
             override_limiter: false,
@@ -163,6 +177,9 @@ impl Game<'_> {
             randomization: 0,
         });
         for g in host.hub.guests.iter().filter(|g| host.hub.here(g)) {
+            if horizon_only && g.brand != "horizon" {
+                continue;
+            }
             // ServerLevel compares the player's block centre, strictly within 32.
             let distance: f64 = (0..3)
                 .map(|k| (g.position[k].floor() + 0.5 - at[k]).powi(2))
@@ -446,6 +463,7 @@ impl Game<'_> {
         let Some(host) = self.lan.as_ref() else {
             return;
         };
+        let horizon_only = mod_particle_only_for_horizon(&particle);
         let body = C::LevelParticles(play::LevelParticles {
             particle,
             override_limiter: false,
@@ -459,7 +477,7 @@ impl Game<'_> {
         .encode();
         // BlockPos.closerToCenterThan(at, 32): from the centre of the
         // player's block.
-        send_native_nearby(host, dimension, body, |position| {
+        send_native_nearby(host, dimension, body, horizon_only, |position| {
             let d: f64 = (0..3)
                 .map(|k| (position[k].floor() + 0.5 - at[k]).powi(2))
                 .sum();
@@ -492,7 +510,7 @@ impl Game<'_> {
                 )
                 .encode();
             let range = f64::from(sound.volume.max(1.0)) * 16.0;
-            send_native_nearby(host, sound.dimension, packet, |position| {
+            send_native_nearby(host, sound.dimension, packet, false, |position| {
                 let distance: f64 = (0..3).map(|k| (position[k] - sound.at[k]).powi(2)).sum();
                 distance <= range * range
             });
