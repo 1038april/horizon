@@ -667,7 +667,7 @@ pub fn encode_block_entity(
         }
         BlockEntity::Sign(sign) => entries.extend(sign.encode()),
         BlockEntity::Jukebox(j) => {
-            if let Some(record) = &j.record {
+            if let Some(record) = j.record() {
                 entries.push(("RecordItem", item_to_nbt(record)));
             }
             entries.push(("ticks_since_song_started", Tag::Long(j.ticks)));
@@ -912,7 +912,7 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
         return Some((
             pos,
             BlockEntity::Jukebox(crate::containers::Jukebox {
-                record,
+                items: [record],
                 ticks,
                 playing,
             }),
@@ -3442,6 +3442,10 @@ pub struct Level {
     /// The player compound as loaded, for fields Horizon does not model
     /// (ender chest, effects, abilities, recipe book, attributes, ...).
     pub player_extra: Option<Tag>,
+    /// The player was read from the file level.dat names (`singleplayer_uuid`,
+    /// or its `.dat_old`): `PlayerList.loadPlayerData` gives the world's owner
+    /// that file, not their own.
+    pub singleplayer_file: bool,
 }
 impl Level {
     /// `PrimaryLevelData.setDifficulty`: the level data holds the world's
@@ -3599,6 +3603,7 @@ impl Level {
             read_dat(&player_dir.join(format!("{name}.dat")))
                 .or_else(|| read_dat(&player_dir.join(format!("{name}.dat_old"))))
         });
+        level.singleplayer_file = owner.is_some();
         let player = owner
             .or_else(|| {
                 fs::read_dir(&player_dir)
@@ -3992,6 +3997,18 @@ impl Level {
         self.write_internal(dir, false)
     }
 
+    /// The player's file alone, `players/data/<singleplayer_uuid>.dat`
+    /// (`PlayerDataStorage.save`): the one level.dat names.
+    pub fn write_player(&mut self, dir: &Path) -> Result<()> {
+        let uuid = self.ensure_player_uuid();
+        let player_file = dir
+            .join("players")
+            .join("data")
+            .join(format!("{}.dat", uuid_text(uuid)));
+        back_up_unreadable_player(&player_file);
+        write_dat(&player_file, self.player_tag())
+    }
+
     fn write_internal(&mut self, dir: &Path, write_player: bool) -> Result<()> {
         fs::create_dir_all(dir)?;
         restore_level_dat(dir);
@@ -4195,12 +4212,7 @@ impl Level {
             write_saved_data(dir, "game_rules", rules)?;
         }
         if write_player {
-            let player_file = dir
-                .join("players")
-                .join("data")
-                .join(format!("{}.dat", uuid_text(uuid)));
-            back_up_unreadable_player(&player_file);
-            write_dat(&player_file, self.player_tag())?;
+            self.write_player(dir)?;
         }
         write_dat(&dir.join("level.dat"), Tag::compound([("Data", data)]))?;
         Ok(())
