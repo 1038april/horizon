@@ -191,6 +191,7 @@ mod native_components;
 mod native_criteria;
 mod native_entities;
 mod native_explosions;
+mod native_falling;
 mod native_hooks;
 mod native_lifecycle;
 mod native_menus;
