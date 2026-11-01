@@ -1,0 +1,11 @@
+{
+  "hooks": [
+    {
+      "name": "dispense_item",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_dispense_item",
+      "side": "server"
+    }
+  ],
+  "rust_summary": "dispenser item behaviours (`native_dispense_item`) and `native_dispense_default` for a plain drop.",
+  "doc_summary": "dispenser item behaviours (`native_dispense_item`): a server hook receives the dimension, dispenser position, facing and selected stack, before any vanilla behaviour, for mod or vanilla items. Leave its answer `None` for vanilla; `Some(None)` empties the slot; `Some(Some(stack))` writes that remainder without consuming again. Return `Some(native_dispense_default(dimension, pos, facing, stack.clone()))` to drop one item normally, including items with a special vanilla behaviour. Handled actions get the normal click and smoke once. Droppers are unaffected. Bundles need \"hooks\": @API:dispenser_behaviour@."
+}
