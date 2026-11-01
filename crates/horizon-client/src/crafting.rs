@@ -1219,6 +1219,15 @@ pub(crate) fn recipe_files(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
     Ok(named)
 }
 /// The type of a recipe the game doesn't craft itself: one outside `minecraft`.
+/// A recipe's whole id from its name in the tables: vanilla's are kept bare
+/// (`oak_planks`), everyone else's whole (`mymod:crusher/iron`).
+pub fn recipe_id(name: &str) -> String {
+    if name.contains(':') {
+        name.to_owned()
+    } else {
+        format!("minecraft:{name}")
+    }
+}
 fn custom_type(v: &Value) -> Option<&str> {
     v["type"]
         .as_str()

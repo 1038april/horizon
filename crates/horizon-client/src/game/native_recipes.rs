@@ -13,7 +13,7 @@ use super::{
     },
 };
 use horizon_client::{
-    crafting::Ingredient,
+    crafting::{Ingredient, recipe_id},
     items::ItemStack,
     recipe_book::{Category, Display},
     stations::Smithing,
@@ -199,11 +199,10 @@ impl Game<'_> {
         );
         let mut out = Vec::new();
         let cooking: HashMap<String, (u32, f32)> = self
-            .res
             .recipes()
             .cooking
             .iter()
-            .map(|c| (format!("minecraft:{}", c.id), (c.time, c.experience)))
+            .map(|c| (recipe_id(&c.id), (c.time, c.experience)))
             .collect();
         for e in self.recipe_book_entries() {
             let furnace = |c: Category| match c.name().split('_').next() {
@@ -255,7 +254,7 @@ impl Game<'_> {
         }
         for c in &self.recipes().cooking {
             if c.kind == "minecraft:campfire_cooking" {
-                let mut r = recipe(format!("minecraft:{}", c.id), RecipeKind::Campfire);
+                let mut r = recipe(recipe_id(&c.id), RecipeKind::Campfire);
                 r.group = c.group.clone();
                 r.slots = vec![index.any(&c.ingredient)];
                 r.results = index.of(&c.result).into_iter().collect();
