@@ -172,6 +172,7 @@
   "Keeps the {count} newest, the one in use and the ones your instances use. Deleted versions install again from the Versions page.": "Оставляет {count} самых новых, используемую и те, что нужны вашим сборкам. Удалённую версию можно снова установить на странице «Версии».",
   "Installed versions use {size}.": "Установленные версии занимают {size}.",
   "{size} on disk": "{size} на диске",
+  "Built on {base}": "Собрано на {base}",
   "Install Horizon first.": "Сначала установите Horizon.",
   "Starting the build": "Начало сборки",
   "These mods will run with full access to your computer": "Эти моды получат полный доступ к вашему компьютеру",

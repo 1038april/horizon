@@ -177,6 +177,7 @@
   "Keeps the {count} newest, the one in use and the ones your instances use. Deleted versions install again from the Versions page.": "Conserva las {count} más recientes, la que está en uso y las que usan tus instancias. Las versiones eliminadas se vuelven a instalar desde la página Versiones.",
   "Installed versions use {size}.": "Las versiones instaladas ocupan {size}.",
   "{size} on disk": "{size} en disco",
+  "Built on {base}": "Compilado sobre {base}",
   "The build compiles the game: 20 to 30 minutes and a few GB of disk the first time (it downloads Rust), a few minutes after that.": "La compilación construye el juego: de 20 a 30 minutos y unos pocos GB de disco la primera vez (descarga Rust), y unos minutos después.",
   "Delete…": "Eliminar…",
   "Keep": "Conservar",

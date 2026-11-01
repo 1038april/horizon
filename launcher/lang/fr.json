@@ -172,6 +172,7 @@
   "Keeps the {count} newest, the one in use and the ones your instances use. Deleted versions install again from the Versions page.": "Garde les {count} plus récentes, celle utilisée et celles de vos instances. Une version supprimée se réinstalle depuis la page Versions.",
   "Installed versions use {size}.": "Les versions installées occupent {size}.",
   "{size} on disk": "{size} sur le disque",
+  "Built on {base}": "Compilé sur {base}",
   "Install Horizon first.": "Installez d'abord Horizon.",
   "Starting the build": "Début de la compilation",
   "These mods will run with full access to your computer": "Ces mods auront un accès complet à votre ordinateur",

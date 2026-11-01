@@ -138,6 +138,7 @@
   "Delete old versions automatically": "Usuwaj stare wersje automatycznie",
   "Installed versions use {size}.": "Zainstalowane wersje zajmują {size}.",
   "{size} on disk": "{size} na dysku",
+  "Built on {base}": "Zbudowano na {base}",
   "Install Horizon first.": "Najpierw zainstaluj Horizon.",
   "Starting the build": "Rozpoczynanie kompilacji",
   "These mods will run with full access to your computer": "Te mody będą miały pełny dostęp do komputera",

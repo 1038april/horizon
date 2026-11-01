@@ -178,6 +178,7 @@
   "Keeps the {count} newest, the one in use and the ones your instances use. Deleted versions install again from the Versions page.": "Залишає {count} найновіших, ту, що використовується, і ті, що потрібні вашим екземплярам. Видалені версії можна знову встановити на сторінці «Версії».",
   "Installed versions use {size}.": "Встановлені версії займають {size}.",
   "{size} on disk": "{size} на диску",
+  "Built on {base}": "Зібрано на {base}",
   "Minecraft {version} (Java Edition). Play downloads it from Mojang for your account the first time, with the Java it needs.": "Minecraft {version} (Java Edition). Уперше «Грати» завантажить його від Mojang для вашого облікового запису разом із потрібною Java.",
   "Move {name} to the Trash, with its worlds and settings? You can get it back from there.": "Перемістити {name} до кошика разом зі світами й налаштуваннями? Звідти його можна буде відновити.",
   "Delete…": "Видалити…",

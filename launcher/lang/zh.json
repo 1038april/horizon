@@ -172,6 +172,7 @@
   "Keeps the {count} newest, the one in use and the ones your instances use. Deleted versions install again from the Versions page.": "保留最新的 {count} 个版本、当前使用的版本，以及你的实例所使用的版本。已删除的版本可从“版本”页面重新安装。",
   "Installed versions use {size}.": "已安装的版本共占用 {size}。",
   "{size} on disk": "磁盘占用 {size}",
+  "Built on {base}": "基于 {base} 构建",
   "Install Horizon first.": "请先安装 Horizon。",
   "Starting the build": "开始构建",
   "These mods will run with full access to your computer": "这些模组运行时将拥有对你电脑的完全访问权限",
