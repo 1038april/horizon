@@ -2399,10 +2399,13 @@ impl Renderer {
             alpha_blend,
             true,
         );
-        // RenderPipelines.TEXT_SEE_THROUGH: translucent, no depth test or writes.
+        // RenderPipelines.TEXT_SEE_THROUGH: translucent, no depth test or
+        // writes, culled like every world text pipeline (TEXT_SNIPPET keeps
+        // RenderPipeline.Builder's default): a name tag or text display hides
+        // its back.
         let see_through_pipeline = entity_pipeline(
             "See-through text",
-            None,
+            Some(wgpu::Face::Back),
             false,
             wgpu::CompareFunction::Always,
             Default::default(),
@@ -2410,10 +2413,11 @@ impl Renderer {
             false,
         );
         // RenderPipelines.TEXT_POLYGON_OFFSET: a text display's text and
-        // background win against the surface they lie on (bias 1, 10).
+        // background win against the surface they lie on (bias 1, 10), from
+        // the front only.
         let text_polygon_offset_pipeline = entity_pipeline(
             "Polygon offset text",
-            None,
+            Some(wgpu::Face::Back),
             true,
             wgpu::CompareFunction::GreaterEqual,
             wgpu::DepthBiasState {
