@@ -18,9 +18,12 @@ pub const DEFAULT_DROP_CHANCE: f32 = 0.085;
 pub use horizon_world::loot::EQUIPMENT_SLOTS as SLOTS;
 
 /// One thing a death leaves in the world, in spawn order.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Drop {
     Item(LootStack),
+    /// The whole stack a mob kept in an equipment slot (damage, name,
+    /// components), dropped as it is.
+    Stack(crate::items::ItemStack),
     /// `Enderman.dropCustomDeathLoot`: the carried block's own drops, rolled
     /// with `enderman::carried_block_tool` (`enderman::carried_block_drops`).
     CarriedBlock(BlockStateId),
@@ -261,6 +264,12 @@ pub fn slot_item(m: &Mob, slot: &str) -> Option<LootStack> {
     if slot == "body" && m.species() == Species::Wolf {
         stack.damage = m.extra.body_damage;
     }
+    if let Some(full) = stored_slot_stack(m, slot) {
+        stack.damage = full.damage as i32;
+        if m.species() != Species::Panda {
+            stack.count = full.count as i32;
+        }
+    }
     if let (Some(index), Some(g)) = (index, gear::gear(m)) {
         for (e, l) in &g.slots[index] {
             stack.enchantments.push((e.to_string(), *l as i32));
@@ -271,6 +280,34 @@ pub fn slot_item(m: &Mob, slot: &str) -> Option<LootStack> {
         }
     }
     Some(stack)
+}
+/// The `finalize` slot of a drop slot's name, for the slots a stack is kept in.
+fn slot_index(m: &Mob, slot: &str) -> Option<usize> {
+    use super::finalize as f;
+    Some(match slot {
+        "mainhand" => f::MAINHAND,
+        "offhand" => f::OFFHAND,
+        "head" if !head_is_body(m.species()) => f::HEAD,
+        "chest" => f::CHEST,
+        "legs" => f::LEGS,
+        "feet" => f::FEET,
+        _ => return None,
+    })
+}
+/// The whole stack the mob kept in `slot` (by name), when it kept one.
+fn stored_slot_stack(m: &Mob, slot: &str) -> Option<crate::items::ItemStack> {
+    super::finalize::stored_stack(m, slot_index(m, slot)?)
+}
+/// The drop of what the mob has in `slot`, given its `stack` after the drop
+/// rolls: the whole stack the mob kept (with the rolled damage), else the loot stack.
+fn slot_drop(m: &Mob, slot: &str, stack: LootStack) -> Drop {
+    match stored_slot_stack(m, slot).filter(|_| m.species() != Species::Panda) {
+        Some(mut full) => {
+            full.damage = stack.damage.max(0) as u32;
+            Drop::Stack(full)
+        }
+        None => Drop::Item(stack),
+    }
 }
 /// `setItemSlot(slot, EMPTY)`.
 pub fn clear_slot(m: &mut Mob, slot: &str) {
@@ -424,7 +461,7 @@ pub fn die(m: &mut Mob, d: &Death, sequences: &mut RandomSequences) -> (Vec<Drop
     if s == Species::Fox
         && let Some(stack) = slot_item(m, "mainhand")
     {
-        out.push(Drop::Item(stack));
+        out.push(slot_drop(m, "mainhand", stack));
         clear_slot(m, "mainhand");
     }
     // Allay: what it carries (`ints[1]` of the held item) is its inventory.
@@ -484,7 +521,7 @@ pub fn die(m: &mut Mob, d: &Death, sequences: &mut RandomSequences) -> (Vec<Drop
                 let inner = m.random.next_int_bound((max - 3).max(1)).unwrap_or(0);
                 stack.damage = max - m.random.next_int_bound(1 + inner).unwrap_or(0);
             }
-            out.push(Drop::Item(stack));
+            out.push(slot_drop(m, slot, stack));
             clear_slot(m, slot);
         }
         // Enderman.dropCustomDeathLoot: after Monster's, the carried block.
@@ -507,7 +544,7 @@ pub fn die(m: &mut Mob, d: &Death, sequences: &mut RandomSequences) -> (Vec<Drop
         if let Some(stack) = slot_item(m, "mainhand")
             && !d.loot.prevents_equipment_drop(&stack)
         {
-            out.push(Drop::Item(stack));
+            out.push(slot_drop(m, "mainhand", stack));
             clear_slot(m, "mainhand");
         }
     }
