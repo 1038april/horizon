@@ -5950,6 +5950,24 @@ impl Game<'_> {
             } else {
                 Vec::new()
             };
+            // A native mod's own model in place of the vanilla one
+            // (`native_mob_submit`).
+            if !is_player
+                && !layers_only
+                && self.mod_mob_geometry(mob, alpha as f32, camera, packed, out)
+            {
+                if let Some(rgb) = outline {
+                    self.mark_outline(&out[entity_start..], rgb);
+                    if mob.invisible {
+                        out.truncate(entity_start);
+                        continue;
+                    }
+                }
+                if outline.is_none() {
+                    self.cull_entity_vertices(out, entity_start);
+                }
+                continue;
+            }
             let body = out.len();
             let render = if layers_only {
                 horizon_client::mobs::render::render_layers
