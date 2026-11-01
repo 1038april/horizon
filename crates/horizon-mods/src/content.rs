@@ -48,6 +48,18 @@ pub fn check_path(name: &str) -> Result<(), String> {
 }
 
 /// A vanilla identifier, `minecraft:path`.
+/// `Identifier.isValidNamespace` and `isValidPath` on an id with both parts
+/// given: `[a-z0-9_.-]`, and `/` in the path too.
+fn namespaced_id(id: &str) -> bool {
+    let ok = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b);
+    id.split_once(':').is_some_and(|(namespace, path)| {
+        !namespace.is_empty()
+            && !path.is_empty()
+            && namespace.bytes().all(ok)
+            && path.bytes().all(|b| ok(b) || b == b'/')
+    })
+}
+
 fn vanilla_id(id: &str) -> bool {
     id.strip_prefix("minecraft:").is_some_and(|path| {
         !path.is_empty()
@@ -549,7 +561,7 @@ fn check_components(
             Some(kind) => (true, kind),
             None => (false, key.as_str()),
         };
-        if horizon_world::identifier::Identifier::parse_namespaced(kind).is_none() {
+        if !namespaced_id(kind) {
             return Err(format!("component {key:?} must be namespaced and valid"));
         }
         if let Some(own) = kind
