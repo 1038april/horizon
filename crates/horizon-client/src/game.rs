@@ -353,10 +353,11 @@ use horizon_world::{
     block_collision::BlockCollisionRegistry,
     collision_context::{CollisionContext, CollisionEntity, CollisionItem},
     entity_obstruction::{EntityIdentity, EntityObstructionWorld, ObstructionEntity},
+    fluid::FluidState,
     level::{
         Behaviours, BucketContent, Dimension as LevelDimension, EntityQuery, Landing, LevelAccess,
-        LevelEvent, PlaceContext, PlaceOutcome, PlayerContext, PlayerEffect, Ticks,
-        flags as level_flags,
+        LevelEvent, PlaceContext, PlaceOutcome, PlacementContext, PlayerContext, PlayerEffect,
+        Ticks, flags as level_flags,
     },
     registry::BlockStateId,
 };
@@ -1230,6 +1231,18 @@ impl LevelAccess for GameLevel<'_> {
                 neighbour,
                 new,
             );
+        }
+    }
+    #[allow(clippy::option_option)]
+    fn before_state_for_placement(
+        &self,
+        state: BlockStateId,
+        context: &PlacementContext,
+        fluid: FluidState,
+        answer: &mut Option<Option<BlockStateId>>,
+    ) {
+        if self.native_authoritative {
+            self.native_state_for_placement(self.dimension, state, context, fluid, answer);
         }
     }
     fn before_can_survive(&self, pos: BlockPos, state: BlockStateId, survives: &mut Option<bool>) {
@@ -10092,17 +10105,18 @@ impl Game<'_> {
         for stand in &self.armor_stands {
             if stand.fire_ticks > 0 && !stand.marker {
                 let scale = if stand.small { 0.5 } else { 1.0 };
+                let at = stand.render_position(alpha);
                 horizon_client::fire_render::flames(
-                    [stand.position.x, stand.position.y, stand.position.z],
+                    [at.x, at.y, at.z],
                     0.5 * scale,
                     1.975 * scale,
                     camera,
                     fire_yaw,
                     &self.gui.atlas.sprites,
                     self.world.light(
-                        stand.position.x.floor() as i32,
-                        stand.position.y.floor() as i32,
-                        stand.position.z.floor() as i32,
+                        at.x.floor() as i32,
+                        at.y.floor() as i32,
+                        at.z.floor() as i32,
                     ),
                     &mut out,
                 );

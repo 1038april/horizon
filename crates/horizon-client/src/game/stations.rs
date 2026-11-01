@@ -2468,7 +2468,7 @@ impl Game<'_> {
                     "item.durability",
                     &[
                         horizon_client::text::Text::literal(
-                            (info.max_damage - stack.damage).to_string(),
+                            info.max_damage.saturating_sub(stack.damage).to_string(),
                         ),
                         horizon_client::text::Text::literal(info.max_damage.to_string()),
                     ],

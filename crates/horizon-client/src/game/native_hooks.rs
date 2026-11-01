@@ -246,8 +246,8 @@ use horizon_core::{
     ticks::{ScheduleResult, TickPriority},
 };
 use horizon_world::{
-    fluid::FluidKind,
-    level::{BlockId, LevelAccess, Ticks},
+    fluid::{FluidKind, FluidState},
+    level::{BlockId, LevelAccess, PlacementContext, Ticks},
     nbt::Compound,
     registry::{BlockRegistry, BlockStateId},
 };
@@ -512,6 +512,36 @@ impl GameLevel<'_> {
         handled: &mut bool,
     ) {
         let _ = (ticks, dimension, pos, state, handled);
+    }
+
+    /// A block is about to take the state it is placed in
+    /// (`Block.getStateForPlacement(BlockPlaceContext)`), `state` the block's
+    /// own default state. Answer only for your blocks: put the state you want
+    /// in `answer` as `Some(Some(state))` — a state of that block, as vanilla
+    /// sets properties on its own `defaultBlockState` (another block's is
+    /// ignored) — or refuse the placement with `Some(None)`: the block goes
+    /// nowhere and the stack is kept, as vanilla's `null`. Left empty, the
+    /// block's own placement runs. `context` is
+    /// vanilla's `BlockPlaceContext` (the clicked face, the placer's rotation,
+    /// the clicked position, whether the clicked block is being replaced, the
+    /// item in hand) and `fluid` the fluid in the position the block would go
+    /// in, which a waterlogged block reads. Build the state from `state` with
+    /// `native_state_with_property`. It is asked for every placer that goes
+    /// through vanilla's placement (a player's `BlockItem.place`, a
+    /// dispenser's `DirectionalPlaceContext`), and the answer still takes its
+    /// survival and entity obstruction checks. Authoritative servers only.
+    /// @API:placement_state@.
+    #[inline(always)]
+    #[allow(clippy::option_option)]
+    pub(super) fn native_state_for_placement(
+        &self,
+        dimension: LevelDimension,
+        state: BlockStateId,
+        context: &PlacementContext,
+        fluid: FluidState,
+        answer: &mut Option<Option<BlockStateId>>,
+    ) {
+        let _ = (dimension, state, context, fluid, answer);
     }
 
     /// A block nothing in Horizon knows a `BonemealableBlock` for is about to
@@ -1143,6 +1173,25 @@ impl Game<'_> {
     /// when a world opens. API 15.
     pub(super) fn native_block_entity_ticks(&self, block: &str, ticks: &mut bool) {
         let _ = (block, ticks);
+    }
+    /// A `minecraft:post_attack` effect of a mod's own kind, on a mob a
+    /// player's weapon hit: the entry says `enchanted` attacker and `affected`
+    /// victim, its `requirements` passed, and its `effect` names a `type` in a
+    /// namespace outside `minecraft:`. Told the enchantment id, the kind, the
+    /// `effect` JSON, the level and the mob's id (it may have just died). The
+    /// acting player is the one whose weapon carries the enchantment. Each
+    /// such entry is told once a hit, and once for each mob a sweep lands on.
+    /// A hit on a player, and an entry inside `minecraft:all_of`, aren't told
+    /// yet. An unclaimed kind does nothing. API @API:enchant_effect@.
+    pub(super) fn native_enchant_effect(
+        &mut self,
+        enchantment: &str,
+        kind: &str,
+        data: &serde_json::Value,
+        level: u32,
+        victim: u32,
+    ) {
+        let _ = (enchantment, kind, data, level, victim);
     }
     /// Block `block`'s block entity has item slots (a `WorldlyContainer`):
     /// set `container` when the block is yours. Asked once for each mod
@@ -2227,6 +2276,21 @@ impl GameLevel<'_> {
         let at = BlockPos::new(pos[0], pos[1], pos[2]);
         let time = self.game_time();
         ticks.schedule_fluid(time, at, kind, delay) != ScheduleResult::MissingChunk
+    }
+    /// The state `state` with its property `key` set to `value`, as a mod block
+    /// builds the state it is placed in: `native_state_with_property(cable,
+    /// "facing", "east")` (`BlockState.setValue`). A block's own declared
+    /// properties (`state_properties` in its block file) are set the same way.
+    /// `state` itself when the property already has that value; None when the
+    /// block has no such property, or the property no such value. API
+    /// @API:placement_state@.
+    pub(super) fn native_state_with_property(
+        &self,
+        state: BlockStateId,
+        key: &str,
+        value: &str,
+    ) -> Option<BlockStateId> {
+        with_property(self.registry, state, key, value)
     }
     /// This level's own random (vanilla's `Level.random`): the stream
     /// `native_level_random(dimension)` hands a server hook, for a world hook
@@ -3801,6 +3865,37 @@ mod tests {
         assert_eq!(super::property_change(&registry, age0, "age", "9"), None);
         assert_eq!(super::property_change(&registry, age0, "lit", "true"), None);
     }
+
+    /// The state a mod block is placed in is built from its own default state
+    /// and one of its properties, its declared ones (`state_properties` in its
+    /// block file) included, and keeps the properties it already had.
+    #[test]
+    fn a_placement_state_is_built_from_a_blocks_own_properties() {
+        let facts = br#"{"defaults":{"minecraft:air":0,"test:pipe":1},"states":[
+            ["air",true,false,"","minecraft:air"],
+            ["north_gas",false,false,"",{"id":"test:pipe","properties":{"carries":"gas","facing":"north"}}],
+            ["east_gas",false,false,"",{"id":"test:pipe","properties":{"carries":"gas","facing":"east"}}],
+            ["north_items",false,false,"",{"id":"test:pipe","properties":{"carries":"items","facing":"north"}}],
+            ["east_items",false,false,"",{"id":"test:pipe","properties":{"carries":"items","facing":"east"}}]
+        ]}"#;
+        let registry = horizon_world::registry::BlockRegistry::from_facts_json(&facts[..]).unwrap();
+        use horizon_world::registry::BlockStateId;
+        let (north_gas, east_gas, east_items) = (BlockStateId(1), BlockStateId(2), BlockStateId(4));
+        // The declared property changes, and `carries` stays as it was.
+        assert_eq!(
+            super::with_property(&registry, north_gas, "facing", "east"),
+            Some(east_gas)
+        );
+        assert_eq!(
+            super::with_property(&registry, east_gas, "carries", "items"),
+            Some(east_items)
+        );
+        // A value the property does not have builds nothing.
+        assert_eq!(
+            super::with_property(&registry, east_gas, "facing", "up"),
+            None
+        );
+    }
     /// Both property setters return false for a write that changes nothing:
     /// each goes through `property_change`, none returns true on its own.
     #[test]
@@ -3929,17 +4024,21 @@ mod tests {
                     .next()
             })
             .collect();
-        // The renderer's hook points (`horizon_client_render::gfx::native_render`).
-        let render_hooks: BTreeSet<_> =
-            include_str!("../../../horizon-client-render/src/gfx/native_render.rs")
+        // Hook points that are free functions in other crates.
+        let free_hooks = |source: &'static str| -> BTreeSet<&'static str> {
+            source
                 .lines()
                 .filter_map(|line| line.strip_prefix("pub fn native_")?.split('(').next())
-                .collect();
+                .collect()
+        };
+        // The renderer's (`horizon_client_render::gfx::native_render`).
+        let render_hooks = free_hooks(include_str!(
+            "../../../horizon-client-render/src/gfx/native_render.rs"
+        ));
+        // Items' default components (`horizon_world::item_defaults`).
+        let item_hooks = free_hooks(include_str!("../../../horizon-world/src/item_defaults.rs"));
         // The loot tables' hook point (`horizon_world::loot`).
-        let loot_hooks: BTreeSet<_> = include_str!("../../../horizon-world/src/loot.rs")
-            .lines()
-            .filter_map(|line| line.strip_prefix("pub fn native_")?.split('(').next())
-            .collect();
+        let loot_hooks = free_hooks(include_str!("../../../horizon-world/src/loot.rs"));
         let declared: BTreeSet<_> = section
             .lines()
             .chain(level_section.lines())
@@ -3950,6 +4049,7 @@ mod tests {
                     .next()
             })
             .chain(render_hooks.iter().copied())
+            .chain(item_hooks.iter().copied())
             .chain(loot_hooks.iter().copied())
             .collect();
         let mut names = BTreeSet::new();
@@ -3964,6 +4064,8 @@ mod tests {
             names.insert(name);
             let target = if render_hooks.contains(name) {
                 format!("horizon_client_render::gfx::native_render::native_{name}")
+            } else if item_hooks.contains(name) {
+                format!("horizon_world::item_defaults::native_{name}")
             } else if loot_hooks.contains(name) {
                 format!("horizon_world::loot::native_{name}")
             } else if level_hooks.contains(name) {

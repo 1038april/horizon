@@ -199,7 +199,9 @@ impl Game<'_> {
     /// Each tick: a mount menu whose mount died or is out of reach closes
     /// (`AbstractMountInventoryMenu.stillValid`: alive, within the entity
     /// interaction range plus 4 of the eyes), and the others follow the
-    /// mount's and the inventory's slots.
+    /// mount's and the inventory's slots. Only the level the player is in
+    /// checks its menu (`ServerPlayer.tick`): another level ticking has
+    /// none of its mobs (#5331).
     pub(super) fn tick_lan_mount_menus(&mut self, host: &mut LanHost) {
         let open: Vec<(u32, u32, i32)> = host
             .play
@@ -210,6 +212,9 @@ impl Game<'_> {
             let Some(g) = host.hub.guests.iter().find(|g| g.conn == conn) else {
                 continue;
             };
+            if !host.hub.here(g) {
+                continue;
+            }
             if self.lan_mount_valid(g, mob) {
                 self.lan_send_mount(host, conn);
             } else {
