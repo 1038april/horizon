@@ -274,6 +274,9 @@ pub struct Guest {
     pub death_time: u32,
     /// The join packets were sent (PlayerList.placeNewPlayer ran).
     pub placed: bool,
+    /// `Abilities.flyingSpeed`: vanilla's 0.05, unless a client mod of the
+    /// single-player owner set another.
+    pub flying_speed: f32,
     /// The level the player is in (`ServerPlayer.level().dimension()`): the
     /// hub's level passes only reach the players in theirs.
     pub dimension: String,
@@ -422,6 +425,7 @@ impl Guest {
             dead: false,
             death_time: 0,
             placed: false,
+            flying_speed: 0.05,
             dimension: "minecraft:overworld".into(),
             menu: None,
             next_window: 0,
