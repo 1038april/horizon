@@ -31,12 +31,9 @@ impl Json {
         Ok(v)
     }
 
-    /// The value of `key` (the last one, when a key repeats).
+    /// The value of `key` in an object.
     pub fn get(&self, key: &str) -> Option<&Json> {
-        match self {
-            Json::Obj(pairs) => pairs.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v),
-            _ => None,
-        }
+        get(self.as_object()?, key)
     }
     pub fn as_str(&self) -> Option<&str> {
         match self {
@@ -56,6 +53,11 @@ impl Json {
             _ => None,
         }
     }
+}
+
+/// The value of `key` (the last one, when a key repeats).
+pub(crate) fn get<'a>(object: &'a [(String, Json)], key: &str) -> Option<&'a Json> {
+    object.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v)
 }
 
 struct Parser<'a> {
@@ -171,17 +173,20 @@ impl Parser<'_> {
                         b'f' => out.push(12),
                         b'u' => {
                             let mut code = self.hex4()?;
-                            // A surrogate pair is one character in two escapes.
+                            // A surrogate pair is one character in two escapes. A half on
+                            // its own is U+FFFD; the escape after a lone high half is read
+                            // again as itself.
                             if (0xD800..0xDC00).contains(&code)
                                 && self.b.get(self.i..self.i + 2) == Some(&b"\\u"[..])
                             {
+                                let next = self.i;
                                 self.i += 2;
                                 let low = self.hex4()?;
-                                code = if (0xDC00..0xE000).contains(&low) {
-                                    0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)
+                                if (0xDC00..0xE000).contains(&low) {
+                                    code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
                                 } else {
-                                    0xFFFD
-                                };
+                                    self.i = next;
+                                }
                             }
                             let ch = char::from_u32(code).unwrap_or('\u{fffd}');
                             out.extend_from_slice(ch.encode_utf8(&mut [0; 4]).as_bytes());
@@ -305,6 +310,17 @@ mod tests {
         assert_eq!(v.get(""), Some(&Json::Str("x".into())));
         let s = Json::parse(r#""\ud83d\ude00\u0041""#).unwrap();
         assert_eq!(s.as_str(), Some("\u{1f600}A"));
+        for (text, want) in [
+            (r#""\ud83dA""#, "\u{fffd}A"),
+            (r#""\ud83dA""#, "\u{fffd}A"),
+            (r#""\ud83d😀""#, "\u{fffd}\u{1f600}"),
+            (r#""\ude00\ud83d""#, "\u{fffd}\u{fffd}"),
+        ] {
+            assert_eq!(Json::parse(text).unwrap().as_str(), Some(want), "{text}");
+        }
+        // Comment marks inside a string are text.
+        let v = Json::parse(r#"{"s": "a#b//c"}"#).unwrap();
+        assert_eq!(v.get("s"), Some(&Json::Str("a#b//c".into())));
         assert!(Json::parse(r#""\u+041""#).is_err());
     }
 
