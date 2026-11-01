@@ -10830,5 +10830,30 @@ CHECKS += ['cushion_break_seated']
 CHECK_FNS['cushion_break_seated'] = check_cushion_break_seated
 
 
+def check_hoglin_wall(host, guest, out):
+    host('command', command='gamemode creative')
+    x, y, z = (int(v // 1) for v in pos_of(host))
+    gx, gz = x + 6, z
+    box = f'{gx - 2} {y} {gz - 2} {gx + 2} {y + 3} {gz + 2}'
+    health = lambda: server_reply(host, 'data get entity @e[type=minecraft:hoglin,limit=1] Health', 'entity data')
+    try:
+        host('command', command='kill @e[type=minecraft:hoglin]')
+        host('command', command=f'fill {box} minecraft:stone')
+        host('command', command=f'summon minecraft:hoglin {gx + 0.5} {y + 1} {gz + 0.5} {{NoAI:1b}}')
+        before = health()
+        host.wait(40)
+        after = health()
+    finally:
+        host('command', command='kill @e[type=minecraft:hoglin]')
+        host('command', command=f'fill {box} minecraft:air')
+        host('command', command='gamemode survival')
+    assert before != after, f'a hoglin inside a wall took no damage: {before} -> {after}'
+    return {'before': before, 'after': after}
+
+
+CHECKS += ['hoglin-wall']
+CHECK_FNS['hoglin-wall'] = check_hoglin_wall
+
+
 if __name__ == '__main__':
     main()
