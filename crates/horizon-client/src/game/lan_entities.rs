@@ -12,6 +12,15 @@ use horizon_client::lan::{
 use horizon_protocol::entity_data::{Value, serializer};
 use horizon_world::{nbt::Tag, registry::BlockStateId};
 
+/// Allocate once: a native summon may need its id before the tracking tick.
+pub(super) fn assign_entity_id(next: &mut u32, id: &mut u32) -> u32 {
+    if *id == 0 {
+        *next += 1;
+        *id = *next;
+    }
+    *id
+}
+
 fn state(id: u32, kind: &str, position: [f64; 3], yaw: f32, on_ground: bool) -> EntityState {
     EntityState {
         id: id as i32,
@@ -443,10 +452,7 @@ impl Game<'_> {
         }
         let next = &mut self.next_entity;
         let mut give = |id: &mut u32| {
-            if *id == 0 {
-                *next += 1;
-                *id = *next;
-            }
+            assign_entity_id(next, id);
         };
         self.tnts.iter_mut().for_each(|t| give(&mut t.id));
         self.falling.iter_mut().for_each(|f| give(&mut f.id));
@@ -728,6 +734,22 @@ fn arrow_meta(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn summoned_ids_are_unique_and_survive_the_tracking_pass() {
+        let mut next = 40;
+        let mut roots = [0; 3];
+        let returned = roots.each_mut().map(|id| assign_entity_id(&mut next, id));
+        assert_eq!(returned, [41, 42, 43]);
+        // Tracking sees the same roots plus an unrelated deferred entity.
+        for id in &mut roots {
+            assign_entity_id(&mut next, id);
+        }
+        let mut later = 0;
+        assert_eq!(assign_entity_id(&mut next, &mut later), 44);
+        assert_eq!(roots, returned);
+        assert_eq!(next, 44);
+    }
 
     #[test]
     fn armor_stand_poses_send_only_what_differs() {
