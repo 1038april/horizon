@@ -70,6 +70,8 @@ solid_materials = [10]     # optional: [[materials]] ids drawn into the map whol
 [[post]]                   # full-screen passes, in the order they run (8 at most)
 file = "post/grade.wgsl"
 name = "Colour grade"      # optional: the GPU time overlay's label
+output = "bloom"           # optional, not on the last pass: writes this target, read by name in later passes
+scale = 0.5                # optional, with output: 1, 0.5 or 0.25 of the world's size
 
 [[options]]                # 64 at most; `id` is the WGSL `override` it sets
 id = "saturation"
@@ -192,3 +194,4 @@ stages.
 - 2026-11-01: API 0.1 (additions): a stage's `files`.
 - 2026-11-01: API 0.1 (additions): `[material] fog`.
 - 2026-11-01: API 0.1 (additions): the material stage reads the resource packs' LabPBR maps (`_n`, `_s`): `block_pbr_maps`, `block_normal_map`, `block_specular_map`, their `_level` forms and `block_pbr_size`. The maps load only while a native pack is picked: without one they cost nothing, and the first pick reloads the resources once.
+- 2026-11-01: API 0.1 (additions): `[[post]] output` and `scale`, targets of a pack's own at the world's size, half or a quarter of it.

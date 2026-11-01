@@ -68,6 +68,10 @@ pub fn markdown() -> String {
                     - `fn depth_at(uv: vec2<f32>) -> f32`: the world's depth at `uv`.\n\
                     - `fn view_position(uv: vec2<f32>, depth: f32) -> vec3<f32>`: the camera-relative position, in blocks, of\n  \
                     the point at `uv` and `depth`.\n";
+            out += "\nA `[[post]]` entry with `output = \"<name>\"` writes a target of the pack's own, at its `scale` of the\n\
+                    world's size (1, 0.5 or 0.25), instead of the next pass's `previous`; the prelude of every pass declares\n\
+                    `var <name>: texture_2d<f32>` (group 3 from binding 32), which holds last frame's until written again (a\n\
+                    pass reads a blank one in place of the target it writes).\n";
         }
         if kind == StageKind::Material {
             out += "Helpers:\n\n\

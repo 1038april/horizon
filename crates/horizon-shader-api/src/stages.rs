@@ -517,6 +517,24 @@ impl Composed {
     }
 }
 
+/// The binding of a pack's first post target (`[[post]] output`) in group 3, the others after.
+pub const POST_TARGET_BINDING: u32 = 32;
+
+/// The declarations of a pack's post targets, part of the post stage's prelude.
+pub fn post_target_declarations(manifest: &crate::manifest::Manifest) -> String {
+    manifest
+        .post_targets()
+        .iter()
+        .enumerate()
+        .map(|(i, (name, _))| {
+            format!(
+                "@group({GROUP}) @binding({}) var {name}: texture_2d<f32>;\n",
+                POST_TARGET_BINDING + i as u32
+            )
+        })
+        .collect()
+}
+
 /// The WGSL of the stage `kind` whose own file is `file`: the prelude, the
 /// pack's shared files in order, the file, then the entry points.
 pub fn compose(pack: &Pack, kind: StageKind, file: &str) -> Composed {
@@ -534,7 +552,10 @@ pub fn compose(pack: &Pack, kind: StageKind, file: &str) -> Composed {
             .parts
             .push((name.to_owned(), start..composed.text.len()));
     };
-    let prelude = kind.prelude() + &texture_declarations(&pack.manifest.textures);
+    let mut prelude = kind.prelude() + &texture_declarations(&pack.manifest.textures);
+    if kind == StageKind::Post {
+        prelude += &post_target_declarations(&pack.manifest);
+    }
     push("<prelude>", &prelude);
     for shared in pack.manifest.shared.iter().filter(|s| *s != file) {
         push(shared, pack.source(shared).unwrap_or_default());

@@ -106,7 +106,7 @@ impl NativePack {
             .map(|stage| NativeMaterial::new(device, terrain, &frame, stage, constants, fog))
             .transpose()?;
         let post = (!post.is_empty())
-            .then(|| NativePost::new(device, post, constants, format, &frame))
+            .then(|| NativePost::new(device, post, &report.manifest, constants, format, &frame))
             .transpose()?;
         let mut labels: Vec<String> = sky.iter().map(|s| s.label.clone()).collect();
         labels.extend(
