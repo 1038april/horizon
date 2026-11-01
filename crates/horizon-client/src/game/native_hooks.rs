@@ -490,7 +490,9 @@ pub(crate) struct NativeLootDrops<'a> {
     pub(crate) block: Option<([i32; 3], BlockStateId)>,
     /// The mob that died: its entity ID and type (`minecraft:zombie`).
     pub(crate) entity: Option<(u32, &'a str)>,
-    /// The player who broke the block or killed the mob, when known.
+    /// The player who broke the block or killed the mob, when known. A mob
+    /// names one only while it remembers the player's hit (100 ticks), so one
+    /// that dies to lava long after names none.
     pub(crate) player: Option<u128>,
     /// What broke the block (`LootContextParams.TOOL`).
     pub(crate) tool: Option<&'a ItemStack>,
@@ -1412,8 +1414,8 @@ impl Game<'_> {
     /// changes), and for a mob what it wore and held (not an enderman's
     /// carried block or a copper golem's preserved equipment, which drop
     /// after). A block's stacks get its block entity's data (a shulker box's
-    /// items) after this. Add, change or take
-    /// out stacks; empty ones don't drop (NeoForge's global loot modifiers, Fabric's
+    /// items) after this. Add, change or take out stacks; empty ones don't
+    /// drop (NeoForge's global loot modifiers, Fabric's
     /// `LootTableEvents.MODIFY_DROPS`); `context` says what dropped them and
     /// how, and it is called even when `drops` is empty. It hears blocks
     /// that a player, an explosion or a mob breaks, not other breaks (leaves
@@ -3401,9 +3403,9 @@ mod tests {
     #[test]
     fn loot_table_load_stays_hookable() {
         let source = include_str!("../../../horizon-world/src/loot.rs");
-        let start = source
-            .find("#[inline(never)]\npub fn native_loot_table_load(")
-            .unwrap();
+        // From its doc comment's last line, so an attribute above it counts.
+        let hook = source.find("pub fn native_loot_table_load(").unwrap();
+        let start = source[..hook].rfind("///").unwrap();
         let body = &source[start..start + source[start..].find("\n}\n").unwrap()];
         for line in body.lines() {
             assert!(!line.contains("cfg"), "a cfg in the loot hook point: {line}");
