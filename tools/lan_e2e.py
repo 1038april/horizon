@@ -10504,12 +10504,22 @@ def check_mount_other_level(host, guest, out):
     again by shift + right click after getting off, must stay open through those ticks instead of
     closing at once. The other way round too (in_nether, --server-thread): the player and the mount
     in the Nether while the other player keeps the Overworld ticking. Each case is reported on its
-    own (LAN_E2E_MOUNTS=camel,llama picks mounts, LAN_E2E_LEVELS=the_end,in_nether cases)."""
+    own (LAN_E2E_MOUNTS=camel,llama picks mounts, LAN_E2E_LEVELS=the_end,in_nether cases).
+
+    By default only the horse and the camel, with the Nether force-loaded, plus in_nether: the
+    whole matrix takes about 10 minutes, past what the nightly LAN suite has left of its timeout.
+    LAN_E2E_MOUNTS=all and LAN_E2E_LEVELS=all run all of it."""
     spots = apart(host, guest)
     result = {}
     failures = []
-    only = [k for k in os.environ.get('LAN_E2E_MOUNTS', '').split(',') if k]
-    picked = [k for k in os.environ.get('LAN_E2E_LEVELS', '').split(',') if k]
+
+    def env_list(name, default):
+        given = [k for k in os.environ.get(name, '').split(',') if k]
+        return [] if given == ['all'] else given or default
+
+    # An empty list means every one.
+    only = env_list('LAN_E2E_MOUNTS', ['horse', 'camel'])
+    picked = env_list('LAN_E2E_LEVELS', ['the_nether', 'in_nether'])
     mounts = [m for m in OTHER_LEVEL_MOUNTS if not only or m[0] in only]
 
     def try_mount(where, label, player, spot, kind, nbt, ahead, into):
