@@ -54,6 +54,26 @@ const fn shadow_sampler(binding: u32) -> Resource {
     }
 }
 
+/// The shadow map with translucent terrain at `binding`.
+const fn shadow_map_translucent(binding: u32) -> Resource {
+    Resource {
+        binding,
+        name: "shadow_map_translucent",
+        ty: "var shadow_map_translucent: texture_depth_2d",
+        doc: "`shadow_map` with the translucent terrain (water, stained glass, ice) the light passes through drawn in too, read with `shadow_sampler` the same way: a point lit in `shadow_map` but not here lies under such a surface, which `shadow_color` gives the colour of.",
+    }
+}
+
+/// The colour of the translucent terrain in the shadow map at `binding`.
+const fn shadow_color(binding: u32) -> Resource {
+    Resource {
+        binding,
+        name: "shadow_color",
+        ty: "var shadow_color: texture_2d<f32>",
+        doc: "The texture colour times the vertex colour (rgb: the tint, the face's directional shade and ambient occlusion) of the nearest translucent surface the light passes through at each texel of `shadow_map_translucent`, white where there is none; alpha is 1 on a fluid (water) and the texture's alpha, at most 0.99, on anything else. Read it with `textureLoad` at `shadow_position`'s xy times `textureDimensions(shadow_color)`.",
+    }
+}
+
 /// A function the material and post preludes give packs.
 pub const SHADOW_HELPERS: &str = "\
 // The shadow map's distortion toward its centre, of a point at shadow clip `xy`.
@@ -71,7 +91,7 @@ fn shadow_position(position: vec3<f32>) -> vec3<f32> {
 }
 ";
 
-const POST_RESOURCES: [Resource; 9] = [
+const POST_RESOURCES: [Resource; 11] = [
     FRAME,
     Resource {
         binding: 1,
@@ -111,11 +131,13 @@ const POST_RESOURCES: [Resource; 9] = [
         ty: "var history: texture_2d<f32>",
         doc: "Last frame's input to the last pass (what the pass before it wrote), for temporal passes (TAA, denoising): put such a pass second to last and it reads its own previous output; reproject with `frame.previous_view_projection`. Black on the first frame, after a gap of over half a second, and with a single pass.",
     },
+    shadow_map_translucent(9),
+    shadow_color(10),
 ];
 
 /// The material stage's resources: the frame, and the world as it was before translucent
 /// terrain drew (for water and glass to see what lies behind them).
-const MATERIAL_RESOURCES: [Resource; 7] = [
+const MATERIAL_RESOURCES: [Resource; 9] = [
     FRAME,
     Resource {
         binding: 1,
@@ -131,6 +153,8 @@ const MATERIAL_RESOURCES: [Resource; 7] = [
     },
     shadow_map(3),
     shadow_sampler(4),
+    shadow_map_translucent(7),
+    shadow_color(8),
     Resource {
         binding: 6,
         name: "opaque_depth",

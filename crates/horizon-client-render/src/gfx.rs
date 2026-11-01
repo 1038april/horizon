@@ -5892,6 +5892,34 @@ impl Renderer {
                 pass.set_vertex_buffer(1, self.instances.slice(..));
                 self.draw_sections(&mut pass, &self.indirect, 0, shadow_first, shadow_solid);
             }
+            drop(pass);
+            let mut pass = native
+                .frame
+                .shadow_map
+                .begin_translucent(&mut encoder, "Native shader pack translucent shadow");
+            pass.set_bind_group(0, &self.group, &[]);
+            pass.set_bind_group(horizon_shader_api::stages::GROUP, &shadow.group, &[]);
+            if flat_frame
+                && let Some(flat) = &self.flat
+                && let Some(pipeline) = &shadow.flat_translucent
+            {
+                pass.set_pipeline(pipeline);
+                let [_, translucent] = flat.shadow_calls;
+                flat.draw(&mut pass, &flat.calls[translucent..], |p| {
+                    self.arena.buffer(p)
+                });
+            } else if !flat_frame {
+                pass.set_pipeline(&shadow.translucent);
+                pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.set_vertex_buffer(1, self.instances.slice(..));
+                self.draw_sections(
+                    &mut pass,
+                    &self.indirect,
+                    0,
+                    shadow_first + shadow_solid,
+                    shadow_translucent,
+                );
+            }
         }
         if native_sky_pass
             && let Some(native) = &mut self.native
