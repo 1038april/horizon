@@ -63,7 +63,14 @@ pub(super) fn wanted(stage: &Path) -> Result<Vec<Wanted>, String> {
             .parse()
             .map_err(|e| format!("{}: {e}", manifest.display()))?;
         let mut tables: Vec<&toml::Value> = Vec::new();
-        let kinds = ["dependencies", "dev-dependencies", "build-dependencies"];
+        // Cargo still reads the underscore spellings before edition 2024.
+        let kinds = [
+            "dependencies",
+            "dev-dependencies",
+            "build-dependencies",
+            "dev_dependencies",
+            "build_dependencies",
+        ];
         tables.extend(kinds.iter().filter_map(|k| value.get(*k)));
         for target in value
             .get("target")
@@ -529,6 +536,7 @@ checksum = "def"
             "[package]\nname = \"bake-engine\"\nversion = \"0.1.0\"\n\
              [dependencies]\nserde_json = \"1\"\nhash = { package = \"sha2\", version = \"0.10\" }\n\
              [build-dependencies]\nitoa = { version = \"1\" }\n\
+             [dev_dependencies]\nryu = \"1\"\n\
              [target.'cfg(unix)'.dev-dependencies]\nlibc = \"0.2\"\n",
         )
         .unwrap();
@@ -537,6 +545,7 @@ checksum = "def"
             [
                 wants("bake", "itoa", "1"),
                 wants("bake", "libc", "0.2"),
+                wants("bake", "ryu", "1"),
                 wants("bake", "serde_json", "1"),
                 wants("bake", "sha2", "0.10"),
             ]
@@ -544,7 +553,7 @@ checksum = "def"
         fs::create_dir_all(stage.join(DIR).join("gone/engine/src")).unwrap();
         assert_eq!(
             wanted(&stage).unwrap().len(),
-            4,
+            5,
             "an emptied crate folder is skipped"
         );
         assert_eq!(post_builds(&stage).unwrap(), []);
