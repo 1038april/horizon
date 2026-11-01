@@ -760,7 +760,9 @@ impl Game<'_> {
     /// every fifth level. No orb pickup sound. False, and nothing given, for
     /// a player who isn't here or is dead, and for another player than the one
     /// whose state is swapped in (inside that player's hook, only they are
-    /// reached). Their bar follows as for any change to their experience.
+    /// reached), and while the server's player list is busy elsewhere in the
+    /// tick: give first, and cancel an orb only when this returned true.
+    /// Their bar follows as for any change to their experience.
     pub(super) fn native_give_experience(&mut self, uuid: u128, points: u32) -> bool {
         self.native_as_player(uuid, |game| {
             let rest = if points > 0 { game.mending(points) } else { 0 };
