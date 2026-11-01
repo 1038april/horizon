@@ -117,7 +117,7 @@ impl Game<'_> {
     /// client's copy of the world, for another dimension, a position outside
     /// `/summon`'s bounds, a chunk that isn't loaded, a kind Horizon can't
     /// load, or one a mod kept out (`native_entity_join_level`). API
-    /// @API:native_entities@.
+    /// 59.
     pub(super) fn native_summon(
         &mut self,
         dimension: &str,
@@ -139,15 +139,25 @@ impl Game<'_> {
             Tag::List(pos.map(|v| Tag::Double(v.to_bits())).to_vec()),
         );
         let from = self.mobs.len();
+        let deferred = (self.tnts.len(), self.falling.len(), self.rockets.len());
         let target = self.spawn_entity_from_nbt(Tag::Compound(tag));
+        // These roots load with id 0 and have no command Target variant.
+        // Select the newly appended root, never an older waiting entity.
+        let root = match kind {
+            "minecraft:tnt" => self.tnts.get_mut(deferred.0).map(|e| &mut e.id),
+            "minecraft:falling_block" => self.falling.get_mut(deferred.1).map(|e| &mut e.id),
+            "minecraft:firework_rocket" => self.rockets.get_mut(deferred.2).map(|e| &mut e.id),
+            _ => None,
+        };
+        let root = root.map(|id| super::lan_entities::assign_entity_id(&mut self.next_entity, id));
         self.native_mobs_joined(from, false);
-        target.and_then(target_id)
+        root.or_else(|| target.and_then(target_id))
     }
     /// Moves entity `id`, one Horizon keeps without simulating (a display, a
     /// marker, an interaction), to `pos` facing `yaw` and `pitch` in degrees;
     /// a display eases there over its `teleport` ticks. False for no such
     /// entity, another dimension or a position outside `/summon`'s bounds.
-    /// Mobs move with `native_teleport_mob`. API @API:native_entities@.
+    /// Mobs move with `native_teleport_mob`. API 59.
     pub(super) fn native_move_entity(
         &mut self,
         dimension: &str,
@@ -175,7 +185,7 @@ impl Game<'_> {
     /// `block_display`, `item_display` or `text_display`): players see it
     /// ease from what it showed over `interpolation` ticks. False for no such
     /// display, another dimension, or a value that isn't finite, a zero
-    /// quaternion, or a duration out of range. API @API:native_entities@.
+    /// quaternion, or a duration out of range. API 59.
     pub(super) fn native_set_display(
         &mut self,
         dimension: &str,
@@ -209,7 +219,7 @@ impl Game<'_> {
     /// Removes entity `id`, one Horizon keeps without simulating, as `/kill`
     /// does (it drops nothing and isn't saved). False for no such entity or
     /// another dimension. Mobs go with `native_remove_mob`. API
-    /// @API:native_entities@.
+    /// 59.
     pub(super) fn native_remove_entity(&mut self, dimension: &str, id: u32) -> bool {
         if !self.native_entity_level(dimension) || !self.others.iter().any(|o| o.id == id) {
             return false;
