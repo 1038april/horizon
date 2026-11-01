@@ -161,6 +161,10 @@ pub struct Stage {
     /// Shown in the GPU time overlay; the file name when absent.
     #[serde(default)]
     pub name: Option<String>,
+    /// The material stage only: whether Horizon applies its fog after the pack's colour
+    /// (true when absent); false for a pack that fogs its surfaces itself.
+    #[serde(default)]
+    pub fog: Option<bool>,
 }
 
 /// An option the player can change: a WGSL `override` constant of the
@@ -282,6 +286,9 @@ impl Manifest {
             return Err(err(
                 "no stage: give it a [sky], a [material] or a [[post]]".into()
             ));
+        }
+        if raw.sky.iter().chain(&raw.post).any(|s| s.fog.is_some()) {
+            return Err(err("`fog` is a key of [material] only".into()));
         }
         if raw.post.len() > MAX_POST_PASSES {
             return Err(err(format!(

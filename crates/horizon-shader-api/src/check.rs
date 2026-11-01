@@ -95,6 +95,8 @@ pub struct Report {
     pub reflection: Option<crate::manifest::Reflection>,
     /// The manifest's `[shadow]`.
     pub shadow: Option<crate::manifest::Shadow>,
+    /// The manifest's `[material] fog`: whether Horizon fogs the material's colour.
+    pub material_fog: bool,
 }
 
 /// Checks every stage of `pack`, and that each option is an `override` of
@@ -143,6 +145,7 @@ pub fn check(pack: &Pack) -> Result<Report, Vec<Problem>> {
             stages: checked,
             reflection: m.reflection.clone(),
             shadow: m.shadow.clone(),
+            material_fog: m.material.as_ref().and_then(|s| s.fog).unwrap_or(true),
         })
     } else {
         Err(problems)

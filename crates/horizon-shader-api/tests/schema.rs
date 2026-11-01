@@ -365,3 +365,18 @@ fn refuses_files_a_pack_does_not_use() {
             .contains("missing at the pack's root")
     );
 }
+
+#[test]
+fn fog_is_a_key_of_the_material_stage() {
+    let with_fog = |stage: &str| {
+        format!(
+            "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1.0.0\"\napi = \"0.1\"\n\n{stage}\nfile = \"a.wgsl\"\nfog = false\n"
+        )
+    };
+    let material = horizon_shader_api::Manifest::parse(&with_fog("[material]")).unwrap();
+    assert_eq!(material.material.unwrap().fog, Some(false));
+    for stage in ["[sky]", "[[post]]"] {
+        let e = horizon_shader_api::Manifest::parse(&with_fog(stage)).unwrap_err();
+        assert!(e.contains("`fog`"), "{e}");
+    }
+}
