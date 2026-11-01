@@ -950,9 +950,10 @@ impl ArmorStand {
     pub fn render_yaw(&self, alpha: f32) -> f32 {
         self.previous_yaw + alpha * crate::camera::wrap_degrees(self.yaw - self.previous_yaw)
     }
-    /// A server's stand on its client (`ClientLevel.tickNonPassenger`):
-    /// `setOldPosAndRot`, then the step of its `SteppedInterpolationHandler`
-    /// (`step`: the position and yaw it is put at, when one is due). The yaw
+    /// A server's stand on its client, each tick:
+    /// `setOldPosAndRot` (`ClientLevel.tickNonPassenger`), then the step of
+    /// its `SteppedInterpolationHandler` (`step`: the position and yaw it is
+    /// put at, when one is due). The yaw
     /// turns the short way and stays continuous, so a frame between ticks
     /// never spins it.
     pub fn interpolate(&mut self, step: Option<(Vec3, f32)>) {
@@ -963,7 +964,8 @@ impl ArmorStand {
             self.yaw += crate::camera::wrap_degrees(yaw - self.yaw);
         }
     }
-    /// `Entity.snapTo`: put there at once, with nothing to blend from.
+    /// Put there at once, with nothing to blend from
+    /// (`Entity.snapTo`).
     pub fn snap(&mut self, at: Vec3, yaw: f32) {
         self.position = at;
         self.previous = at;

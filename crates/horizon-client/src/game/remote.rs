@@ -2232,7 +2232,7 @@ impl Game<'_> {
     /// A move packet for entity `id`: to the end of `path` (None: a
     /// rotation alone), turned to `rotation` if it has one. `packet` says
     /// whether a living entity more than 64 blocks away is put there at once
-    /// (`MovePacket::snaps`).
+    /// (its `snaps`).
     fn move_entity(
         &mut self,
         id: i32,
@@ -5479,6 +5479,8 @@ impl Game<'_> {
                 _ => {}
             }
         }
+        // A stand riding the player follows this move (tickPassenger).
+        self.seat_own_stands();
         // The server owns health and hunger.
         self.apply_remote_health();
         self.tick_avatar(before, false);
@@ -9271,8 +9273,8 @@ mod tests {
         assert!(!MovePacket::Teleport.snaps(&idle, at(0.0), [60.0, 0.0, 0.0]));
     }
 
-    /// A far sync puts the entity there with nothing left to walk; a
-    /// rotation alone keeps the position it is headed for and turns there
+    /// A far sync puts the entity there and drops the steps it was walking;
+    /// a rotation alone keeps the position it is headed for and turns there
     /// over the update interval.
     #[test]
     fn a_living_entitys_move_snaps_or_steps() {
@@ -9283,6 +9285,9 @@ mod tests {
             pitch: 0.0,
         };
         let mut handler = SteppedInterpolation::new(3);
+        // Walking to x 5 when the far sync comes.
+        handler.interpolate_to(at(0.0, 0.0), Some(Path::Linear([5.0, 0.0, 0.0])), None);
+        assert!(handler.active());
         let far = [100.0, 0.0, 0.0];
         let snap = stepped_move(
             &mut handler,
@@ -9294,6 +9299,7 @@ mod tests {
         );
         assert_eq!(snap, Some(at(100.0, 90.0)));
         assert!(!handler.active());
+        assert_eq!(handler.interpolate(), None, "no step back toward x 5");
         // A rotation-only move packet.
         let turn = stepped_move(
             &mut handler,
