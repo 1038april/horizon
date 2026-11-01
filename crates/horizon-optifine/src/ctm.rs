@@ -465,7 +465,14 @@ fn tile_list(props: &str, value: &str) -> Option<Vec<Tile>> {
                     }
                     continue;
                 }
-                let t = t.strip_prefix("assets/minecraft/").unwrap_or(t);
+                if let Some(rest) = t.strip_prefix("assets/minecraft/") {
+                    // A full path: `minecraft` whatever the file's namespace.
+                    out.extend(
+                        crate::paths::in_root(format!("assets/minecraft/{}", png(rest)))
+                            .map(Tile::Texture),
+                    );
+                    continue;
+                }
                 // A leading `/` is OptiFine's folder, as `~/` is.
                 let t = match t.strip_prefix('/') {
                     Some(rest) => format!("~/{rest}"),
@@ -707,6 +714,16 @@ mod tests {
             ]
         );
 
+        let full = Rule::parse(
+            "assets/mymod/optifine/ctm/a.properties",
+            &Properties::parse(
+                "matchBlocks=stone\nmethod=fixed\ntiles=assets/minecraft/textures/block/stone.png",
+            ),
+        );
+        assert_eq!(
+            full.unwrap().unwrap().tiles,
+            [tex("assets/minecraft/textures/block/stone.png")]
+        );
         let text = "matchBlocks=stone\nmethod=fixed\ntiles=0\noptifineOnly=true";
         assert!(rule("a.properties", text).unwrap().is_none());
         assert!(
