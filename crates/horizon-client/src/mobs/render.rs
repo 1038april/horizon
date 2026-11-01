@@ -1661,6 +1661,18 @@ fn render_visible(
     let overlay = u32::from(red_overlay(m));
     let s = anim::state(m, alpha);
     let (model_key, texture) = body(m);
+    // OptiFine random textures: the sprite of the variant the mob wears for a texture, when
+    // the atlas has it. The texture keeps its name for everything else.
+    let random = data
+        .random_textures
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let random_uv = |texture: &str| {
+        if random.is_empty() {
+            return None;
+        }
+        atlas(super::random_textures::texture(m, &random, texture)?)
+    };
     let model = m
         .kind
         .layer(&model_key)
@@ -1671,7 +1683,7 @@ fn render_visible(
     let draw_body = |out: &mut Vec<Vertex>| {
         // A player or mannequin whose skin has no atlas sprite (an evicted or
         // never stored download) draws with its default skin, not invisibly.
-        let uv = atlas(&texture).or_else(|| {
+        let uv = random_uv(&texture).or_else(|| atlas(&texture)).or_else(|| {
             if avatar(m) {
                 atlas(&m.kind.texture)
             } else {
@@ -1725,7 +1737,7 @@ fn render_visible(
         let Some(part) = m.kind.layer(&layer.model).cloned() else {
             continue;
         };
-        let Some(uv) = atlas(&layer.texture) else {
+        let Some(uv) = random_uv(&layer.texture).or_else(|| atlas(&layer.texture)) else {
             continue;
         };
         layer_poses.reset(&part);
@@ -2399,6 +2411,7 @@ mod tests {
             biome_tags: Default::default(),
             entity_tags: Default::default(),
             villager_hats: Default::default(),
+            random_textures: Default::default(),
             pois: Default::default(),
             species_placements: Default::default(),
         };
@@ -2488,6 +2501,7 @@ mod tests {
             biome_tags: Default::default(),
             entity_tags: Default::default(),
             villager_hats: Default::default(),
+            random_textures: Default::default(),
             pois: Default::default(),
             species_placements: Default::default(),
         };
@@ -2541,6 +2555,7 @@ mod tests {
             biome_tags: Default::default(),
             entity_tags: Default::default(),
             villager_hats: Default::default(),
+            random_textures: Default::default(),
             pois: Default::default(),
             species_placements: Default::default(),
         };
@@ -2650,6 +2665,7 @@ mod tests {
             biome_tags: Default::default(),
             entity_tags: Default::default(),
             villager_hats: Default::default(),
+            random_textures: Default::default(),
             pois: Default::default(),
             species_placements: Default::default(),
         };
