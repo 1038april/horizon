@@ -30,7 +30,8 @@ pub struct Facts<'a> {
     pub y: Option<i32>,
     /// The block it stood on and the block it stood in when first seen (ETF checks both).
     pub blocks: &'a [Block<'a>],
-    /// The plain text of its custom name.
+    /// Its custom name, with `§` formatting codes where the name has them (rules may ask for
+    /// `\u00a74Pinky`).
     pub name: Option<&'a str>,
     /// Villager profession (`minecraft:farmer`) and level.
     pub profession: Option<(&'a str, i32)>,
@@ -43,7 +44,7 @@ pub struct Facts<'a> {
     pub moon_phase: Option<i32>,
     pub day_time: Option<i32>,
     pub weather: Option<Weather>,
-    /// Slime, magma cube or phantom size.
+    /// Slime, magma cube or phantom size as the docs number it: 0 small, 1 medium, 3 big.
     pub size: Option<i32>,
 }
 
@@ -64,19 +65,20 @@ pub enum Weather {
 /// One `.properties` file's rules, in order.
 #[derive(Clone, Debug, Default)]
 pub struct Rules {
-    pub rules: Vec<Rule>,
+    rules: Vec<Rule>,
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct Rule {
+struct Rule {
     /// Variant indices; 1 is the default texture.
-    pub textures: Vec<u32>,
+    textures: Vec<u32>,
     /// Same length as `textures`, or empty for an even choice.
-    pub weights: Vec<u32>,
+    weights: Vec<u32>,
     /// ETF's `seedOffset`: added to the entity's seed.
-    pub seed_offset: i32,
+    seed_offset: i32,
     biomes: Option<IdList>,
     heights: Option<RangeList>,
+    /// Each with whether it is negated (`!`).
     names: Vec<(Name, bool)>,
     professions: Vec<(String, Option<RangeList>)>,
     colors: Option<Vec<String>>,
@@ -88,6 +90,31 @@ pub struct Rule {
     sizes: Option<RangeList>,
     blocks: Vec<(BlockMatch, bool)>,
 }
+
+/// The conditions a rule may hold, as `<key>.<n>`. A rule with any other (`nbt.<n>.*`, ETF's
+/// `teams`, `items`...) is skipped rather than applied to every entity.
+const KEYS: &[&str] = &[
+    "textures",
+    "skins",
+    "weights",
+    "seedOffset",
+    "biomes",
+    "heights",
+    "minHeight",
+    "maxHeight",
+    "name",
+    "names",
+    "professions",
+    "colors",
+    "collarColors",
+    "baby",
+    "health",
+    "moonPhase",
+    "dayTime",
+    "weather",
+    "sizes",
+    "blocks",
+];
 
 impl Rules {
     pub fn parse(props: &Properties) -> Self {
@@ -105,7 +132,8 @@ impl Rules {
         Self { rules }
     }
 
-    /// The variant this entity wears: the first matching rule's pick, or 1 (the default).
+    /// The variant this entity wears: the first matching rule's pick, or 1 (the default). ETF
+    /// also lets a rule list 0 for the default; the caller treats 0 as 1.
     pub fn select(&self, facts: &Facts, seed: i32) -> u32 {
         self.rules
             .iter()
@@ -125,7 +153,7 @@ impl Rules {
         })
     }
 
-    /// The highest variant index any rule lists.
+    /// The highest variant index any rule lists (at most [`MAX_INDEX`]).
     pub fn max_texture(&self) -> u32 {
         self.rules
             .iter()
@@ -136,8 +164,30 @@ impl Rules {
 }
 
 impl Rule {
+    /// `None` when the rule lists no textures, or holds a condition that doesn't parse or isn't
+    /// supported: such a rule never matches, instead of matching every entity.
     fn parse(props: &Properties, n: u32) -> Option<Self> {
+        let unsupported = props.entries.iter().any(|(key, _)| {
+            key.strip_prefix("nbt.")
+                .is_some_and(|rest| rest.split('.').next() == Some(&n.to_string()))
+                || key
+                    .rsplit_once('.')
+                    .is_some_and(|(k, i)| i.parse::<u32>() == Ok(n) && !KEYS.contains(&k))
+        });
+        if unsupported {
+            return None;
+        }
         let get = |key: &str| props.get(&format!("{key}.{n}"));
+        // `Some(None)` for a missing key, `None` for one that doesn't parse.
+        fn read<T>(
+            value: Option<&str>,
+            parse: impl FnOnce(&str) -> Option<T>,
+        ) -> Option<Option<T>> {
+            match value {
+                None => Some(None),
+                Some(v) => parse(v).map(Some),
+            }
+        }
         let textures = expand(&RangeList::parse(get("textures").or(get("skins"))?)?);
         if textures.is_empty() {
             return None;
@@ -147,59 +197,65 @@ impl Rule {
             .map(|w| w.0.iter().map(|&(lo, _)| lo.max(0) as u32).collect())
             .filter(|w: &Vec<u32>| w.len() == textures.len() && w.iter().any(|&w| w > 0))
             .unwrap_or_default();
-        let ranges = |key| get(key).and_then(RangeList::parse);
-        let heights = ranges("heights").or_else(|| {
-            let min = get("minHeight").and_then(|v| v.parse().ok());
-            let max = get("maxHeight").and_then(|v| v.parse().ok());
-            (min.is_some() || max.is_some())
-                .then(|| RangeList(vec![(min.unwrap_or(i32::MIN), max.unwrap_or(i32::MAX))]))
-        });
-        let mut names: Vec<(Name, bool)> =
-            get("name").and_then(negatable_name).into_iter().collect();
-        names.extend(get("names").map_or(Vec::new(), |v| {
-            quoted_words(v).filter_map(negatable_name).collect()
-        }));
+        let ranges = |key| read(get(key), RangeList::parse);
+        let heights = match ranges("heights")? {
+            Some(h) => Some(h),
+            None => {
+                let min = read(get("minHeight"), |v| v.parse().ok())?;
+                let max = read(get("maxHeight"), |v| v.parse().ok())?;
+                (min.is_some() || max.is_some())
+                    .then(|| RangeList(vec![(min.unwrap_or(i32::MIN), max.unwrap_or(i32::MAX))]))
+            }
+        };
+        let mut names = Vec::new();
+        if let Some(v) = get("name") {
+            let (v, negated) = negation(v);
+            names.push((Name::parse(v)?, negated));
+        }
+        for (word, negated) in quoted_words(get("names").unwrap_or("")) {
+            names.push((Name::parse(word)?, negated));
+        }
         Some(Self {
             textures,
             weights,
-            seed_offset: get("seedOffset").and_then(|v| v.parse().ok()).unwrap_or(0),
+            seed_offset: read(get("seedOffset"), |v| v.parse().ok())?.unwrap_or(0),
             biomes: get("biomes").map(IdList::parse),
             heights,
             names,
-            professions: get("professions").map_or(Vec::new(), parse_professions),
+            professions: read(get("professions"), parse_professions)?.unwrap_or_default(),
             colors: get("colors")
                 .or(get("collarColors"))
                 .map(|v| v.split_whitespace().map(str::to_ascii_lowercase).collect()),
-            baby: get("baby").and_then(|v| v.parse().ok()),
-            health: get("health").and_then(|v| {
-                let percent = v.contains('%');
-                Some((RangeList::parse(&v.replace('%', ""))?, percent))
-            }),
-            moon_phase: ranges("moonPhase"),
-            day_time: ranges("dayTime"),
-            weather: get("weather").map(|v| {
+            baby: read(get("baby"), parse_bool)?,
+            health: read(get("health"), |v| {
+                Some((RangeList::parse(&v.replace('%', ""))?, v.contains('%')))
+            })?,
+            moon_phase: ranges("moonPhase")?,
+            day_time: ranges("dayTime")?,
+            weather: read(get("weather"), |v| {
                 v.split_whitespace()
-                    .filter_map(|w| match w {
+                    .map(|w| match w.to_ascii_lowercase().as_str() {
                         "clear" => Some(Weather::Clear),
                         "rain" => Some(Weather::Rain),
                         "thunder" => Some(Weather::Thunder),
                         _ => None,
                     })
                     .collect()
-            }),
-            sizes: ranges("sizes"),
-            blocks: get("blocks").map_or(Vec::new(), |v| {
+            })?,
+            sizes: ranges("sizes")?,
+            blocks: read(get("blocks"), |v| {
                 v.split_whitespace()
-                    .filter_map(|b| {
-                        let (b, negated) = b.strip_prefix('!').map_or((b, false), |b| (b, true));
+                    .map(|b| {
+                        let (b, negated) = negation(b);
                         Some((BlockMatch::parse(b)?, negated))
                     })
                     .collect()
-            }),
+            })?
+            .unwrap_or_default(),
         })
     }
 
-    pub fn matches(&self, f: &Facts) -> bool {
+    fn matches(&self, f: &Facts) -> bool {
         let ranged = |list: &Option<RangeList>, fact: Option<i32>| {
             list.as_ref()
                 .is_none_or(|l| fact.is_some_and(|v| l.contains(v)))
@@ -208,12 +264,9 @@ impl Rule {
             .as_ref()
             .is_none_or(|l| f.biome.is_some_and(|b| l.matches(b)))
             && ranged(&self.heights, f.y)
-            && (self.names.is_empty() || {
-                let name = f.name.unwrap_or("");
-                self.names
-                    .iter()
-                    .any(|(n, negated)| n.matches(name) != *negated)
-            })
+            && (self.names.is_empty()
+                || f.name
+                    .is_some_and(|name| included(&self.names, |n| n.matches(name))))
             && (self.professions.is_empty()
                 || f.profession.is_some_and(|(p, level)| {
                     let p = namespaced(p);
@@ -243,11 +296,19 @@ impl Rule {
                 .as_ref()
                 .is_none_or(|w| f.weather.is_some_and(|f| w.contains(&f)))
             && ranged(&self.sizes, f.size)
-            && (self.blocks.is_empty() || block_matches(&self.blocks, f.blocks))
+            && (self.blocks.is_empty()
+                || included(&self.blocks, |m| {
+                    f.blocks.iter().any(|b| {
+                        m.matches(b.id, |key| {
+                            b.states.iter().find(|(k, _)| *k == key).map(|(_, v)| *v)
+                        })
+                    })
+                }))
     }
 
-    /// One of the rule's textures, by weight, from the entity's seed.
-    pub fn pick(&self, seed: i32) -> u32 {
+    /// One of the rule's textures, by weight, from the entity's seed. OptiFine's docs don't say
+    /// how the seed becomes a choice: this is Horizon's, the seed's magnitude modulo the total.
+    fn pick(&self, seed: i32) -> u32 {
         let r = seed.wrapping_add(self.seed_offset).unsigned_abs();
         if self.weights.is_empty() {
             return self.textures[r as usize % self.textures.len()];
@@ -260,7 +321,7 @@ impl Rule {
             }
             left -= u64::from(weight);
         }
-        self.textures[0]
+        unreachable!("left < total")
     }
 }
 
@@ -271,10 +332,13 @@ pub fn seed(most: i64, least: i64) -> i32 {
     ((x >> 32) ^ x) as i32
 }
 
+/// The highest variant index a rule may name (`textures.1=2000000000` is dropped).
+pub const MAX_INDEX: u32 = 1024;
+
 fn expand(list: &RangeList) -> Vec<u32> {
     let mut out = Vec::new();
     for &(lo, hi) in &list.0 {
-        for i in lo.max(0)..=hi.min(lo.max(0).saturating_add(MAX_TEXTURES as i32)) {
+        for i in lo.max(0)..=hi.min(MAX_INDEX as i32) {
             if out.len() == MAX_TEXTURES {
                 return out;
             }
@@ -284,54 +348,57 @@ fn expand(list: &RangeList) -> Vec<u32> {
     out
 }
 
-fn negatable_name(value: &str) -> Option<(Name, bool)> {
-    match value.strip_prefix('!') {
-        Some(v) => Some((Name::parse(v)?, true)),
-        None => Some((Name::parse(value)?, false)),
+fn negation(value: &str) -> (&str, bool) {
+    value
+        .strip_prefix('!')
+        .map_or((value, false), |v| (v, true))
+}
+
+fn parse_bool(value: &str) -> Option<bool> {
+    match value.to_ascii_lowercase().as_str() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
     }
 }
 
-/// Words split on spaces, a `"double quoted"` group kept as one word (ETF's `names`).
-fn quoted_words(value: &str) -> impl Iterator<Item = &str> {
+/// Words split on spaces, a `"double quoted"` group kept as one word (ETF's `names`), each
+/// with whether it starts with `!` (before or inside the quotes' group: `!"Blue Team"`).
+fn quoted_words(value: &str) -> impl Iterator<Item = (&str, bool)> {
     let mut rest = value.trim_start();
     std::iter::from_fn(move || {
         if rest.is_empty() {
             return None;
         }
-        let (word, after) = match rest.strip_prefix('"') {
+        let (r, negated) = negation(rest);
+        let (word, after) = match r.strip_prefix('"') {
             Some(q) => q.split_once('"').unwrap_or((q, "")),
-            None => rest.split_once(' ').unwrap_or((rest, "")),
+            None => r.split_once(' ').unwrap_or((r, "")),
         };
         rest = after.trim_start();
-        Some(word)
+        Some((word, negated))
     })
 }
 
-/// `farmer librarian:1,3-4 minecraft:fisherman mymod:mayor:2`.
-fn parse_professions(value: &str) -> Vec<(String, Option<RangeList>)> {
+/// `farmer librarian:1,3-4 minecraft:fisherman mymod:mayor:2`; `None` if a level list is bad.
+fn parse_professions(value: &str) -> Option<Vec<(String, Option<RangeList>)>> {
     value
         .split_whitespace()
         .map(|entry| match entry.rsplit_once(':') {
             Some((name, levels)) if levels.starts_with(|c: char| c.is_ascii_digit()) => {
-                (namespaced(name), RangeList::parse(levels))
+                Some((namespaced(name), Some(RangeList::parse(levels)?)))
             }
-            _ => (namespaced(entry), None),
+            _ => Some((namespaced(entry), None)),
         })
         .collect()
 }
 
-/// Any listed block (not negated) is one of the entity's, and no negated one is.
-fn block_matches(list: &[(BlockMatch, bool)], blocks: &[Block]) -> bool {
-    let hit = |m: &BlockMatch| {
-        blocks.iter().any(|b| {
-            m.matches(b.id, |key| {
-                b.states.iter().find(|(k, _)| *k == key).map(|(_, v)| *v)
-            })
-        })
-    };
+/// A list of (entry, negated): some entry that isn't negated hits (when there is one), and no
+/// negated one does. `!red !blue` excludes both.
+fn included<T>(list: &[(T, bool)], hit: impl Fn(&T) -> bool) -> bool {
     let mut wanted = list.iter().filter(|(_, negated)| !negated).peekable();
-    let any_wanted = wanted.peek().is_none() || wanted.any(|(m, _)| hit(m));
-    any_wanted && !list.iter().any(|(m, negated)| *negated && hit(m))
+    let any_wanted = wanted.peek().is_none() || wanted.any(|(e, _)| hit(e));
+    any_wanted && !list.iter().any(|(e, negated)| *negated && hit(e))
 }
 
 #[cfg(test)]
@@ -462,7 +529,72 @@ mod tests {
             "textures.1=2\nminHeight.1=-50\nmaxHeight.1=-40",
             world.clone()
         ));
-        assert!(!check("textures.1=2\nminHeight.1=-39", world));
+        assert!(!check("textures.1=2\nminHeight.1=-39", world.clone()));
+        // Each world condition alone, failing.
+        for rule in [
+            "moonPhase.1=4-7",
+            "dayTime.1=0-18000",
+            "sizes.1=0 1",
+            "heights.1=-64--41",
+            "colors.1=pink",
+            "collarColors.1=pink",
+            "baby.1=false",
+        ] {
+            assert!(
+                !check(&format!("textures.1=2\n{rule}"), world.clone()),
+                "{rule}"
+            );
+        }
+        // ETF's bare negative height range.
+        assert!(check("textures.1=2\nheights.1=-64--30", world));
+    }
+
+    #[test]
+    fn name_lists() {
+        let r = rules("textures.1=2\nnames.1=!Bob !\"Blue Team\"");
+        let pick = |name| {
+            r.select(
+                &Facts {
+                    name,
+                    ..Default::default()
+                },
+                0,
+            )
+        };
+        assert_eq!(pick(Some("Bob")), 1, "negated entries exclude");
+        assert_eq!(pick(Some("Blue Team")), 1);
+        assert_eq!(pick(Some("Green")), 2);
+        assert_eq!(pick(None), 1, "an unnamed entity has no name to match");
+        let r = rules("textures.1=2\nname.1=pattern:*");
+        assert_eq!(r.select(&Facts::default(), 0), 1);
+    }
+
+    #[test]
+    fn rules_run_in_number_order_with_their_seed_offset() {
+        // Written 10 before 9: rule 9 is tried first.
+        let r = rules("textures.10=5\ntextures.9=2 3 4\nseedOffset.9=1\n");
+        assert_eq!(r.select(&Facts::default(), 0), 3, "(0 + 1) % 3: the second");
+        assert_eq!(r.select(&Facts::default(), 2), 2, "(2 + 1) % 3: the first");
+        // `textures` wins over `skins` in the same rule.
+        assert_eq!(
+            rules("textures.1=4\nskins.1=5").select(&Facts::default(), 0),
+            4
+        );
+    }
+
+    #[test]
+    fn changing_facts_need_rechecks() {
+        for rule in [
+            "name.1=Bob",
+            "names.1=Bob",
+            "professions.1=farmer",
+            "colors.1=red",
+            "baby.1=true",
+            "health.1=1-5",
+        ] {
+            assert!(rules(&format!("textures.1=2\n{rule}")).updates(), "{rule}");
+        }
+        assert!(!rules("textures.1=2\nbiomes.1=desert\nweather.1=rain").updates());
     }
 
     #[test]
@@ -497,11 +629,46 @@ mod tests {
         let r = rules(
             "textures.1=abc\nbiomes.1=desert\n\
              textures.2=2 3\nweights.2=5\n\
-             skins.7=1-100000\n",
+             skins.7=1-100000\n\
+             textures.8=2\nweights.8=0\n\
+             textures.9=2000000000\n",
         );
-        assert_eq!(r.rules.len(), 2, "rule 1 lists no textures");
+        assert_eq!(r.rules.len(), 3, "rules 1 and 9 list no usable textures");
         assert!(r.rules[0].weights.is_empty(), "one weight for two textures");
         assert_eq!(r.rules[1].textures.len(), MAX_TEXTURES);
+        assert!(r.rules[2].weights.is_empty(), "only zero weights");
+        assert!(r.max_texture() <= MAX_INDEX);
+    }
+
+    #[test]
+    fn bad_or_unknown_conditions_never_match() {
+        // Each would match every entity if the condition were dropped.
+        for rule in [
+            "heights.1=0-55 x",
+            "moonPhase.1=full",
+            "baby.1=yes",
+            "health.1=5.5-8",
+            "professions.1=librarian:1,x",
+            "weather.1=snow",
+            "name.1=regex:(",
+            "names.1=Bob regex:(",
+            "minHeight.1=low",
+            "nbt.1.CustomName=Bob",
+            "teams.1=red",
+        ] {
+            let r = rules(&format!("textures.1=2\n{rule}\ntextures.2=3"));
+            assert_eq!(r.select(&Facts::default(), 0), 3, "{rule}");
+        }
+        // Case doesn't matter where Java's parsers ignore it.
+        let baby = Facts {
+            baby: Some(true),
+            weather: Some(Weather::Rain),
+            ..Default::default()
+        };
+        assert_eq!(
+            rules("textures.1=2\nbaby.1=TRUE\nweather.1=Rain").select(&baby, 0),
+            2
+        );
     }
 
     #[test]
