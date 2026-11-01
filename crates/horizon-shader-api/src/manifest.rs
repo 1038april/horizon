@@ -122,7 +122,21 @@ pub struct Stage {
     /// Shown in the GPU time overlay; the file name when absent.
     #[serde(default)]
     pub name: Option<String>,
+    /// A post pass only: its target's size against the world's, 1, 0.5 or 0.25 (1 when
+    /// absent); below 1 the pass writes an `output`.
+    #[serde(default)]
+    pub scale: Option<f32>,
+    /// A post pass only: the pack target it writes in place of the chain of passes. The
+    /// passes after it read that target by name, and the next one's `previous` is still the
+    /// chain's last picture.
+    #[serde(default)]
+    pub output: Option<String>,
 }
+
+/// The scales a post pass may draw at.
+pub const POST_SCALES: [f32; 3] = [1.0, 0.5, 0.25];
+/// The most targets a pack's post passes may write.
+pub const MAX_POST_TARGETS: usize = 4;
 
 /// An option the player can change: a WGSL `override` constant of the
 /// same name, set when the pipelines are built.
@@ -210,6 +224,77 @@ struct RawBudget {
     gpu_ms: Option<f64>,
 }
 
+/// `[[post]] scale` and `output`: scales from `POST_SCALES`, below 1 only with an output,
+/// the last pass drawing the picture itself, outputs named as WGSL names no other resource
+/// takes, each at one scale, `MAX_POST_TARGETS` at most.
+fn check_post_targets(post: &[Stage]) -> Result<(), String> {
+    let reserved = [
+        "frame",
+        "scene_color",
+        "scene_depth",
+        "previous",
+        "linear_sampler",
+        "nearest_sampler",
+        "shadow_map",
+        "shadow_sampler",
+        "history",
+        "shadow_map_translucent",
+        "shadow_color",
+        "scene_surface",
+    ];
+    let mut targets: Vec<(&str, f32)> = Vec::new();
+    for (i, p) in post.iter().enumerate() {
+        let scale = p.scale.unwrap_or(1.0);
+        if !POST_SCALES.contains(&scale) {
+            return Err(format!(
+                "{}: scale {scale} is not one of {POST_SCALES:?}",
+                p.file
+            ));
+        }
+        if i + 1 == post.len() && (p.output.is_some() || scale != 1.0) {
+            return Err(format!(
+                "{}: the last [[post]] pass draws the picture: no `output` or `scale`",
+                p.file
+            ));
+        }
+        let Some(name) = &p.output else {
+            if scale != 1.0 {
+                return Err(format!("{}: a scaled pass writes an `output`", p.file));
+            }
+            continue;
+        };
+        let valid = name.len() <= 32
+            && name.starts_with(|c: char| c.is_ascii_lowercase())
+            && name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            && !name.starts_with("horizon_");
+        if !valid || reserved.contains(&name.as_str()) {
+            return Err(format!(
+                "{}: output {name:?} is not a free WGSL name ([a-z][a-z0-9_]*, at most 32)",
+                p.file
+            ));
+        }
+        match targets.iter().find(|t| t.0 == name) {
+            Some(&(_, s)) if s != scale => {
+                return Err(format!(
+                    "{}: output {name:?} is written at two scales",
+                    p.file
+                ));
+            }
+            Some(_) => {}
+            None => targets.push((name, scale)),
+        }
+    }
+    if targets.len() > MAX_POST_TARGETS {
+        return Err(format!(
+            "{} [[post]] outputs; a pack may write {MAX_POST_TARGETS}",
+            targets.len()
+        ));
+    }
+    Ok(())
+}
+
 impl Manifest {
     pub fn parse(text: &str) -> Result<Manifest, String> {
         let raw: Raw = toml::from_str(text).map_err(|e| format!("{MANIFEST}: {e}"))?;
@@ -242,6 +327,15 @@ impl Manifest {
                 "no stage: give it a [sky], a [material] or a [[post]]".into()
             ));
         }
+        if raw
+            .sky
+            .iter()
+            .chain(&raw.material)
+            .any(|s| s.scale.is_some() || s.output.is_some())
+        {
+            return Err(err("`scale` and `output` are keys of [[post]] only".into()));
+        }
+        check_post_targets(&raw.post).map_err(err)?;
         if raw.post.len() > MAX_POST_PASSES {
             return Err(err(format!(
                 "{} post passes; a pack may chain {MAX_POST_PASSES}",
@@ -371,6 +465,20 @@ impl Manifest {
             }
         }
         layers.into_iter().collect()
+    }
+
+    /// The pack targets its post passes write (`[[post]] output`), in the order first
+    /// written, with their scale.
+    pub fn post_targets(&self) -> Vec<(&str, f32)> {
+        let mut out: Vec<(&str, f32)> = Vec::new();
+        for p in &self.post {
+            if let Some(name) = &p.output
+                && !out.iter().any(|t| t.0 == name)
+            {
+                out.push((name, p.scale.unwrap_or(1.0)));
+            }
+        }
+        out
     }
 
     /// Every WGSL file the manifest names, shared files first, each once.

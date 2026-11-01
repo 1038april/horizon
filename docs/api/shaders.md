@@ -62,6 +62,8 @@ distance = 128.0           # half the side of the square it covers, in blocks, 3
 [[post]]                   # full-screen passes, in the order they run (8 at most)
 file = "post/grade.wgsl"
 name = "Colour grade"      # optional: the GPU time overlay's label
+output = "bloom"           # optional, not on the last pass: writes this target, read by name in later passes
+scale = 0.5                # optional, with output: 1, 0.5 or 0.25 of the world's size
 
 [[options]]                # 64 at most; `id` is the WGSL `override` it sets
 id = "saturation"
@@ -143,3 +145,4 @@ stages.
 - 2026-10-25: the stages of API 0.1 (sky, material, post), their inputs and the generated reference.
 - 2026-10-25: the pack format, schema 1: `horizon-shaders.toml` and the `.hshader` package.
 - 2026-10-24: the earlier shader pack code was removed; this API is designed from scratch.
+- 2026-11-01: API 0.1 (additions): `[[post]] output` and `scale`, targets of a pack's own at the world's size, half or a quarter of it.

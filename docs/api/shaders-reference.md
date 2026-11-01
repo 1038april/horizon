@@ -123,6 +123,11 @@ Helpers:
 - `fn depth_at(uv: vec2<f32>) -> f32`: the world's depth at `uv`.
 - `fn view_position(uv: vec2<f32>, depth: f32) -> vec3<f32>`: the camera-relative position, in blocks, of
   the point at `uv` and `depth`.
+
+A `[[post]]` entry with `output = "<name>"` writes a target of the pack's own, at its `scale` of the
+world's size (1, 0.5 or 0.25), instead of the next pass's `previous`; the prelude of every pass declares
+`var <name>: texture_2d<f32>` (group 3 from binding 32), which holds last frame's until written again (a
+pass reads a blank one in place of the target it writes).
 - `fn shadow_position(position: vec3<f32>) -> vec3<f32>`: where the camera-relative point `position` is
   stored in the shadow map, for `textureSampleCompareLevel`.
 - `fn shadow_distort(xy: vec2<f32>) -> vec2<f32>`: the map's distortion of a point at shadow clip `xy`.

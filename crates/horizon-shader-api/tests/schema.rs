@@ -305,3 +305,37 @@ fn refuses_files_a_pack_does_not_use() {
             .contains("missing at the pack's root")
     );
 }
+
+#[test]
+fn post_outputs_are_named_scaled_and_never_the_last_pass() {
+    let head = "schema = 1\nid = \"p\"\nname = \"P\"\nversion = \"1.0.0\"\napi = \"0.1\"\n";
+    let pack = |passes: &str| horizon_shader_api::Manifest::parse(&format!("{head}{passes}"));
+    let good = pack(
+        "[[post]]\nfile = \"a.wgsl\"\noutput = \"bloom\"\nscale = 0.5\n\
+         [[post]]\nfile = \"b.wgsl\"\n",
+    )
+    .unwrap();
+    assert_eq!(good.post_targets(), [("bloom", 0.5)]);
+    for (passes, why) in [
+        ("[[post]]\nfile = \"a.wgsl\"\noutput = \"bloom\"\n", "last"),
+        (
+            "[[post]]\nfile = \"a.wgsl\"\nscale = 0.5\n[[post]]\nfile = \"b.wgsl\"\n",
+            "output",
+        ),
+        (
+            "[[post]]\nfile = \"a.wgsl\"\noutput = \"b\"\nscale = 0.3\n[[post]]\nfile = \"b.wgsl\"\n",
+            "scale",
+        ),
+        (
+            "[[post]]\nfile = \"a.wgsl\"\noutput = \"scene_color\"\n[[post]]\nfile = \"b.wgsl\"\n",
+            "free",
+        ),
+        (
+            "[material]\nfile = \"a.wgsl\"\noutput = \"b\"\n",
+            "[[post]]",
+        ),
+    ] {
+        let e = pack(passes).unwrap_err();
+        assert!(e.contains(why), "{passes}: {e}");
+    }
+}

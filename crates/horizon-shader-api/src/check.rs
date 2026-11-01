@@ -95,6 +95,8 @@ pub struct Report {
     pub reflection: Option<crate::manifest::Reflection>,
     /// The manifest's `[shadow]`.
     pub shadow: Option<crate::manifest::Shadow>,
+    /// The manifest the stages were checked against.
+    pub manifest: crate::manifest::Manifest,
 }
 
 /// Checks every stage of `pack`, and that each option is an `override` of
@@ -143,6 +145,7 @@ pub fn check(pack: &Pack) -> Result<Report, Vec<Problem>> {
             stages: checked,
             reflection: m.reflection.clone(),
             shadow: m.shadow.clone(),
+            manifest: m.clone(),
         })
     } else {
         Err(problems)
@@ -158,7 +161,7 @@ pub fn check_stage(pack: &Pack, kind: StageKind, file: &str) -> Result<CheckedSt
     own.text.truncate(entries.1.start);
     let module = parse(&own)?;
     let mut problems = signature(&module, kind, file);
-    problems.extend(api_rules(&module, kind, &own));
+    problems.extend(api_rules(&module, &own));
     problems.extend(options(&module, &pack.manifest.options, file));
     if !problems.is_empty() {
         return Err(problems);
@@ -307,8 +310,10 @@ fn names(module: &naga::Module) -> HashSet<String> {
 
 /// A pack's files declare no bindings, no entry points and no `horizon_`
 /// names: what the prelude doesn't define is the pack's.
-fn api_rules(module: &naga::Module, kind: StageKind, own: &Composed) -> Vec<Problem> {
-    let prelude = naga::front::wgsl::parse_str(&kind.prelude()).expect("the prelude parses");
+fn api_rules(module: &naga::Module, own: &Composed) -> Vec<Problem> {
+    // The prelude as composed: the stage's own, with the pack's post targets.
+    let prelude = naga::front::wgsl::parse_str(&own.text[own.parts[0].1.clone()])
+        .expect("the prelude parses");
     let ours = names(&prelude);
     let file = &own.parts[own.parts.len() - 1].0;
     let mut problems = Vec::new();

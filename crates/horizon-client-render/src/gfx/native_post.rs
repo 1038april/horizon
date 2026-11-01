@@ -16,6 +16,54 @@ const INTERMEDIATE: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// The world's colour and depth views a set of bind groups was made for.
 type WorldViews = (wgpu::TextureView, wgpu::TextureView);
 
+/// Where a post pass draws.
+#[derive(Clone, Copy, PartialEq)]
+enum Writes {
+    /// One of the chain's two targets.
+    Chain(usize),
+    /// A pack target (`[[post]] output`).
+    Target(usize),
+    /// The screen: the last pass.
+    Screen,
+}
+
+/// A post pass's target, and the chain's picture it reads as `previous` (the world's for
+/// none).
+#[derive(Clone, Copy)]
+struct PassPlan {
+    writes: Writes,
+    reads: Option<usize>,
+}
+
+/// The passes' plan for `outputs` (each pass's `[[post]] output`, by target index): the chain's
+/// passes write its targets in turn, each reading what the one before wrote; a pass with an
+/// output writes that and reads the chain's picture, which goes on past it.
+fn plan(outputs: &[Option<usize>]) -> Vec<PassPlan> {
+    let mut current = None;
+    outputs
+        .iter()
+        .enumerate()
+        .map(|(i, output)| {
+            let reads = current;
+            let writes = match output {
+                _ if i + 1 == outputs.len() => Writes::Screen,
+                Some(t) => Writes::Target(*t),
+                None => {
+                    let slot = usize::from(current == Some(0));
+                    current = Some(slot);
+                    Writes::Chain(slot)
+                }
+            };
+            PassPlan { writes, reads }
+        })
+        .collect()
+}
+
+/// A pack target's size: `scale` of the world's `size`, at least a texel.
+fn scaled(size: [u32; 2], scale: f32) -> [u32; 2] {
+    size.map(|s| ((s as f32 * scale).ceil() as u32).max(1))
+}
+
 pub struct NativePost {
     passes: Vec<(String, wgpu::RenderPipeline)>,
     layout: wgpu::BindGroupLayout,
@@ -40,6 +88,12 @@ pub struct NativePost {
     groups: Option<(WorldViews, bool, Vec<wgpu::BindGroup>)>,
     /// Whether `history` contains the last frame's input to the last pass.
     history_valid: bool,
+    /// What each pass writes and reads (`[[post]] output`).
+    plan: Vec<PassPlan>,
+    /// The pack's targets' scales (`Manifest::post_targets`), and their views for the world's
+    /// size.
+    scales: Vec<f32>,
+    named: Option<([u32; 2], Vec<wgpu::TextureView>)>,
     /// The screen's colour format, the world target's too.
     format: wgpu::TextureFormat,
 }
@@ -461,26 +515,42 @@ impl NativePost {
     pub fn new(
         device: &wgpu::Device,
         stages: Vec<CheckedStage>,
+        manifest: &horizon_shader_api::Manifest,
         constants: &[(String, f64)],
         format: wgpu::TextureFormat,
         frame: &NativeFrame,
     ) -> Result<Self, String> {
+        let targets = manifest.post_targets();
+        let outputs: Vec<Option<usize>> = manifest
+            .post
+            .iter()
+            .map(|p| {
+                let name = p.output.as_deref()?;
+                targets.iter().position(|t| t.0 == name)
+            })
+            .collect();
+        let plan = plan(&outputs);
         let float = wgpu::TextureSampleType::Float { filterable: true };
+        let mut entries = vec![
+            frame_entry(wgpu::ShaderStages::FRAGMENT),
+            texture_entry(1, float),
+            texture_entry(2, wgpu::TextureSampleType::Depth),
+            texture_entry(3, float),
+            sampler_entry(4),
+            sampler_entry(5),
+            texture_entry(6, wgpu::TextureSampleType::Depth),
+            comparison_entry(7),
+            texture_entry(8, float),
+            texture_entry(9, wgpu::TextureSampleType::Depth),
+            texture_entry(10, float),
+        ];
+        entries
+            .extend((0..targets.len() as u32).map(|j| {
+                texture_entry(horizon_shader_api::stages::POST_TARGET_BINDING + j, float)
+            }));
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Native shader pack post"),
-            entries: &[
-                frame_entry(wgpu::ShaderStages::FRAGMENT),
-                texture_entry(1, float),
-                texture_entry(2, wgpu::TextureSampleType::Depth),
-                texture_entry(3, float),
-                sampler_entry(4),
-                sampler_entry(5),
-                texture_entry(6, wgpu::TextureSampleType::Depth),
-                comparison_entry(7),
-                texture_entry(8, float),
-                texture_entry(9, wgpu::TextureSampleType::Depth),
-                texture_entry(10, float),
-            ],
+            entries: &entries,
         });
         let mut groups: [Option<&wgpu::BindGroupLayout>; GROUP as usize + 1] = Default::default();
         groups[GROUP as usize] = Some(&layout);
@@ -519,7 +589,11 @@ impl NativePost {
                     entry_point: Some("horizon_fs_post"),
                     compilation_options: options,
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: if i + 1 == count { format } else { INTERMEDIATE },
+                        format: if plan[i].writes == Writes::Screen {
+                            format
+                        } else {
+                            INTERMEDIATE
+                        },
                         blend: None,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
@@ -557,6 +631,9 @@ impl NativePost {
             history_blank: history_target(device, "Native shader pack history blank", [1, 1]),
             groups: None,
             history_valid: false,
+            scales: targets.iter().map(|t| t.1).collect(),
+            named: None,
+            plan,
             format,
         })
     }
@@ -573,7 +650,39 @@ impl NativePost {
         size: [u32; 2],
         history_reset: bool,
     ) {
-        if self.passes.len() > 1 && self.targets.as_ref().is_none_or(|t| t.0 != size) {
+        if !self.scales.is_empty() && self.named.as_ref().is_none_or(|n| n.0 != size) {
+            let views = self
+                .scales
+                .iter()
+                .map(|&scale| {
+                    let size = scaled(size, scale);
+                    device
+                        .create_texture(&wgpu::TextureDescriptor {
+                            label: Some("Native shader pack target"),
+                            size: wgpu::Extent3d {
+                                width: size[0],
+                                height: size[1],
+                                depth_or_array_layers: 1,
+                            },
+                            mip_level_count: 1,
+                            sample_count: 1,
+                            dimension: wgpu::TextureDimension::D2,
+                            format: INTERMEDIATE,
+                            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                                | wgpu::TextureUsages::TEXTURE_BINDING,
+                            view_formats: &[],
+                        })
+                        .create_view(&Default::default())
+                })
+                .collect();
+            self.named = Some((size, views));
+            self.groups = None;
+        }
+        let chain = self
+            .plan
+            .iter()
+            .any(|p| matches!(p.writes, Writes::Chain(_)));
+        if chain && self.targets.as_ref().is_none_or(|t| t.0 != size) {
             let target = |label| {
                 device
                     .create_texture(&wgpu::TextureDescriptor {
@@ -624,62 +733,78 @@ impl NativePost {
                 .expect("history exists after a post stage has more than one pass")
         }
         .create_view(&Default::default());
+        let blank = self.history_blank.create_view(&Default::default());
         let groups = (0..self.passes.len())
             .map(|i| {
-                // Pass i reads what pass i - 1 wrote: target (i - 1) % 2, the world for the first.
-                let previous = match (&self.targets, i) {
-                    (Some((_, t)), 1..) => &t[(i - 1) % 2],
+                // The chain's picture so far: the world's before its first pass.
+                let previous = match (&self.targets, self.plan[i].reads) {
+                    (Some((_, t)), Some(slot)) => &t[slot],
                     _ => world.0,
                 };
+                let mut entries = vec![
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.frame.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(world.0),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(world.1),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(previous),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::Sampler(&self.linear),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::Sampler(&self.nearest),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: wgpu::BindingResource::TextureView(&self.shadow.0),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: wgpu::BindingResource::Sampler(&self.shadow.1),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 8,
+                        resource: wgpu::BindingResource::TextureView(&history),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 9,
+                        resource: wgpu::BindingResource::TextureView(&self.shadow.2),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 10,
+                        resource: wgpu::BindingResource::TextureView(&self.shadow.3),
+                    },
+                ];
+                // The pack's targets, a blank one in place of the one this pass writes.
+                if let Some((_, views)) = &self.named {
+                    entries.extend(views.iter().enumerate().map(|(j, view)| {
+                        let view = if self.plan[i].writes == Writes::Target(j) {
+                            &blank
+                        } else {
+                            view
+                        };
+                        wgpu::BindGroupEntry {
+                            binding: horizon_shader_api::stages::POST_TARGET_BINDING + j as u32,
+                            resource: wgpu::BindingResource::TextureView(view),
+                        }
+                    }));
+                }
                 device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("Native shader pack post"),
                     layout: &self.layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: self.frame.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::TextureView(world.0),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: wgpu::BindingResource::TextureView(world.1),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 3,
-                            resource: wgpu::BindingResource::TextureView(previous),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 4,
-                            resource: wgpu::BindingResource::Sampler(&self.linear),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 5,
-                            resource: wgpu::BindingResource::Sampler(&self.nearest),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 6,
-                            resource: wgpu::BindingResource::TextureView(&self.shadow.0),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 7,
-                            resource: wgpu::BindingResource::Sampler(&self.shadow.1),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 8,
-                            resource: wgpu::BindingResource::TextureView(&history),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 9,
-                            resource: wgpu::BindingResource::TextureView(&self.shadow.2),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 10,
-                            resource: wgpu::BindingResource::TextureView(&self.shadow.3),
-                        },
-                    ],
+                    entries: &entries,
                 })
             })
             .collect();
@@ -706,8 +831,9 @@ impl NativePost {
             return;
         };
         for (i, ((label, pipeline), group)) in self.passes.iter().zip(groups).enumerate() {
-            let view = match &self.targets {
-                Some((_, t)) if i + 1 < self.passes.len() => &t[i % 2],
+            let view = match (self.plan[i].writes, &self.targets, &self.named) {
+                (Writes::Chain(slot), Some((_, t)), _) => &t[slot],
+                (Writes::Target(j), _, Some((_, n))) => &n[j],
                 _ => screen,
             };
             let attachments = [Some(wgpu::RenderPassColorAttachment {
@@ -729,14 +855,17 @@ impl NativePost {
             pass.set_bind_group(GROUP, group, &[]);
             pass.draw(0..3, 0..1);
         }
-        // The last pass's input becomes next frame's `history`, once that pass has read this
-        // frame's.
-        let count = self.passes.len();
-        if count > 1
+        // The chain's last picture becomes next frame's `history`, once every pass has read
+        // this frame's.
+        let before_last = &self.plan[..self.plan.len() - 1];
+        if let Some(Writes::Chain(slot)) = before_last
+            .iter()
+            .rfind(|p| matches!(p.writes, Writes::Chain(_)))
+            .map(|p| p.writes)
             && let (Some(history), Some((_, targets))) = (&self.history, &self.targets)
         {
             encoder.copy_texture_to_texture(
-                targets[(count - 2) % 2].texture().as_image_copy(),
+                targets[slot].texture().as_image_copy(),
                 history.as_image_copy(),
                 history.size(),
             );
@@ -874,6 +1003,20 @@ pub fn frame_inputs(
 #[cfg(test)]
 mod tests {
     #[test]
+    fn a_pass_with_an_output_leaves_the_chain_as_it_was() {
+        use super::{Writes, plan};
+        // Bloom into a target, a pass of the chain, a second target, the picture.
+        let p = plan(&[Some(0), None, Some(1), None, None]);
+        let writes: Vec<_> = p.iter().map(|p| p.writes).collect();
+        assert!(writes[0] == Writes::Target(0));
+        assert!(writes[1] == Writes::Chain(0));
+        assert!(writes[2] == Writes::Target(1));
+        assert!(writes[3] == Writes::Chain(1));
+        assert!(writes[4] == Writes::Screen);
+        let reads: Vec<_> = p.iter().map(|p| p.reads).collect();
+        assert_eq!(reads, [None, None, Some(0), Some(0), Some(1)]);
+    }
+    #[test]
     fn eased_values_start_at_the_target_and_halve_the_distance() {
         use super::eased;
         assert_eq!(eased(f32::NAN, 0.25, 2.0, 0.0), 0.25);
@@ -943,6 +1086,7 @@ mod tests {
         let mut post = NativePost::new(
             &device,
             report.stages,
+            &report.manifest,
             &[("gain".into(), 1.0)],
             format,
             &frame,
@@ -1054,7 +1198,15 @@ file = \"b.wgsl\"
         let report = check(&Pack::from_files(files).unwrap()).unwrap();
         let format = wgpu::TextureFormat::Rgba8Unorm;
         let frame = NativeFrame::new(&device, None);
-        let mut post = NativePost::new(&device, report.stages, &[], format, &frame).unwrap();
+        let mut post = NativePost::new(
+            &device,
+            report.stages,
+            &report.manifest,
+            &[],
+            format,
+            &frame,
+        )
+        .unwrap();
         let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
         let color = texture(&device, format, usage).create_view(&Default::default());
         let depth = texture(&device, wgpu::TextureFormat::Depth32Float, usage)
