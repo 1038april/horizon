@@ -63,7 +63,7 @@ fn item_components_patch_the_template_entry() {
     );
     for typo in [r#"{"minecraft:fod": {}}"#, r#"{"!minecraft:fod": {}}"#] {
         let e = patch_components(&mut entry, &patch(typo), &known).unwrap_err();
-        assert_eq!(e, "minecraft:fod is no component a vanilla item has");
+        assert_eq!(e, "minecraft:fod is not a known component type");
     }
 }
 
@@ -87,6 +87,7 @@ fn creative_tabs_keep_vanilla_items_missing_from_search() {
         items: Vec::new(),
         vanilla_items: tab.items.iter().cloned().collect(),
         effects: Vec::new(),
+        entity_types: Vec::new(),
         states: 0,
         defaults: BTreeMap::new(),
         sounds: BTreeMap::new(),
@@ -170,7 +171,7 @@ fn block_items_patch_their_template_item() {
         .unwrap_err();
     assert_eq!(
         e.to_string(),
-        "ruby:ruby_block: minecraft:fod is no component a vanilla item has"
+        "ruby:ruby_block: minecraft:fod is not a known component type"
     );
     fs::remove_dir_all(scratch).unwrap();
 }
@@ -1112,6 +1113,189 @@ fn content_root_carries_a_structure_mod() {
     let _ = fs::remove_dir_all(&scratch);
 }
 
+/// `FlatLevelSource.createState`: a superflat world runs the structure sets its
+/// `structure_overrides` allow (the classic flat world: strongholds and villages) on its
+/// flat ground, and no other set, with the layers where the terrain would be.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn a_superflat_world_runs_its_structure_sets_on_flat_ground() {
+    use crate::streaming::ChunkGenerator;
+    let Some(base) = prepared() else {
+        return;
+    };
+    let assets = Assets::load(&base).unwrap();
+    let biomes = crate::biome::Biomes::load(&base).unwrap();
+    let flat = horizon_world::worldgen::generator::FlatSettings {
+        layers: vec![
+            ("minecraft:bedrock".into(), 1),
+            ("minecraft:dirt".into(), 2),
+            ("minecraft:grass_block".into(), 1),
+        ],
+        biome: "minecraft:plains".into(),
+        structure_overrides: Some(vec![
+            "minecraft:strongholds".into(),
+            "minecraft:villages".into(),
+        ]),
+    };
+    let terrain = crate::vanillagen::VanillaTerrain::for_flat(
+        &base.join("worldgen"),
+        &Default::default(),
+        assets.registry,
+        &biomes,
+        1234,
+        &flat,
+        true,
+    )
+    .unwrap();
+    // A village and a stronghold are found; a mineshaft is not in the overrides.
+    let village = terrain.locate(&["minecraft:village_plains".to_owned()], [0, 64, 0], 12);
+    assert!(village.is_some(), "no plains village near the origin");
+    assert!(
+        terrain
+            .locate(&["minecraft:stronghold".to_owned()], [0, 64, 0], 12)
+            .is_some()
+    );
+    assert!(
+        terrain
+            .locate(&["minecraft:mineshaft".to_owned()], [0, 64, 0], 12)
+            .is_none()
+    );
+    // The layers: bedrock, two dirt and grass from the level's minimum Y, air above.
+    let mut worker = terrain.worker();
+    let chunk = terrain.finish(terrain.proto(&mut worker, 3, 3));
+    let name = |y| {
+        let id = chunk.block(3 * 16 + 5, y, 3 * 16 + 7);
+        assets.registry.state(id).unwrap().name.clone()
+    };
+    assert_eq!(
+        [-65, -64, -63, -62, -61, -60].map(name),
+        [
+            "minecraft:air",
+            "minecraft:bedrock",
+            "minecraft:dirt",
+            "minecraft:dirt",
+            "minecraft:grass_block",
+            "minecraft:air"
+        ]
+        .map(String::from)
+    );
+}
+
+/// `createForFlat` searches the stronghold rings with seed 0, so a superflat world's
+/// strongholds are in the same place on every seed; a layer that is not opaque to
+/// `MOTION_BLOCKING` is `null`, left out of `buildTerrain` for the fill after the structures.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn a_superflat_world_keeps_its_strongholds_on_every_seed_and_leaves_null_layers_for_the_fill() {
+    use crate::streaming::ChunkGenerator;
+    let Some(base) = prepared() else {
+        return;
+    };
+    let assets = Assets::load(&base).unwrap();
+    let biomes = crate::biome::Biomes::load(&base).unwrap();
+    let flat = horizon_world::worldgen::generator::FlatSettings {
+        layers: vec![
+            ("minecraft:bedrock".into(), 1),
+            ("minecraft:dirt".into(), 2),
+            ("minecraft:snow".into(), 1),
+        ],
+        biome: "minecraft:plains".into(),
+        structure_overrides: Some(vec!["minecraft:strongholds".into()]),
+    };
+    let make = |seed| {
+        crate::vanillagen::VanillaTerrain::for_flat(
+            &base.join("worldgen"),
+            &Default::default(),
+            assets.registry,
+            &biomes,
+            seed,
+            &flat,
+            true,
+        )
+        .unwrap()
+    };
+    let stronghold = |seed| {
+        make(seed)
+            .locate(&["minecraft:stronghold".to_owned()], [0, 64, 0], 100)
+            .expect("a stronghold")
+    };
+    assert_eq!(stronghold(1234), stronghold(-987654321));
+    // `moveBelowSeaLevel(-63, ChunkGenerator.getMinY() = 0, ..)`: the sea level less 10 is far
+    // below the room's height above 0, so the stronghold's top lands at `ySpan + 1` above Y 0
+    // (with the level's -64 it would sit 64 blocks lower). The start's box is inflated by 12
+    // for the terrain adaptation: the pieces span Y 2 to 36, the box -10 to 48.
+    let (_, at) = stronghold(1234);
+    let starts = make(1234).starts_at(at[0] >> 4, at[2] >> 4);
+    let start = starts
+        .iter()
+        .find(|s| s.name == "minecraft:stronghold")
+        .expect("the stronghold start");
+    assert!(
+        start.bounding_box.min[1] >= -12,
+        "the stronghold sits below the generator's Y 0: {:?}",
+        start.bounding_box
+    );
+    let terrain = make(1234);
+    let mut worker = terrain.worker();
+    let chunk = terrain.finish(terrain.proto(&mut worker, 3, 3));
+    let name = |y| {
+        let id = chunk.block(3 * 16 + 5, y, 3 * 16 + 7);
+        assets.registry.state(id).unwrap().name.clone()
+    };
+    // The snow layer (index 3, y -61) is filled later, not by the terrain.
+    assert_eq!(
+        [-64, -63, -62, -61].map(name),
+        [
+            "minecraft:bedrock",
+            "minecraft:dirt",
+            "minecraft:dirt",
+            "minecraft:air"
+        ]
+        .map(String::from)
+    );
+}
+
+/// `structure_overrides` is a lenient field: a list naming a structure set that does not exist
+/// fails to decode and counts as absent, so every set generates.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn a_superflat_structure_override_naming_no_set_lets_every_set_generate() {
+    let Some(base) = prepared() else {
+        return;
+    };
+    let assets = Assets::load(&base).unwrap();
+    let biomes = crate::biome::Biomes::load(&base).unwrap();
+    let flat = horizon_world::worldgen::generator::FlatSettings {
+        layers: vec![
+            ("minecraft:bedrock".into(), 1),
+            ("minecraft:dirt".into(), 2),
+            ("minecraft:grass_block".into(), 1),
+        ],
+        biome: "minecraft:plains".into(),
+        structure_overrides: Some(vec!["minecraft:village".into()]),
+    };
+    let terrain = crate::vanillagen::VanillaTerrain::for_flat(
+        &base.join("worldgen"),
+        &Default::default(),
+        assets.registry,
+        &biomes,
+        1234,
+        &flat,
+        true,
+    )
+    .unwrap();
+    assert!(
+        terrain
+            .locate(&["minecraft:stronghold".to_owned()], [0, 64, 0], 12)
+            .is_some()
+    );
+    assert!(
+        terrain
+            .locate(&["minecraft:village_plains".to_owned()], [0, 64, 0], 12)
+            .is_some()
+    );
+}
+
 /// A mod's mob effect gets the network id after vanilla's last, on the game
 /// and its server alike, and joins the ids `/effect` and its suggestions
 /// check.
@@ -1184,6 +1368,57 @@ fn content_root_with_only_an_item_checks_its_identity() {
         crate::content_identity::identity(&root).unwrap(),
         crate::content_identity::identity(&base).unwrap()
     );
+    fs::remove_dir_all(&scratch).unwrap();
+}
+
+/// a mod's thrown entity type gets the network id after vanilla's last, the
+/// commands accept it, and it changes the content identity.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn content_root_registers_a_mod_entity_type() {
+    let Some(base) = prepared() else {
+        return;
+    };
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-entity-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let m = folder_mod(
+        &scratch.join("example"),
+        &[
+            ("horizon-mod.toml", &manifest("example", "")),
+            (
+                "data/example/horizon/item/gem.json",
+                r#"{"template": "minecraft:snowball"}"#,
+            ),
+            (
+                "data/example/horizon/entity_type/bolt.json",
+                r#"{"template": "minecraft:snowball", "item": "example:gem", "damage": 2}"#,
+            ),
+        ],
+    );
+    let root = resource_root(&base, std::slice::from_ref(&m), &scratch.join("cache")).unwrap();
+    let report = |root: &Path| {
+        horizon_protocol::registry::Builtin::load(&root.join("registries.json")).unwrap()
+    };
+    let (vanilla, ids) = (report(&base), report(&root));
+    let vanilla = vanilla.get("minecraft:entity_type").unwrap();
+    let ids = ids.get("minecraft:entity_type").unwrap();
+    let count = (0..).take_while(|&i| vanilla.name(i).is_some()).count() as i32;
+    assert_eq!(ids.id("example:bolt"), Some(count));
+    assert_eq!(
+        ids.id("minecraft:snowball"),
+        vanilla.id("minecraft:snowball")
+    );
+    let commands: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("command-registries.json")).unwrap()).unwrap();
+    for ids in [
+        &commands["entity_types"],
+        &commands["by_registry"]["minecraft:entity_type"]["ids"],
+    ] {
+        assert!(ids.as_array().unwrap().contains(&"example:bolt".into()));
+    }
+    assert!(root.join(crate::content_identity::MARKER).exists());
+    let identity = crate::content_identity::identity;
+    assert_ne!(identity(&root).unwrap(), identity(&base).unwrap());
     fs::remove_dir_all(&scratch).unwrap();
 }
 
@@ -1697,6 +1932,151 @@ fn shapes_reject_unknown_or_missing_template_values() {
         assert!(e.contains("shapetest:rod"), "{e}");
     }
     fs::remove_dir_all(scratch).unwrap();
+}
+
+/// A connecting block (template `minecraft:chorus_plant`, `connects_to` a
+/// tag) joins itself and its tag's blocks on each side, needs no support, and
+/// leaves vanilla's chorus plant as it was.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn connecting_blocks_join_themselves_and_their_tag() {
+    use horizon_core::position::BlockPos;
+    use horizon_core::random::LegacyRandom;
+    use horizon_world::level::{Behaviours, LevelAccess, Ticks};
+    use std::collections::HashMap;
+
+    let Some(_) = prepared() else {
+        return;
+    };
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-pipe-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let dir = scratch.join("cable");
+    for (name, text) in [
+        (
+            "horizon-mod.toml",
+            "id = \"cable\"\nname = \"Cable\"\nversion = \"0.1.0\"\napi = \"0.2\"\nside = \"both\"\ncapabilities = [\"registries\"]\n",
+        ),
+        (
+            "data/cable/horizon/block/tin_cable.json",
+            r##"{"template": "minecraft:chorus_plant", "connects_to": "#cable:joins", "thickness": 4}"##,
+        ),
+        (
+            "data/cable/horizon/block/machine.json",
+            r#"{"template": "minecraft:iron_block"}"#,
+        ),
+        (
+            "data/cable/tags/block/joins.json",
+            r#"{"values": ["cable:machine"]}"#,
+        ),
+    ] {
+        let path = dir.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+    let package = horizon_mods::Package::read(&dir).unwrap();
+    let m = ContentMod {
+        id: "cable".into(),
+        content: Content::read(&dir, &package.manifest).unwrap(),
+    };
+    let relative = Path::new("../../.local/horizon-client/26.3");
+    let root = resource_root(relative, std::slice::from_ref(&m), &scratch.join("cache")).unwrap();
+    let assets = Assets::load(&root).unwrap();
+    let registry = assets.registry;
+    let b = Behaviours::load(registry, &root).unwrap();
+
+    struct Level {
+        blocks: HashMap<BlockPos, BlockStateId>,
+        air: BlockStateId,
+        random: LegacyRandom,
+    }
+    impl LevelAccess for Level {
+        fn block_state(&self, pos: BlockPos) -> BlockStateId {
+            self.blocks.get(&pos).copied().unwrap_or(self.air)
+        }
+        fn set_raw(&mut self, pos: BlockPos, state: BlockStateId) -> Option<BlockStateId> {
+            Some(self.blocks.insert(pos, state).unwrap_or(self.air))
+        }
+        fn is_loaded(&self, _pos: BlockPos) -> bool {
+            true
+        }
+        fn random(&mut self) -> &mut LegacyRandom {
+            &mut self.random
+        }
+        fn game_time(&self) -> i64 {
+            0
+        }
+    }
+    let air = registry.default_state("minecraft:air").unwrap();
+    let mut level = Level {
+        blocks: HashMap::new(),
+        air,
+        random: LegacyRandom::new(1),
+    };
+    let mut ticks = Ticks::new(0);
+    ticks
+        .add_empty_chunk(horizon_core::position::ChunkPos::new(0, 0))
+        .unwrap();
+    let sides = |state: BlockStateId| {
+        let s = registry.state(state).unwrap();
+        ["down", "up", "north", "south", "west", "east"]
+            .into_iter()
+            .filter(|k| s.properties.get(*k).map(String::as_str) == Some("true"))
+            .collect::<Vec<_>>()
+    };
+    let at = |x, y, z| BlockPos::new(x, y, z);
+    let machine = registry.default_state("cable:machine").unwrap();
+    let cable = registry.default_state("cable:tin_cable").unwrap();
+    // A cable beside a machine (in its tag) and a stone joins the machine only,
+    // and floats: no chorus plant support.
+    b.set_block(&mut level, &mut ticks, at(1, 64, 0), machine, 3);
+    b.set_block(
+        &mut level,
+        &mut ticks,
+        at(-1, 64, 0),
+        registry.default_state("minecraft:stone").unwrap(),
+        3,
+    );
+    let placed = b.update_from_neighbour_shapes(&mut level, &mut ticks, at(0, 64, 0), cable);
+    b.set_block(&mut level, &mut ticks, at(0, 64, 0), placed, 3);
+    assert_eq!(sides(level.block_state(at(0, 64, 0))), ["east"]);
+    assert!(b.can_survive(&mut level, &mut ticks, at(0, 64, 0), placed));
+    // A second cable above: both join, through the neighbour's shape update.
+    let above = b.update_from_neighbour_shapes(&mut level, &mut ticks, at(0, 65, 0), cable);
+    b.set_block(&mut level, &mut ticks, at(0, 65, 0), above, 3);
+    assert_eq!(sides(level.block_state(at(0, 65, 0))), ["down"]);
+    assert_eq!(sides(level.block_state(at(0, 64, 0))), ["up", "east"]);
+    // The machine gone: the arm goes too.
+    b.set_block(&mut level, &mut ticks, at(1, 64, 0), air, 3);
+    assert_eq!(sides(level.block_state(at(0, 64, 0))), ["up"]);
+    // Its shapes are 4 pixels across: the outline and the cached collision.
+    let joined = level.block_state(at(0, 64, 0));
+    let thin = horizon_world::collision::pipe_shape(4.0, [false, true, false, false, false, false])
+        .unwrap();
+    let facts = BlockFacts::load(&root, registry).unwrap();
+    let outline = &facts.get(joined).outline;
+    assert_eq!(outline.len(), thin.boxes().len());
+    let file =
+        horizon_world::registry::BlockTableFile::open(&root.join("cached-collision.nbt"), registry)
+            .unwrap();
+    let cached = horizon_world::collision::CachedCollisionRegistry::from_table(
+        file.table("collision").unwrap(),
+    )
+    .unwrap();
+    assert!(cached.has_canonical_identities());
+    let shape = cached.cached_shape(joined).unwrap().unwrap();
+    assert_eq!(shape.boxes(), thin.boxes());
+    assert_eq!(
+        shape
+            .bounds()
+            .map(|b| b.min(horizon_core::geometry::Axis::X)),
+        Some(0.375)
+    );
+    // Vanilla's chorus plant keeps its own rules: it doesn't join the machine.
+    b.set_block(&mut level, &mut ticks, at(5, 64, 0), machine, 3);
+    let chorus = registry.default_state("minecraft:chorus_plant").unwrap();
+    let chorus = b.update_from_neighbour_shapes(&mut level, &mut ticks, at(4, 64, 0), chorus);
+    assert!(sides(chorus).is_empty());
+    fs::remove_dir_all(&scratch).unwrap();
 }
 
 /// An old chunk's saved jigsaw start comes back with its pieces (`StructureStart.loadStaticStart`):
@@ -2323,6 +2703,64 @@ fn a_declared_property_defaults_on_a_template_with_none() {
     );
     fs::remove_dir_all(&base).unwrap();
     fs::remove_dir_all(base.parent().unwrap().join("mod0")).ok();
+}
+
+#[test]
+fn named_definitions_follow_the_block_state_fanout() {
+    let declaration = r#"{"template":"minecraft:test","item":false,
+      "state_properties":{"lit":{"type":"boolean"}},
+      "default_state":{"lit":"true"}}"#;
+    let (base, mods) = block_base("named-state-fanout", &[declaration]);
+    let plan = Plan::new(&base, &mods).unwrap();
+    let mut models: J = serde_json::from_str(
+        r#"{"minecraft:test":{
+        "schema":{"axis":{"named":["x","y"]}},
+        "states":[{"axis":"x"},{"axis":"y"}]}}"#,
+    )
+    .unwrap();
+    plan.json("model-states.json", &mut models).unwrap();
+    let added = models.get("testmod:test").unwrap();
+    let expected: J = serde_json::from_str(
+        r#"{"axis":{"named":["x","y"]},
+        "lit":{"named":["false","true"]}}"#,
+    )
+    .unwrap();
+    assert_eq!(added.get("schema"), Some(&expected));
+    let expected: J = serde_json::from_str(
+        r#"[
+        {"axis":"x","lit":"true"},{"axis":"x","lit":"false"},
+        {"axis":"y","lit":"true"},{"axis":"y","lit":"false"}]"#,
+    )
+    .unwrap();
+    assert_eq!(added.get("states"), Some(&expected));
+
+    let mut render: J = serde_json::from_str(
+        r#"{"minecraft:test":{
+        "default":0,"can_occlude":true,"bars_tag":false,"rule":"never",
+        "states":[0,1]}}"#,
+    )
+    .unwrap();
+    plan.json("render-definitions.json", &mut render).unwrap();
+    let added = render.get("testmod:test").unwrap();
+    let expected: J = serde_json::from_str("[2,3,4,5]").unwrap();
+    assert_eq!(added.get("states"), Some(&expected));
+    assert_eq!(added.get("default"), Some(&J::Num(2.into())));
+
+    for (file, json) in [
+        (
+            "landing-definitions.json",
+            r#"{"minecraft:test":{"fall":"Block","bounce":false}}"#,
+        ),
+        (
+            "worldgen/blocks/survival-rules.json",
+            r#"{"minecraft:test":"Always"}"#,
+        ),
+    ] {
+        let mut doc: J = serde_json::from_str(json).unwrap();
+        plan.json(file, &mut doc).unwrap();
+        assert_eq!(doc.get("testmod:test"), doc.get("minecraft:test"), "{file}");
+    }
+    fs::remove_dir_all(base.parent().unwrap()).unwrap();
 }
 
 /// An NBT state row for the two-state `minecraft:test` template, the shape

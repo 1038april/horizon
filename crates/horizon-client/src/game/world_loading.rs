@@ -624,7 +624,58 @@ pub(super) fn make_streaming(
                 shape,
             )
         });
-    let mut streaming = if let Some(inner) = flat {
+    // `FlatLevelSource.createState`: a superflat world whose settings let structure sets
+    // generate runs them on its flat ground.
+    let flat_structures = (dim == Dim::Overworld)
+        .then(|| horizon_client::save::world_gen_settings(world_root))
+        .flatten()
+        .and_then(|s| horizon_client::flatgen::FlatTerrain::structure_settings(&s))
+        .filter(|_| horizon_client::save::WorldGen::read(world_root).is_none_or(|w| w.structures));
+    // A generator that cannot be built (a layer block the registry lacks, a level shorter
+    // than the noise) leaves the world on its flat ground, as it was before.
+    let flat_vanilla = flat_structures.and_then(|settings| {
+        let overrides =
+            world_worldgen_overrides(world_root, &options.resources, &biomes, enabled_features);
+        match VanillaTerrain::for_flat(
+            &options.resources.join("worldgen"),
+            &overrides,
+            pack.assets.registry,
+            &biomes,
+            seed,
+            &settings,
+            true,
+        ) {
+            Ok(terrain) => Some(Arc::new(terrain)),
+            Err(e) => {
+                log::warn!("Horizon: the superflat structures are unavailable: {e}");
+                None
+            }
+        }
+    });
+    let mut streaming = if let Some(inner) = flat_vanilla {
+        inner.search_rings_behind();
+        inner.set_reference_file(world_root.join("data").join(format!(
+            "horizon_structure_references_{}.json",
+            dim.id().replace(':', "_")
+        )));
+        {
+            let save = save.clone();
+            inner.set_saved_references(Arc::new(move |name, x, z| {
+                save.start_references(x, z, name)
+            }));
+        }
+        locator = Some(inner.clone());
+        Streaming::new(
+            Arc::new(Persistent {
+                inner,
+                save: save.clone(),
+                registry: pack.assets.clone(),
+                biomes: biomes.clone(),
+            }),
+            pack.context.clone(),
+            res.threads(),
+        )
+    } else if let Some(inner) = flat {
         Streaming::new(
             Arc::new(Persistent {
                 inner: Arc::new(inner),
