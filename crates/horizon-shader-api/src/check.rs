@@ -91,6 +91,8 @@ impl CheckedStage {
 #[derive(Debug)]
 pub struct Report {
     pub stages: Vec<CheckedStage>,
+    /// The manifest's `[sky]`.
+    pub sky: Option<crate::manifest::Stage>,
     /// The manifest's `[reflection]`.
     pub reflection: Option<crate::manifest::Reflection>,
     /// The manifest's `[shadow]`.
@@ -142,6 +144,7 @@ pub fn check(pack: &Pack) -> Result<Report, Vec<Problem>> {
     }
     if problems.is_empty() {
         Ok(Report {
+            sky: pack.manifest.sky.clone(),
             stages: checked,
             reflection: m.reflection.clone(),
             shadow: m.shadow.clone(),
