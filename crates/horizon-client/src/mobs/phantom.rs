@@ -401,7 +401,7 @@ mod tests {
             }
             let pane = registry.default_state("minecraft:glass_pane").unwrap();
             for y in 64..wall_top {
-                world.set(2, y, 2, pane.clone()).unwrap();
+                world.set(2, y, 2, pane).unwrap();
             }
         }
     }
