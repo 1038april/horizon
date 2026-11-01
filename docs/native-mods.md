@@ -27,7 +27,8 @@ the commit of the installed version the build starts from.
 ### Mods on the hook points
 
 A mod that hooks only Horizon's native hook points (`crates/horizon-client/src/game/native_hooks.rs`: empty
-functions the game calls at fixed places, plus helpers, kept stable across releases) can name the version it
+functions the game calls at fixed places, plus helpers, kept stable across releases; a few are free functions of a lib
+crate, such as the renderer's and `horizon_world::loot::native_loot_table_load`) can name the version it
 needs instead of pinning: `"hooks": 1` in its `.hnmod`'s `horizon-native.json`, the `NATIVE_HOOKS_API` of that
 file when it was made. Hook points are only ever added: each addition raises `NATIVE_HOOKS_API`, and a mod builds
 on any Horizon whose version is the one it needs or a later one. Its `horizon` is then only the commit it was tested on. The launcher builds it on the commit the other mods
@@ -329,7 +330,7 @@ of the source it applies to, so a hook point can move in the source without brea
 the catalog lacks is `E_HOOK_UNKNOWN` (the error lists the names it has), a version it lacks `E_HOOK_VERSION`. A
 contract is never changed: an incompatible change adds a version. Helpers (`native_text`, `native_player`…) are not
 in the catalog; they are kept stable as the hook points are. A test (`catalog_matches_hook_points`) keeps the
-catalog and `native_hooks.rs` in step.
+catalog and the hook points' sources (`native_hooks.rs`, `gfx/native_render.rs`, `horizon-world`'s `loot.rs`) in step.
 
 ### The mod's crate
 
@@ -874,6 +875,25 @@ place; `native_server_tick` does not define one, so name the dimension and expec
   and no loot (it is not saved either).
 - While the game ticks its mobs they are out of the level: from a hook inside that tick, a spawned mob joins after the tick, and the others
   read as gone.
+
+### Loot tables
+
+Changing loot a mod didn't make, as NeoForge's `LootTableLoadEvent` and global loot modifiers and Fabric's
+`LootTableEvents.MODIFY` and `MODIFY_DROPS` do. A mod's own loot function and condition kinds are #5451.
+
+- **`horizon_world::loot::native_loot_table_load(id, table)`**: each table's JSON as it loads, after the data packs'. Push a pool
+  onto `table["pools"]` or an entry onto a pool's `entries`; chests, block and mob drops, fishing and the rest then roll the
+  changed table. Keep a replaced table's `random_sequence`: a mob's table without one drops nothing. It runs wherever tables load,
+  a client too, so make the same change each time; a `/reload` may keep the tables already loaded. It is a free function in
+  `crates/horizon-world/src/loot.rs`, so a helper injected there compiles inside `horizon-world`, without `crate::game`.
+- **`native_loot_drops(context, drops)`**: the items a broken block or a dead mob is about to drop, after its tables rolled (a
+  mob's worn, held and carried items and inventory too, not an enderman's carried block or a copper golem's preserved equipment).
+  Add, change or take out stacks; empty ones don't drop. `NativeLootDrops` says what dropped them: its own loot table (empty when
+  none rolled), the dimension, the origin, the block's position and state or the mob's id and type, the player who broke or killed
+  it (a mob names one only while it remembers the player's hit, 100 ticks), the tool and an explosion's radius. It hears blocks
+  that a player, an explosion or a mob breaks, not other breaks (leaves decaying, a torch losing its wall, a piston,
+  `/setblock ... destroy`), nor a creative break or a tool that can't harvest the block. A block's stacks get its block entity's data (a
+  shulker box's items) after the hook, and a container's contents spill on their own, not through it.
 
 ### A block's items
 
