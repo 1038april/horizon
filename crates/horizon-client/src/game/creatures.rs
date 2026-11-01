@@ -1482,7 +1482,7 @@ impl Game<'_> {
                     }
                 }
                 drops::Drop::Orb(value) if !consumed => self.spawn_orbs(pos, value as u32),
-                _ => {}
+                drops::Drop::Item(_) | drops::Drop::Orb(_) => {}
             }
         }
     }

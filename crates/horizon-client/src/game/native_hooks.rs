@@ -479,8 +479,9 @@ impl GameLevel<'_> {
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct NativeLootDrops<'a> {
-    /// The loot table rolled (`minecraft:blocks/stone`, `minecraft:entities/zombie`); empty when
-    /// none rolled: the block or mob has none, the `mob_drops` rule is off, a baby animal.
+    /// The block's or mob's own loot table (`minecraft:blocks/stone`, `minecraft:entities/zombie`);
+    /// empty when none rolled: the block or mob has none, the `mob_drops` rule is off, a baby
+    /// animal. A mob's drops may hold more: a charged creeper's head, a fox's mouth item.
     pub(crate) table: &'a str,
     /// The level they drop in (`minecraft:overworld`).
     pub(crate) dimension: &'a str,
@@ -1410,10 +1411,10 @@ impl Game<'_> {
         let _ = (player, entity, kind);
     }
     /// A block broke or a mob died, and `drops` are the items about to drop,
-    /// in order: what its loot table rolled (after `native_loot_table_load`'s
-    /// changes), and for a mob what it wore and held (not an enderman's
-    /// carried block or a copper golem's preserved equipment, which drop
-    /// after). A block's stacks get its block entity's data (a shulker box's
+    /// in the order they drop: what the loot tables rolled (after
+    /// `native_loot_table_load`'s changes), and for a mob what it wore, held
+    /// or carried in its mouth (not an enderman's carried block or a copper
+    /// golem's preserved equipment, which drop after). A block's stacks get its block entity's data (a shulker box's
     /// items) after this. Add, change or take out stacks; empty ones don't
     /// drop (NeoForge's global loot modifiers, Fabric's
     /// `LootTableEvents.MODIFY_DROPS`); `context` says what dropped them and
