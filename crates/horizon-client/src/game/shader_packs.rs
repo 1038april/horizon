@@ -210,7 +210,7 @@ impl Game<'_> {
                             old_hand_light: properties
                                 .get("oldHandLight")
                                 .is_none_or(|v| v.trim() != "false"),
-                            // On unless the pack turns it off, as Iris has it.
+                            // On unless the pack turns it off (`vignette=false`).
                             vignette: properties
                                 .get("vignette")
                                 .is_none_or(|v| v.trim() != "false"),
