@@ -285,3 +285,14 @@ fn refuses_files_a_pack_does_not_use() {
             .contains("missing at the pack's root")
     );
 }
+
+#[test]
+fn a_weather_stage_is_a_stage_of_its_own() {
+    let m = Manifest::parse(
+        "schema = 1\nid = \"a\"\nname = \"A\"\nversion = \"1\"\napi = \"0.1\"\n\
+         [weather]\nfile = \"w.wgsl\"\n",
+    )
+    .unwrap();
+    assert_eq!(m.weather.as_ref().unwrap().file, "w.wgsl");
+    assert_eq!(m.files(), ["w.wgsl"]);
+}

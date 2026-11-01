@@ -115,6 +115,9 @@ pub struct TerrainShape<'a> {
     /// The pack's tags of each tagged sprite layer, as `(layer, bits)`
     /// (`Manifest::sprite_tags`).
     pub sprite_tags: &'a [(u32, u32)],
+    /// The weather's groups 0 and 1 (the entities' atlas, the fall clock), for the weather
+    /// stage.
+    pub weather_groups: [&'a wgpu::BindGroupLayout; 2],
 }
 
 /// The pack's terrain pipelines: solid (with the cutout test) and translucent, for the

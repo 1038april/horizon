@@ -13,6 +13,7 @@ bindings and no entry points, and no names starting with `horizon_`.
 | --- | --- | --- |
 | sky | `[sky]` | `fn sky(input: SkyInput) -> vec4<f32>` |
 | material | `[material]` | `fn material(input: MaterialInput) -> Surface` |
+| weather | `[weather]` | `fn weather(input: WeatherInput) -> vec4<f32>` |
 | post | `[[post]]` | `fn post(input: PostInput) -> vec4<f32>` |
 
 ## sky
@@ -76,6 +77,27 @@ Resources (bind group 3):
 | 2 | `var reflection_sampler: sampler` | Bilinear filtering, clamped to the edges. |
 | 6 | `var opaque_depth: texture_depth_2d` | The world's depth before translucent terrain (reversed, like `scene_depth`), for the translucent pass: `textureLoad(opaque_depth, vec2<i32>(input.screen * frame.resolution), 0)` is what lies behind water or glass. Stale while solid terrain draws. |
 | 11 | `var opaque_color: texture_2d<f32>` | The world's picture before translucent terrain (sky, solid terrain, entities), the size of `opaque_depth`, for the translucent pass: what a surface refracts. Read it with `textureLoad`. Stale while solid terrain draws; black when the world draws straight to the window (a pack without `[[post]]` passes, at full resolution). |
+
+## weather
+
+`fn weather(input: WeatherInput) -> vec4<f32>`
+
+### `WeatherInput`
+
+One point of a rain or snow streak, for `fn weather(input: WeatherInput) -> vec4<f32>`, which returns the colour blended over the world (alpha its opacity).
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `color` | `vec4<f32>` | The rain or snow texture's colour here times the streak's vertex colour (alpha 0.1..1). |
+| `light` | `vec2<f32>` | Block and sky light, 0..1. |
+| `position` | `vec3<f32>` | The point, camera-relative, in blocks. |
+| `snow` | `bool` | A snow streak (rain otherwise). |
+
+Resources (bind group 3):
+
+| Binding | Declaration | Meaning |
+| --- | --- | --- |
+| 0 | `var<uniform> frame: Frame` | The frame (`Frame`). |
 
 ## post
 

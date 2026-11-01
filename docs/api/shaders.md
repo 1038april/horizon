@@ -55,6 +55,9 @@ file = "sky.wgsl"
 [material]
 file = "material.wgsl"
 
+[weather]                  # the colour of rain and snow streaks
+file = "weather.wgsl"
+
 [[post]]                   # full-screen passes, in the order they run (8 at most)
 file = "post/grade.wgsl"
 name = "Colour grade"      # optional: the GPU time overlay's label
@@ -103,6 +106,8 @@ stages.
 
 ## Changelog
 
+- 2026-11-01: API 0.1 (additions): the `[weather]` stage
+  (`fn weather(input: WeatherInput) -> vec4<f32>`) colours rain and snow streaks.
 - 2026-10-30: API 0.1 (additions): the manifest's `[reflection] option`, which draws the water
   mirror only while that option is on, and the mirror's own eye in facing culling.
 - 2026-10-30: API 0.1 (additions): the material stage's `reflection` and

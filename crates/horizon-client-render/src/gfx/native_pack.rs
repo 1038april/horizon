@@ -13,6 +13,7 @@ pub struct NativePack {
     pub sky: Option<NativeSky>,
     pub material: Option<NativeMaterial>,
     pub post: Option<NativePost>,
+    pub weather: Option<wgpu::RenderPipeline>,
     /// GPU time of each pass, while the renderer asks for it (`pack_timing.rs`).
     pub timing: Option<PassTiming>,
 }
@@ -43,6 +44,27 @@ impl NativePack {
                     .find(|(k, _)| k == id)
                     .is_none_or(|(_, v)| *v != 0.0)
             });
+        let weather = report
+            .stages
+            .iter()
+            .find(|s| s.kind == StageKind::Weather)
+            .map(|stage| {
+                super::weather::native_pipeline(
+                    device,
+                    format,
+                    terrain.weather_groups[0],
+                    terrain.weather_groups[1],
+                    &frame,
+                    stage,
+                    constants,
+                )
+            })
+            .transpose()?;
+        let weather_label = report
+            .stages
+            .iter()
+            .find(|s| s.kind == StageKind::Weather)
+            .map(|s| s.label.clone());
         let (post, others): (Vec<_>, Vec<_>) = report
             .stages
             .into_iter()
@@ -67,6 +89,7 @@ impl NativePack {
                 .filter(|s| material.is_some() && s.kind == StageKind::Material)
                 .map(|s| s.label.clone()),
         );
+        labels.extend(weather_label);
         if let Some(post) = &post {
             labels.extend(post.labels().into_iter().map(str::to_owned));
         }
@@ -75,6 +98,7 @@ impl NativePack {
             sky,
             material,
             post,
+            weather,
             timing: None,
         };
         Ok((pack, labels))
@@ -82,6 +106,9 @@ impl NativePack {
 
     /// Whether the pack draws anything the game runs today.
     pub fn draws(&self) -> bool {
-        self.sky.is_some() || self.material.is_some() || self.post.is_some()
+        self.sky.is_some()
+            || self.material.is_some()
+            || self.weather.is_some()
+            || self.post.is_some()
     }
 }

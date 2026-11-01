@@ -2,7 +2,7 @@
 //! that Horizon calls inside its own passes, and the WGSL put around a
 //! pack's files to build a stage: the prelude before (the inputs and the
 //! resources), the entry points after.
-use crate::inputs::{Frame, MATERIAL_INPUT, POST_INPUT, SKY_INPUT, SURFACE, Struct};
+use crate::inputs::{Frame, MATERIAL_INPUT, POST_INPUT, SKY_INPUT, SURFACE, Struct, WEATHER_INPUT};
 use crate::package::Pack;
 
 /// The bind group of a pack's resources; groups 0 to 2 are the renderer's.
@@ -14,6 +14,8 @@ pub enum StageKind {
     Sky,
     /// The colour of block surfaces (terrain), before the alpha test and fog.
     Material,
+    /// The colour of rain and snow streaks.
+    Weather,
     /// A full-screen pass over the world's picture, under the hand and HUD.
     Post,
 }
@@ -215,14 +217,35 @@ struct HorizonSkyIn {
 }
 ";
 
-impl StageKind {
-    pub const ALL: [StageKind; 3] = [StageKind::Sky, StageKind::Material, StageKind::Post];
+/// An entry point with the weather stage's inputs: the renderer calls `weather` from its own
+/// weather shader in the same way.
+const WEATHER_ENTRIES: &str = "\
+struct HorizonWeatherIn {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color: vec4<f32>,
+    @location(1) light: vec2<f32>,
+    @location(2) world: vec3<f32>,
+    @location(3) @interpolate(flat) snow: u32,
+}
+@fragment fn horizon_fs_weather(in: HorizonWeatherIn) -> @location(0) vec4<f32> {
+    return weather(WeatherInput(in.color, in.light, in.world, in.snow != 0u));
+}
+";
 
-    /// The manifest's name for the stage (`[sky]`, `[material]`, `[[post]]`).
+impl StageKind {
+    pub const ALL: [StageKind; 4] = [
+        StageKind::Sky,
+        StageKind::Material,
+        StageKind::Weather,
+        StageKind::Post,
+    ];
+
+    /// The manifest's name for the stage (`[sky]`, `[material]`, `[weather]`, `[[post]]`).
     pub fn name(self) -> &'static str {
         match self {
             StageKind::Sky => "sky",
             StageKind::Material => "material",
+            StageKind::Weather => "weather",
             StageKind::Post => "post",
         }
     }
@@ -236,6 +259,7 @@ impl StageKind {
         match self {
             StageKind::Sky => &SKY_INPUT,
             StageKind::Material => &MATERIAL_INPUT,
+            StageKind::Weather => &WEATHER_INPUT,
             StageKind::Post => &POST_INPUT,
         }
     }
@@ -244,7 +268,7 @@ impl StageKind {
     pub fn output(self) -> &'static str {
         match self {
             StageKind::Material => SURFACE.name,
-            StageKind::Sky | StageKind::Post => "vec4<f32>",
+            StageKind::Sky | StageKind::Weather | StageKind::Post => "vec4<f32>",
         }
     }
 
@@ -261,7 +285,7 @@ impl StageKind {
     pub fn resources(self) -> &'static [Resource] {
         match self {
             StageKind::Post => &POST_RESOURCES,
-            StageKind::Sky => std::slice::from_ref(&FRAME),
+            StageKind::Sky | StageKind::Weather => std::slice::from_ref(&FRAME),
             StageKind::Material => &MATERIAL_RESOURCES,
         }
     }
@@ -281,7 +305,7 @@ impl StageKind {
         match self {
             StageKind::Post => out += POST_HELPERS,
             StageKind::Material => out += MATERIAL_HELPERS,
-            StageKind::Sky => {}
+            StageKind::Sky | StageKind::Weather => {}
         }
         out
     }
@@ -291,6 +315,7 @@ impl StageKind {
         match self {
             StageKind::Sky => SKY_ENTRIES,
             StageKind::Material => MATERIAL_ENTRIES,
+            StageKind::Weather => WEATHER_ENTRIES,
             StageKind::Post => POST_ENTRIES,
         }
     }
