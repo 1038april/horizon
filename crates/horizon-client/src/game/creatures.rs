@@ -1419,6 +1419,9 @@ impl Game<'_> {
                     // the orbs' merge ids and block ticks read next).
                     self.spawn_item(item, pos, dispenser::new_item_motion(), 10);
                 }
+                drops::Drop::Stack(item) => {
+                    self.spawn_item(item, pos, dispenser::new_item_motion(), 10);
+                }
                 drops::Drop::CarriedBlock(state) => {
                     // Enderman.dropCustomDeathLoot: spawnAtLocation for each
                     // of the carried block's silk-touch drops.
@@ -1598,6 +1601,15 @@ impl Game<'_> {
         if p.id == 0 {
             self.next_entity += 1;
             p.id = self.next_entity;
+        }
+        // Projectile.setOwner: the acting player's or the mob's UUID, which
+        // its save keeps even once the owner is gone.
+        if p.owner_uuid.is_none() {
+            p.owner_uuid = match p.owner {
+                Some(Who::Player) => Some(self.acting_player_uuid()),
+                Some(Who::Mob(id)) => Some(self.uuid_for(id)),
+                None => None,
+            };
         }
         self.creatures.projectiles.push(p);
     }
@@ -3096,7 +3108,7 @@ impl Game<'_> {
             });
         }
         if raised {
-            self.after_block(outcome, amount, attacker, projectile);
+            self.after_block(outcome, attacker, projectile);
         }
         outcome.hurt
     }
@@ -3411,9 +3423,10 @@ impl Game<'_> {
                 } = hit
                     && let Some(j) = wind_charge_hit(id)
                 {
-                    let (owner, guest) = (p.owner, p.guest);
+                    let (owner, owner_uuid, guest) = (p.owner, p.owner_uuid, p.guest);
                     let look = self.owner_look(owner, guest);
-                    super::deflect::aim_deflect(&mut projectiles[j], look, owner, guest);
+                    let wind = &mut projectiles[j];
+                    super::deflect::aim_deflect(wind, look, owner, owner_uuid, guest);
                 }
             }
             let mut idx = 0;
@@ -3564,6 +3577,7 @@ impl Game<'_> {
             ProjectileKind::Arrow { .. }
                 | ProjectileKind::Trident
                 | ProjectileKind::Snowball
+                | ProjectileKind::Thrown(_)
                 | ProjectileKind::Egg
                 | ProjectileKind::SmallFireball
                 | ProjectileKind::LargeFireball { .. }
@@ -3860,6 +3874,7 @@ impl Game<'_> {
             let amount = match p.kind {
                 ProjectileKind::SmallFireball => 5.0,
                 ProjectileKind::LargeFireball { .. } => 6.0,
+                ProjectileKind::Thrown(t) => t.damage,
                 _ => 0.0,
             };
             let kind = match p.kind {
@@ -3880,6 +3895,7 @@ impl Game<'_> {
                 ProjectileKind::EnderPearl
                     | ProjectileKind::Egg
                     | ProjectileKind::Snowball
+                    | ProjectileKind::Thrown(_)
                     | ProjectileKind::LargeFireball { .. }
             ) {
                 return Ok(());
@@ -4132,6 +4148,47 @@ impl Game<'_> {
                 }
                 self.thrown_break_event(p.id, atp);
                 self.item_burst(atp, "minecraft:snowball");
+            }
+            // a mod's copy of Snowball: its damage to anything it hits.
+            (ProjectileKind::Thrown(t), hit) => {
+                match hit {
+                    Hit::Entity {
+                        who: Who::Mob(id), ..
+                    } => {
+                        let push = [p.velocity.x, p.velocity.z];
+                        let hurt = self
+                            .mobs
+                            .iter_mut()
+                            .find(|m| m.id == id)
+                            .is_some_and(|m| m.damage_projectile(t.damage, source, aim, push));
+                        if hurt {
+                            self.player_hurt_mob(p, id);
+                        }
+                        // LivingEntity.hurtServer: PLAYER_HURT_ENTITY.
+                        if hurt
+                            && p.owner == Some(Who::Player)
+                            && let Some(m) = self.mobs.iter().find(|m| m.id == id)
+                        {
+                            let victim = self.mob_entity(m);
+                            let direct = horizon_client::advancements::EntityView {
+                                kind: t.id.into(),
+                                position: [p.position.x, p.position.y, p.position.z],
+                                ..Default::default()
+                            };
+                            self.player_hit(&victim, "minecraft:thrown", Some(direct), t.damage);
+                        }
+                    }
+                    // Player.hurtServer takes no 0 damage.
+                    Hit::Entity {
+                        who: Who::Player, ..
+                    } if t.damage > 0.0 => {
+                        let from = [p.previous.x, p.previous.y, p.previous.z];
+                        self.mob_hits_player(t.damage, from, "minecraft:thrown");
+                    }
+                    _ => {}
+                }
+                self.thrown_break_event(p.id, atp);
+                self.item_burst(atp, t.item);
             }
             (ProjectileKind::Egg, hit) => {
                 if let Hit::Entity {
@@ -4450,7 +4507,7 @@ impl Game<'_> {
     /// client entity's random (the particle engine's here) for an egg.
     pub(super) fn item_burst(&mut self, at: [f64; 3], item: &str) {
         let options = self.item_particle(&horizon_client::items::ItemStack::new(item, 1));
-        let egg = item != "minecraft:snowball";
+        let egg = item == "minecraft:egg";
         for _ in 0..8 {
             let v = if egg {
                 let r = self.particles.random();
@@ -5450,7 +5507,10 @@ impl Game<'_> {
                 return Ok(thrown);
             }
             _ if item.ends_with("_spawn_egg") => return self.use_spawn_egg(stack),
-            _ => return Ok(false),
+            _ => match horizon_client::projectiles::thrown_by_item(item) {
+                Some(t) => ProjectileKind::Thrown(t),
+                None => return Ok(false),
+            },
         };
         let Some(eye) = self.eye_position() else {
             return Ok(false);
@@ -5480,7 +5540,9 @@ impl Game<'_> {
         // second is the `use_cooldown` component, as for any thrown item.
         self.apply_use_cooldown(stack);
         let sound = match kind {
-            ProjectileKind::Snowball => "minecraft:entity.snowball.throw",
+            ProjectileKind::Snowball | ProjectileKind::Thrown(_) => {
+                "minecraft:entity.snowball.throw"
+            }
             ProjectileKind::Egg => "minecraft:entity.egg.throw",
             _ => "minecraft:entity.ender_pearl.throw",
         };
@@ -6080,8 +6142,8 @@ impl Game<'_> {
                 }
                 continue;
             }
-            if let Some(stack) = a.potion_item() {
-                let owner = super::item_draw::owner_at(at, 0.0, "minecraft:splash_potion");
+            if let Some(stack) = a.drawn_item() {
+                let owner = super::item_draw::owner_at(at, 0.0, a.kind.id());
                 let state = self.resolve_item(&stack, DisplayContext::Ground, Some(&owner), 0);
                 let pose = glam::Mat4::from_translation(c)
                     * glam::Mat4::from_quat(self.camera_orientation());

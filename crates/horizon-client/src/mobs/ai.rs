@@ -1524,6 +1524,7 @@ fn server_ai_step(
         || m.species() == Species::HappyGhast && m.is_baby()
         || m.species() == Species::CopperGolem
         || m.species() == Species::Axolotl
+        || m.species() == Species::Tadpole
     {
         super::animal_brain::tick(m, w, level_random, events);
     }

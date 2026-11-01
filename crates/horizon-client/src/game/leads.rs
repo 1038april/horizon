@@ -246,7 +246,14 @@ impl Game<'_> {
                 return true;
             }
         }
-        if self.mobs[index].extra.leash == Some(Holder::Player) {
+        // Mob.checkAndHandleImportantInteractions: only the player the lead
+        // is tied to unties it (`getLeashHolder() == player`).
+        if self.mobs[index].extra.leash == Some(Holder::Player)
+            && self.mobs[index]
+                .extra
+                .leash_player
+                .is_none_or(|p| p == self.acting_player_uuid())
+        {
             let creative = self.creative;
             self.break_leash(id, !creative, false);
             self.lead_game_event("minecraft:entity_interact", at);
