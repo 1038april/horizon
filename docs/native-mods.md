@@ -1069,6 +1069,48 @@ level is in place.
   (TNT is 4, vanilla's largest is 7).
 - A blast set off inside `native_explosion_detonate` runs that hook again, so a mod that chains blasts keeps its own guard.
 
+### Camera shake
+
+`native_camera_shake(partial, shake)` (client) asks every frame for the camera shake a mod wants: `pitch`, `yaw` and `roll`
+in degrees and an `offset` in blocks along the camera's right, up and back. Add to `shake` rather than set it, so two
+mods' shakes add up. Horizon reads it only while playing, scales the sum by Distortion Effects (a player who turns
+that to 0% sees no shake), bounds it to 10 degrees and half a block on each axis, and multiplies it into the view
+after the hurt tilt and view bobbing. A mod keeps its own shake's time and decay, from `partial` and its tick hooks;
+it moves only what the player sees, not where they are or aim.
+
+### Values for a mod's shader pack
+
+`native_shader_params(partial, params)` (client) asks every frame, while a Horizon shader pack is on, for eight
+`[f32; 4]` that every stage of the pack reads as `frame.mods` (`array<vec4<f32>, 8>`, docs/api/shaders-reference.md). What
+they mean is the mod's own: a mod that bundles its pack as `native-<mod id>` writes the slots that pack reads, such as an
+explosion's centre (camera-relative, from `frame.camera_position`) and its age in seconds, for a cloud or a shock wave
+ray marched in a post pass against `scene_depth`. A value that isn't finite reads as 0, and all are 0 when no mod sets
+them. The mod's server half can send what happened to each client half with mod messages (API 40).
+
+### Sounds a client mod plays
+
+`native_play_local_sound(sound, at, volume, pitch, delay)` (client) plays sound event `sound` at `at` for this player only,
+`delay` ticks from now (0 to 1200). The event is vanilla's (`minecraft:entity.generic.explode`) or the mod's own: a content
+mod's `assets/<id>/sounds.json` and `assets/<id>/sounds/*.ogg` load with the rest of its assets. A volume past 1 carries
+farther, as vanilla's attenuation does. A client half that hears from its server half (mod messages, API 40) where
+something happened can time the sound to the distance, such as a blast heard when its shock wave reaches the player:
+`delay = distance / speed`. It answers false on a server and for a value out of range; an event the resources lack
+plays nothing.
+
+### Falling blocks
+
+`crates/horizon-client/src/game/native_falling.rs`: a helper for server mods, for the level in place, on a server only. It
+names the level it means by its `dimension` (`minecraft:overworld`), as `native_set_block` does.
+
+- `native_spawn_falling_block(dimension, state, pos, velocity, falling)` throws a falling block of `state` from `pos` (its
+  bottom centre) at `velocity` in blocks a tick, each axis cut to 3.9. It flies, lands and places itself as sand does, or
+  drops as an item where it can't be placed. `NativeFalling` holds `drop_item` (default true) and `hurts` (hurts what it
+  lands on as an anvil does, 2 a block fallen and 40 at most; default false).
+- The block at `pos` stays: take it away first with `native_set_block` to make a block fall out of the world, as an
+  explosion's debris or a collapsing tower would.
+- It answers false, throwing nothing, on a client, for another dimension, air or an unknown state, a chunk that isn't
+  loaded, a value that isn't finite, or with 1024 falling blocks in the level already.
+
 ### Mod messages
 
 API 40, `crates/horizon-client/src/game/native_net.rs`: bytes between a mod's server half and its client half, on the
