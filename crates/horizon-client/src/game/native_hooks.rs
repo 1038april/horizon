@@ -1430,12 +1430,13 @@ impl Game<'_> {
     /// (vanilla's `BlockEntityRenderer.submit`: within 64 blocks, its chunk
     /// faded in, and its bounds, `native_block_entity_render_bounding_box`,
     /// in the frustum), when its `id` is yours. `state` is the block's state
-    /// (`blockEntity.getBlockState()`), `entity` holds what the server sent
+    /// (`blockEntity.getBlockState()`: read its `facing` with
+    /// `native_block_state_property`), `entity` holds what the server sent
     /// (`native_block_entity_update_tag`). Add geometry with
-    /// `native_draw_quad`, `native_draw_cube` and `native_draw_block` under
-    /// `draw`'s pose stack, which starts at the block's lower north-west
-    /// corner, in blocks; `draw` also has the partial tick, the game time and
-    /// the block's light. API 71.
+    /// `native_draw_quad`, `native_draw_cube`, `native_draw_block` and
+    /// `native_draw_item` under `draw`'s pose stack, which starts at the
+    /// block's lower north-west corner, in blocks; `draw` also has the partial
+    /// tick, the game time and the block's light. API 71.
     pub(super) fn native_block_entity_submit(
         &self,
         pos: [i32; 3],
