@@ -142,8 +142,14 @@ impl ValueTest {
 impl ComponentTest {
     /// `key` is the part after `nbt.` or `components.`.
     fn parse(legacy: bool, key: &str, value: &str) -> Option<Self> {
-        let key = key.replace('~', "minecraft:");
-        let mut segments: Vec<String> = key.split('.').map(str::to_owned).collect();
+        // `~` is the minecraft namespace where it starts a segment (`levels.~thorns`).
+        let mut segments: Vec<String> = key
+            .split('.')
+            .map(|s| match s.strip_prefix('~') {
+                Some(rest) => format!("minecraft:{rest}"),
+                None => s.to_owned(),
+            })
+            .collect();
         if segments.iter().any(String::is_empty) {
             return None;
         }
@@ -266,21 +272,12 @@ impl Rule {
             // `minecraft:` one whatever the rule's namespace).
             items.push(namespaced(stem));
         }
-        // An optional key: `Some(None)` when absent, `None` (dropping the rule) when malformed.
-        let optional = |key: &str, parse: &dyn Fn(&str) -> Option<i32>| match props.get(key) {
-            Some(v) => parse(v).map(Some),
-            None => Some(None),
-        };
         let int = |v: &str| v.parse::<i32>().ok();
-        let ranges = |key: &str| match props.get(key) {
-            Some(v) => RangeList::parse(v).map(Some),
-            None => Some(None),
-        };
         let damage = match props.get("damage") {
             Some(v) => Some(Damage {
                 ranges: RangeList::parse(&v.replace('%', ""))?,
                 percent: v.contains('%'),
-                mask: optional("damageMask", &int)?,
+                mask: optional(props, "damageMask", int)?,
             }),
             None => None,
         };
@@ -302,20 +299,19 @@ impl Rule {
         }
         let tex = |v: &str| asset(path, v, "png", "textures", &exists);
         let model_at = |v: &str| asset(path, v, "json", "models", &exists);
-        let mut texture = props.get("texture").and_then(tex);
-        let mut model = props.get("model").and_then(model_at);
-        let textures: Vec<_> = props
+        // A named asset that is not there drops the rule, as in CIT Resewn: half a bow's textures
+        // would draw a vanilla frame among custom ones.
+        let mut texture = optional(props, "texture", tex)?;
+        let mut model = optional(props, "model", model_at)?;
+        let textures = props
             .with_prefix("texture.")
-            .filter_map(|(name, v)| Some((name.to_owned(), tex(v)?)))
-            .collect();
-        let models: Vec<_> = props
+            .map(|(name, v)| Some((name.to_owned(), tex(v)?)))
+            .collect::<Option<Vec<_>>>()?;
+        let models = props
             .with_prefix("model.")
-            .filter_map(|(name, v)| Some((name.to_owned(), model_at(v)?)))
-            .collect();
-        let named = ["texture", "model"].iter().any(|k| props.get(k).is_some())
-            || props.with_prefix("texture.").next().is_some()
-            || props.with_prefix("model.").next().is_some();
-        if !named {
+            .map(|(name, v)| Some((name.to_owned(), model_at(v)?)))
+            .collect::<Option<Vec<_>>>()?;
+        if texture.is_none() && model.is_none() && textures.is_empty() && models.is_empty() {
             // Neither named: a model, then a texture, named after the file beside it.
             let dir = path.rsplit_once('/').map_or("", |(d, _)| d);
             let beside = |ext: &str| {
@@ -335,18 +331,19 @@ impl Rule {
         Some(Self {
             path: path.to_owned(),
             kind,
-            weight: optional("weight", &int)?.unwrap_or(0),
+            weight: optional(props, "weight", int)?.unwrap_or(0),
             items,
-            stack_size: ranges("stackSize")?,
+            stack_size: optional(props, "stackSize", RangeList::parse)?,
             damage,
-            hand: match props.get("hand") {
-                None | Some("any") => Hand::Any,
-                Some("main") => Hand::Main,
-                Some("off") => Hand::Off,
+            hand: match props.get("hand").map(str::to_ascii_lowercase).as_deref() {
+                // CIT Resewn's spellings too.
+                None | Some("any" | "either" | "*") => Hand::Any,
+                Some("main" | "mainhand" | "main_hand") => Hand::Main,
+                Some("off" | "offhand" | "off_hand") => Hand::Off,
                 Some(_) => return None,
             },
             enchantments,
-            enchantment_levels: ranges("enchantmentLevels")?,
+            enchantment_levels: optional(props, "enchantmentLevels", RangeList::parse)?,
             components,
             texture,
             textures,
@@ -359,6 +356,18 @@ impl Rule {
     /// then the path that sorts first.
     pub fn priority(&self, other: &Self) -> std::cmp::Ordering {
         (other.weight, &self.path).cmp(&(self.weight, &other.path))
+    }
+}
+
+/// An optional key: `Some(None)` when absent, `None` (dropping the rule) when malformed.
+fn optional<T>(
+    props: &Properties,
+    key: &str,
+    parse: impl Fn(&str) -> Option<T>,
+) -> Option<Option<T>> {
+    match props.get(key) {
+        Some(v) => parse(v).map(Some),
+        None => Some(None),
     }
 }
 
@@ -498,6 +507,15 @@ mod tests {
         );
         assert_eq!(r.weight, 5);
         assert_eq!(r.hand, Hand::Off);
+        let files = ["assets/minecraft/optifine/cit/swords/flame.png"];
+        for (v, hand) in [
+            ("Offhand", Hand::Off),
+            ("main_hand", Hand::Main),
+            ("*", Hand::Any),
+        ] {
+            let r = rule(SWORD, &format!("items=stick\nhand={v}"), &files).unwrap();
+            assert_eq!(r.hand, hand, "{v}");
+        }
         let stack = r.stack_size.as_ref().unwrap();
         assert!(stack.contains(1) && !stack.contains(2));
         assert_eq!(
@@ -550,6 +568,13 @@ mod tests {
         assert_eq!(r.model.as_deref(), Some(&*format!("{dir}/stick.json")));
         assert_eq!(r.texture, None);
         let r = rule(&path, "", &both[1..]).unwrap();
+        // The file name is a bare id: a minecraft one even in another namespace's folder.
+        let other = rule(
+            "assets/mymod/optifine/cit/stick.properties",
+            "",
+            &["assets/mymod/optifine/cit/stick.png"],
+        );
+        assert_eq!(other.unwrap().items, ["minecraft:stick"]);
         assert_eq!(r.texture.as_deref(), Some(&*format!("{dir}/stick.png")));
         // Nothing to draw: no rule.
         assert!(rule(&path, "", &[]).is_none());
@@ -576,7 +601,12 @@ mod tests {
         assert_eq!(tex("./sub/x"), at(files[3]));
         assert_eq!(tex("./../swords/sub/x"), at(files[3]));
         assert_eq!(tex("sub/x"), at(files[3]), "beside the rule, last");
-        assert_eq!(tex("~/cit/../cit/shared/glow"), None);
+        // `..` climbs only from the rule's folder: `~/` and `ns:` name theirs outright.
+        let beside = ["assets/minecraft/optifine/cit/swords/x.png"];
+        let up = |v| rule(SWORD, &format!("items=stick\ntexture={v}"), &beside);
+        assert!(up("./a/../x").is_some());
+        assert!(up("~/../x").is_none());
+        assert!(up("minecraft:a/../x").is_none());
         let model = rule(SWORD, "items=stick\nmodel=item/excalibur", &files).unwrap();
         assert_eq!(model.model.as_deref(), Some(files[1]));
     }
@@ -589,7 +619,7 @@ mod tests {
         assert_eq!(tex("../../../x").as_deref(), Some("assets/minecraft/x.png"));
         assert_eq!(tex("../../../../x"), None);
         assert_eq!(tex("../../../../../x"), None);
-        assert_eq!(tex("..\\..\\..\\x"), None, "a Windows separator");
+        // A Windows `\\` is refused by `paths::valid`, whose tests cover it.
     }
 
     #[test]
@@ -610,16 +640,15 @@ mod tests {
         let refs: Vec<&str> = files.iter().map(String::as_str).collect();
         let r = rule(
             &format!("{dir}/bow.properties"),
-            "items=bow\ntexture.bow_pulling_0=a0\ntexture.bow_pulling_1=a1\ntexture.bow_pulling_2=missing\n",
+            "items=bow\ntexture.bow_pulling_0=a0\ntexture.bow_pulling_1=a1\n",
             &refs,
         )
         .unwrap();
         let names: Vec<_> = r.textures.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(
-            names,
-            ["bow_pulling_0", "bow_pulling_1"],
-            "a missing file is dropped"
-        );
+        assert_eq!(names, ["bow_pulling_0", "bow_pulling_1"]);
+        // One frame missing: no rule, rather than a bow that is half vanilla.
+        let missing = "items=bow\ntexture.bow_pulling_0=a0\ntexture.bow_pulling_2=missing\n";
+        assert!(rule(&format!("{dir}/bow.properties"), missing, &refs).is_none());
         let armor = rule(
             &format!("{dir}/armor.properties"),
             "type=armor\nitems=diamond_chestplate\ntexture.diamond_layer_1=diamond1\ntexture.diamond_layer_2=diamond2\n",
@@ -688,6 +717,12 @@ mod tests {
         let c = ComponentTest::parse(false, "enchantments.levels.~thorns", "3").unwrap();
         assert_eq!(c.source, Source::Component("minecraft:enchantments".into()));
         assert_eq!(c.path, s(&["minecraft:thorns"]));
+        let c = ComponentTest::parse(false, "custom_data.my~key.~x", "3").unwrap();
+        assert_eq!(
+            c.path,
+            s(&["my~key", "minecraft:x"]),
+            "~ only opens a segment"
+        );
         let c = ComponentTest::parse(false, "custom_data.levels", "3").unwrap();
         assert_eq!(c.path, s(&["levels"]));
         assert!(ComponentTest::parse(false, "lore..0", "x").is_none());
@@ -747,6 +782,7 @@ mod tests {
             "damage=3\ndamageMask=abc",
             "stackSize=1-x",
             "hand=left",
+            "texture=a\nmodel=typo",
             "weight=heavy",
             "type=hat",
             "nbt.display.Name=regex:(",
