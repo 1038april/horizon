@@ -2763,14 +2763,14 @@ impl Game<'_> {
         signed: Option<Vec<(String, horizon_client::lan::hub::chat::ChatMessage)>>,
     ) {
         // The mods hear every command first, and may stop it.
-        let mut cancel = false;
+        let mut canceled = false;
         let mut replies = Vec::new();
         if let Some((uuid, name)) = host.hub.guest(conn).map(|g| (g.uuid, g.name.clone())) {
             self.native_player_command(
                 uuid,
                 &name,
                 command.trim_start_matches('/'),
-                &mut cancel,
+                &mut canceled,
                 &mut replies,
             );
         }
@@ -2783,7 +2783,7 @@ impl Game<'_> {
                 }),
             );
         }
-        if cancel {
+        if canceled {
             return;
         }
         if self.guest_message_command(host, conn, command, signed.as_ref()) {

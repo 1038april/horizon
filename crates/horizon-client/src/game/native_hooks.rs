@@ -1737,20 +1737,24 @@ impl Game<'_> {
     /// A command a player typed (NeoForge's `CommandEvent`, before
     /// `Commands.performCommand` runs it), without its slash: any command,
     /// vanilla's and the mods' own, also one the player may not run. Set
-    /// `cancel` to stop it: nothing runs and nothing is answered but the
-    /// lines pushed to `replies`, which go to the player as system chat
-    /// (`native_tell` reaches nobody here). With no player's state swapped
-    /// in (the UUID is the player's). Once for each command a player sends,
-    /// on a server. @API:native_player_command@.
+    /// `canceled` to stop it: nothing runs and nothing is answered but the
+    /// lines pushed to `replies`, which go to the player as system chat.
+    /// No player's state is swapped in and the server's player list is busy
+    /// with this one, so `native_tell` and the other helpers that take a UUID
+    /// reach nobody here: answer through `replies`. Once for each command a
+    /// player sends, on a server, and for each line of a quiet command batch
+    /// (`horizon:quiet_commands`, whose replies are dropped). A command the
+    /// server refuses before reading it (unsigned chat arguments, the chat
+    /// rate limit) never reaches it. @API:native_player_command@.
     pub(super) fn native_player_command(
         &mut self,
         player: u128,
         name: &str,
         command: &str,
-        cancel: &mut bool,
+        canceled: &mut bool,
         replies: &mut Vec<Text>,
     ) {
-        let _ = (player, name, command, cancel, replies);
+        let _ = (player, name, command, canceled, replies);
     }
     /// A click in a menu a mod opened (`native_open_menu`), which moved
     /// nothing: the menu's `slot` (its own first, then the player's
