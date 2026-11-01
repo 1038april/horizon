@@ -1,0 +1,5 @@
+{
+  "hooks": [],
+  "rust_summary": "the world's clock on a client (`native_get_clock`).",
+  "doc_summary": "the world's clock on a client: `native_get_clock()` is its game time and time of day in ticks, none on the title screen. Bundles need `\"hooks\": @API:native_clock@`."
+}
