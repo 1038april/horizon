@@ -4005,9 +4005,10 @@ impl Renderer {
             horizon_shader_api::Report,
             Vec<(String, f64)>,
             Vec<(u32, u32)>,
+            Vec<(u32, u32)>,
         )>,
     ) -> std::result::Result<Vec<String>, String> {
-        let Some((report, constants, sprite_tags)) = pack else {
+        let Some((report, constants, sprite_tags, sprite_materials)) = pack else {
             self.native = None;
             return Ok(Vec::new());
         };
@@ -4017,6 +4018,7 @@ impl Renderer {
             sprites: self.terrain_sprites,
             format: self.config.format.remove_srgb_suffix(),
             sprite_tags: &sprite_tags,
+            sprite_materials: &sprite_materials,
             entities: &self.entity_bindings,
         };
         let (pack, labels) =

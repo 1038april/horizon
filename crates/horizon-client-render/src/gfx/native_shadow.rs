@@ -56,7 +56,7 @@ fn horizon_shadow_vertex(pos: vec3<f32>, uv: vec2<f32>, layer: u32, color: vec4<
 @fragment fn horizon_shadow_fs(in: HorizonShadowOut) {
     // Bit 15 of the layer marks opaque leaves (forceOpaque): no alpha cutout.
     let alpha = horizon_terrain_sprite(in.uv, in.layer & 0x7fffu).a;
-    if alpha < 0.5 && (in.layer & 0x8000u) == 0u { discard; }
+    if alpha < 0.5 && (in.layer & 0x8000u) == 0u && !horizon_shadow_solid(in.layer & 0x7fffu) { discard; }
 }
 // Translucent terrain: its colour where it is the nearest thing the light passes through;
 // alpha 1 marks a fluid, other surfaces keep their alpha below it.
@@ -389,11 +389,31 @@ fn entity_pipeline(
     })
 }
 
-/// The shadow pass's shader: the frame, Horizon's terrain, and the entries.
-fn shader_source() -> String {
+/// `horizon_shadow_solid(layer)`: whether the sprite layer's id, out of `materials`
+/// (`(layer, id)`), is one of the pack's `solid` ones.
+fn shadow_solid(materials: &[(u32, u32)], solid: &[u32]) -> String {
+    let layers: Vec<String> = materials
+        .iter()
+        .filter(|(_, id)| solid.contains(id))
+        .map(|(layer, _)| format!("{layer}u"))
+        .collect();
+    let cases = if layers.is_empty() {
+        String::new()
+    } else {
+        format!("        case {}: {{ return true; }}\n", layers.join(", "))
+    };
+    format!(
+        "fn horizon_shadow_solid(layer: u32) -> bool {{\n    switch layer {{\n{cases}        \
+         default: {{ return false; }}\n    }}\n}}\n"
+    )
+}
+
+/// The shadow pass's shader: the frame, Horizon's terrain, and the entries, with the layers
+/// `solid` of `shadow_solid`.
+fn shader_source(solid: &str) -> String {
     format!(
         "{}@group({GROUP}) @binding(0) var<uniform> frame: Frame;\n{}\
-         // Horizon's terrain (terrain.wgsl)\n{}{ENTRIES}",
+         // Horizon's terrain (terrain.wgsl)\n{}{solid}{ENTRIES}",
         FrameInputs::WGSL.wgsl(),
         horizon_shader_api::stages::SHADOW_HELPERS,
         prefixed(
@@ -408,8 +428,9 @@ impl NativeShadow {
         device: &wgpu::Device,
         shape: &TerrainShape<'_>,
         frame: &super::native_post::NativeFrame,
+        solid_materials: &[u32],
     ) -> Result<Self, String> {
-        let text = shader_source();
+        let text = shader_source(&shadow_solid(shape.sprite_materials, solid_materials));
         let module = naga::front::wgsl::parse_str(&text)
             .map_err(|e| format!("shadow pass: {}", e.emit_to_string(&text)))?;
         let constants = [
@@ -566,7 +587,22 @@ mod tests {
 
     #[test]
     fn the_shadow_shader_validates() {
-        let text = shader_source();
+        for materials in [&[][..], &[(3, 7), (4, 8), (9, 7)][..]] {
+            let text = shader_source(&shadow_solid(materials, &[7]));
+            let module = naga::front::wgsl::parse_str(&text).unwrap();
+            naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
+            .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&text)));
+        }
+        assert!(shadow_solid(&[(3, 7), (4, 8), (9, 7)], &[7]).contains("case 3u, 9u:"));
+    }
+
+    #[test]
+    fn a_pack_without_solid_materials_keeps_every_cutout() {
+        let text = shader_source(&shadow_solid(&[(3, 7)], &[]));
         let module = naga::front::wgsl::parse_str(&text).unwrap();
         naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
@@ -593,6 +629,7 @@ mod tests {
         let settings = Settings {
             resolution: 2048,
             distance: 128.0,
+            solid_materials: Vec::new(),
         };
         let shadow = camera(&settings);
         let (view, projection) = super::super::pack_uniforms::shadow_camera(
@@ -613,6 +650,7 @@ mod tests {
         let shadow = camera(&Settings {
             resolution: 2048,
             distance: 128.0,
+            solid_materials: Vec::new(),
         });
         let light = glam::Vec3::Y;
         for x in [5.5, -5.5, -2064.5, 2064.5] {

@@ -14,6 +14,8 @@ pub const MAX_POST_PASSES: usize = 8;
 pub const MAX_OPTIONS: usize = 64;
 /// The most GPU time a pack may declare for itself, in milliseconds.
 pub const MAX_GPU_MS: f32 = 16.0;
+/// `[[materials]]` entries a manifest may declare.
+pub const MAX_MATERIALS: usize = 1024;
 /// Sprite tags a pack may declare: the bits of `MaterialInput.tags`.
 pub const MAX_TAGS: usize = 32;
 
@@ -38,6 +40,8 @@ pub struct Manifest {
     pub options: Vec<PackOption>,
     /// Sprite tags the material stage reads, in bit order.
     pub tags: Vec<SpriteTag>,
+    /// Material ids by sprite: the first entry with a matching pattern wins.
+    pub materials: Vec<Material>,
     pub budget: Budget,
     /// When the material stage's water mirror (`reflection`) is drawn.
     pub reflection: Option<Reflection>,
@@ -56,6 +60,10 @@ pub struct Shadow {
     /// Half the side of the square the map covers around the camera, in blocks.
     #[serde(default = "default_shadow_distance")]
     pub distance: f32,
+    /// `[[materials]]` ids drawn into the map whole, their cutouts ignored: leaves cast
+    /// a full shadow, say, whatever holes they show.
+    #[serde(default)]
+    pub solid_materials: Vec<u32>,
 }
 
 /// The shadow map's side, in texels.
@@ -97,21 +105,49 @@ pub struct SpriteTag {
 impl SpriteTag {
     /// Whether the sprite `name` (`namespace:path`) is one of the tag's.
     pub fn matches(&self, name: &str) -> bool {
-        self.sprites.iter().any(|pattern| {
-            let pattern = match pattern.contains(':') {
-                true => std::borrow::Cow::Borrowed(pattern.as_str()),
-                false => std::borrow::Cow::Owned(format!("minecraft:{pattern}")),
-            };
-            match pattern.split_once('*') {
-                None => pattern == name,
-                Some((head, tail)) => {
-                    name.len() >= head.len() + tail.len()
-                        && name.starts_with(head)
-                        && name.ends_with(tail)
-                }
-            }
-        })
+        self.sprites.iter().any(|p| sprite_matches(p, name))
     }
+}
+
+/// `[[materials]]`: a number the material stage reads as `MaterialInput.material`, for the
+/// many kinds of surface a pack treats differently, where `[[tags]]` hold 32 sets.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Material {
+    /// 1 to 65535 (0 is a sprite without an entry). Entries may share one.
+    pub id: u32,
+    /// Sprite names such as `minecraft:block/oak_leaves` (the namespace defaults to
+    /// `minecraft`), each with any number of `*` matching any run of characters.
+    pub sprites: Vec<String>,
+}
+
+impl Material {
+    /// Whether the sprite `name` (`namespace:path`) has this entry's id.
+    pub fn matches(&self, name: &str) -> bool {
+        self.sprites.iter().any(|p| sprite_matches(p, name))
+    }
+}
+
+/// Whether the sprite `name` (`namespace:path`) fits `pattern`.
+fn sprite_matches(pattern: &str, name: &str) -> bool {
+    let pattern = match pattern.contains(':') {
+        true => std::borrow::Cow::Borrowed(pattern),
+        false => std::borrow::Cow::Owned(format!("minecraft:{pattern}")),
+    };
+    let Some((head, rest)) = pattern.split_once('*') else {
+        return pattern == name;
+    };
+    let Some(mut left) = name.strip_prefix(head) else {
+        return false;
+    };
+    let (middle, tail) = rest.rsplit_once('*').unwrap_or(("", rest));
+    for part in middle.split('*').filter(|p| !p.is_empty()) {
+        let Some(at) = left.find(part) else {
+            return false;
+        };
+        left = &left[at + part.len()..];
+    }
+    left.ends_with(tail)
 }
 
 /// One stage: the WGSL file that defines its function.
@@ -182,6 +218,8 @@ struct Raw {
     options: Vec<RawOption>,
     #[serde(default)]
     tags: Vec<SpriteTag>,
+    #[serde(default)]
+    materials: Vec<Material>,
     #[serde(default)]
     budget: RawBudget,
     reflection: Option<Reflection>,
@@ -295,6 +333,32 @@ impl Manifest {
                 )));
             }
         }
+        if !raw.materials.is_empty() && raw.material.is_none() {
+            return Err(err(
+                "materials are read by the material stage: give it a [material]".into(),
+            ));
+        }
+        if raw.materials.len() > MAX_MATERIALS {
+            return Err(err(format!(
+                "{} materials; a pack may declare {MAX_MATERIALS}",
+                raw.materials.len()
+            )));
+        }
+        for m in &raw.materials {
+            if !(1..=65535).contains(&m.id) {
+                return Err(err(format!("material id {} is not in 1..=65535", m.id)));
+            }
+            if m.sprites.is_empty() || m.sprites.iter().any(String::is_empty) {
+                return Err(err(format!("material {}: needs sprites", m.id)));
+            }
+        }
+        for id in raw.shadow.iter().flat_map(|s| &s.solid_materials) {
+            if !raw.materials.iter().any(|m| m.id == *id) {
+                return Err(err(format!(
+                    "shadow.solid_materials: no [[materials]] entry has id {id}"
+                )));
+            }
+        }
         let gpu_ms = match raw.budget.gpu_ms {
             Some(ms) if !(ms > 0.0 && ms <= f64::from(MAX_GPU_MS)) => {
                 return Err(err(format!(
@@ -344,6 +408,7 @@ impl Manifest {
             post: raw.post,
             options,
             tags: raw.tags,
+            materials: raw.materials,
             budget: Budget { gpu_ms },
             reflection: raw.reflection,
             shadow: raw.shadow,
@@ -371,6 +436,27 @@ impl Manifest {
             }
         }
         layers.into_iter().collect()
+    }
+
+    /// The material id of each block sprite `(name, layer)` that has one, as `(layer, id)` in
+    /// layer order: what the material stage's `MaterialInput.material` reads.
+    pub fn sprite_materials<'a>(
+        &self,
+        sprites: impl IntoIterator<Item = (&'a str, u32)>,
+    ) -> Vec<(u32, u32)> {
+        // Identical stills share one layer under several names: the earliest entry any of
+        // them matches decides, whatever order the names come in.
+        let mut layers = std::collections::BTreeMap::<u32, usize>::new();
+        for (name, layer) in sprites {
+            if let Some(entry) = self.materials.iter().position(|m| m.matches(name)) {
+                let best = layers.entry(layer).or_insert(entry);
+                *best = entry.min(*best);
+            }
+        }
+        layers
+            .into_iter()
+            .map(|(layer, entry)| (layer, self.materials[entry].id))
+            .collect()
     }
 
     /// Every WGSL file the manifest names, shared files first, each once.
