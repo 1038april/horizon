@@ -41,13 +41,13 @@ Fresh release preparation therefore starts five exporter/data-generator JVMs, do
 (six with 6 cores or more, below), and invokes no compiler. `HORIZON_PREPARE_ISOLATED=1`
 retains separate exporter JVMs for output comparisons and diagnosis.
 
-Those JVMs run on four lanes at once, so at most three run at a time: the server worker's
-steps in their fixed order; the client worker's, then the command registries'; the data
-generator, then the creative tabs'; and the Rust-only copying (client assets and data, the
-world generator's bundle), spread over several threads. The world generator's tables, which
-need the block facts and the reports, and the manifest come after all four. A worker stops
-when its lane is done. The two sides compile at once too. Imports and checks hash the pinned
-files on several threads; every file is still checked in full.
+Those JVMs run on four lanes at once, so at most three run at a time (four with the split
+below): the server worker's steps in their fixed order; the client worker's, then the command
+registries'; the data generator, then the creative tabs'; and the Rust-only copying (client
+assets and data, the world generator's bundle), spread over several threads. The world
+generator's tables, which need the block facts and the reports, and the manifest come after
+all four. A worker stops when its lane is done. The two sides compile at once too. Imports and
+checks hash the pinned files on several threads; every file is still checked in full.
 
 `HORIZON_PREPARE_JOBS` is how many things run at once: the processors by default, at most 8.
 `1` runs it all one step after another (for a machine short on memory). From 6, the world

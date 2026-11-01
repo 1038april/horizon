@@ -754,7 +754,8 @@ type Entries = Vec<(&'static str, Value)>;
 /// The exporters, the data generator and the asset copy, on four lanes that run at once:
 /// the server exporter JVM's steps in a fixed order (they share its state), the client
 /// exporter JVM's then the command registries' JVM, the data generator's then the creative
-/// inventory's, and the copying, which needs no Java. At most three JVMs run at a time.
+/// inventory's, and the copying, which needs no Java. At most three JVMs run at a time, four
+/// with the split below.
 /// From this many cores (`pool::jobs`) the generator's block behaviour gets its own server JVM.
 /// It pays a second Bootstrap and ~400 MB, which only pays off when the other lanes leave cores
 /// idle: a 6-core laptop finished its other JVMs 20 s before the server lane.

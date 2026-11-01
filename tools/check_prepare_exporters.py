@@ -146,8 +146,9 @@ def main():
             times.append(round(time.monotonic() - started, 2))
             print(f'{name}: {times[-1]}s, prepared', flush=True)
         verify(results)
-        # Nothing changed since the last run: it starts no JVM and rewrites nothing.
-        before = hashes(resources)
+        # Nothing changed since the last run: it starts no JVM and leaves every file as it was.
+        manifest = resources / 'horizon-resources.json'
+        before = hashes(resources), manifest.read_bytes()
         trace.write_text('')
         with (work / 'repeat.log').open('w') as log:
             subprocess.run([str(binary), '--root', str(folder)], cwd=folder, env=env,
@@ -155,7 +156,7 @@ def main():
         launches = [line for line in trace.read_text().splitlines() if line != '-version']
         if launches:
             raise SystemExit(f'A repeat preparation started {len(launches)} JVMs')
-        if hashes(resources) != before:
+        if (hashes(resources), manifest.read_bytes()) != before:
             raise SystemExit('A repeat preparation changed the resources')
         print('Repeat preparation: no JVM, same files')
         print(f'Isolated {times[:2]}s, batched {times[2:]}s')
