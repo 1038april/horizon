@@ -43,7 +43,7 @@ pub const OPTIONS: &[LaunchOption] = &[
     option(
         "--player-dir",
         Some("DIR"),
-        "One player's own files, for several games playing in one game folder at the same time: `options.txt` and the settings beside it, `logs/`, `crash-reports/`, `horizon-player.txt`, `servers.dat`, `hotbar.nbt`, `screenshots/`. Saves, packs, mods and their config stay in the game folder. Created when missing. Default: the game folder, and `--home` for logs.",
+        "One player's own files, for several games playing in one game folder at the same time: `options.txt` and the settings beside it, `logs/`, `crash-reports/`, `horizon-player.txt`, `servers.dat`, `hotbar.nbt`, `screenshots/`. Saves, packs, mods and their config, the chat's command history and Play with Friends' relay settings stay in the game folder. A relative path is taken from the folder the game starts in. Created when missing. Default: the game folder, and `--home` for logs. Crash telemetry still follows `--home`'s consent, and `horizon-ctl logs` and the launcher read `--home`'s logs.",
     ),
     option(
         "--width",

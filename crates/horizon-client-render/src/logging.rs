@@ -91,8 +91,19 @@ pub fn player_dir_override() -> Option<&'static Path> {
 /// `options_dir` (the enabled mods): that folder, unless `--player-dir` moved `options.txt`
 /// out of the game folder.
 pub fn shared_dir(options_dir: &Path) -> PathBuf {
-    match PLAYER.get() {
-        Some(player) if player == options_dir => std::env::current_dir().unwrap_or_default(),
+    shared_dir_of(PLAYER.get().map(PathBuf::as_path), options_dir, || {
+        std::env::current_dir().unwrap_or_default()
+    })
+}
+
+/// [`shared_dir`] for a given `--player-dir` and game folder.
+fn shared_dir_of(
+    player: Option<&Path>,
+    options_dir: &Path,
+    game_dir: impl FnOnce() -> PathBuf,
+) -> PathBuf {
+    match player {
+        Some(player) if player == options_dir => game_dir(),
         _ => options_dir.to_path_buf(),
     }
 }
@@ -604,6 +615,20 @@ pub fn newest_crash_report(home: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_player_dir_keeps_the_shared_files_in_the_game_folder() {
+        let (game, player) = (Path::new("/games/shared"), Path::new("/games/players/alex"));
+        // options.txt moved to the player's folder: the enabled mods stay the game folder's.
+        assert_eq!(shared_dir_of(Some(player), player, || game.into()), game);
+        // No --player-dir, or a splitscreen profile's own folder: beside options.txt as before.
+        assert_eq!(shared_dir_of(None, game, || unreachable!()), game);
+        let profile = Path::new("/games/shared/splitscreen/profiles/P2");
+        assert_eq!(
+            shared_dir_of(Some(player), profile, || unreachable!()),
+            profile
+        );
+    }
 
     #[test]
     fn a_warning_repeated_every_packet_is_counted_past_a_hundred_a_minute() {
