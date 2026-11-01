@@ -345,7 +345,7 @@ impl Game<'_> {
         self.recipe_tables.incoming.clear();
         self.recipe_tables.received = None;
         self.recipe_tables.tables = None;
-        self.recipe_ui.book = None;
+        self.forget_book();
     }
     /// `native_recipes_received` for the types that came, once the window
     /// has its player: the recipes of a join come before it, and the helpers
@@ -414,7 +414,7 @@ impl Game<'_> {
                 self.recipe_tables.synced = Some(recipes);
                 // What was made of the window's own recipes is made again.
                 self.recipe_tables.tables = None;
-                self.recipe_ui.book = None;
+                self.forget_book();
                 self.recipe_tables.received = Some(types);
                 self.recipes_received_now();
             }
