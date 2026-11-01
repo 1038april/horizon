@@ -206,6 +206,8 @@ pub fn serve(session: &mut Session) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+
+    use super::*;
     #[test]
     fn version_negotiation() {
         let v = |p: Value| negotiate_version(&p);
@@ -215,8 +217,6 @@ mod tests {
         assert_eq!(v(json!({ "protocolVersion": 7 })), "2025-06-18");
         assert_eq!(v(json!({})), "2025-06-18");
     }
-
-    use super::*;
 
     #[test]
     fn base64_matches_rfc_4648() {

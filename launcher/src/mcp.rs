@@ -12,7 +12,7 @@ use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
-pub const PROTOCOL: &str = "2025-06-18";
+pub const PROTOCOL: &str = SUPPORTED[0];
 
 /// Revisions this server implements. Older ones are not claimed: only the revision actually
 /// implemented is advertised (no JSON-RPC batches, no other capability than `tools`).
