@@ -13902,8 +13902,9 @@ impl Game<'_> {
             self.options.execution_role,
         )?;
         // PlayerList.saveAll: every placed player saves with the server, to
-        // their own file (`PlayerDataStorage.save`); the level itself carries
-        // no player.
+        // their own file (`PlayerDataStorage.save`); the owner is also in the
+        // file level.dat names, which is the one it loads from
+        // (`playerdata::load_owner`).
         if self.options.dedicated.is_some()
             && !self.options.execution_role.is_client()
             && let Some(host) = self.lan.take()
