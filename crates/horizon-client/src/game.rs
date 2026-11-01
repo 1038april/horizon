@@ -17852,6 +17852,12 @@ fn gameplay_tables(
     let (facts, gameplay_projection) =
         BlockFacts::load_with_projection(root, assets.registry, &behaviour_json)
             .map_err(|e| e.to_string())?;
+    horizon_client::block_contact::set_mod_blocks(
+        facts
+            .states
+            .iter()
+            .any(|s| !s.name.starts_with("minecraft:")),
+    );
     progress.set(2);
     let (light, motion) = std::thread::scope(|scope| {
         let light = Step::spawn(scope, parallel, || {
@@ -19097,6 +19103,7 @@ pub fn run() -> Result<()> {
         return Ok(());
     }
     let _ = horizon_client::health::HURT_SERVER.set(native_hooks::hurt_server);
+    let _ = horizon_client::block_contact::HOOK.set(native_hooks::block_contact);
     // Before any worker starts: on Linux they go behind the server thread
     // and the render thread.
     horizon_threads::put_helpers_behind();

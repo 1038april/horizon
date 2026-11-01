@@ -205,6 +205,8 @@ pub trait ProjectileWorld {
     /// block's surface reaches the bottom of the box (deflated by 0.001).
     fn in_water(&self, bounds: Aabb) -> bool;
     fn targets(&self) -> &[(Who, Aabb)];
+    /// Server-only mod-block contacts along the completed movement.
+    fn block_contacts(&self, _entity: i32, _kind: &str, _from: Vec3, _to: Vec3, _bounds: Aabb) {}
     /// `Level.isEmptyBlock`.
     fn empty(&self, _p: [i32; 3]) -> bool {
         true
@@ -740,6 +742,18 @@ impl Projectile {
 
     /// One tick: returns whether to keep the projectile and what it hit.
     pub fn tick(&mut self, w: &impl ProjectileWorld) -> (bool, Hit) {
+        let from = self.position;
+        let result = self.tick_inner(w);
+        w.block_contacts(
+            self.id as i32,
+            self.kind.id(),
+            from,
+            self.position,
+            self.bounds(),
+        );
+        result
+    }
+    fn tick_inner(&mut self, w: &impl ProjectileWorld) -> (bool, Hit) {
         self.previous = self.position;
         self.age += 1;
         if matches!(self.kind, ProjectileKind::ShulkerBullet { .. }) {
