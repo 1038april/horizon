@@ -3,7 +3,7 @@
 //! Update it with: `HORIZON_WRITE_DOCS=1 cargo test -p horizon-client --bin horizon-client launch_api`.
 
 /// The Launch API's version (docs/api/stability.md): an addition makes the next patch.
-pub const VERSION: &str = "0.1.1";
+pub const VERSION: &str = "0.1.0";
 
 /// One option of the contract: its name, its value's placeholder (none for a flag), what it does.
 pub struct LaunchOption {

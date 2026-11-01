@@ -1,7 +1,7 @@
 <!-- Generated from crates/horizon-client/src/game/launch_api.rs; a test fails when this file is out of date. Update it with: HORIZON_WRITE_DOCS=1 cargo test -p horizon-client --bin horizon-client launch_api -->
 # Launch API reference
 
-What `horizon-client` promises a launcher that starts it, Launch API 0.1.1. The guide: [launch.md](launch.md); stability and versions: [stability.md](stability.md).
+What `horizon-client` promises a launcher that starts it, Launch API 0.1.0. The guide: [launch.md](launch.md); stability and versions: [stability.md](stability.md).
 
 ## Options
 
@@ -36,7 +36,7 @@ Prints one JSON object on stdout and exits 0. `horizon` is the build's version; 
     101
   ],
   "horizon": "<version>",
-  "launch_api": "0.1.1",
+  "launch_api": "0.1.0",
   "minecraft": "26.3",
   "options": [
     {

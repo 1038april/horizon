@@ -138,11 +138,11 @@ pub use bonemeal::TemplateSettings;
 pub use buckets::BucketContent;
 pub use data::{BlockData, ItemBinding, ItemKind, Named, Props, PushReaction, StateFacts, Tags};
 pub use falling::Landing;
-pub use interact::{InteractionResult, PlayerContext, PlayerEffect, hit_slot};
+pub use interact::{InteractionResult, PlayerContext, PlayerEffect, UseBranch, hit_slot};
 pub use pistons::{BlockEventData, MovingPiston};
 pub use place::{PlaceContext, PlaceOutcome};
 pub use states::{BlockId, PropKey, StateTable};
-pub use tick::{Precipitation, PrecipitationKind};
+pub use tick::{Precipitation, PrecipitationKind, RandomTickMask};
 pub use ticks::Ticks;
 
 /// `Block.UPDATE_*` flags accepted by [`Behaviours::set_block`].
@@ -510,6 +510,23 @@ pub trait LevelAccess {
     fn adjust_signal_source(&self, _state: BlockStateId, vanilla: bool) -> bool {
         vanilla
     }
+    /// `BlockState.hasAnalogOutputSignal` once the library answered `vanilla`:
+    /// whether comparators read the block. The default keeps it.
+    fn adjust_has_analog_output(&self, _state: BlockStateId, vanilla: bool) -> bool {
+        vanilla
+    }
+    /// `BlockState.getAnalogOutputSignal(level, pos, direction)` once the
+    /// library answered `vanilla`, `direction` pointing from the block to the
+    /// comparator reading it: the output to use. The default keeps it.
+    fn adjust_analog_output(
+        &self,
+        _pos: BlockPos,
+        _state: BlockStateId,
+        _direction: Direction,
+        vanilla: i32,
+    ) -> i32 {
+        vanilla
+    }
     /// `BlockState.getSignal` (or `getDirectSignal` when `direct`) once the
     /// library answered `vanilla`: the signal to use. The default keeps it.
     fn adjust_signal(
@@ -611,6 +628,7 @@ pub struct Behaviours {
     pub fluid_tags: data::FluidTags,
     blocks: Vec<BlockData>,
     items: HashMap<String, ItemBinding>,
+    potted_by_content: HashMap<BlockId, BlockId>,
     liquid_blocks: FluidBlockBindings,
     /// Uncached (position- or block-entity-dependent) collision shapes.
     dynamic: HashMap<BlockStateId, crate::dynamic_support::DynamicSupport>,
@@ -661,6 +679,11 @@ impl Behaviours {
     }
     pub fn item_binding(&self, item: &str) -> Option<&ItemBinding> {
         self.items.get(item)
+    }
+    /// FlowerPotBlock.POTTED_BY_CONTENT: the potted flower pot block that
+    /// holds plant, if any.
+    pub fn potted_block(&self, plant: BlockId) -> Option<BlockId> {
+        self.potted_by_content.get(&plant).copied()
     }
     pub fn tag(&self, name: &str) -> Option<&data::BlockSet> {
         self.all_tags.get(name).map(|s| &**s)
