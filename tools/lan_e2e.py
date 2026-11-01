@@ -10472,5 +10472,44 @@ CHECKS += ['arrow_pickup']
 CHECK_FNS['arrow_pickup'] = check_arrow_pickup
 
 
+def check_cushion_break_seated(host, guest, out):
+    """#4571: breaking the cushion one sits on (Entity.setRemoved) puts the rider on the floor it
+    sat on (LivingEntity.dismountVehicle from a removed vehicle), not a block below it."""
+    seen = {}
+    for label, player in (('host', host), ('guest', guest)):
+        x, y, z = (int(v // 1) for v in pos_of(player))
+        at = (x + 0.5, y, z + 2.5)
+        host('command', command=f'fill {x - 1} {y} {z + 1} {x + 1} {y + 3} {z + 3} minecraft:air')
+        host('command', command=f'setblock {x} {y - 1} {z + 2} minecraft:stone')
+        player('command', command='gamemode creative')
+        player('command', command='item replace entity @s weapon.mainhand with minecraft:green_cushion')
+        player.wait(10)
+        player.raw('look-at', *at)
+        player.raw('mouse', 'right', 'click')
+        player.wait(15)
+        cushion = [o for o in host('status')['objects'] if o['kind'] == 'minecraft:cushion'
+                   and abs(o['position'][0] - at[0]) < .1 and abs(o['position'][2] - at[2]) < .1]
+        assert len(cushion) == 1, (label, cushion)
+        player('command', command='item replace entity @s weapon.mainhand with minecraft:air')
+        player.wait(5)
+        player.raw('look-at', at[0], at[1] + .125, at[2])
+        player.raw('mouse', 'right', 'click')
+        player.wait(10)
+        assert player('status').get('riding') == cushion[0]['id'], label
+        player.raw('look-at', at[0], at[1] + .125, at[2])
+        player.raw('mouse', 'left', 'click')
+        player.wait(20)
+        seen[label] = {'riding': player('status').get('riding'), 'position': pos_of(player)}
+        player.shot(out, 'cushion-broken-seated')
+        assert seen[label]['riding'] is None, seen
+        assert abs(seen[label]['position'][1] - y) < 1e-3, seen
+        assert abs(seen[label]['position'][0] - at[0]) < 1e-3, seen
+    return seen
+
+
+CHECKS += ['cushion_break_seated']
+CHECK_FNS['cushion_break_seated'] = check_cushion_break_seated
+
+
 if __name__ == '__main__':
     main()
