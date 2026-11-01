@@ -4211,6 +4211,8 @@ def check_objects(host, guest, out):
         f'summon minecraft:armor_stand {x - 2.5} {y} {z - 2.5} {{Rotation:[90f,0f]}}',
         f'summon minecraft:armor_stand {x - 4.5} {y} {z - 2.5} {{ShowArms:1b,Small:1b,NoBasePlate:1b,'
         'equipment:{head:{id:"minecraft:diamond_helmet",count:1}}}',
+        # Falls to the floor: the guest's copy has to follow the server's moves.
+        f'summon minecraft:armor_stand {x + 2.5} {y + 3} {z - 2.5} {{Rotation:[200f,0f]}}',
         f'summon minecraft:item_frame {x - 3.5} {y + 1} {z - 4.97} {{block_pos:[I;{x - 4},{y + 1},{z - 5}],Facing:3b,'
         'Item:{id:"minecraft:diamond",count:1},ItemRotation:3b}',
         f'summon minecraft:glow_item_frame {x - 1.5} {y + 1} {z - 4.97} {{block_pos:[I;{x - 2},{y + 1},{z - 5}],Facing:3b}}',
