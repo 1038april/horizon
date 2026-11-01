@@ -83,7 +83,7 @@ pub fn identity(root: &Path) -> Result<[u8; 32], IdentityError> {
         let mut defaults = Vec::new();
         for (item, components) in items {
             for (name, value) in components.as_object().into_iter().flatten() {
-                if horizon_protocol::item::custom::id(&name).is_some() {
+                if horizon_protocol::item::custom::id(name).is_some() {
                     defaults.push((defaults.len() as u64, format!("{item}\0{name}\0{value}")));
                 }
             }
