@@ -101,6 +101,8 @@ pub struct Report {
     pub material_fog: bool,
     /// The manifest's `[[textures]]`, and each image decoded, in that order.
     pub textures: Vec<(crate::manifest::PackTexture, Image)>,
+    /// The manifest the stages were checked against.
+    pub manifest: crate::manifest::Manifest,
 }
 
 #[derive(Clone, Debug)]
@@ -207,6 +209,7 @@ pub fn check(pack: &Pack) -> Result<Report, Vec<Problem>> {
             reflection: m.reflection.clone(),
             shadow: m.shadow.clone(),
             material_fog: m.material.as_ref().and_then(|s| s.fog).unwrap_or(true),
+            manifest: m.clone(),
         })
     } else {
         Err(problems)
