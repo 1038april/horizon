@@ -1084,19 +1084,16 @@ impl Game<'_> {
     /// and on servers), and the server's own (`native_window` is false
     /// there: the single player server thread, a dedicated server).
     pub(super) fn native_tick(&mut self) {}
-    /// Before one first-person hand and its displayed stack are drawn (RenderHandEvent).
-    /// Equip progress is the inverse arm height, including the item's swap animation scale.
-    /// Cancel skips that hand's default geometry, including its map and arm geometry.
-    pub(super) fn native_render_hand(
+    /// Before an eligible targeted block's selection outline is built.
+    /// Cancel skips only the default block highlight, after normal HUD and game-mode gates.
+    pub(super) fn native_block_highlight(
         &self,
-        hand: horizon_client::first_person::Hand,
-        stack: Option<&ItemStack>,
+        pos: [i32; 3],
+        state: BlockStateId,
         partial: f32,
-        swing: f32,
-        equip: f32,
         canceled: &mut bool,
     ) {
-        let _ = (hand, stack, partial, swing, equip, canceled);
+        let _ = (pos, state, partial, canceled);
     }
     /// The world frame's local visual sources. Push requests; Horizon validates
     /// and limits them before rendering. Called only while a world is visible.
@@ -1265,6 +1262,21 @@ impl Game<'_> {
     pub(super) fn native_camera_shake(&self, partial: f32, shake: &mut NativeShake) {
         let _ = (partial, shake);
     }
+    /// Before one first-person hand and its displayed stack are drawn (RenderHandEvent).
+    /// Equip progress is the inverse arm height, including the item's swap animation scale.
+    /// Cancel skips that hand's default geometry, including its map and arm geometry.
+    /// It only hides: the hook has no way to draw a replacement.
+    pub(super) fn native_render_hand(
+        &self,
+        hand: horizon_client::first_person::Hand,
+        stack: Option<&ItemStack>,
+        partial: f32,
+        swing: f32,
+        equip: f32,
+        canceled: &mut bool,
+    ) {
+        let _ = (hand, stack, partial, swing, equip, canceled);
+    }
 
     /// The values native mods hand their shader packs in this frame,
     /// `partial` ticks past the last tick (0 to 1): a pack's WGSL reads
@@ -1344,9 +1356,11 @@ impl Game<'_> {
     /// set `container` when the block is yours. Asked once for each mod
     /// block when the ticking table is built; at most 256 slots, and slot
     /// numbers past the count are left out. Its `menu`, one of
-    /// `containers::MOD_MENUS` with as many slots, opens when the block is
-    /// used (its template must open a menu, as a chest or a furnace does);
-    /// another is left out. API 17.
+    /// `containers::MOD_MENUS` or a content mod's menu type
+    /// (`data/<id>/horizon/menu/`, API @API:mod_menu_types@) with as many
+    /// slots, opens when the block is used (its template must open a menu, as
+    /// a chest or a furnace does); another is left out. A mod menu type shows
+    /// on Horizon clients through the mod's `native_screen` only. API 17.
     pub(super) fn native_block_entity_container(
         &self,
         block: &str,
@@ -3926,9 +3940,12 @@ fn debug_takes(corner: Corner, debug: bool, charts: [bool; 2]) -> bool {
         }
 }
 
-/// A menu of `MOD_MENUS`, by its name.
+/// A menu of `MOD_MENUS` or a content mod's menu type, by its name.
 fn mod_menu(name: &str) -> Option<(&'static str, usize)> {
-    MOD_MENUS.into_iter().find(|(menu, _)| *menu == name)
+    MOD_MENUS
+        .into_iter()
+        .find(|(menu, _)| *menu == name)
+        .or_else(|| horizon_client::containers::mod_menu_type(name).map(|m| (m.id, m.slots)))
 }
 
 /// `state` with its property `key` set to `value`; none when the block has

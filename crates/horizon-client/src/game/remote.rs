@@ -2716,8 +2716,12 @@ impl Game<'_> {
                     _ => None,
                 }
             }
+            // A content mod's menu type: its container, then the inventory.
             // A workstation: its inputs, its result, then the inventory.
             m => {
+                if let Some(t) = horizon_client::containers::mod_menu_type(m) {
+                    return slots(t.slots);
+                }
                 let kind = Self::remote_station_kind(m)?;
                 let inputs = kind.inputs();
                 let own = inputs + usize::from(kind.has_result());
@@ -8602,6 +8606,7 @@ impl Game<'_> {
             self.remote_open_merchant(p.container, title, menu_title(&p.title));
             return;
         }
+        let mod_type = horizon_client::containers::mod_menu_type(&menu);
         let entity = match menu.as_str() {
             "minecraft:crafting" => None,
             "minecraft:furnace" | "minecraft:blast_furnace" | "minecraft:smoker" => {
@@ -8638,6 +8643,14 @@ impl Game<'_> {
                     .unwrap_or(3);
                 Some(BlockEntity::Chest(vec![None; rows * 9]))
             }
+            // A content mod's menu type: its container's slots, which its
+            // mod's screen places.
+            _ if mod_type.is_some() => Some(BlockEntity::Mod(Box::new(
+                horizon_client::containers::ModBlockEntity {
+                    items: vec![None; mod_type.map_or(0, |t| t.slots)],
+                    ..Default::default()
+                },
+            ))),
             _ => {
                 // Unsupported menu: tell the server we closed it.
                 self.send(S::ContainerClose(play::ContainerClose {
@@ -8673,6 +8686,20 @@ impl Game<'_> {
             self.world.block_entities.insert(key, entity);
             self.container = Some(key);
             self.open_native_screen(key, target, p.container, &menu);
+            // A mod menu type shows through its mod's screen only: without one
+            // (`MenuScreens.create` finds no screen) the window closes again.
+            if self.mod_screen.is_none() && mod_type.is_some() {
+                self.world.block_entities.remove(&key);
+                self.container = None;
+                if let Some(r) = self.remote.as_mut() {
+                    r.menu = None;
+                    r.menu_title = None;
+                }
+                self.send(S::ContainerClose(play::ContainerClose {
+                    container: p.container,
+                }));
+                return;
+            }
         }
         self.screen = Screen::Inventory;
         self.capture(false);
