@@ -1735,6 +1735,7 @@ impl Game<'_> {
         let _ = (player, command, ran);
     }
     /// A command a mod registered, typed on the dedicated server's console
+    /// or sent through `horizon-server console`
     /// (`DedicatedServer.handleConsoleInputs`), without its slash: set `ran`
     /// when it is yours. There is no player: the source is the console, at
     /// permission level 4, so `native_acting_player` is None and the
