@@ -4597,14 +4597,13 @@ impl Renderer {
     }
     fn animate(&mut self, encoder: &mut wgpu::CommandEncoder, tick: u64, cull_inactive: bool) {
         let active = cull_inactive.then_some(&self.active_animated_layers[..]);
-        self.animations
-            .animate(
-                encoder,
-                &mut self.uploads,
-                tick,
-                active,
-                self.own_timing.as_mut(),
-            );
+        self.animations.animate(
+            encoder,
+            &mut self.uploads,
+            tick,
+            active,
+            self.own_timing.as_mut(),
+        );
         if let Some(atlas) = &self.pack_atlas {
             atlas.copy(
                 encoder,
@@ -6044,10 +6043,11 @@ impl Renderer {
             && let Some(native) = &self.native
             && let Some(shadow) = &native.shadow
         {
-            let mut pass = native
-                .frame
-                .shadow_map
-                .begin(&mut encoder, "Native shader pack shadow", self.own_timing.as_mut());
+            let mut pass = native.frame.shadow_map.begin(
+                &mut encoder,
+                "Native shader pack shadow",
+                self.own_timing.as_mut(),
+            );
             pass.set_bind_group(0, &self.group, &[]);
             pass.set_bind_group(horizon_shader_api::stages::GROUP, &shadow.group, &[]);
             if flat_frame
@@ -6066,14 +6066,11 @@ impl Renderer {
                 self.draw_sections(&mut pass, &self.indirect, 0, shadow_first, shadow_solid);
             }
             drop(pass);
-            let mut pass = native
-                .frame
-                .shadow_map
-                .begin_translucent(
-                    &mut encoder,
-                    "Native shader pack translucent shadow",
-                    self.own_timing.as_mut(),
-                );
+            let mut pass = native.frame.shadow_map.begin_translucent(
+                &mut encoder,
+                "Native shader pack translucent shadow",
+                self.own_timing.as_mut(),
+            );
             pass.set_bind_group(0, &self.group, &[]);
             pass.set_bind_group(horizon_shader_api::stages::GROUP, &shadow.group, &[]);
             if flat_frame
@@ -7033,8 +7030,12 @@ impl Renderer {
                 native.timing.as_mut(),
             );
         } else if scaled.is_some() {
-            self.world_post
-                .finish(&self.queue, &mut encoder, &view_target, self.own_timing.as_mut());
+            self.world_post.finish(
+                &self.queue,
+                &mut encoder,
+                &view_target,
+                self.own_timing.as_mut(),
+            );
         }
         if !frame.title {
             let (depth, depth_size) = match &scaled {

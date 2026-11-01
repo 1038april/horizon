@@ -303,11 +303,7 @@ impl ShadowMap {
     pub fn clear_blank(&mut self, encoder: &mut wgpu::CommandEncoder) {
         if std::mem::take(&mut self.blank_uncleared) {
             drop(self.begin(encoder, "Native shader pack shadow map clear", None));
-            drop(self.begin_translucent(
-                encoder,
-                "Native shader pack shadow colour clear",
-                None,
-            ));
+            drop(self.begin_translucent(encoder, "Native shader pack shadow colour clear", None));
         }
     }
 }

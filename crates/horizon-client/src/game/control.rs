@@ -112,10 +112,17 @@ impl Game<'_> {
     /// The frame summary, with Horizon's own passes' median GPU times while they are timed.
     fn summary_with_passes(&self) -> Value {
         let mut summary = self.frame_stats.summary();
-        let passes = self.renderer.as_ref().map(|r| r.own_pass_times()).unwrap_or_default();
+        let passes = self
+            .renderer
+            .as_ref()
+            .map(|r| r.own_pass_times())
+            .unwrap_or_default();
         if !passes.is_empty() {
             summary["gpu_passes"] = Value::Object(
-                passes.into_iter().map(|(name, ms)| (name, json!(ms))).collect(),
+                passes
+                    .into_iter()
+                    .map(|(name, ms)| (name, json!(ms)))
+                    .collect(),
             );
         }
         summary
