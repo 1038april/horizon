@@ -265,6 +265,19 @@ pub const SKY_INPUT: Struct = Struct {
     },
 };
 
+/// The weather stage's input: one point of a rain or snow streak.
+pub const WEATHER_INPUT: Struct = Struct {
+    name: "WeatherInput",
+    doc: "One point of a rain or snow streak, for `fn weather(input: WeatherInput) -> vec4<f32>`, \
+          which returns the colour blended over the world (alpha its opacity).",
+    fields: fields! {
+        color: "vec4<f32>" = "The rain or snow texture's colour here times the streak's vertex colour (alpha 0.1..1).",
+        light: "vec2<f32>" = "Block and sky light, 0..1.",
+        position: "vec3<f32>" = "The point, camera-relative, in blocks.",
+        snow: "bool" = "A snow streak (rain otherwise).",
+    },
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
