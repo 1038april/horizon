@@ -371,6 +371,16 @@ impl Game<'_> {
                 }
                 // Native mods see the key as the keyboard hook does.
                 let action = arg(2)?;
+                // ScreenEvent.KeyPressed.Pre: the open screen hears of the
+                // press before it acts on it, as the window's key event hands
+                // it over. A cancelled press goes no further — not to the
+                // screens, not to `native_key` — and its release still comes.
+                if action != "up" && self.screen_key_pressed(physical, action == "repeat") {
+                    if action == "tap" {
+                        self.physical_keys.remove(&physical);
+                    }
+                    return ok();
+                }
                 self.native_key_event(physical, action != "up", action == "repeat");
                 if action == "tap" {
                     self.native_key_event(physical, false, false);
@@ -674,6 +684,14 @@ impl Game<'_> {
                 self.require_world()?;
                 // Typed keys: the open screen's narration hears them.
                 self.narration.keyboard_action();
+                // ScreenEvent.CharacterTyped.Pre: the open screen hears of
+                // each character before a text box takes it, as the window's
+                // key event fires it. A cancelled character is dropped, so
+                // `type` types the survivors only.
+                let Some(typed) = self.screen_text_typed(text) else {
+                    return ok();
+                };
+                let text = typed.as_str();
                 if self.book.is_some() {
                     self.book_type(text);
                     return ok();

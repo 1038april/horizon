@@ -15658,6 +15658,38 @@ impl Game<'_> {
             }
             return;
         }
+        // ScreenEvent.KeyPressed.Pre / CharacterTyped.Pre: the open screen
+        // hears of the key and of each character it types before it acts on
+        // either, and a cancelled press goes no further — no focus move, no
+        // Escape-close, no inventory or hotbar key, no text box, no
+        // `native_key`. It fires after the window's own shortcuts (fullscreen,
+        // screenshot, the debug keys, the narrator) so those keep working with
+        // a mod that cancels. The characters fire even when the key was
+        // cancelled, as vanilla delivers `charTyped` anyway, and a cancelled
+        // one leaves the event's text; the key's release still comes through.
+        if let WindowEvent::KeyboardInput {
+            event: key_event, ..
+        } = &mut event
+            && key_event.state == ElementState::Pressed
+        {
+            let canceled = match key_event.physical_key {
+                PhysicalKey::Code(key) => self.screen_key_pressed(key, key_event.repeat),
+                PhysicalKey::Unidentified(_) => false,
+            };
+            // Only a screen's own text is filtered: the gate first, so a key
+            // press in play or on the title screen copies nothing.
+            if self.screen_hooks_open()
+                && let Some(text) = key_event.text.as_deref()
+            {
+                let left = self.screen_text_typed(text);
+                if left.as_deref() != Some(text) {
+                    key_event.text = left.map(Into::into);
+                }
+            }
+            if canceled {
+                return;
+            }
+        }
         // Screen.keyPressed: Tab, the arrows and Enter move and press the
         // menu's focus, unless the focused widget or the screen keeps them.
         if let WindowEvent::KeyboardInput {
