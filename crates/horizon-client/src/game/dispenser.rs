@@ -516,7 +516,7 @@ impl Game<'_> {
     /// Drop one item as DefaultDispenseItemBehavior does. For a dispenser hook:
     /// return this remainder in its answer with `CLICK`; the caller plays the
     /// answer's event and smoke once. A client, another dimension or an unloaded
-    /// chunk keeps the input stack unchanged. API @API:dispenser_behaviour@.
+    /// chunk keeps the input stack unchanged. API 67.
     #[allow(dead_code)]
     pub(super) fn native_dispense_default(
         &mut self,
