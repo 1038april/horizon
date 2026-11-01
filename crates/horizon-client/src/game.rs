@@ -12986,6 +12986,18 @@ impl Game<'_> {
             let attack = attacks[i];
             let inverse_height =
                 horizon_client::first_person::equip_displacement(heights[i], scale);
+            let mut canceled = false;
+            self.native_render_hand(
+                hand,
+                item.as_ref(),
+                a,
+                attack,
+                inverse_height,
+                &mut canceled,
+            );
+            if canceled {
+                continue;
+            }
             // The main hand on its arm, the off hand on the other one.
             let left = self.settings.main_hand_left != (hand == Hand::Off);
             let Some(stack) = item else {

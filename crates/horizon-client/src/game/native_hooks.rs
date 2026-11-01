@@ -1084,6 +1084,20 @@ impl Game<'_> {
     /// and on servers), and the server's own (`native_window` is false
     /// there: the single player server thread, a dedicated server).
     pub(super) fn native_tick(&mut self) {}
+    /// Before one first-person hand and its displayed stack are drawn (RenderHandEvent).
+    /// Equip progress is the inverse arm height, including the item's swap animation scale.
+    /// Cancel skips that hand's default geometry, including its map and arm geometry.
+    pub(super) fn native_render_hand(
+        &self,
+        hand: horizon_client::first_person::Hand,
+        stack: Option<&ItemStack>,
+        partial: f32,
+        swing: f32,
+        equip: f32,
+        canceled: &mut bool,
+    ) {
+        let _ = (hand, stack, partial, swing, equip, canceled);
+    }
     /// The world frame's local visual sources. Push requests; Horizon validates
     /// and limits them before rendering. Called only while a world is visible.
     pub(super) fn native_visuals(
