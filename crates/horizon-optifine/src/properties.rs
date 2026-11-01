@@ -21,7 +21,10 @@ impl Properties {
     /// hold an unescaped `:` (`components.minecraft:custom_name=Bob`); other lines as `parse`.
     pub fn parse_equals_first(text: &str) -> Self {
         Self::read(text, |line| match unescaped_equals(line) {
-            Some(i) => (line[..i].trim_end(), line[i + 1..].trim_start()),
+            Some(i) => (
+                line[..i].trim_end_matches([' ', '\t', '\x0c']),
+                line[i + 1..].trim_start_matches([' ', '\t', '\x0c']),
+            ),
             None => split(line),
         })
     }

@@ -4,7 +4,9 @@
 //!
 //! Written from OptiFine's `cit.properties` and `cit_single.properties` docs, CIT Resewn's wiki
 //! (citresewn.shcm.io) and CIT Resewn Continuation's MIT-licensed source (its conditions, read
-//! for the 1.21 component rules); where OptiFine and CIT Resewn differ, CIT Resewn is followed.
+//! for the 1.21 component rules). Where OptiFine and CIT Resewn differ, CIT Resewn is followed,
+//! but for keys neither reads: those are ignored, as OptiFine does, where CIT Resewn would never
+//! match the rule.
 
 use crate::matchers::{IdList, Name, RangeList, namespaced};
 use crate::paths::{resolve, valid};
@@ -198,8 +200,8 @@ fn legacy_source(path: Vec<String>) -> Option<(Source, Vec<String>)> {
         ["display", "Name", ..] => component("custom_name", &[], &path[2..]),
         ["display", "Lore", ..] => component("lore", &[], &path[2..]),
         ["display", "color", ..] => component("dyed_color", &[], &path[2..]),
-        ["display", "MapColor", ..] => component("map_color", &[], &path[2..]),
-        ["display", ..] => None,
+        // `map_color` is gone since 1.21.5; `LocName` became a translated `item_name`.
+        ["display", "MapColor" | "LocName", ..] => None,
         ["CustomModelData", ..] => component("custom_model_data", &["floats", "0"], &path[1..]),
         ["Potion", ..] => component("potion_contents", &["potion"], &path[1..]),
         ["CustomPotionColor", ..] => component("potion_contents", &["custom_color"], &path[1..]),
@@ -208,15 +210,28 @@ fn legacy_source(path: Vec<String>) -> Option<(Source, Vec<String>)> {
         ["Trim", ..] => component("trim", &[], &path[1..]),
         ["title", ..] => component("written_book_content", &["title", "raw"], &path[1..]),
         ["author", ..] => component("written_book_content", &["author"], &path[1..]),
+        // `generation` and `flight_duration` are left out when 0: the matcher reads that default.
         ["generation", ..] => component("written_book_content", &["generation"], &path[1..]),
         ["SkullOwner"] | ["SkullOwner", "Name", ..] => {
             component("profile", &["name"], path.get(2..).unwrap_or_default())
         }
         ["SkullOwner", "Id", ..] => component("profile", &["id"], &path[2..]),
+        // `Properties.textures` became `profile.properties`, a list of `{name, value}`.
+        ["SkullOwner", ..] => None,
         ["Fireworks", "Flight", ..] => component("fireworks", &["flight_duration"], &path[2..]),
         ["map", ..] => component("map_id", &[], &path[1..]),
         ["EntityTag", ..] => component("entity_data", &[], &path[1..]),
+        // The data fixer took these out of `BlockEntityTag` into components of their own shape.
+        [
+            "BlockEntityTag",
+            "Base" | "Patterns" | "Items" | "Lock" | "LootTable" | "LootTableSeed" | "sherds"
+            | "item" | "Bees" | "bees" | "note_block_sound",
+            ..,
+        ] => None,
         ["BlockEntityTag", ..] => component("block_entity_data", &[], &path[1..]),
+        ["instrument", ..] => component("instrument", &[], &path[1..]),
+        ["Recipes", ..] => component("recipes", &[], &path[1..]),
+        ["DebugProperty", ..] => component("debug_stick_state", &[], &path[1..]),
         ["BlockStateTag", ..] => component("block_state", &[], &path[1..]),
         ["Enchantments", ..] => Some((
             Source::LegacyEnchantments { stored: false },
@@ -248,9 +263,6 @@ fn legacy_source(path: Vec<String>) -> Option<(Source, Vec<String>)> {
             | "Items"
             | "ChargedProjectiles"
             | "Charged"
-            | "Recipes"
-            | "DebugProperty"
-            | "instrument"
             | "CustomCreativeLock",
             ..,
         ] => None,
@@ -287,9 +299,9 @@ pub struct Rule {
 
 impl Rule {
     /// The rule `props` (at resource path `path`, read with `Properties::parse_equals_first` as
-    /// CIT Resewn reads them) describes. `exists` answers whether a resource
-    /// path names a file, to find textures and models the way OptiFine and CIT Resewn look for
-    /// them. `None` for an unknown type, a malformed condition, or a rule that changes nothing.
+    /// CIT Resewn reads them) describes. `exists` answers whether a resource path names a file,
+    /// to find textures and models the way OptiFine and CIT Resewn look for them. `None` for an
+    /// unknown type, a malformed condition, or a rule that changes nothing.
     pub fn parse(path: &str, props: &Properties, exists: impl Fn(&str) -> bool) -> Option<Self> {
         let kind = match props.get("type").unwrap_or("item") {
             "item" => Kind::Item,
@@ -862,7 +874,17 @@ mod tests {
         assert_eq!(at("Fireworks.Flight"), is("fireworks", "flight_duration"));
         // Moved to a component of another shape: no test, and so no rule.
         assert_eq!(at("AttributeModifiers.0.Amount"), None);
-        assert_eq!(at("display.HideFlags"), None);
+        assert_eq!(at("HideFlags"), None);
+        assert_eq!(at("SkullOwner.Properties.textures.0.Value"), None);
+        assert_eq!(at("BlockEntityTag.Patterns.0.Pattern"), None);
+        assert_eq!(at("display.MapColor"), None);
+        assert_eq!(
+            at("BlockEntityTag.CustomName"),
+            is("block_entity_data", "CustomName")
+        );
+        assert_eq!(at("instrument"), is("instrument", ""));
+        // What the fixer left in `display` stayed in custom data.
+        assert_eq!(at("display.Foo"), is("custom_data", "display.Foo"));
         let files = ["assets/minecraft/optifine/cit/swords/flame.png"];
         assert!(rule(SWORD, "items=stick\nnbt.Unbreakable=!1", &files).is_none());
     }
