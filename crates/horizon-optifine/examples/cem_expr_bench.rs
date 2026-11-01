@@ -1,6 +1,7 @@
 //! How fast CEM animation expressions evaluate: a walk cycle, idle breathing, head tracking,
 //! counters and keyframes in the style of animation packs, compiled once, then evaluated as
-//! one entity's frame over and over.
+//! one entity's frame over and over. CPU time is the figure to compare: the wall clock counts
+//! whatever else the machine runs.
 //!
 //! `cargo run --release -p horizon-optifine --example cem_expr_bench`
 
@@ -99,6 +100,8 @@ fn main() {
         .collect();
     let mut slots = vec![0.0f32; NAMES.len()];
     let frames = 2_000_000u32;
+    let pid = std::process::id();
+    let cpu = horizon_bench::cpu_seconds(pid);
     let start = Instant::now();
     for frame in 0..frames {
         // An entity walking in and out of water.
@@ -122,4 +125,12 @@ fn main() {
         evals / elapsed / 1e6,
         elapsed * 1e6 / f64::from(frames),
     );
+    match cpu.zip(horizon_bench::cpu_seconds(pid)) {
+        Some((before, after)) => println!(
+            "  cpu time {:.1} ns per expression, {:.2} us per entity frame",
+            (after - before) * 1e9 / evals,
+            (after - before) * 1e6 / f64::from(frames),
+        ),
+        None => println!("  cpu time unavailable on this system"),
+    }
 }

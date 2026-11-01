@@ -11,7 +11,7 @@
 //! vanilla texture name, and the texture selection then works on that name as on vanilla's.
 
 use super::{MobType, Part, Polygon};
-use horizon_optifine::cem::model::{Bone, EntityModel, parse_jem};
+use horizon_optifine::cem::model::{Bone, EntityModel, MAX_BYTES, parse_jem};
 use std::{collections::HashMap, fs, path::Path, sync::Arc};
 
 /// The CEM models of the enabled packs, by model layer (`zombie#main`).
@@ -46,12 +46,15 @@ impl CemModels {
         if files.is_empty() {
             return Self::default();
         }
-        let mut read = |path: &str| fs::read_to_string(root.join(path)).ok();
+        let mut read = |path: &str| read_small(&root.join(path));
         let mut layers = HashMap::new();
         // A baby layer without its own file takes the adult's: those go after every own file.
         let mut fallbacks = Vec::new();
         for (name, path) in &files {
-            let Ok(text) = fs::read_to_string(root.join(path)) else {
+            let Some(text) = read_small(&root.join(path)) else {
+                log::warn!(
+                    "Horizon: custom entity model {path}: unreadable or over {MAX_BYTES} bytes"
+                );
                 continue;
             };
             let jem = match parse_jem(path, &text, &mut read) {
@@ -61,6 +64,9 @@ impl CemModels {
                     continue;
                 }
             };
+            for warning in &jem.warnings {
+                log::warn!("Horizon: custom entity model {warning}");
+            }
             let jem = Arc::new(jem);
             let key = layer_key(name);
             if let Some(part) = vanilla.get(key.as_str()) {
@@ -87,6 +93,16 @@ impl CemModels {
     pub fn layer(&self, key: &str) -> Option<&CemLayer> {
         self.layers.get(key)
     }
+}
+
+/// A pack file's text, None when it's missing or larger than a model may read: its size is
+/// checked before anything is read.
+fn read_small(path: &Path) -> Option<String> {
+    let len = fs::metadata(path).ok()?.len();
+    if len > MAX_BYTES as u64 {
+        return None;
+    }
+    fs::read_to_string(path).ok()
 }
 
 /// Every `.jem` of the CEM folders by model name, `emf/cem` over `optifine/cem`.
