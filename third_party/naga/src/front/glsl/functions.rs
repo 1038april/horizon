@@ -902,6 +902,7 @@ impl Frontend {
         proxy_writes: &mut Vec<ProxyWrite>,
         arguments: &mut Vec<Handle<Expression>>,
     ) -> Result<()> {
+        let whole_local = matches!(ctx.expressions[original], Expression::LocalVariable(_));
         let original_ty = ctx.resolve_type(original, meta)?;
         let original_pointer_space = original_ty.pointer_space();
 
@@ -921,6 +922,9 @@ impl Frontend {
             // indirection through a local variable is needed to align the address
             // spaces of the call argument and the overload parameter.
             TypeInner::Pointer { base, space } if space != AddressSpace::Function => Some(base),
+            // A pointer into a struct or an array (`f(s.field)`, `f(a[i])`): the SPIR-V
+            // writer passes only whole variables by pointer, so it is spilled too.
+            TypeInner::Pointer { base, .. } if !whole_local => Some(base),
             // A pointer into a vector or a matrix: MSL and WGSL can't pass a vector element
             // by reference, so it is spilled whatever its address space (GLSL copies `out`
             // and `inout` arguments in and out anyway).
