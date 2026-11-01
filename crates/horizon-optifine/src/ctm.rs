@@ -84,7 +84,8 @@ impl Method {
             | OverlayVerticalHorizontal => n(7),
             Top | Fixed | OverlayFixed => n(1),
             Random | OverlayRandom => (1, None),
-            Repeat | OverlayRepeat => n((width * height) as usize),
+            // `checked_mul`'s `None` (a pattern no pack can fill) asks for 0 tiles: refused.
+            Repeat | OverlayRepeat => n(width.checked_mul(height).unwrap_or(0) as usize),
             Overlay => n(17),
         }
     }
@@ -199,7 +200,12 @@ pub fn load(root: &Path) -> Vec<Rule> {
     let mut rules: Vec<Rule> = crate::properties_files(root, "ctm")
         .into_iter()
         .filter_map(|path| {
-            let text = std::fs::read_to_string(root.join(&path)).ok()?;
+            let bytes = std::fs::read(root.join(&path))
+                .map_err(|e| log::warn!("Horizon: connected textures {path}: {e}"))
+                .ok()?;
+            // Java's `Properties.load(InputStream)` reads ISO-8859-1; UTF-8 when it is valid.
+            let text = String::from_utf8(bytes)
+                .unwrap_or_else(|e| e.into_bytes().iter().map(|&b| char::from(b)).collect());
             Rule::parse(&path, &Properties::parse(&text))
                 .map_err(|e| log::warn!("Horizon: connected textures {path}: {e}"))
                 .ok()
@@ -218,8 +224,12 @@ impl Rule {
     /// `Ok(None)` for a file the pack keeps from Continuity (`optifineOnly=true`).
     pub fn parse(path: &str, props: &Properties) -> Result<Option<Self>, String> {
         let get = |key| props.get(key).filter(|v| !v.is_empty());
+        // `Boolean.parseBoolean`.
+        let flag = |key| get(key).map(|v: &str| v.eq_ignore_ascii_case("true"));
+        // Continuity's wiki: `optifineOnly` counts only in `minecraft`, the namespace OptiFine
+        // reads, so a pack can keep a file from Continuity there and give it another elsewhere.
         let namespace = path.split('/').nth(1).unwrap_or("minecraft");
-        if namespace == "minecraft" && get("optifineOnly") == Some("true") {
+        if namespace == "minecraft" && flag("optifineOnly") == Some(true) {
             return Ok(None);
         }
         let method = get("method").ok_or("no method")?;
@@ -244,11 +254,13 @@ impl Rule {
         }
 
         let int = |key, default| get(key).and_then(|v| v.parse().ok()).unwrap_or(default);
-        let flag = |key| get(key).is_some_and(|v| v.eq_ignore_ascii_case("true"));
         let width = int("width", 0).max(0) as u32;
         let height = int("height", 0).max(0) as u32;
 
-        let tiles = get("tiles").map_or_else(Vec::new, |v| tile_list(path, v));
+        let tiles = match get("tiles") {
+            Some(v) => tile_list(path, v).ok_or(format!("more than {MAX_TILES} tiles"))?,
+            None => Vec::new(),
+        };
         let (min, max) = method.tiles_needed(width, height);
         if tiles.len() < min || max.is_some_and(|max| tiles.len() != max) || min == 0 {
             return Err(format!("{} tiles for {method:?}", tiles.len()));
@@ -259,20 +271,25 @@ impl Rule {
 
         let mut weights: Vec<u32> = get("weights")
             .map(|v| {
+                // By position: a weight that is not a number counts 1.
                 v.split_whitespace()
-                    .filter_map(|w| w.parse().ok())
+                    .map(|w| w.parse().unwrap_or(1))
                     .collect()
             })
             .unwrap_or_default();
         if !weights.is_empty() {
             weights.resize(tiles.len(), 1);
         }
+        if weights.iter().all(|&w| w == 0) {
+            // Nothing to pick by: every tile alike.
+            weights.clear();
+        }
 
         let compact_overrides = props
             .with_prefix("ctm.")
             .filter_map(|(case, tile)| {
                 let case: u8 = case.parse().ok().filter(|&c| c < 47)?;
-                let tile: usize = tile.trim().parse().ok().filter(|&t| t < tiles.len())?;
+                let tile: usize = tile.parse().ok().filter(|&t| t < tiles.len())?;
                 Some((case, tile))
             })
             .collect();
@@ -312,18 +329,21 @@ impl Rule {
         Ok(Some(Self {
             path: path.to_owned(),
             method,
-            prioritize: get("prioritize").map_or(!match_tiles.is_empty(), |v| v == "true"),
+            prioritize: flag("prioritize").unwrap_or(!match_tiles.is_empty()),
             match_tiles,
             match_blocks,
             weight: int("weight", 0),
             faces: get("faces").map_or(faces::ALL, face_bits),
             biomes: get("biomes").map(IdList::parse),
             heights,
-            name: get("name").and_then(Name::parse),
+            name: match get("name") {
+                Some(n) => Some(Name::parse(n).ok_or(format!("bad name {n}"))?),
+                None => None,
+            },
             connect,
             connect_tiles: get("connectTiles").map_or_else(Vec::new, sprite_list),
             connect_blocks: get("connectBlocks").map_or_else(Vec::new, BlockMatch::parse_list),
-            inner_seams: flag("innerSeams"),
+            inner_seams: flag("innerSeams") == Some(true),
             weights,
             random_loops: int("randomLoops", 0).clamp(0, 9) as u32,
             symmetry: match get("symmetry") {
@@ -331,7 +351,7 @@ impl Rule {
                 Some("all") => Symmetry::All,
                 _ => Symmetry::None,
             },
-            linked: flag("linked"),
+            linked: flag("linked") == Some(true),
             width,
             height,
             compact_overrides,
@@ -386,15 +406,16 @@ pub fn sprite_path(name: &str) -> Option<String> {
         p if p.starts_with("block/") || p.starts_with("item/") => format!("textures/{p}"),
         p => p.to_owned(),
     };
-    let path = format!("assets/{}/{path}.png", ns.to_ascii_lowercase());
-    path.split('/')
-        .all(|s| !matches!(s, "" | "." | ".."))
-        .then_some(path)
+    crate::paths::in_root(format!("assets/{}/{path}.png", ns.to_ascii_lowercase()))
 }
 
+/// More tiles than any rule needs (a 64 x 64 `repeat`): a range past it is a broken file, not
+/// millions of textures.
+const MAX_TILES: usize = 4096;
+
 /// `tiles`: `0-3 5 name name.png <skip> <default> path/x.png ~/x ns:path`. Numbers and bare
-/// names are beside the properties file; ranges count up (or down).
-fn tile_list(props: &str, value: &str) -> Vec<Tile> {
+/// names are beside the properties file; ranges count up (or down). `None` past [`MAX_TILES`].
+fn tile_list(props: &str, value: &str) -> Option<Vec<Tile>> {
     let png = |p: &str| {
         if p.ends_with(".png") {
             p.to_owned()
@@ -410,10 +431,15 @@ fn tile_list(props: &str, value: &str) -> Vec<Tile> {
             // Continuity: a namespaced tile is a sprite location, never a range.
             t if t.contains(':') => {
                 let (ns, path) = t.split_once(':').unwrap_or_default();
+                // As `sprite_path`, but a path outside `textures/` and `optifine/` is in `textures/`.
                 let path = match path {
-                    p if !p.contains('/') || p.starts_with("textures/") => p.to_owned(),
-                    p if p.starts_with("optifine/") => p.to_owned(),
-                    p => format!("textures/{p}"),
+                    p if p.contains('/')
+                        && !p.starts_with("textures/")
+                        && !p.starts_with("optifine/") =>
+                    {
+                        format!("textures/{p}")
+                    }
+                    p => p.to_owned(),
                 };
                 out.extend(sprite_path(&format!("{ns}:{path}")).map(Tile::Texture));
             }
@@ -421,17 +447,16 @@ fn tile_list(props: &str, value: &str) -> Vec<Tile> {
                 if let Some((a, b)) = t.split_once('-')
                     && let (Ok(a), Ok(b)) = (a.parse::<u32>(), b.parse::<u32>())
                 {
+                    if a.abs_diff(b) as usize >= MAX_TILES - out.len() {
+                        return None;
+                    }
                     let dir = props.rsplit_once('/').map_or("", |(d, _)| d);
-                    let range: Vec<u32> = if a <= b {
-                        (a..=b).collect()
+                    let tile = |n| Tile::Texture(format!("{dir}/{n}.png"));
+                    if a <= b {
+                        out.extend((a..=b).map(tile));
                     } else {
-                        (b..=a).rev().collect()
-                    };
-                    out.extend(
-                        range
-                            .iter()
-                            .map(|n| Tile::Texture(format!("{dir}/{n}.png"))),
-                    );
+                        out.extend((b..=a).rev().map(tile));
+                    }
                     continue;
                 }
                 let t = t.strip_prefix("assets/minecraft/").unwrap_or(t);
@@ -444,7 +469,7 @@ fn tile_list(props: &str, value: &str) -> Vec<Tile> {
             }
         }
     }
-    out
+    (out.len() <= MAX_TILES).then_some(out)
 }
 
 fn face_bits(value: &str) -> u8 {
@@ -659,7 +684,10 @@ mod tests {
             ),
         ];
         sort(&mut rules);
-        let names: Vec<_> = rules.iter().map(|r| &r.path[30..]).collect();
+        let names: Vec<_> = rules
+            .iter()
+            .map(|r| r.path.rsplit('/').next().unwrap())
+            .collect();
         assert_eq!(
             names,
             [
@@ -680,5 +708,82 @@ mod tests {
             .unwrap()
             .is_some()
         );
+    }
+    #[test]
+    fn broken_values() {
+        let base = "matchBlocks=furnace\nmethod=random\n";
+        let r = |extra: &str| rule("a.properties", &format!("{base}{extra}"));
+        // A pack can't ask for billions of tiles, or a pattern too big to count.
+        assert!(r("tiles=0-4294967295").is_err());
+        assert!(r("tiles=0-2999 3000-5000").is_err());
+        assert_eq!(r("tiles=0-4095").unwrap().unwrap().tiles.len(), 4096);
+        let repeat = "matchBlocks=stone\nmethod=repeat\nwidth=65536\nheight=65536\ntiles=0";
+        assert!(rule("a.properties", repeat).is_err());
+        // A name test that can't be read matches no block, so the rule is dropped.
+        assert!(r("tiles=0\nname=regex:[").is_err());
+        // Weights pair with tiles by position.
+        let w = r("tiles=0-2\nweights=10 x 5").unwrap().unwrap();
+        assert_eq!(w.weights, [10, 1, 5]);
+        assert!(
+            r("tiles=0-2\nweights=0 0 0")
+                .unwrap()
+                .unwrap()
+                .weights
+                .is_empty()
+        );
+        assert!(r("tiles=0\nprioritize=TRUE").unwrap().unwrap().prioritize);
+        assert!(r("tiles=0\nheights=..").is_err());
+        assert!(r("tiles=0\nconnect=sideways").is_err());
+        assert_eq!(r("tiles=0").unwrap().unwrap().connect, Connect::Block);
+    }
+
+    #[test]
+    fn height_forms() {
+        let h = |v: &str| {
+            rule(
+                "a.properties",
+                &format!("matchBlocks=stone\nmethod=fixed\ntiles=0\n{v}"),
+            )
+            .unwrap()
+            .unwrap()
+            .heights
+            .unwrap()
+        };
+        let below = h("heights=..10");
+        assert!(below.contains(i32::MIN) && below.contains(10) && !below.contains(11));
+        let swapped = h("heights=128..-16");
+        assert!(swapped.contains(-16) && swapped.contains(128) && !swapped.contains(129));
+        let max = h("maxHeight=5");
+        assert!(max.contains(-64) && max.contains(5) && !max.contains(6));
+    }
+
+    #[test]
+    fn loading_a_pack() {
+        let root = std::env::temp_dir().join(format!("horizon-ctm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let ctm = root.join("assets/minecraft/optifine/ctm");
+        std::fs::create_dir_all(ctm.join("b")).unwrap();
+        std::fs::write(
+            ctm.join("b/block_stone.properties"),
+            "method=fixed\ntiles=0",
+        )
+        .unwrap();
+        std::fs::write(ctm.join("a.properties"), "matchBlocks=stone\nmethod=spiral").unwrap();
+        // ISO-8859-1, as Java reads it: "É" is one byte.
+        let latin1 = b"matchBlocks=furnace\nmethod=fixed\ntiles=0\nname=\xc9p\xe9e\n";
+        std::fs::write(ctm.join("c.properties"), latin1).unwrap();
+        std::fs::write(ctm.join("z.properties"), "method=fixed\ntiles=0").unwrap();
+        let rules = load(&root);
+        let names: Vec<_> = rules
+            .iter()
+            .map(|r| r.path.rsplit('/').next().unwrap())
+            .collect();
+        // The broken a.properties is left out; the tile rule z comes first.
+        assert_eq!(
+            names,
+            ["z.properties", "block_stone.properties", "c.properties"]
+        );
+        assert!(rules[2].applies_at(faces::UP, 0, "plains", Some("Épée")));
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

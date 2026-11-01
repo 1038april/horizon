@@ -18,7 +18,11 @@ use std::path::{Path, PathBuf};
 /// empty one (`a//b`, a leading `/`), as vanilla's resource paths refuse them. Callers join the
 /// result onto the overlay root, so a pack must never name a file outside it.
 pub fn resolve(props: &str, value: &str) -> Option<String> {
-    let path = resolve_unchecked(props, value);
+    in_root(resolve_unchecked(props, value))
+}
+
+/// `path` when it stays inside the resource root ([`resolve`]'s test).
+pub(crate) fn in_root(path: String) -> Option<String> {
     path.split('/')
         .all(|segment| !matches!(segment, "" | "." | ".."))
         .then_some(path)
