@@ -34,9 +34,16 @@ fn parse_nine_slice(v: &serde_json::Value) -> Option<NineSlice> {
         let g = |k: &str| border[k].as_u64().unwrap_or(0) as u32;
         [g("left"), g("top"), g("right"), g("bottom")]
     };
+    let (width, height) = (size("width")?, size("height")?);
+    // `NineSlice.validate`: borders that meet leave no centre slice, so the
+    // sprite has no nine-slice metadata (vanilla draws it as a stretch).
+    let [l, t, r, b] = border;
+    if l.saturating_add(r) >= width || t.saturating_add(b) >= height {
+        return None;
+    }
     Some(NineSlice {
-        width: size("width")?,
-        height: size("height")?,
+        width,
+        height,
         border,
         stretch_inner: s["stretch_inner"].as_bool().unwrap_or(false),
     })
@@ -354,7 +361,28 @@ pub fn button(
     active: bool,
     hover: bool,
 ) {
+    button_as(batch, atlas, x, y, w, h, label, active, hover, |rect| {
+        crate::widgets::Narratable::button(label.plain(), rect, active)
+    });
+}
+/// A [`button`] that vanilla narrates as another widget (a `CycleButton`, a
+/// `LockIconButton`): `narration` builds what it records from its rectangle,
+/// and only while the narrator records.
+#[allow(clippy::too_many_arguments)]
+pub fn button_as(
+    batch: &mut HudBatch,
+    atlas: &HudAtlas,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    label: &Text,
+    active: bool,
+    hover: bool,
+    narration: impl FnOnce([f32; 4]) -> crate::widgets::Narratable,
+) {
     crate::widgets::record(&label.plain(), [x, y, w, h], active);
+    crate::widgets::narratable(|| narration([x, y, w, h]).hovered(hover));
     crate::widgets::widget_cursor(hover, active);
     let sprite = if !active {
         "gui/sprites/widget/button_disabled"
@@ -419,6 +447,9 @@ pub fn slider_ext(
     };
     // The control socket's widget tree (`ui`): its label and value.
     crate::widgets::record_as(&label.plain(), [x, y, w, 20.0], active, kind);
+    crate::widgets::narratable(|| {
+        crate::widgets::Narratable::slider(label.plain(), [x, y, w, 20.0], active).hovered(hover)
+    });
     if active {
         // A controller's D-pad can focus it (Horizon's controller support).
         crate::widgets::target_as([x, y, w, 20.0], kind);
@@ -680,6 +711,7 @@ pub fn tooltip(batch: &mut HudBatch, atlas: &HudAtlas, lines: &[Text], cursor: (
     if lines.is_empty() {
         return;
     }
+    crate::widgets::frame_tooltip(lines);
     let w = lines
         .iter()
         .map(|l| atlas.font.width_text(l))
@@ -697,7 +729,6 @@ pub fn tooltip(batch: &mut HudBatch, atlas: &HudAtlas, lines: &[Text], cursor: (
     if y + h + 3.0 > batch.height {
         y = batch.height - h - 3.0;
     }
-    y = y.max(4.0);
     nine_slice(
         batch,
         atlas,
@@ -746,6 +777,9 @@ pub struct EditBox {
     /// Grey completion shown after the text (EditBox.setSuggestion).
     pub suggestion: Option<String>,
     pub text_color: u32,
+    /// `getMessage`: what the narrator calls the box ("<message> edit box:
+    /// <value>").
+    pub message: String,
 }
 /// The focused text field of a screen that keeps its values as `String`s
 /// (the world list's search, world names, seeds, and the server screens): the `EditBox` state that
@@ -1007,6 +1041,7 @@ impl EditBox {
             focused_at: Instant::now(),
             suggestion: None,
             text_color: rgba(224, 224, 224, 255),
+            message: String::new(),
         }
     }
     pub fn inner_width(&self) -> f32 {
@@ -1229,6 +1264,14 @@ impl EditBox {
             [self.x, self.y, self.width, self.height],
             crate::widgets::Kind::Field,
         );
+        crate::widgets::narratable(|| {
+            crate::widgets::Narratable::edit_box(
+                self.message.clone(),
+                self.value.clone(),
+                [self.x, self.y, self.width, self.height],
+            )
+            .focused(self.focused)
+        });
         if self.bordered {
             let sprite = if self.focused {
                 "gui/sprites/widget/text_field_highlighted"
@@ -1420,6 +1463,17 @@ mod tests {
         assert_eq!(q.len(), 2);
         assert_quad(q[0], ([0.0, 5.0, 32.0, 7.0], [0.0, 0.0, 1.0, 1.0]));
         assert_quad(q[1], ([32.0, 5.0, 40.0, 7.0], [0.0, 0.0, 0.25, 1.0]));
+    }
+    #[test]
+    fn a_border_that_leaves_no_centre_slice_is_no_metadata() {
+        // NineSlice.validate rejects 12 + 12 >= 20, so the sprite has none.
+        let json = serde_json::json!({"gui": {"scaling": {
+            "type": "nine_slice", "width": 20, "height": 20, "border": 12}}});
+        assert!(parse_nine_slice(&json).is_none());
+        // 9 + 9 < 20 still leaves a centre slice.
+        let json = serde_json::json!({"gui": {"scaling": {
+            "type": "nine_slice", "width": 20, "height": 20, "border": 9}}});
+        assert_eq!(parse_nine_slice(&json).unwrap().border, [9; 4]);
     }
     #[test]
     fn a_high_resolution_button_slices_in_its_gui_units() {

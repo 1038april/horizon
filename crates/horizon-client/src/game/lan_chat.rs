@@ -92,7 +92,9 @@ impl Game<'_> {
             self.detect_rate_spam(host, conn, true);
             return;
         }
-        self.guest_command(host, conn, command, None);
+        if self.chat_filter_command(host, i, command) {
+            self.guest_command(host, conn, command, None);
+        }
         self.detect_rate_spam(host, conn, true);
     }
 
@@ -127,7 +129,9 @@ impl Game<'_> {
         for event in events {
             self.lan_log_event(event);
         }
-        if let Some(signed) = signed {
+        if let Some(signed) = signed
+            && self.chat_filter_command(host, i, &p.command)
+        {
             self.guest_command(host, conn, &p.command, Some(signed));
         }
         // The lambda counts the command even when its arguments failed to decode.
@@ -182,9 +186,27 @@ impl Game<'_> {
             let targets: Vec<usize> = match (raw, &selector.player_name, selector.uuid) {
                 (Some("@s"), ..) => vec![i],
                 (Some("@a"), ..) => (0..guests.len()).filter(placed).collect(),
-                (_, Some(name), _) => (0..guests.len())
-                    .filter(|&k| placed(&k) && guests[k].name.eq_ignore_ascii_case(name))
-                    .collect(),
+                (_, Some(name), _) => {
+                    let named: Vec<usize> = (0..guests.len())
+                        .filter(|&k| placed(&k) && guests[k].name.eq_ignore_ascii_case(name))
+                        .collect();
+                    if named.is_empty() {
+                        // No player has that name: the one going by it as a nickname (`~` optional).
+                        let bare = |s: &str| s.strip_prefix('~').unwrap_or(s).to_ascii_lowercase();
+                        let wanted = bare(name);
+                        let nicknamed = |k: &usize| {
+                            host.hub
+                                .nicknames
+                                .get(&guests[*k].uuid)
+                                .is_some_and(|nick| bare(nick) == wanted)
+                        };
+                        (0..guests.len())
+                            .filter(|k| placed(k) && nicknamed(k))
+                            .collect()
+                    } else {
+                        named
+                    }
+                }
                 (_, None, Some(uuid)) => (0..guests.len())
                     .filter(|&k| placed(&k) && guests[k].uuid == uuid)
                     .collect(),

@@ -86,12 +86,14 @@ mod end_sky;
 mod flat;
 mod frame_gen;
 mod hdr;
+mod hdr_stats;
 pub use hdr::Calibration as HdrCalibration;
 pub mod lightning;
 mod lod;
 mod native_material;
 mod native_pack;
 mod native_post;
+pub mod native_render;
 mod native_sky;
 mod occlusion;
 mod oit;
@@ -316,6 +318,12 @@ pub struct Frame<'a> {
     pub yaw: f32,
     pub pitch: f32,
     pub fov_degrees: f32,
+    /// The camera entity's eye and view rotation (yaw, pitch): the camera's own except in a
+    /// third-person view.
+    pub eye: DVec3,
+    pub eye_rotation: [f32; 2],
+    /// The camera is the entity's eye: no third-person view.
+    pub first_person: bool,
     /// The `GameRenderer.bobHurt`/`bobView` pose multiplied into the
     /// projection (`crate::camera::bob_matrix`).
     pub bob: Mat4,
@@ -683,6 +691,9 @@ pub struct Renderer {
     world_post: world_post::Post,
     /// HDR output (Horizon setting): `Some` while the swapchain is HDR.
     hdr: Option<hdr::Hdr>,
+    /// Which pixels of each block sprite may shine in HDR output (terrain.wgsl's
+    /// `emission_thresholds`), measured when HDR output turns on.
+    emission_stats: hdr_stats::EmissionStats,
     /// The HDR output the window's surface can present.
     hdr_output: Option<hdr::Output>,
     /// The marker file of an HDR output that has not presented a frame yet
@@ -817,6 +828,7 @@ fn terrain_group(
     sprite_sampler: &wgpu::Sampler,
     lightmap: &wgpu::TextureView,
     lightmap_sampler: &wgpu::Sampler,
+    emission_thresholds: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     let view = |binding, view| wgpu::BindGroupEntry {
         binding,
@@ -847,6 +859,7 @@ fn terrain_group(
             view(9, &sprites[5]),
             view(10, &sprites[6]),
             view(11, &sprites[7]),
+            view(12, emission_thresholds),
         ],
     })
 }
@@ -1565,6 +1578,15 @@ impl Renderer {
                 entry(9, vf, sprite_array),
                 entry(10, vf, sprite_array),
                 entry(11, vf, sprite_array),
+                entry(
+                    12,
+                    vf,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
             ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1888,6 +1910,8 @@ impl Renderer {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
+        let emission_stats =
+            hdr_stats::EmissionStats::new(&device, split, sprite_textures.len() as u32);
         let group = terrain_group(
             &device,
             "Horizon terrain resources",
@@ -1897,6 +1921,7 @@ impl Renderer {
             &sprite_sampler,
             &lightmap_view,
             &lightmap_sampler,
+            &emission_stats.view,
         );
         let crosshair_group = terrain_group(
             &device,
@@ -1907,6 +1932,7 @@ impl Renderer {
             &sprite_sampler,
             &lightmap_view,
             &lightmap_sampler,
+            &emission_stats.view,
         );
         let mirror_group = terrain_group(
             &device,
@@ -1917,6 +1943,7 @@ impl Renderer {
             &sprite_sampler,
             &lightmap_view,
             &lightmap_sampler,
+            &emission_stats.view,
         );
         let index_quads = 1 << 16;
         let indices = Self::quad_indices(&device, index_quads);
@@ -3093,6 +3120,7 @@ impl Renderer {
             layout: crate::chunk::ColumnLayout::VANILLA,
             world_post,
             hdr: None,
+            emission_stats,
             hdr_output,
             hdr_marker: None,
             pack_post: None,
@@ -3839,6 +3867,7 @@ impl Renderer {
                 ),
                 None => log::info!("Horizon renderer: HDR off"),
             }
+            self.measure_emission();
         }
         if let Some(hdr) = &mut self.hdr {
             hdr.ui = ui;
@@ -3850,6 +3879,15 @@ impl Renderer {
             hdr.peak = peak;
             hdr.black = black;
             self.send_hdr_metadata();
+        }
+    }
+    /// Measures which pixels of each block sprite may shine (`hdr_stats`), at the current
+    /// masks. Only with HDR output on: without it the frame's alpha is never read.
+    pub fn measure_emission(&mut self) {
+        if let Some(hdr) = &self.hdr {
+            let views = sprite_views(&self.sprite_textures, &self.sprite_unused, None);
+            self.emission_stats
+                .measure(&self.device, &self.queue, &views, hdr.masks);
         }
     }
     /// Whether what the system reports for the display changed (another output, the
@@ -3924,6 +3962,7 @@ impl Renderer {
             pack_post::PackPost::new(
                 &self.device,
                 &self.queue,
+                &self.adapter,
                 post,
                 self.config.format.remove_srgb_suffix(),
                 world,
@@ -3979,8 +4018,24 @@ impl Renderer {
     /// What a shader pack's gbuffers programs read from Horizon's geometry: the sky's, and
     /// terrain's in the pack's block atlas (made here when missing; none when it does not fit).
     pub fn pack_inputs(&mut self) -> horizon_shaders::GameInputs {
+        let terrain = self.pack_terrain_inputs();
+        // A geometry stage reads flat draws' vertices itself, through their index buffer.
+        let terrain_geometry = terrain
+            .clone()
+            .filter(|_| self.pack_terrain_flat)
+            .map(|mut inputs| {
+                inputs.declarations.push_str(
+                    "layout(set = 5, binding = 0) readonly buffer HzIndices { uint hz_indices[]; };\n",
+                );
+                horizon_shaders::GeometryInputs {
+                    inputs,
+                    pull: pack_atlas::PULL.to_owned(),
+                    index: "hz_indices[@]".to_owned(),
+                }
+            });
         horizon_shaders::GameInputs {
-            terrain: self.pack_terrain_inputs(),
+            terrain,
+            terrain_geometry,
             sky: Some(pack_sky::inputs()),
             celestial: Some(pack_sky::celestial_inputs()),
             entities: Some(pack_entities::inputs()),
@@ -4101,6 +4156,7 @@ impl Renderer {
             &self.sprite_sampler,
             &self.lightmap_view,
             &self.lightmap_sampler,
+            &self.emission_stats.view,
         );
     }
     /// The Mipmap Levels option: block textures sample at most `levels`
@@ -4608,14 +4664,27 @@ impl Renderer {
                 planes: frustum(v.cull),
             };
             crate::spans::time("shadow visibility", || {
-                self.sections.visible(
-                    camera,
-                    radius,
-                    &light,
-                    |_| true,
-                    |_, _| false,
-                    &mut shadow_visible,
-                )
+                // Within the unculled distance every section, then those in the light's box.
+                if let Some(d) = v.unculled {
+                    let all = Frustum {
+                        planes: [glam::Vec4::W; 6],
+                    };
+                    let near = radius.min((d / 16.0).ceil() as i32);
+                    self.sections.visible(
+                        camera,
+                        near,
+                        &all,
+                        |_| true,
+                        |_, _| false,
+                        &mut shadow_visible,
+                    );
+                }
+                let mut boxed = Vec::new();
+                self.sections
+                    .visible(camera, radius, &light, |_| true, |_, _| false, &mut boxed);
+                let seen: std::collections::HashSet<_> =
+                    shadow_visible.iter().map(|s| s.key).collect();
+                shadow_visible.extend(boxed.into_iter().filter(|s| !seen.contains(&s.key)));
             });
             // Nearest the light first, so the depth test rejects what lies under it.
             let light = v.light;
@@ -4965,7 +5034,13 @@ impl Renderer {
                     }
                 }
                 let before = self.draws.len();
-                facing_runs(&s.sides, Some(toward), v.origin, |first, quads| {
+                // Every face of a section within the unculled distance.
+                let unculled = view.unculled.is_some_and(|d| {
+                    let o = glam::Vec3::from(v.origin) + 8.0;
+                    o.x.abs().max(o.z.abs()) <= d + 8.0
+                });
+                let toward = (!unculled).then_some(toward);
+                facing_runs(&s.sides, toward, v.origin, |first, quads| {
                     let start = s.start as u32 + first * 4;
                     self.draws.push([quads * 6, 1, 0, start, instance]);
                     self.draw_pages.push((s.page, None));
@@ -5381,7 +5456,10 @@ impl Renderer {
         }
         let pack_reads_world = pack_post || native_post;
         // Phase 2 of occlusion culling draws over the depth, and a shader pack or TAA reads it.
-        let keep_depth = pack_reads_world || (taa && self.world_post.taa) || oit_on;
+        let keep_depth = pack_reads_world
+            || (taa && self.world_post.taa)
+            || oit_on
+            || native_render::render_needs().world_depth;
         // The pack's program reads the vertices this frame's draws bind.
         let pack_draws_terrain = pack_terrain && flat_frame == self.pack_terrain_flat;
         // The shadow camera's lists, drawn by the pack's shadow programs.
@@ -6294,7 +6372,8 @@ impl Renderer {
             let mut terrain =
                 |rp: &mut wgpu::RenderPass<'_>,
                  list: pack_post::TerrainList,
-                 page: &dyn Fn(&mut wgpu::RenderPass<'_>, u32)| {
+                 page: &dyn Fn(&mut wgpu::RenderPass<'_>, u32),
+                 geometry: Option<(u32, &wgpu::BindGroupLayout)>| {
                     use pack_post::TerrainList as L;
                     let shadow = matches!(list, L::ShadowSolid | L::ShadowTranslucent);
                     if !(if shadow {
@@ -6313,8 +6392,26 @@ impl Renderer {
                                 L::ShadowSolid => &flat.calls[shadow..shadow_translucent],
                                 L::ShadowTranslucent => &flat.calls[shadow_translucent..],
                             };
-                            flat.draw_with(rp, calls, |p| self.arena.buffer(p), page);
+                            match geometry {
+                                Some((instances, layout)) => {
+                                    let indices =
+                                        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                            label: Some("Shader pack geometry indices"),
+                                            layout,
+                                            entries: &[wgpu::BindGroupEntry {
+                                                binding: 0,
+                                                resource: flat.indices.as_entire_binding(),
+                                            }],
+                                        });
+                                    rp.set_bind_group(5, &indices, &[]);
+                                    let vertices = |p| self.arena.buffer(p);
+                                    flat.draw_geometry(rp, calls, vertices, page, instances);
+                                }
+                                None => flat.draw_with(rp, calls, |p| self.arena.buffer(p), page),
+                            }
                         }
+                        // A geometry stage reads flat draws' indices; without them it draws nothing.
+                        None if geometry.is_some() => {}
                         None => {
                             rp.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                             rp.set_vertex_buffer(1, self.instances.slice(..));
@@ -6370,6 +6467,30 @@ impl Renderer {
         } else if scaled.is_some() {
             self.world_post
                 .finish(&self.queue, &mut encoder, &view_target);
+        }
+        if !frame.title {
+            let (depth, depth_size) = match &scaled {
+                Some((_, depth)) => (depth, self.world_post.size().unwrap_or(size)),
+                None => (&self.depth, size),
+            };
+            native_render::native_world_drawn(&mut native_render::WorldDrawn {
+                device: &self.device,
+                queue: &self.queue,
+                encoder: &mut encoder,
+                color: &target_texture,
+                color_view: &view_target,
+                color_format: self.config.format.remove_srgb_suffix(),
+                size,
+                depth,
+                depth_size,
+                view_proj,
+                jittered,
+                camera: frame.camera,
+                entities: frame.entities,
+                spans: frame.entity_spans,
+                atlas: self.hud.atlas_texture.as_ref(),
+                quad_indices: &self.indices,
+            });
         }
         if let Some(hdr) = &self.hdr {
             hdr.keep_world(&mut encoder);

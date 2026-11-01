@@ -138,6 +138,8 @@ fn connect(port: u16, name: &str, known_pack: bool) -> Result<Bot, String> {
             }
             cfg::Clientbound::RegistryData(r) => {
                 registries += 1;
+                // A client that knows the core pack rebuilds the entries itself
+                // (RegistrySynchronization.packRegistry), dialogs included.
                 let has_data = r.entries.iter().any(|e| e.data.is_some());
                 assert_eq!(has_data, !known_pack, "{}", r.registry);
             }
@@ -883,6 +885,7 @@ fn guests_see_each_other_and_the_world_entities() {
                 && reminder.elapsed() >= Duration::from_secs(1)
             {
                 bot.send(S::MovePlayerPos(play::MovePlayerPos { x, y, z, flags: 1 }));
+                bot.send(S::ClientTickEnd(Empty));
                 reminder = Instant::now();
             }
             let Ok((id, payload)) = bot.c.recv() else {
@@ -945,6 +948,8 @@ fn guests_see_each_other_and_the_world_entities() {
                 z: 8.5,
                 flags: 1,
             }));
+            // A client ends each tick: a second move before it is kicked.
+            bot.send(S::ClientTickEnd(Empty));
         }
         Ok::<(), String>(())
     });
