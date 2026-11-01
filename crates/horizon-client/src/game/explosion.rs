@@ -693,6 +693,50 @@ impl Game<'_> {
                 c.velocity.z + dir[2] * power,
             );
         }
+        // Arrows, fire charges, snowballs and the rest: `Entity.pushFromExplosion`
+        // (`push`) from their eyes (0.85 of their height). `AbstractArrow.push`
+        // does nothing while it is in the ground; `hurtServer` never hurts them.
+        let mut projectiles = std::mem::take(&mut self.creatures.projectiles);
+        for p in projectiles.iter_mut().filter(|p| !p.stuck) {
+            let (lo, hi) = (p.bounds().min_position(), p.bounds().max_position());
+            let dist = distance([p.position.x, p.position.y, p.position.z]) / diameter;
+            if dist > 1.0 {
+                continue;
+            }
+            let exposure = self.seen_percent(center, [lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z]);
+            let eye_height = p.kind.eye_height();
+            let dir = direction([p.position.x, p.position.y + eye_height, p.position.z]);
+            let power = (1.0 - dist) * f64::from(exposure);
+            p.velocity = Vec3::new(
+                p.velocity.x + dir[0] * power,
+                p.velocity.y + dir[1] * power,
+                p.velocity.z + dir[2] * power,
+            );
+            p.needs_sync = true;
+        }
+        self.creatures.projectiles = projectiles;
+        // Firework rockets (0.25 wide, so 0.2125 to the eyes).
+        let mut rockets = std::mem::take(&mut self.rockets);
+        for r in &mut rockets {
+            let feet = r.position;
+            let dist = distance([feet.x, feet.y, feet.z]) / diameter;
+            if dist > 1.0 {
+                continue;
+            }
+            let exposure = self.seen_percent(
+                center,
+                [feet.x - 0.125, feet.y, feet.z - 0.125],
+                [feet.x + 0.125, feet.y + 0.25, feet.z + 0.125],
+            );
+            let dir = direction([feet.x, feet.y + 0.2125, feet.z]);
+            let power = (1.0 - dist) * f64::from(exposure);
+            r.velocity = Vec3::new(
+                r.velocity.x + dir[0] * power,
+                r.velocity.y + dir[1] * power,
+                r.velocity.z + dir[2] * power,
+            );
+        }
+        self.rockets = rockets;
         // Frames, paintings, cushions and armour stands last: vanilla lists
         // the entities in reach before hurting any, so the items they drop
         // here are neither destroyed nor pushed by the same blast.
