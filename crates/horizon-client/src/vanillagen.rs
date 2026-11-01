@@ -63,6 +63,8 @@ pub struct VanillaTerrain {
     /// `created`: the ring search waits for a pause in generation.
     last_proto: std::sync::atomic::AtomicU64,
     created: std::time::Instant,
+    /// A superflat generator (`FlatLevelSource`).
+    flat: bool,
 }
 /// A proto chunk, or the position of one whose generation failed.
 enum VanillaProto {
@@ -182,12 +184,55 @@ impl VanillaTerrain {
         structures: bool,
     ) -> crate::Result<Self> {
         let data: Arc<GeneratorData> = shared_data_with(dir, overrides, registry)?;
-        let biome_map = data
+        let generator = OverworldGenerator::for_world(data, seed, preset, dimension, structures)?;
+        Self::assemble(dir, registry, biomes, generator, seed, preset, dimension)
+    }
+    /// A superflat overworld with the structures its settings allow
+    /// (`FlatLevelSource`: its layers, `structure_overrides` and the fixed biome).
+    #[allow(clippy::too_many_arguments)]
+    pub fn for_flat(
+        dir: &Path,
+        overrides: &WorldgenOverrides,
+        registry: &'static BlockRegistry,
+        biomes: &Biomes,
+        seed: i64,
+        flat: &horizon_world::worldgen::generator::FlatSettings,
+        structures: bool,
+    ) -> crate::Result<Self> {
+        let data: Arc<GeneratorData> = shared_data_with(dir, overrides, registry)?;
+        let generator = OverworldGenerator::flat(data, seed, flat, structures)?;
+        let mut terrain = Self::assemble(
+            dir,
+            registry,
+            biomes,
+            generator,
+            seed,
+            "minecraft:normal",
+            "minecraft:overworld",
+        )?;
+        terrain.flat = true;
+        Ok(terrain)
+    }
+    /// Whether this is a superflat generator, whose `spawnOriginalMobs` places nothing.
+    pub fn is_flat(&self) -> bool {
+        self.flat
+    }
+    /// The terrain around a generator, with the tables the client's chunks need.
+    fn assemble(
+        dir: &Path,
+        registry: &'static BlockRegistry,
+        biomes: &Biomes,
+        generator: OverworldGenerator,
+        seed: i64,
+        preset: &str,
+        dimension: &str,
+    ) -> crate::Result<Self> {
+        let biome_map = generator
+            .data()
             .biome_names()
             .iter()
             .map(|name| biomes.id(name))
             .collect();
-        let generator = OverworldGenerator::for_world(data, seed, preset, dimension, structures)?;
         if let Some((asked, kept)) = generator.noise_clamped() {
             log::warn!(
                 "Horizon: {dimension}'s noise settings reach y {}..{}, past its build height; \
@@ -256,6 +301,7 @@ impl VanillaTerrain {
             dimension: dimension.to_owned(),
             last_proto: std::sync::atomic::AtomicU64::new(0),
             created: std::time::Instant::now(),
+            flat: false,
         })
     }
     /// The column the dimension's chunks hold (its build range's).

@@ -16,7 +16,9 @@
 //! content mod the root is the base root itself.
 use crate::{Result, blocks::MAP_COLORS};
 use horizon_core::geometry::{Aabb, Axis, ShapeOp, Vec3, VoxelShape};
-use horizon_mods::content::{Block, Content, CreativeTab, MobEffect, Rarity, StateProperty};
+use horizon_mods::content::{
+    Block, Content, CreativeTab, EntityType, MobEffect, Rarity, StateProperty,
+};
 use horizon_world::nbt::{self, Compound, JavaString, Limits, Tag};
 use serde::{Deserialize, Serialize, de};
 use std::{
@@ -38,6 +40,13 @@ pub fn mob_effects(mods: &[ContentMod]) -> Vec<&MobEffect> {
     let mut effects: Vec<&MobEffect> = mods.iter().flat_map(|m| &m.content.effects).collect();
     effects.sort_by(|a, b| a.id.cmp(&b.id));
     effects
+}
+
+/// the mods' entity types in registry order, by id as effects are.
+pub fn entity_types(mods: &[ContentMod]) -> Vec<&EntityType> {
+    let mut types: Vec<&EntityType> = mods.iter().flat_map(|m| &m.content.entity_types).collect();
+    types.sort_by(|a, b| a.id.cmp(&b.id));
+    types
 }
 
 /// JSON with its object keys in file order, so a rewritten table differs
@@ -459,6 +468,7 @@ struct Plan<'a> {
     /// Every vanilla item id, including items omitted from the search tab.
     vanilla_items: BTreeSet<String>,
     effects: Vec<&'a MobEffect>,
+    entity_types: Vec<&'a EntityType>,
     /// Vanilla's state count (the tables' length before).
     states: usize,
     /// Each vanilla block's default state.
@@ -867,6 +877,7 @@ impl<'a> Plan<'a> {
             items,
             vanilla_items,
             effects: mob_effects(mods),
+            entity_types: entity_types(mods),
             states: names.len(),
             defaults,
             sounds,
@@ -1149,12 +1160,12 @@ impl<'a> Plan<'a> {
             }
             "items.json" => self.items(doc, true)?,
             "registries.json" => {
-                // Network ids: the game and its server map items, blocks and mob
-                // effects through this report, so new ones get the ids after
-                // vanilla's, in plan order. A block entity type for each block too,
-                // named after it: a mod names its types only when one is made
-                // (`native_block_entity`), and the chunk packet carries the type of
-                // each block's entity.
+                // Network ids: the game and its server map items, blocks, mob
+                // effects and entity types through this report, so new ones get
+                // the ids after vanilla's, in plan order. A block entity type for
+                // each block too, named after it: a mod names its types only when
+                // one is made (`native_block_entity`), and the chunk packet
+                // carries the type of each block's entity.
                 let new_items = self.items.iter().map(|i| i.rename.to.clone());
                 let new_blocks: Vec<_> = self.blocks.iter().map(|b| b.decl.id.clone()).collect();
                 let mut registries = vec![
@@ -1165,6 +1176,10 @@ impl<'a> Plan<'a> {
                 if !self.effects.is_empty() {
                     let new_effects = self.effects.iter().map(|e| e.id.clone());
                     registries.push(("minecraft:mob_effect", new_effects.collect()));
+                }
+                if !self.entity_types.is_empty() {
+                    let new_types = self.entity_types.iter().map(|t| t.id.clone());
+                    registries.push(("minecraft:entity_type", new_types.collect()));
                 }
                 for (registry, names) in registries {
                     let Some(J::Obj(entries)) =
@@ -1215,6 +1230,14 @@ impl<'a> Plan<'a> {
                 }
                 if let Some(J::Arr(ids)) = doc.at("by_registry/minecraft:mob_effect/ids") {
                     ids.extend(new_effects());
+                }
+                // entity type arguments and `type=` in selectors.
+                let new_types = || self.entity_types.iter().map(|t| J::Str(t.id.clone()));
+                if let Some(J::Arr(ids)) = doc.at("entity_types") {
+                    ids.extend(new_types());
+                }
+                if let Some(J::Arr(ids)) = doc.at("by_registry/minecraft:entity_type/ids") {
+                    ids.extend(new_types());
                 }
             }
             "mob-data.json" => states(doc, "states", false, false)?,
@@ -2055,9 +2078,13 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
             &serde_json::to_vec(&remainders)?,
         )?;
     }
-    // clients must agree on the block states and the items' and mob effects'
-    // network ids.
-    if !plan.blocks.is_empty() || !plan.items.is_empty() || !plan.effects.is_empty() {
+    // clients must agree on the block states and the items', mob effects' and
+    // entity types' network ids.
+    if !plan.blocks.is_empty()
+        || !plan.items.is_empty()
+        || !plan.effects.is_empty()
+        || !plan.entity_types.is_empty()
+    {
         overlay.write(crate::content_identity::MARKER, b"1")?;
     }
     overlay.write(WARNINGS, warnings.join("\n").as_bytes())?;

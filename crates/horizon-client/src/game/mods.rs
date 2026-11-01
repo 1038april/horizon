@@ -102,11 +102,13 @@ pub(super) fn content_root(
                 );
             }
             register_mob_effects(&mods);
+            register_entity_types(&mods);
             out
         }
         Err(e) => {
             log::warn!("Horizon: content mods not loaded: {e}");
             register_mob_effects(&[]);
+            register_entity_types(&[]);
             root.to_owned()
         }
     }
@@ -136,6 +138,26 @@ fn register_mob_effects(mods: &[horizon_client::mod_content::ContentMod]) {
             .ne(ids.iter().map(String::as_str))
     {
         log::warn!("Horizon: the mods' mob effects changed; restart the game to use them");
+    }
+}
+
+/// the mods' thrown entity types, as their mob effects: set once, from the
+/// startup root.
+fn register_entity_types(mods: &[horizon_client::mod_content::ContentMod]) {
+    use horizon_client::projectiles;
+    let types = horizon_client::mod_content::entity_types(mods);
+    let set = projectiles::register_thrown_types(
+        types
+            .iter()
+            .map(|t| (t.id.clone(), t.item.clone(), t.damage)),
+    );
+    if !set
+        && projectiles::thrown_types()
+            .iter()
+            .map(|t| t.id)
+            .ne(types.iter().map(|t| t.id.as_str()))
+    {
+        log::warn!("Horizon: the mods' entity types changed; restart the game to use them");
     }
 }
 
