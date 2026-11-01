@@ -1199,9 +1199,11 @@ impl Game<'_> {
     /// `RecipesReceivedEvent`): from now on the recipe helpers
     /// (`native_recipes`, `native_recipes_of_type`) give the server's recipes
     /// of those types in place of the window's own, so rebuild what you made
-    /// of them. It comes after a join and after every `/reload` on a server
-    /// whose mods asked for them (`native_datapack_sync`), single player
-    /// included. Client-side. API @API:recipe_sync@.
+    /// of them. It comes after a join, once the window has its player, and
+    /// after every `/reload`, on a server whose mods asked for them
+    /// (`native_datapack_sync`), single player included. A recipe the
+    /// window's own recipe book doesn't know has `book_id` -1. Client-side.
+    /// API @API:recipe_sync@.
     pub(super) fn native_recipes_received(&mut self, recipe_types: &[String]) {
         let _ = recipe_types;
     }
@@ -3559,9 +3561,10 @@ impl Game<'_> {
         self.player.is_none() && self.options.execution_role.is_client()
     }
     /// Every item and recipe the game knows, made once (the same for every
-    /// call); none outside a world. They are the window's own: the world's
-    /// in single player, vanilla's on a server, which sends a client no
-    /// others.
+    /// call); none outside a world. They are the window's own (the content
+    /// mods' and vanilla's), with the server's recipes of the types a mod had
+    /// it send (`native_datapack_sync`) in their place; made again when those
+    /// arrive (`native_recipes_received`).
     pub(super) fn native_recipes(&mut self) -> Option<Arc<NativeRecipes>> {
         self.player.as_ref()?;
         self.made_recipes()

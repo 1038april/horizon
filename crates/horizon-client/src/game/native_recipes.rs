@@ -1,10 +1,10 @@
 //! Every item and recipe the game knows, made once for the mods that read
 //! them (native mods' `native_recipes`, capability `recipes` of WebAssembly
 //! mods, docs/mods.md), and the recipe book's known displays; placing a
-//! recipe and creative gifts. The recipes are the window's own data: the
-//! world's in single player, vanilla's on a server (a client is sent no
-//! others), while the known displays follow the server's book as the recipe
-//! book does.
+//! recipe and creative gifts. The recipes are the window's own data — the
+//! content root's — with the server's recipes of the types its native mods
+//! had it send (`horizon:recipe_content`) in their place, while the known
+//! displays follow the server's book as the recipe book does.
 use super::{
     Game,
     native_hooks::{
@@ -35,6 +35,9 @@ pub(super) struct RecipeTables {
     synced: Option<horizon_client::crafting::Recipes>,
     /// The recipe content's parts so far, until its last.
     incoming: Vec<(String, serde_json::Value)>,
+    /// The types that came before the player did: the mods hear of them
+    /// once the helpers can answer (`recipes_received_now`).
+    received: Option<Vec<String>>,
 }
 
 /// Item id -> its index in [`Recipes::items`].
@@ -340,7 +343,19 @@ impl Game<'_> {
     pub(super) fn forget_synced_recipes(&mut self) {
         self.recipe_tables.synced = None;
         self.recipe_tables.incoming.clear();
+        self.recipe_tables.received = None;
         self.recipe_tables.tables = None;
+        self.recipe_ui.book = None;
+    }
+    /// `native_recipes_received` for the types that came, once the window
+    /// has its player: the recipes of a join come before it, and the helpers
+    /// answer nothing until then. Once a frame.
+    pub(super) fn recipes_received_now(&mut self) {
+        if self.player.is_some()
+            && let Some(types) = self.recipe_tables.received.take()
+        {
+            self.native_recipes_received(&types);
+        }
     }
     /// `OnDatapackSyncEvent.sendRecipes`: the recipe types the native mods
     /// want their clients to have, from this load's tables, become what the
@@ -397,8 +412,11 @@ impl Game<'_> {
         match built {
             Ok(recipes) => {
                 self.recipe_tables.synced = Some(recipes);
+                // What was made of the window's own recipes is made again.
                 self.recipe_tables.tables = None;
-                self.native_recipes_received(&types);
+                self.recipe_ui.book = None;
+                self.recipe_tables.received = Some(types);
+                self.recipes_received_now();
             }
             Err(e) => log::warn!("Horizon: the server's recipes were not taken: {e}"),
         }
