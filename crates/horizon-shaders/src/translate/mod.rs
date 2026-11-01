@@ -785,12 +785,17 @@ fn constant(stage: &Stage, name: &str) -> Option<Vec<f64>> {
         .iter()
         .filter_map(|t| t.trim_end_matches(['u', 'U', 'f', 'F']).parse().ok())
         .collect();
-    if values.len() == 1 {
+    if values.len() == 1 && values[0] >= 0.0 {
         // A vector constructor with one scalar fills every component (GLSL 5.4.2).
-        let constructor = rest.iter().copied().filter(|t| scan::significant(t)).nth(1);
-        let count = match constructor {
-            Some("ivec2" | "uvec2" | "vec2") => 2,
-            Some("ivec3" | "uvec3" | "vec3") => 3,
+        // Only splat a literal; collecting a number out of an expression loses its operators.
+        let words: Vec<_> = rest[..end]
+            .iter()
+            .copied()
+            .filter(|t| scan::significant(t))
+            .collect();
+        let count = match words.as_slice() {
+            ["=", "ivec2" | "uvec2" | "vec2", "(", _, ")"] => 2,
+            ["=", "ivec3" | "uvec3" | "vec3", "(", _, ")"] => 3,
             _ => 1,
         };
         values.resize(count, values[0]);
@@ -1221,6 +1226,27 @@ mod tests {
                     .unwrap_or_else(|errors| panic!("{declaration}: {errors:?}"));
             assert_eq!(program.work_groups_render, expected, "{declaration}");
             assert_eq!(program.work_groups, None);
+        }
+    }
+
+    #[test]
+    fn compute_dispatch_does_not_guess_unsupported_scalar_expressions() {
+        for declaration in [
+            "const ivec3 workGroups = ivec3(-1);",
+            "const vec2 workGroupsRender = vec2(-0.5);",
+            "const ivec3 workGroups = ivec3(int(1.0));",
+        ] {
+            let source = format!(
+                "#version 430\nlayout(local_size_x=1) in;\n{declaration}\nvoid main(){{}}\n"
+            );
+            let pack =
+                Pack::from_zip_bytes("dispatch.zip", zip(&[("shaders/composite.csh", &source)]))
+                    .unwrap();
+            assert!(
+                translate_compute(&preprocess(&pack, "composite.csh", &Macros::standard()))
+                    .is_err(),
+                "{declaration}"
+            );
         }
     }
     use crate::pack::tests::zip;
