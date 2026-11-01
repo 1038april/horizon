@@ -47,7 +47,10 @@ fn main() {
         (logging::game_home(), "client", "Render thread")
     };
     if !help {
-        logging::init(logging::player_dir_override().unwrap_or(home.as_path()), thread);
+        logging::init(
+            logging::player_dir_override().unwrap_or(home.as_path()),
+            thread,
+        );
         // The log's first line names the build, so a bug report that carries the log says which one it was.
         log::info!("Horizon {}", crash::version());
         crash::install(home.clone(), side);
