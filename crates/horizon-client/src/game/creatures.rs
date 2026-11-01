@@ -1201,7 +1201,12 @@ impl Game<'_> {
         self.villager_murdered(m, slain_by_player, killer.flatten());
         let pos = [m.position.x, m.position.y + 0.5, m.position.z];
         let killer_entity = self.killer_loot_entity(killer.flatten());
-        let player = killer.and_then(|conn| self.killer_uuid(conn));
+        // LAST_DAMAGE_PLAYER only while the player-hurt memory lasts
+        // (LivingEntity.dropFromLootTable's playerKilled): a mob that dies to
+        // the environment long after a player's hit names no player.
+        let player = killer
+            .filter(|_| m.ai.last_hurt_by_player > 0)
+            .and_then(|conn| self.killer_uuid(conn));
         self.drop_death_loot(&mut dying, player, by_player, killer_entity, consumed, pos);
         self.create_wither_rose(m);
         if m.species() == Species::CopperGolem {
