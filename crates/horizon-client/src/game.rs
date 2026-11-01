@@ -14187,7 +14187,12 @@ impl Game<'_> {
         let at = camera.to_array();
         // GameRenderer.render3dHud: the debug crosshair, first person with the HUD shown.
         let mut crosshair = horizon_client::gizmos::Gizmos::default();
-        if self.debug_crosshair() && self.camera_type.first_person() && !self.ui.hide_gui {
+        if debug_crosshair_drawn(
+            self.debug_crosshair(),
+            self.camera_type.first_person(),
+            self.ui.hide_gui,
+            self.shows_panorama(),
+        ) {
             let scale = HudBatch::new(size).scale;
             crosshair.debug_crosshair(at, view_pitch, view_yaw, scale);
         }
@@ -14254,10 +14259,7 @@ impl Game<'_> {
         };
         let mut hud = horizon_client::spans::time("hud", || self.hud(size));
         self.flush_ime(&mut hud);
-        // LevelLoadingScreen (Reason.OTHER) draws the title's panorama.
-        let title = self.title.is_some()
-            || self.loading_reason() == Some(horizon_client::level_loading::Reason::Other)
-            || self.remote_loading();
+        let title = self.shows_panorama();
         let (yaw, pitch) = if title {
             // PanoramaRenderer: the title cube spins at 0.1 degrees per tick, pitched 10 degrees.
             (
@@ -14540,6 +14542,13 @@ impl Game<'_> {
         *self.glowing_vertices.get_mut() = glowing;
         self.see_through_vertices = see_through;
         result
+    }
+    /// The frame shows the title's panorama, not a level: the title screen, or a
+    /// LevelLoadingScreen (Reason.OTHER), which draws it too.
+    fn shows_panorama(&self) -> bool {
+        self.title.is_some()
+            || self.loading_reason() == Some(horizon_client::level_loading::Reason::Other)
+            || self.remote_loading()
     }
     /// The LevelLoadingScreen shown while the player waits for its chunks:
     /// opening a world, or after a portal or a respawn into another dimension.
@@ -19292,10 +19301,28 @@ pub(crate) fn closest_space_nudge(
     out
 }
 
+/// GameRenderer.render3dHud: the debug crosshair, first person with the HUD shown, and only over
+/// a level. The F3 overlay stays on when the world closes, so it must not reach the panorama.
+fn debug_crosshair_drawn(
+    enabled: bool,
+    first_person: bool,
+    hide_gui: bool,
+    panorama: bool,
+) -> bool {
+    enabled && first_person && !hide_gui && !panorama
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use horizon_client::container_screen::{Button, Clicks, Release, Target};
+
+    /// F3 left on when leaving a world kept the axes on the title screen.
+    #[test]
+    fn the_debug_crosshair_is_gone_once_the_world_is() {
+        assert!(debug_crosshair_drawn(true, true, false, false));
+        assert!(!debug_crosshair_drawn(true, true, false, true));
+    }
 
     /// Snuffing a candle or a candle cake draws one smoke per
     /// `getParticleOffsets`: by `candles` for a candle, a block up for a cake.
