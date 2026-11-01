@@ -3,6 +3,7 @@
 mod admin;
 pub(super) mod compute;
 mod data;
+pub(super) use data::place_summoned;
 mod effects;
 pub(super) mod execute;
 pub(super) mod extra;
@@ -1227,21 +1228,11 @@ impl Game<'_> {
         static RARITY: std::sync::OnceLock<std::collections::HashMap<String, String>> =
             std::sync::OnceLock::new();
         let map = RARITY.get_or_init(|| {
-            let v: serde_json::Value = serde_json::from_slice(
-                &std::fs::read(self.options.resources.join("items.json")).unwrap_or_default(),
-            )
-            .unwrap_or_default();
-            v.as_object()
-                .map(|o| {
-                    o.iter()
-                        .filter_map(|(k, c)| {
-                            c["minecraft:rarity"]
-                                .as_str()
-                                .map(|r| (k.clone(), r.to_owned()))
-                        })
-                        .collect()
-                })
+            horizon_world::item_defaults::read(&self.options.resources)
                 .unwrap_or_default()
+                .into_iter()
+                .filter_map(|(k, c)| c["minecraft:rarity"].as_str().map(|r| (k, r.to_owned())))
+                .collect()
         });
         map.get(item).cloned().unwrap_or_else(|| "common".into())
     }
@@ -1951,11 +1942,15 @@ impl Game<'_> {
             Target::Boat(id) => {
                 // AbstractBoat.remove: a killed boat drops its lead.
                 if let Some(i) = self.boats.iter().position(|b| b.id == id) {
+                    self.release_vehicle_container(id);
                     let b = self.boats.remove(i);
                     self.boat_removed(&b);
                 }
             }
-            Target::Cart(id) => self.carts.retain(|c| c.id != id),
+            Target::Cart(id) => {
+                self.release_vehicle_container(id);
+                self.carts.retain(|c| c.id != id);
+            }
             Target::Other(id) => self.others.retain(|o| o.id != id),
             Target::Crystal(id) => self.kill_crystal(id),
             Target::Dragon(id) => self.kill_dragon(id),
@@ -2106,11 +2101,19 @@ impl Game<'_> {
                     let cart_kind = super::minecarts::CartKind::from_id(&kind)
                         .unwrap_or(super::minecarts::CartKind::Rideable);
                     self.next_entity += 1;
-                    let cart = super::minecarts::Minecart::new(
+                    let mut cart = super::minecarts::Minecart::new(
                         self.next_entity,
                         cart_kind,
                         Vec3::new(pos[0], pos[1], pos[2]),
                     );
+                    // SummonCommand.createEntity loads even an empty compound, so a
+                    // spawner minecart's BaseSpawner.load runs: SpawnPotentials becomes
+                    // WeightedList.of(new SpawnData()).
+                    if cart.spawner.is_some() {
+                        use horizon_client::mobs::spawner::{Spawner, SpawnerExt};
+                        let empty = horizon_world::nbt::Tag::Compound(Default::default());
+                        cart.spawner = Some(Box::new(Spawner::load(&empty)));
+                    }
                     self.carts.push(cart);
                     name = Text::translate(&format!("entity.minecraft.{k}"), &[]);
                 }

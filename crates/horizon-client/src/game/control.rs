@@ -320,6 +320,8 @@ impl Game<'_> {
                     return ok();
                 }
                 self.require_world()?;
+                // KeyboardHandler.keyPress: the open screen's narration hears it.
+                super::narrator::narrate_key(&mut self.narration, key, arg(2)? != "up");
                 // The sign editor takes raw presses (Enter, arrows, Backspace, Escape).
                 if self.sign_edit.is_some() {
                     if arg(2)? != "up" {
@@ -642,6 +644,7 @@ impl Game<'_> {
                 renderer.screenshot = Some(horizon_client::gfx::ScreenshotRequest {
                     path: path.trim().into(),
                     size: None,
+                    scaled: false,
                 });
                 self.pending_screenshot = Some(reply.clone());
                 Ok(None)
@@ -670,6 +673,8 @@ impl Game<'_> {
                     return ok();
                 }
                 self.require_world()?;
+                // Typed keys: the open screen's narration hears them.
+                self.narration.keyboard_action();
                 if self.book.is_some() {
                     self.book_type(text);
                     return ok();
@@ -889,6 +894,15 @@ impl Game<'_> {
                     horizon_client::mobs::DamageKind::PlayerAttack,
                     None,
                 );
+                ok()
+            }
+            // A splitscreen player leaves splitscreen; only P1's game ends the process.
+            "quit" if self.options.split_guest => {
+                if self.remote.is_some() {
+                    self.leave_server(None)?;
+                } else if let Some(title) = self.title.as_mut() {
+                    title.escape();
+                }
                 ok()
             }
             "quit" => {
