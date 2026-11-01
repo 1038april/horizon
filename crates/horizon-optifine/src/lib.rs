@@ -11,6 +11,7 @@ pub mod matchers;
 pub mod paths;
 pub mod properties;
 pub mod random;
+pub mod random_textures;
 
 pub use matchers::{BlockMatch, IdList, Name, RangeList};
 pub use paths::{properties_files, resolve};
