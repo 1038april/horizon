@@ -417,6 +417,10 @@ impl Replay {
                 body.attributes = server.attributes.clone();
                 let _ = body.set_sprint_modifier(sprint);
             }
+            // ClientPacketListener.handleSetEntityData: the flag alone. A sprint the tick goes on
+            // with is then started again (`MotionWorld::replayed_tick`), its modifier with it, as
+            // LocalPlayer.aiStep does when the sprint key is held.
+            Change::Sprinting(sprinting) => body.sprinting = sprinting,
             Change::Effects => body.status = server.status.clone(),
             // `sync` takes them every tick.
             Change::Abilities => {}
@@ -696,6 +700,10 @@ mod tests {
         /// On tick `.0`, the server sends the player attributes (the server's body has no sprint
         /// modifier): `.1` as in [`Change::Attributes`], which the client takes.
         attributes: Option<(usize, Option<bool>)>,
+        /// On each tick `.0`, the client handles what the server sent when it heard the client's
+        /// sprint `.1`: the shared flags with that sprinting bit, and the movement speed with the
+        /// sprint modifier or without ([`Change::Sprinting`], [`Change::Attributes`]).
+        server_sprint: Vec<(usize, bool)>,
         /// The first ticks the client is on its loading screen: it ends them without moving or
         /// sending a move.
         frozen: usize,
@@ -715,6 +723,7 @@ mod tests {
                 burst: None,
                 blocks: Vec::new(),
                 attributes: None,
+                server_sprint: Vec::new(),
                 frozen: 0,
                 item_use: None,
             }
@@ -814,6 +823,17 @@ mod tests {
                 if let Some(kept) = sprint {
                     client.set_sprint_modifier(kept).unwrap();
                 }
+            }
+            for &(_, sprint) in run.server_sprint.iter().filter(|&&(at, _)| at == i) {
+                record.changed(tick, Change::Sprinting(sprint));
+                record.changed(
+                    tick,
+                    Change::Attributes {
+                        sprint: Some(sprint),
+                    },
+                );
+                client.sprinting = sprint;
+                client.set_sprint_modifier(sprint).unwrap();
             }
             record.pong(tick, tick);
             let before = client.position;
@@ -1197,6 +1217,60 @@ mod tests {
         assert!(counted.iter().all(|&i| i >= 20), "{counted:?}");
         // Measured: ticks 21 to 25 go uncounted, 35 of the 40 count.
         assert!(counted.len() >= 30, "{} of 40: {counted:?}", counted.len());
+    }
+
+    /// A sprint stopped for one tick (forward let go) and started again: the server hears the STOP
+    /// and the START in two of its ticks, and sends each back (the shared flags and the movement
+    /// speed). The STOP's reach the client `late` ticks after it sprints again: its flag cleared, it
+    /// starts the sprint again in its next aiStep, its modifier with it, and says nothing. The
+    /// START's come one tick later (the live server's `ground sprinting` flags, 0.045 off).
+    fn sprint_restarted(late: usize, gap: usize) -> Run {
+        let mut script = vec![(1 | 64, 0.0); 20];
+        script.push((0, 0.0));
+        script.extend(vec![(1 | 64, 0.0); 20]);
+        Run {
+            script,
+            server_sprint: vec![(21 + late, false), (21 + late + gap, true)],
+            ..Run::walk()
+        }
+    }
+
+    #[test]
+    fn a_sprint_the_server_cleared_is_started_again() {
+        for (late, gap) in [(1, 1), (2, 1), (3, 2)] {
+            let Some(steps) = steps_in(sprint_restarted(late, gap), |_, _, honest| honest, None)
+            else {
+                return;
+            };
+            for (i, s) in steps.iter().enumerate() {
+                assert!(
+                    s.played.offset <= EXACT && s.over == Over::default(),
+                    "late {late}, gap {gap}, tick {i}: {:?}",
+                    s.played
+                );
+            }
+        }
+    }
+
+    /// The same with a speed lie (a twentieth of a block a tick) from the tick the STOP's packets
+    /// reach the client: it counts from that tick on.
+    #[test]
+    fn a_speed_lie_through_a_sprint_restart_still_counts() {
+        let Some(steps) = steps_in(
+            sprint_restarted(2, 1),
+            |i, _, honest| honest.add_vector(Vec3::new(0.0, 0.0, if i >= 23 { 0.05 } else { 0.0 })),
+            None,
+        ) else {
+            return;
+        };
+        let counted: Vec<usize> = steps
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.over.ticks > 0)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(counted.first(), Some(&23), "{counted:?}");
+        assert!(counted.len() >= 10, "{} of 18: {counted:?}", counted.len());
     }
 
     /// An elytra: a jump while falling starts a glide, played again exactly.
