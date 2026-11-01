@@ -36,6 +36,7 @@ impl NativePack {
         terrain: &TerrainShape<'_>,
         report: Report,
         constants: &[(String, f64)],
+        lights: super::block_light::LightTable,
     ) -> Result<(Self, Vec<String>), String> {
         let (globals, format) = (terrain.globals, terrain.format);
         let textures = super::native_post::pack_textures(device, queue, &report);
@@ -43,7 +44,7 @@ impl NativePack {
             .shadow
             .as_ref()
             .map(|settings| super::native_shadow::fitted(device, settings));
-        let mut frame = NativeFrame::new(device, settings.as_ref(), textures);
+        let mut frame = NativeFrame::new(device, settings.as_ref(), textures, lights);
         let shadow = report
             .shadow
             .as_ref()
