@@ -2323,6 +2323,10 @@ pub fn throwable_to_nbt(
     };
     let mut tag = base.tag(raw);
     put_projectile(&mut tag, p, owner);
+    // Entity.saveWithoutId writes NoGravity only when set.
+    if p.no_gravity {
+        put(&mut tag, "NoGravity", Tag::Byte(1));
+    }
     // the loaded item stays (a blue egg's, a renamed one's).
     if tag.get("Item").is_none() {
         put(
@@ -2346,6 +2350,7 @@ pub fn throwable_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Project
     [p.yaw, p.pitch] = rotation(tag);
     p.left_owner = flag(tag, "LeftOwner");
     p.owner_uuid = owner;
+    p.no_gravity = flag(tag, "NoGravity");
     Some(p)
 }
 
@@ -4313,6 +4318,22 @@ mod fireball_nbt_tests {
         assert_eq!(number(tag.get("HasBeenShot")), Some(0));
         let wind = Projectile::new(ProjectileKind::WindCharge, Vec3::ZERO, None);
         assert!(throwable_to_nbt(&wind, [1; 4], None, None).is_none());
+        // NoGravity is loaded and saved again (a summoned pearl that floats).
+        let floating = Tag::compound([
+            ("id", Tag::String("minecraft:ender_pearl".into())),
+            ("Pos", doubles(&[0.0, 64.0, 0.0])),
+            ("NoGravity", Tag::Byte(1)),
+        ]);
+        let pearl = throwable_from_nbt(&floating, None).unwrap();
+        assert!(pearl.no_gravity);
+        let tag = throwable_to_nbt(&pearl, [1; 4], None, None).unwrap();
+        assert_eq!(number(tag.get("NoGravity")), Some(1));
+        assert!(
+            throwable_to_nbt(&egg, [1; 4], None, None)
+                .unwrap()
+                .get("NoGravity")
+                .is_none()
+        );
     }
 }
 
