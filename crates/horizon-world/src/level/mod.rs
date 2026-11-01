@@ -382,9 +382,11 @@ pub trait LevelAccess {
     /// vanilla uses it up (the caller fires the growth particles and consumes
     /// the meal). Asked on both sides, as vanilla asks it on both (a client
     /// predicts the use with it), so a mod that can only grow on a server says
-    /// so with `is_client_side`. The default refuses.
-    fn is_valid_bonemeal_target(&self, _pos: BlockPos, _state: BlockStateId) -> bool {
-        false
+    /// so with `is_client_side`. `Some(false)` refuses it, even a block whose
+    /// template takes bone meal; `None` (the default) leaves the block its own
+    /// `BonemealableBlock`, or none.
+    fn is_valid_bonemeal_target(&self, _pos: BlockPos, _state: BlockStateId) -> Option<bool> {
+        None
     }
     /// `BonemealableBlock.isBonemealSuccess` for the block `state` at `pos`,
     /// after `is_valid_bonemeal_target` said yes: whether it grows this time.

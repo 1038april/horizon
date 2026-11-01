@@ -9099,7 +9099,7 @@ impl horizon_world::level::LevelAccess for DryLevel<'_> {
         &self,
         pos: horizon_core::position::BlockPos,
         state: BlockStateId,
-    ) -> bool {
+    ) -> Option<bool> {
         self.base.is_valid_bonemeal_target(pos, state)
     }
     fn game_time(&self) -> i64 {

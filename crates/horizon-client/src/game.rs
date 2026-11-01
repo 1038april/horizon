@@ -1160,10 +1160,10 @@ impl LevelAccess for GameLevel<'_> {
     fn is_client_side(&self) -> bool {
         self.client_side
     }
-    fn is_valid_bonemeal_target(&self, pos: BlockPos, state: BlockStateId) -> bool {
+    fn is_valid_bonemeal_target(&self, pos: BlockPos, state: BlockStateId) -> Option<bool> {
         // Asked on both sides, as vanilla asks `isValidBonemealTarget`: a
         // client predicts the use with it. Only a mod answers.
-        let mut valid = false;
+        let mut valid = None;
         self.native_is_valid_bonemeal_target(self.dimension, pos, state, &mut valid);
         valid
     }

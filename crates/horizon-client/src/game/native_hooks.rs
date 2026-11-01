@@ -437,8 +437,10 @@ impl GameLevel<'_> {
     /// crop (a villager bonemeals only a `CropBlock`), from a villager. Asked
     /// on both sides, as vanilla asks it on both, so a client predicts the
     /// use with your answer: say no where you can only grow on a server
-    /// (`is_client_side`). A block that says no keeps the
-    /// `BonemealableBlock` its template gives it, or takes no bone meal.
+    /// (`is_client_side`). `Some(false)` refuses the meal, even on a block
+    /// whose template takes it (vanilla's `growCrop` then keeps the meal);
+    /// left `None`, the block keeps the `BonemealableBlock` its template gives
+    /// it, or takes no bone meal.
     /// @API:bonemeal@.
     #[inline(always)]
     pub(super) fn native_is_valid_bonemeal_target(
@@ -446,7 +448,7 @@ impl GameLevel<'_> {
         dimension: LevelDimension,
         pos: BlockPos,
         state: BlockStateId,
-        valid: &mut bool,
+        valid: &mut Option<bool>,
     ) {
         let _ = (dimension, pos, state, valid);
     }

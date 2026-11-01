@@ -280,7 +280,7 @@ fn bone_meal_answers_a_mod_blocks_three_questions() {
     /// A level whose bone meal answers are the test's.
     struct ModLevel<'a> {
         inner: &'a mut Level,
-        valid: bool,
+        valid: Option<bool>,
         success: bool,
         /// `isBonemealSuccess` was asked, and what it saw.
         rolls: Vec<(BlockPos, BlockStateId)>,
@@ -309,7 +309,7 @@ fn bone_meal_answers_a_mod_blocks_three_questions() {
         fn emit(&mut self, event: LevelEvent) {
             self.inner.emit(event);
         }
-        fn is_valid_bonemeal_target(&self, _pos: BlockPos, _state: BlockStateId) -> bool {
+        fn is_valid_bonemeal_target(&self, _pos: BlockPos, _state: BlockStateId) -> Option<bool> {
             self.valid
         }
         fn is_bonemeal_success(&mut self, pos: BlockPos, state: BlockStateId) -> bool {
@@ -332,7 +332,7 @@ fn bone_meal_answers_a_mod_blocks_three_questions() {
     w.put(pos, stone);
     let mut level = ModLevel {
         inner: &mut w.level,
-        valid: true,
+        valid: Some(true),
         success: true,
         rolls: Vec::new(),
         performed: Vec::new(),
@@ -347,7 +347,7 @@ fn bone_meal_answers_a_mod_blocks_three_questions() {
     // A roll that fails still uses the meal up, without growing it.
     let mut level = ModLevel {
         inner: &mut w.level,
-        valid: true,
+        valid: Some(true),
         success: false,
         rolls: Vec::new(),
         performed: Vec::new(),
@@ -357,7 +357,7 @@ fn bone_meal_answers_a_mod_blocks_three_questions() {
     // Refused: not a target, no roll, no growth, no meal used.
     let mut level = ModLevel {
         inner: &mut w.level,
-        valid: false,
+        valid: Some(false),
         success: true,
         rolls: Vec::new(),
         performed: Vec::new(),
@@ -369,7 +369,7 @@ fn bone_meal_answers_a_mod_blocks_three_questions() {
     w.put(pos, crop);
     let mut level = ModLevel {
         inner: &mut w.level,
-        valid: true,
+        valid: Some(true),
         success: true,
         rolls: Vec::new(),
         performed: Vec::new(),
@@ -377,10 +377,21 @@ fn bone_meal_answers_a_mod_blocks_three_questions() {
     assert!(b.grow_crop(&mut level, &mut w.ticks, pos));
     assert_eq!(level.performed, vec![(pos, crop)]);
     assert_eq!(level.inner.block_state(pos), crop);
+    // Refused by the mod: vanilla's growCrop stops, the crop keeps its meal
+    // and doesn't grow.
+    let mut level = ModLevel {
+        inner: &mut w.level,
+        valid: Some(false),
+        success: true,
+        rolls: Vec::new(),
+        performed: Vec::new(),
+    };
+    assert!(!b.grow_crop(&mut level, &mut w.ticks, pos));
+    assert_eq!(level.inner.block_state(pos), crop);
     // Answered nothing, the crop keeps its own bone meal and grows.
     let mut level = ModLevel {
         inner: &mut w.level,
-        valid: false,
+        valid: None,
         success: true,
         rolls: Vec::new(),
         performed: Vec::new(),
@@ -393,13 +404,13 @@ fn bone_meal_answers_a_mod_blocks_three_questions() {
     w.put(pos, stone);
     let mut level = ModLevel {
         inner: &mut w.level,
-        valid: true,
+        valid: Some(true),
         success: true,
         rolls: Vec::new(),
         performed: Vec::new(),
     };
     assert!(b.bone_meal_succeeds_on_client(&mut level, pos, Direction::Up));
-    level.valid = false;
+    level.valid = Some(false);
     assert!(!b.bone_meal_succeeds_on_client(&mut level, pos, Direction::Up));
 }
 
