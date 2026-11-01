@@ -676,26 +676,48 @@ impl FileStore {
         Ok(())
     }
 
-    /// Hands the file's secrets to `keychain` one by one, each leaving the file once the keychain
-    /// took it (the file's copy is the newer one: it was written while the keychain was away), and
-    /// sign-outs the keychain missed are done there too. What the keychain refuses stays in the
-    /// file, and the file goes once it is empty. Whatever stops it, every secret is in one place.
-    fn move_into(&self, keychain: &dyn SecretStore) {
+    /// The file's entry for `key`, if the file is there.
+    fn entry(&self, key: &str) -> Result<Option<String>, String> {
         if !self.path.exists() {
-            return;
+            return Ok(None);
         }
-        let _ = self.locked(|| {
+        self.locked(|| Ok(self.read()?.remove(key)))
+    }
+
+    /// Everything the file holds, if it is there.
+    fn entries(&self) -> Result<std::collections::BTreeMap<String, String>, String> {
+        if !self.path.exists() {
+            return Ok(Default::default());
+        }
+        self.locked(|| self.read())
+    }
+
+    fn put(&self, key: &str, value: &str) -> Result<(), String> {
+        self.locked(|| {
             let mut secrets = self.read()?;
-            secrets.retain(|key, secret| {
-                let moved = if secret.as_str() == SIGNED_OUT {
-                    keychain.delete(key)
-                } else {
-                    keychain.set(key, secret)
-                };
-                moved.is_err()
-            });
+            secrets.insert(key.into(), value.into());
             self.write(&secrets)
-        });
+        })
+    }
+
+    /// Removes each entry that still holds the value given: one another process wrote since stays.
+    fn take_unchanged(&self, taken: &[(String, String)]) -> Result<(), String> {
+        if taken.is_empty() || !self.path.exists() {
+            return Ok(());
+        }
+        self.locked(|| {
+            let mut secrets = self.read()?;
+            let before = secrets.len();
+            for (key, value) in taken {
+                if secrets.get(key) == Some(value) {
+                    secrets.remove(key);
+                }
+            }
+            if secrets.len() == before {
+                return Ok(());
+            }
+            self.write(&secrets)
+        })
     }
 }
 
@@ -1078,61 +1100,117 @@ pub fn no_keychain() -> Option<String> {
     })
 }
 
+/// What a keychain this run stopped asking answers.
+const KEYCHAIN_AWAY: &str =
+    "The keychain didn't answer earlier: sign in again to keep this account.";
+
 /// The keychain, with the secrets file for what it can't keep (#5095). Each call asks both, never a
 /// choice made once: a launcher that wrote to the file while the keychain was away still finds its
 /// secrets after another process handed them to the keychain. Reads take the file's copy first (it
-/// is the newer one), writes go to the keychain and to the file only when it refuses, and every call
-/// holds the file's lock, so a secret is in one place whatever runs at once.
+/// is the newer one), writes go to the keychain and to the file only when it refuses.
+///
+/// The file's lock is never held across a keychain call, which can wait on an unlock prompt: other
+/// processes keep reading and writing the file meanwhile. A file entry is only removed if it still
+/// holds what was read before the keychain call, so another process's newer write stays. And once the
+/// keychain refuses or doesn't answer, this run stops asking it (no prompt after a dismissed
+/// prompt), until another process hands it a secret this run parked in the file.
 pub struct Layered {
     keychain: Box<dyn SecretStore>,
     file: FileStore,
+    away: std::sync::atomic::AtomicBool,
+    /// What this run put in the file while the keychain was away.
+    parked: Mutex<std::collections::HashSet<String>>,
 }
 
 impl Layered {
-    /// Starts by handing the keychain what the file kept while it was away.
+    /// Starts by handing the keychain what the file kept while it was away, one secret at a time,
+    /// up to the first it refuses; sign-outs it missed are done there too.
     pub fn new(keychain: Box<dyn SecretStore>, file: FileStore) -> Self {
-        file.move_into(keychain.as_ref());
-        Self { keychain, file }
+        let layered = Self {
+            keychain,
+            file,
+            away: Default::default(),
+            parked: Default::default(),
+        };
+        let mut moved = Vec::new();
+        for (key, secret) in layered.file.entries().unwrap_or_default() {
+            let handed = layered.ask(|keychain| match secret.as_str() {
+                SIGNED_OUT => keychain.delete(&key),
+                _ => keychain.set(&key, &secret),
+            });
+            if handed.is_err() {
+                break;
+            }
+            moved.push((key, secret));
+        }
+        let _ = layered.file.take_unchanged(&moved);
+        layered
+    }
+
+    fn is_away(&self) -> bool {
+        self.away.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Asks the keychain unless it was away; an error means it is away for the rest of the run.
+    fn ask<T>(
+        &self,
+        call: impl FnOnce(&dyn SecretStore) -> Result<T, String>,
+    ) -> Result<T, String> {
+        if self.is_away() {
+            return Err(KEYCHAIN_AWAY.into());
+        }
+        let answer = call(self.keychain.as_ref());
+        if answer.is_err() {
+            self.away.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        answer
+    }
+
+    /// Puts `value` in the file for `key`, the keychain being away.
+    fn park(&self, key: &str, value: &str) -> Result<(), String> {
+        self.file.put(key, value)?;
+        self.parked.lock().unwrap().insert(key.into());
+        Ok(())
+    }
+
+    /// The keychain took `key`: the file's copy read before goes, unless another process wrote since.
+    fn unpark(&self, key: &str, before: Option<String>) -> Result<(), String> {
+        self.parked.lock().unwrap().remove(key);
+        match before {
+            Some(value) => self.file.take_unchanged(&[(key.into(), value)]),
+            None => Ok(()),
+        }
     }
 }
 
 impl SecretStore for Layered {
     fn get(&self, key: &str) -> Result<Option<String>, String> {
-        if self.file.path.exists() {
-            match self.file.locked(|| Ok(self.file.read()?.remove(key)))? {
-                Some(secret) if secret == SIGNED_OUT => return Ok(None),
-                Some(secret) => return Ok(Some(secret)),
-                None => {}
-            }
+        match self.file.entry(key)? {
+            Some(secret) if secret == SIGNED_OUT => return Ok(None),
+            Some(secret) => return Ok(Some(secret)),
+            None => {}
         }
-        self.keychain.get(key)
+        // Parked here and gone from the file: another process handed it to the keychain, which
+        // answers again.
+        if self.is_away() && self.parked.lock().unwrap().remove(key) {
+            self.away.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.ask(|keychain| keychain.get(key))
     }
     fn set(&self, key: &str, secret: &str) -> Result<(), String> {
-        self.file.locked(|| {
-            let mut secrets = self.file.read()?;
-            match self.keychain.set(key, secret) {
-                Ok(()) if secrets.remove(key).is_none() => return Ok(()),
-                Ok(()) => {}
-                Err(_) => {
-                    secrets.insert(key.into(), secret.into());
-                }
-            }
-            self.file.write(&secrets)
-        })
+        let before = self.file.entry(key)?;
+        match self.ask(|keychain| keychain.set(key, secret)) {
+            Ok(()) => self.unpark(key, before),
+            Err(_) => self.park(key, secret),
+        }
     }
     fn delete(&self, key: &str) -> Result<(), String> {
-        self.file.locked(|| {
-            let mut secrets = self.file.read()?;
-            match self.keychain.delete(key) {
-                Ok(()) if secrets.remove(key).is_none() => return Ok(()),
-                Ok(()) => {}
-                // The keychain may hold a copy: the mark hides it until it can go.
-                Err(_) => {
-                    secrets.insert(key.into(), SIGNED_OUT.into());
-                }
-            }
-            self.file.write(&secrets)
-        })
+        let before = self.file.entry(key)?;
+        match self.ask(|keychain| keychain.delete(key)) {
+            Ok(()) => self.unpark(key, before),
+            // The keychain may hold a copy: the mark hides it until it can go.
+            Err(_) => self.park(key, SIGNED_OUT),
+        }
     }
     fn persistent(&self) -> bool {
         true

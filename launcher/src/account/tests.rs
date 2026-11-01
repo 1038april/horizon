@@ -1172,16 +1172,22 @@ fn processes_sharing_the_secrets_file_lose_nothing() {
     remove_secrets_dir(&path);
 }
 
-/// A keychain that can be away, as a Secret Service that didn't start, or refuse some keys.
+/// A keychain that can be away (a Secret Service that didn't start, a dismissed unlock prompt),
+/// refuse some keys, or hold every call while `prompt` is held (an unlock prompt left open).
 #[derive(Default)]
 struct Keychain {
     kept: MemoryStore,
     away: std::sync::atomic::AtomicBool,
     refuses: Mutex<Vec<String>>,
+    prompt: Mutex<()>,
+    /// Calls that reached it: each one could have been a prompt.
+    asked: std::sync::atomic::AtomicUsize,
 }
 
 impl Keychain {
     fn answer(&self) -> Result<(), String> {
+        self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        drop(self.prompt.lock().unwrap());
         if self.away.load(std::sync::atomic::Ordering::Relaxed) {
             return Err("The name org.freedesktop.secrets was not provided".into());
         }
@@ -1189,6 +1195,9 @@ impl Keychain {
     }
     fn set_away(&self, away: bool) {
         self.away.store(away, std::sync::atomic::Ordering::Relaxed);
+    }
+    fn asked(&self) -> usize {
+        self.asked.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -1279,7 +1288,7 @@ fn a_launcher_on_the_file_keeps_working_after_another_hands_it_to_the_keychain()
 }
 
 #[test]
-fn a_move_the_keychain_half_refuses_leaves_each_secret_in_one_place() {
+fn a_move_the_keychain_half_refuses_then_a_sign_out_leaves_no_copy() {
     let path = secrets_file("half");
     let keychain = Arc::new(Keychain::default());
     keychain.set_away(true);
@@ -1297,17 +1306,96 @@ fn a_move_the_keychain_half_refuses_leaves_each_secret_in_one_place() {
         ),
         (Some("secret-a".into()), None)
     );
-    assert_eq!(
-        (back.get("A").unwrap(), back.get("B").unwrap()),
-        (Some("secret-a".into()), Some("secret-b".into()))
-    );
-    // Signing A out leaves no copy anywhere; B is still kept.
-    back.delete("A").unwrap();
-    assert_eq!(
-        (back.get("A").unwrap(), keychain.kept.get("A").unwrap()),
-        (None, None)
-    );
     assert_eq!(back.get("B").unwrap(), Some("secret-b".into()));
+    // A signs out on that run, which stopped asking the keychain: no launcher reads A again...
+    back.delete("A").unwrap();
+    assert_eq!(back.get("A").unwrap(), None);
+    // (A start where the keychain still refuses B then reads A as "away": no secret either.)
+    assert_eq!(
+        launcher_with(&keychain, &path).get("A").ok().flatten(),
+        None
+    );
+    // ...and the keychain's copy goes at the first start it takes everything.
+    keychain.refuses.lock().unwrap().clear();
+    let later = launcher_with(&keychain, &path);
+    assert_eq!(
+        (keychain.kept.get("A").unwrap(), later.get("B").unwrap()),
+        (None, Some("secret-b".into()))
+    );
+    assert!(!path.exists());
+    remove_secrets_dir(&path);
+}
+
+#[test]
+fn a_keychain_waiting_on_a_prompt_never_holds_the_file_up() {
+    let path = secrets_file("prompt");
+    let keychain = Arc::new(Keychain::default());
+    keychain.set_away(true);
+    launcher_with(&keychain, &path)
+        .set("B", "secret-b")
+        .unwrap();
+    keychain.set_away(false);
+    // An unlock prompt nobody answers yet, while one launcher signs A in.
+    let prompt = keychain.prompt.lock().unwrap();
+    let asked = keychain.asked();
+    let signing_in = {
+        let (keychain, path) = (keychain.clone(), path.clone());
+        std::thread::spawn(move || {
+            Layered {
+                keychain: Box::new(Shared(keychain)),
+                file: FileStore::new(path),
+                away: Default::default(),
+                parked: Default::default(),
+            }
+            .set("A", "secret-a")
+        })
+    };
+    while keychain.asked() == asked {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    // Another process still reads and writes the file meanwhile.
+    let (done, said) = std::sync::mpsc::channel();
+    let other = path.clone();
+    std::thread::spawn(move || {
+        let file = FileStore::new(other);
+        let _ = done.send((file.get("B"), file.set("C", "secret-c")));
+    });
+    let (read, written) = said
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the file waited on the keychain's prompt");
+    assert_eq!((read.unwrap(), written), (Some("secret-b".into()), Ok(())));
+    // The prompt is answered: A goes to the keychain, B and C are still in the file.
+    drop(prompt);
+    signing_in.join().unwrap().unwrap();
+    let file = FileStore::new(path.clone());
+    assert_eq!(keychain.kept.get("A").unwrap(), Some("secret-a".into()));
+    assert_eq!(
+        (
+            file.get("A").unwrap(),
+            file.get("B").unwrap(),
+            file.get("C").unwrap()
+        ),
+        (None, Some("secret-b".into()), Some("secret-c".into()))
+    );
+    remove_secrets_dir(&path);
+}
+
+#[test]
+fn a_dismissed_prompt_is_asked_once_a_run() {
+    let path = secrets_file("dismissed");
+    FileStore::new(path.clone()).set("A", "secret-a").unwrap();
+    let keychain = Arc::new(Keychain::default());
+    keychain.set_away(true);
+    // The start asks once to hand A over; nothing after asks again.
+    let run = launcher_with(&keychain, &path);
+    assert_eq!(keychain.asked(), 1);
+    run.set("B", "secret-b").unwrap();
+    run.set("A", "renewed-a").unwrap();
+    assert_eq!(run.get("A").unwrap(), Some("renewed-a".into()));
+    assert!(run.get("never-signed-in").is_err());
+    run.delete("B").unwrap();
+    assert_eq!(run.get("B").unwrap(), None);
+    assert_eq!(keychain.asked(), 1);
     remove_secrets_dir(&path);
 }
 

@@ -141,11 +141,16 @@ one is selected. "Sign out" deletes the account's secrets from the keychain.
   readable and writable by the player only (0600 on Unix), as most launchers keep them. The
   launcher never picks one store for a run: every read takes the file's copy first (it was written
   while the keychain was away, so it is the newer one) and the keychain's otherwise, and every write
-  goes to the keychain and to the file only when it refuses. Each call holds `account-secrets.lock`
-  across its read and replace, and each write goes through a temporary file of its own, so launcher
-  and CLI processes running at once lose nothing and a secret is never in two places. Every start
-  hands the keychain what the file kept, one secret at a time; what it refuses stays in the file,
-  which goes once it is empty. Signing out while the keychain is away leaves an empty entry for the
+  goes to the keychain and to the file only when it refuses. Each change to the file holds
+  `account-secrets.lock` across its read and replace, and each write goes through a temporary file
+  of its own, so launcher and CLI processes running at once lose nothing. The lock is never held
+  while the keychain is asked (it can wait on an unlock prompt): a file entry the keychain took is
+  removed only if it still holds what was read before, so another process's newer write stays and
+  is read first. Once the keychain refuses or doesn't answer (a dismissed prompt), the run stops
+  asking it and keeps new sign-ins in the file, until it finds that another process handed the
+  keychain a secret it put there. Every start
+  hands the keychain what the file kept, one secret at a time up to the first it refuses; the rest
+  stays in the file, which goes once it is empty. Signing out while the keychain is away leaves an empty entry for the
   account, which hides the keychain's copy until it can be deleted. A broken file is an error naming
   only its line and column, never what it holds. Only sign-ins go there: the Tailscale access token
   (Internet servers) administers the player's whole tailnet, so without a keychain it stays in
