@@ -11,7 +11,7 @@
 
 use super::json::Json;
 use crate::paths;
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc};
 
 /// One face of a box, as `horizon_client::mobs::Polygon` holds it: `[x, y, z, u, v]` vertices
 /// in model pixels, UV a fraction of the texture, and the outward normal.
@@ -61,11 +61,32 @@ pub struct EntityModel {
 
 /// OptiFine's texture size when a model gives none.
 const DEFAULT_TEXTURE_SIZE: [f32; 2] = [64.0, 32.0];
-/// The most entries and quads one `.jem` builds: a pack can't make loading run out of memory.
-const MAX_PARTS: usize = 1024;
-const MAX_QUADS: usize = 1 << 16;
+/// What one `.jem` may make the game build, so a pack can't make loading run out of memory: its
+/// entries, its bones and faces, and the bytes of each file.
+const MAX_ENTRIES: usize = 1024;
+const MAX_NODES: usize = 1 << 16;
+const MAX_BYTES: usize = 8 << 20;
 
 type Object = Vec<(String, Json)>;
+
+/// Keys looked up in a part definition.
+trait Def {
+    fn key(&self, key: &str) -> Option<&Json>;
+}
+impl Def for [(String, Json)] {
+    fn key(&self, key: &str) -> Option<&Json> {
+        get(self, key)
+    }
+}
+/// An entry's keys: its own, then its `.jpm`'s, then its `baseId` entry's, each layer over the
+/// next. Layers are shared, so inheriting a big model copies nothing.
+#[derive(Clone, Default)]
+struct Layers(Vec<Rc<Object>>);
+impl Def for Layers {
+    fn key(&self, key: &str) -> Option<&Json> {
+        self.0.iter().find_map(|layer| get(layer, key))
+    }
+}
 
 /// Parses the `.jem` at resource path `path` (`assets/minecraft/optifine/cem/zombie.jem`).
 /// `read` returns the text of a resource path (the `.jpm` files `model` names), None when missing.
@@ -75,6 +96,9 @@ pub fn parse_jem(
     text: &str,
     read: &mut dyn FnMut(&str) -> Option<String>,
 ) -> Result<EntityModel, String> {
+    if text.len() > MAX_BYTES {
+        return Err(format!("{path}: larger than {MAX_BYTES} bytes"));
+    }
     let root = Json::parse(text).map_err(|e| format!("{path}: {e}"))?;
     let size = size2(root.get("textureSize")).unwrap_or(DEFAULT_TEXTURE_SIZE);
     let texture = root
@@ -85,19 +109,26 @@ pub fn parse_jem(
         texture,
         ..EntityModel::default()
     };
-    let mut jpms: HashMap<String, Result<Object, String>> = HashMap::new();
-    let mut by_id: Vec<(String, Object)> = Vec::new();
-    let mut budget = MAX_QUADS;
-    for entry in objects(root.get("models")) {
-        let mut entry = entry.to_vec();
+    let mut jpms: HashMap<String, Result<Rc<Object>, String>> = HashMap::new();
+    // The first entry with an id is the one `baseId` finds.
+    let mut by_id: HashMap<String, Layers> = HashMap::new();
+    let mut budget = MAX_NODES;
+    let mut unread = false;
+    for (n, entry) in objects(root.get("models")).enumerate() {
+        if n == MAX_ENTRIES {
+            out.warnings
+                .push(format!("{path}: more than {MAX_ENTRIES} models"));
+            break;
+        }
+        let mut layers = Layers(vec![Rc::new(entry.to_vec())]);
         // `model`: the part model in a `.jpm`, under this entry's own keys.
-        if let Some(model) = take(&mut entry, "model") {
+        if let Some(model) = get(entry, "model") {
             let jpm = model
                 .as_str()
                 .ok_or_else(|| format!("{path}: a model that isn't a file name"))
                 .and_then(|m| jpm(path, m, read, &mut jpms));
             match jpm {
-                Ok(jpm) => entry = merged(jpm, entry),
+                Ok(jpm) => layers.0.push(jpm),
                 Err(e) => {
                     out.warnings.push(e);
                     continue;
@@ -105,26 +136,22 @@ pub fn parse_jem(
             }
         }
         // `baseId`: the named entry's properties, under this one's and its `.jpm`'s.
-        if let Some(base) = get(&entry, "baseId").and_then(Json::as_str) {
-            match by_id.iter().find(|(id, _)| id == base) {
-                Some((_, parent)) => entry = merged(parent.clone(), entry),
+        if let Some(base) = get(entry, "baseId").and_then(Json::as_str) {
+            match by_id.get(base) {
+                Some(parent) => layers.0.extend(parent.0.iter().cloned()),
                 None => out
                     .warnings
                     .push(format!("{path}: no model {base} for baseId")),
             }
         }
-        if let Some(id) = get(&entry, "id").and_then(Json::as_str) {
-            by_id.push((id.to_owned(), entry.clone()));
+        if let Some(id) = layers.key("id").and_then(Json::as_str) {
+            by_id.entry(id.to_owned()).or_insert_with(|| layers.clone());
         }
-        let Some(part) = get(&entry, "part").and_then(Json::as_str) else {
+        let Some(part) = layers.key("part").and_then(Json::as_str) else {
             continue;
         };
-        if out.parts.len() == MAX_PARTS {
-            out.warnings
-                .push(format!("{path}: more than {MAX_PARTS} models"));
-            break;
-        }
-        let animations = objects(get(&entry, "animations"))
+        unread |= layers.key("texture").is_some() || layers.key("sprites").is_some();
+        let animations = objects(layers.key("animations"))
             .flatten()
             .filter_map(|(k, v)| {
                 let expr = match v {
@@ -136,18 +163,23 @@ pub fn parse_jem(
                 Some((k.clone(), expr))
             })
             .collect();
-        let bone = bone(&entry, size, true, &mut budget);
+        let bone = bone(&layers, size, true, &mut budget);
         out.parts.push(PartModel {
             part: part.to_owned(),
-            attach: boolean(get(&entry, "attach")).unwrap_or(false),
-            scale: num(get(&entry, "scale")).unwrap_or(1.0),
+            attach: boolean(layers.key("attach")).unwrap_or(false),
+            scale: num(layers.key("scale")).unwrap_or(1.0),
             animations,
             bone,
         });
     }
     if budget == 0 {
         out.warnings.push(format!(
-            "{path}: more than {MAX_QUADS} faces, the rest left out"
+            "{path}: more than {MAX_NODES} bones and faces, the rest left out"
+        ));
+    }
+    if unread {
+        out.warnings.push(format!(
+            "{path}: per-part textures and sprites aren't drawn yet"
         ));
     }
     Ok(out)
@@ -158,8 +190,8 @@ fn jpm(
     path: &str,
     model: &str,
     read: &mut dyn FnMut(&str) -> Option<String>,
-    cache: &mut HashMap<String, Result<Object, String>>,
-) -> Result<Object, String> {
+    cache: &mut HashMap<String, Result<Rc<Object>, String>>,
+) -> Result<Rc<Object>, String> {
     let Some(file) = paths::resolve(path, model) else {
         return Err(format!("{path}: {model} is outside the pack"));
     };
@@ -167,30 +199,19 @@ fn jpm(
         .entry(file.clone())
         .or_insert_with(|| {
             let text = read(&file).ok_or_else(|| format!("{path}: missing {file}"))?;
+            if text.len() > MAX_BYTES {
+                return Err(format!("{file}: larger than {MAX_BYTES} bytes"));
+            }
             match Json::parse(&text).map_err(|e| format!("{file}: {e}"))? {
-                Json::Obj(pairs) => Ok(pairs),
+                Json::Obj(pairs) => Ok(Rc::new(pairs)),
                 _ => Err(format!("{file}: not an object")),
             }
         })
         .clone()
 }
 
-/// `under`'s keys, with `over`'s in their place where both have one.
-fn merged(mut under: Object, over: Object) -> Object {
-    under.retain(|(k, _)| !over.iter().any(|(o, _)| o == k));
-    under.extend(over);
-    under
-}
-
 fn get<'a>(object: &'a [(String, Json)], key: &str) -> Option<&'a Json> {
     object.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v)
-}
-
-fn take(object: &mut Object, key: &str) -> Option<Json> {
-    let i = object.iter().rposition(|(k, _)| k == key)?;
-    let value = object.remove(i).1;
-    object.retain(|(k, _)| k != key);
-    Some(value)
 }
 
 /// The objects of an array value.
@@ -239,28 +260,30 @@ fn size2(v: Option<&Json>) -> Option<[f32; 2]> {
 }
 
 /// Bakes a part model definition. `top`: a part (its `translate` shifts its content) rather
-/// than a submodel (its `translate` is its pivot). `budget`: the faces still allowed.
-fn bone(def: &[(String, Json)], size: [f32; 2], top: bool, budget: &mut usize) -> Bone {
-    let axes = get(def, "invertAxis").and_then(Json::as_str).unwrap_or("");
+/// than a submodel (its `translate` is its pivot). `budget`: the bones and faces still allowed.
+fn bone(def: &(impl Def + ?Sized), size: [f32; 2], top: bool, budget: &mut usize) -> Bone {
+    *budget = budget.saturating_sub(1);
+    let axes = def.key("invertAxis").and_then(Json::as_str).unwrap_or("");
     let invert = [axes.contains('x'), axes.contains('y'), axes.contains('z')];
     let sign = |i: usize| if invert[i] { -1.0 } else { 1.0 };
-    let size = size2(get(def, "textureSize")).unwrap_or(size);
-    let mirror = get(def, "mirrorTexture")
+    let size = size2(def.key("textureSize")).unwrap_or(size);
+    let mirror = def
+        .key("mirrorTexture")
         .and_then(Json::as_str)
         .unwrap_or("");
-    let translate = nums::<3>(get(def, "translate")).unwrap_or_default();
+    let translate = nums::<3>(def.key("translate")).unwrap_or_default();
     let translate: [f32; 3] = std::array::from_fn(|i| sign(i) * translate[i]);
     // A rotation seen through flipped axes: about a flipped axis it turns the other way, and an
     // odd number of flips (a mirror) turns every rotation around.
     let det = sign(0) * sign(1) * sign(2);
-    let rotate = nums::<3>(get(def, "rotate")).unwrap_or_default();
+    let rotate = nums::<3>(def.key("rotate")).unwrap_or_default();
     let (pivot, offset) = if top {
         ([0.0; 3], translate)
     } else {
         (translate, [0.0; 3])
     };
     let mut out = Bone {
-        id: get(def, "id").and_then(Json::as_str).map(str::to_owned),
+        id: def.key("id").and_then(Json::as_str).map(str::to_owned),
         pivot,
         rotation: std::array::from_fn(|i| det * sign(i) * rotate[i].to_radians()),
         ..Bone::default()
@@ -272,7 +295,7 @@ fn bone(def: &[(String, Json)], size: [f32; 2], top: bool, budget: &mut usize) -
         size,
         offset,
     };
-    for b in objects(get(def, "boxes")) {
+    for b in objects(def.key("boxes")) {
         if *budget < 6 {
             *budget = 0;
             break;
@@ -281,8 +304,11 @@ fn bone(def: &[(String, Json)], size: [f32; 2], top: bool, budget: &mut usize) -
         shape.bake(b, &mut out.quads);
         *budget -= out.quads.len() - before;
     }
-    let one = get(def, "submodel").and_then(Json::as_object).into_iter();
-    for sub in one.chain(objects(get(def, "submodels"))) {
+    let one = def.key("submodel").and_then(Json::as_object).into_iter();
+    for sub in one.chain(objects(def.key("submodels"))) {
+        if *budget == 0 {
+            break;
+        }
         let mut child = bone(sub, size, false, budget);
         child.pivot = std::array::from_fn(|i| child.pivot[i] + offset[i]);
         out.children.push(child);
@@ -763,13 +789,51 @@ mod tests {
     }
 
     #[test]
-    fn a_file_builds_at_most_the_face_limit() {
+    fn a_file_builds_at_most_its_limits() {
+        // Faces: one bone, then boxes of six until fewer than six are left.
         let one = r#"{"coordinates": [0, 0, 0, 1, 1, 1], "textureOffset": [0, 0]}"#;
-        let boxes = vec![one; MAX_QUADS / 6 + 10].join(",");
+        let boxes = vec![one; MAX_NODES / 6 + 10].join(",");
         let model = parse(&format!(
             r#"{{"models": [{{"part": "body", "boxes": [{boxes}]}}]}}"#
         ));
-        assert_eq!(model.parts[0].bone.quads.len(), MAX_QUADS / 6 * 6);
+        assert_eq!(model.parts[0].bone.quads.len(), (MAX_NODES - 1) / 6 * 6);
         assert_eq!(model.warnings.len(), 1);
+        // Bones count too: empty submodels can't multiply for free.
+        let empty = vec!["{}"; MAX_NODES].join(",");
+        let model = parse(&format!(
+            r#"{{"models": [{{"part": "body", "submodels": [{empty}]}}]}}"#
+        ));
+        assert_eq!(model.parts[0].bone.children.len(), MAX_NODES - 1);
+        // Entries count whether or not they name a part.
+        let ids = vec![r#"{"id": "x"}"#; MAX_ENTRIES].join(",");
+        let model = parse(&format!(r#"{{"models": [{ids}, {{"part": "late"}}]}}"#));
+        assert!(model.parts.is_empty());
+        assert!(model.warnings[0].contains("models"));
+    }
+
+    #[test]
+    fn bases_chain_and_the_first_id_wins() {
+        let model = parse(
+            r#"{"models": [
+                {"id": "a", "scale": 2, "boxes": [{"coordinates": [0, 0, 0, 1, 1, 1], "textureOffset": [0, 0]}]},
+                {"id": "a", "scale": 9},
+                {"id": "b", "baseId": "a", "attach": true},
+                {"baseId": "b", "part": "head"}
+            ]}"#,
+        );
+        let head = &model.parts[0];
+        assert_eq!(
+            (head.scale, head.attach, head.bone.quads.len()),
+            (2.0, true, 6)
+        );
+    }
+
+    #[test]
+    fn unread_keys_are_named_once() {
+        let model = parse(
+            r#"{"models": [{"part": "head", "texture": "a"}, {"part": "body", "sprites": []}]}"#,
+        );
+        assert_eq!(model.warnings.len(), 1);
+        assert!(model.warnings[0].contains("textures and sprites"));
     }
 }

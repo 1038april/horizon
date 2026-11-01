@@ -127,11 +127,25 @@ impl Parser<'_> {
         let start = self.i;
         while self
             .peek()
-            .is_some_and(|c| !c.is_ascii_whitespace() && !b",:{}[]\"'#/".contains(&c))
+            .is_some_and(|c| !c.is_ascii_whitespace() && !b",:;={}[]\"'#/".contains(&c))
         {
             self.i += 1;
         }
         String::from_utf8_lossy(&self.b[start..self.i]).into_owned()
+    }
+
+    /// The four hex digits of a `\u` escape.
+    fn hex4(&mut self) -> Result<u32, String> {
+        let digits = self
+            .b
+            .get(self.i..self.i + 4)
+            .filter(|h| h.iter().all(u8::is_ascii_hexdigit));
+        let Some(digits) = digits else {
+            return Err(self.error("bad \\u escape"));
+        };
+        self.i += 4;
+        // Hex digits are ASCII: the slice is a str.
+        Ok(u32::from_str_radix(std::str::from_utf8(digits).unwrap_or("0"), 16).unwrap_or(0))
     }
 
     fn string(&mut self, quote: u8) -> Result<String, String> {
@@ -156,13 +170,19 @@ impl Parser<'_> {
                         b'b' => out.push(8),
                         b'f' => out.push(12),
                         b'u' => {
-                            let hex = self.b.get(self.i..self.i + 4).and_then(|h| {
-                                u32::from_str_radix(std::str::from_utf8(h).ok()?, 16).ok()
-                            });
-                            let Some(code) = hex else {
-                                return Err(self.error("bad \\u escape"));
-                            };
-                            self.i += 4;
+                            let mut code = self.hex4()?;
+                            // A surrogate pair is one character in two escapes.
+                            if (0xD800..0xDC00).contains(&code)
+                                && self.b.get(self.i..self.i + 2) == Some(&b"\\u"[..])
+                            {
+                                self.i += 2;
+                                let low = self.hex4()?;
+                                code = if (0xDC00..0xE000).contains(&low) {
+                                    0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)
+                                } else {
+                                    0xFFFD
+                                };
+                            }
                             let ch = char::from_u32(code).unwrap_or('\u{fffd}');
                             out.extend_from_slice(ch.encode_utf8(&mut [0; 4]).as_bytes());
                         }
@@ -216,16 +236,23 @@ impl Parser<'_> {
         self.list(b'}', |p| {
             let key = match p.peek() {
                 Some(q @ (b'"' | b'\'')) => p.string(q)?,
-                _ => p.word(),
+                _ => match p.word() {
+                    word if word.is_empty() => return Err(p.error("expected a key")),
+                    word => word,
+                },
             };
-            if key.is_empty() {
-                return Err(p.error("expected a key"));
-            }
             p.space()?;
-            if !matches!(p.peek(), Some(b':' | b'=')) {
-                return Err(p.error("expected a colon"));
+            // Gson also takes `=` and `=>` for the colon.
+            match p.peek() {
+                Some(b':') => p.i += 1,
+                Some(b'=') => {
+                    p.i += 1;
+                    if p.peek() == Some(b'>') {
+                        p.i += 1;
+                    }
+                }
+                _ => return Err(p.error("expected a colon")),
             }
-            p.i += 1;
             pairs.push((key, p.value(depth + 1)?));
             Ok(())
         })?;
@@ -265,6 +292,20 @@ mod tests {
                 .as_str(),
             Some("a\"b\u{e9}\n")
         );
+    }
+
+    #[test]
+    fn gson_separators_empty_keys_and_escapes() {
+        let v = Json::parse("{a=1; b=>[2;3], \"\": 'x'}").unwrap();
+        assert_eq!(v.get("a"), Some(&Json::Num(1.0)));
+        assert_eq!(
+            v.get("b"),
+            Some(&Json::Arr(vec![Json::Num(2.0), Json::Num(3.0)]))
+        );
+        assert_eq!(v.get(""), Some(&Json::Str("x".into())));
+        let s = Json::parse(r#""\ud83d\ude00\u0041""#).unwrap();
+        assert_eq!(s.as_str(), Some("\u{1f600}A"));
+        assert!(Json::parse(r#""\u+041""#).is_err());
     }
 
     #[test]
