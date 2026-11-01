@@ -36,6 +36,7 @@ pub enum H {
     Fog,
     Weather,
     AnimatedTextures,
+    DitherCutoutMips,
     PresentMode,
     Pacing,
     Workers,
@@ -269,6 +270,11 @@ pub fn rows(level: Level) -> Vec<Row> {
                 H::AnimatedTextures,
                 Low,
                 "Animates water, lava, fire and other moving textures.",
+            ),
+            h(
+                H::DitherCutoutMips,
+                Low,
+                "Keeps fine plants in high-res packs from fading far away.",
             ),
             Row::Header("Display"),
             fov,
@@ -545,6 +551,7 @@ impl H {
             H::Fog => labelled("Fog", on_off(g.fog)),
             H::Weather => labelled("Weather", on_off(g.weather)),
             H::AnimatedTextures => labelled("Animated Textures", on_off(g.animated_textures)),
+            H::DitherCutoutMips => labelled("Distant Plant Dither", on_off(g.dither_cutout_mips)),
             H::PresentMode => labelled("Present Mode", g.present_mode.label()),
             H::Pacing => labelled(
                 "Frame Pacing",
@@ -669,6 +676,7 @@ impl H {
             H::Fog => g.fog = !g.fog,
             H::Weather => g.weather = !g.weather,
             H::AnimatedTextures => g.animated_textures = !g.animated_textures,
+            H::DitherCutoutMips => g.dither_cutout_mips = !g.dither_cutout_mips,
             H::PresentMode => g.present_mode = step(&PresentMode::ALL, g.present_mode, back),
             // Off, FXAA, TAA.
             H::Antialiasing => {
@@ -756,6 +764,7 @@ impl Item {
             Item::Horizon(H::Fog) => g.fog,
             Item::Horizon(H::Weather) => g.weather,
             Item::Horizon(H::AnimatedTextures) => g.animated_textures,
+            Item::Horizon(H::DitherCutoutMips) => g.dither_cutout_mips,
             Item::Horizon(H::Hdr) => g.hdr,
             Item::Horizon(H::BatteryMode) => g.battery,
             Item::Horizon(H::ShadowCache) => g.shadow_cache,

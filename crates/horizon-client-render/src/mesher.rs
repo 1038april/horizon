@@ -233,6 +233,9 @@ pub struct SectionMesh {
     /// each frame by `block_entity_render` like vanilla's per-section
     /// `SectionCompiler.Results.blockEntities`.
     pub block_entities: Vec<([i32; 3], u32)>,
+    /// Blocks that give off light (world position, state id), for the colour of block light
+    /// Horizon's shader packs read (`gfx::block_light`).
+    pub lights: Vec<([i32; 3], u32)>,
     /// Sprite layers emitted while building this mesh. Kept distinct before
     /// upload so the renderer does not rescan every terrain vertex.
     pub sprite_layers: Vec<u16>,
@@ -250,6 +253,7 @@ impl Default for SectionMesh {
             translucent: Vec::new(),
             visibility: ALL_VISIBLE,
             block_entities: Vec::new(),
+            lights: Vec::new(),
             sprite_layers: Vec::new(),
             bounds: None,
             keep: false,
@@ -1152,6 +1156,10 @@ impl Mesher<'_> {
                     let state = &info[id as usize];
                     if state.block_entity {
                         out.block_entities
+                            .push(([center.x * 16 + x, base_y + y, center.z * 16 + z], id));
+                    }
+                    if state.emission > 0 {
+                        out.lights
                             .push(([center.x * 16 + x, base_y + y, center.z * 16 + z], id));
                     }
                     if state.solid
