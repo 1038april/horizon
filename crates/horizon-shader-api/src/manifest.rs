@@ -155,6 +155,9 @@ fn sprite_matches(pattern: &str, name: &str) -> bool {
 #[serde(deny_unknown_fields)]
 pub struct Stage {
     pub file: String,
+    /// WGSL files put before `file`, after the shared ones, for this stage only.
+    #[serde(default)]
+    pub files: Vec<String>,
     /// Shown in the GPU time overlay; the file name when absent.
     #[serde(default)]
     pub name: Option<String>,
@@ -287,7 +290,11 @@ impl Manifest {
             )));
         }
         let stages = raw.sky.iter().chain(&raw.material).chain(&raw.post);
-        for file in raw.shared.iter().chain(stages.map(|s| &s.file)) {
+        for file in raw
+            .shared
+            .iter()
+            .chain(stages.flat_map(|s| s.files.iter().chain(std::iter::once(&s.file))))
+        {
             if !crate::package::plain_path(file) || !file.ends_with(".wgsl") {
                 return Err(err(format!("{file:?} is not a plain path to a .wgsl file")));
             }
@@ -466,7 +473,11 @@ impl Manifest {
     pub fn files(&self) -> Vec<&str> {
         let mut files: Vec<&str> = Vec::new();
         let stages = self.sky.iter().chain(&self.material).chain(&self.post);
-        for file in self.shared.iter().chain(stages.map(|s| &s.file)) {
+        for file in self
+            .shared
+            .iter()
+            .chain(stages.flat_map(|s| s.files.iter().chain(std::iter::once(&s.file))))
+        {
             if !files.contains(&file.as_str()) {
                 files.push(file);
             }
