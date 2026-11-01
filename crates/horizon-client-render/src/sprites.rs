@@ -475,6 +475,33 @@ mod tests {
         }
     }
     #[test]
+    fn files_outside_textures_load_by_path() {
+        let root = std::env::temp_dir().join(format!("horizon-sprite-file-{}", std::process::id()));
+        let tile = "assets/minecraft/optifine/ctm/glass/0.png";
+        fs::create_dir_all(root.join(tile).parent().unwrap()).unwrap();
+        let mut encoder = png::Encoder::new(File::create(root.join(tile)).unwrap(), 16, 16);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let pixels: Vec<u8> = (0..256).flat_map(|i| [i as u8, 0, 0, 128]).collect();
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&pixels)
+            .unwrap();
+        let mut sprites = Sprites::default();
+        let layer = sprites.insert_file(&root, tile).unwrap();
+        assert_eq!(sprites.insert_file(&root, tile).unwrap(), layer);
+        assert!(sprites.translucent[layer as usize]);
+        // A missing tile is an error, not the missing texture.
+        assert!(
+            sprites
+                .insert_file(&root, "assets/minecraft/optifine/ctm/glass/1.png")
+                .is_err()
+        );
+        assert_eq!(sprites.count(), 1);
+        fs::remove_dir_all(&root).unwrap();
+    }
+    #[test]
     fn identical_still_textures_share_a_layer() {
         let root =
             std::env::temp_dir().join(format!("horizon-sprite-share-{}", std::process::id()));

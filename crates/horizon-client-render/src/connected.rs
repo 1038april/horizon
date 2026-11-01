@@ -90,6 +90,9 @@ impl ConnectedTextures {
         mut face_layer: impl FnMut(BlockStateId, Face) -> Option<u32>,
     ) -> Self {
         let mut rules = ctm::load(root);
+        // Rules no face can use load no tiles: overlays (not drawn yet), and custom names (section
+        // meshes see no block entity).
+        rules.retain(|r| !r.method.is_overlay() && r.name.is_none());
         // Rule indices are `u16`.
         rules.truncate(usize::from(u16::MAX));
         if rules.is_empty() {
@@ -105,7 +108,11 @@ impl ConnectedTextures {
                         Tile::Skip => Ok(TileLayer::Skip),
                         Tile::Default => Ok(TileLayer::Default),
                         Tile::Texture(path) => {
-                            let layer = sprites.insert_file(root, path)?;
+                            // A tile among the textures is that sprite, under its own name.
+                            let layer = match sprite_name(path) {
+                                name if name != *path => sprites.insert(root, &name)?,
+                                _ => sprites.insert_file(root, path)?,
+                            };
                             Ok(TileLayer::Layer {
                                 layer: u16::try_from(layer)?,
                                 translucent: sprites.translucent[layer as usize],
@@ -153,19 +160,31 @@ impl ConnectedTextures {
         };
         let mut blocks = HashMap::new();
         let mut by_layer: Vec<Vec<u16>> = Vec::new();
+        // Block rules by the block each entry names, so a state tests only its own.
+        let mut by_block: HashMap<&str, Vec<u16>> = HashMap::new();
         for (i, r) in out.rules.iter().enumerate() {
+            let i = i as u16;
             for tile in &r.rule.match_tiles {
                 if let Some(l) = layer(&sprite_name(tile)) {
                     let l = l as usize;
                     if by_layer.len() <= l {
                         by_layer.resize(l + 1, Vec::new());
                     }
-                    by_layer[l].push(i as u16);
+                    if by_layer[l].last() != Some(&i) {
+                        by_layer[l].push(i);
+                    }
+                }
+            }
+            for m in &r.rule.match_blocks {
+                let list = by_block.entry(m.id.as_str()).or_default();
+                if list.last() != Some(&i) {
+                    list.push(i);
                 }
             }
         }
         for list in by_layer {
-            out.by_layer.push(out.push_list(&list));
+            let range = out.push_list(&list);
+            out.by_layer.push(range);
         }
         let mut list = Vec::new();
         for state in states {
@@ -188,11 +207,13 @@ impl ConnectedTextures {
                 upper: prop("half") == Some("upper"),
             });
             list.clear();
-            list.extend(
-                (0..out.rules.len())
-                    .filter(|&i| out.rules[i].rule.matches_block(name, prop))
-                    .map(|i| i as u16),
-            );
+            if let Some(candidates) = by_block.get(name) {
+                list.extend(
+                    candidates
+                        .iter()
+                        .filter(|&&i| out.rules[usize::from(i)].rule.matches_block(name, prop)),
+                );
+            }
             let range = out.push_list(&list);
             out.by_state.push(range);
         }
@@ -218,37 +239,46 @@ impl ConnectedTextures {
     /// What the `face` of the block `state` at `pos` draws, for a quad with sprite `layer`.
     /// `neighbour` answers the state at an offset from the block; `biome` its biome, asked only
     /// by rules that test one.
-    pub fn pick(
+    pub fn pick<'b>(
         &self,
         state: u32,
         layer: u16,
         face: Face,
         pos: [i32; 3],
         neighbour: impl Fn([i32; 3]) -> u32,
-        biome: impl Fn() -> Option<String>,
+        biome: impl Fn() -> Option<&'b str>,
     ) -> Pick {
-        let (by_state, by_layer) = (
+        let (mut by_state, mut by_layer) = (
             self.list(&self.by_state, state as usize),
             self.list(&self.by_layer, layer as usize),
         );
-        // Both lists are in rule order: walk them as one.
-        let (mut a, mut b) = (by_state.iter().peekable(), by_layer.iter().peekable());
+        // Both lists are in rule order: walk them as one. A rule naming blocks and tiles needs
+        // both (it is in both lists); one naming either needs that one.
         loop {
-            let next = match (a.peek(), b.peek()) {
-                (Some(&&x), Some(&&y)) if x == y => {
-                    a.next();
-                    b.next()
-                }
-                (Some(&&x), Some(&&y)) if x < y => a.next(),
-                (Some(_), None) => a.next(),
-                (_, Some(_)) => b.next(),
+            let (i, block, tile) = match (by_state.split_first(), by_layer.split_first()) {
                 (None, None) => return Pick::Keep,
+                (Some((&x, rest)), Some((&y, other))) if x == y => {
+                    (by_state, by_layer) = (rest, other);
+                    (x, true, true)
+                }
+                (Some((&x, rest)), Some((&y, _))) if x < y => {
+                    by_state = rest;
+                    (x, true, false)
+                }
+                (Some((&x, rest)), None) => {
+                    by_state = rest;
+                    (x, true, false)
+                }
+                (_, Some((&y, rest))) => {
+                    by_layer = rest;
+                    (y, false, true)
+                }
             };
-            let Some(&i) = next else {
-                return Pick::Keep;
-            };
-            let r = &self.rules[i as usize];
-            if let Some(pick) = self.apply(r, state, layer, face, pos, &neighbour, &biome) {
+            let r = &self.rules[usize::from(i)];
+            if (block || r.rule.match_blocks.is_empty())
+                && (tile || r.rule.match_tiles.is_empty())
+                && let Some(pick) = self.apply(r, state, layer, face, pos, &neighbour, &biome)
+            {
                 return pick;
             }
         }
@@ -256,7 +286,7 @@ impl ConnectedTextures {
 
     /// One rule on a face: `None` when it doesn't apply or picks `<skip>`.
     #[allow(clippy::too_many_arguments)]
-    fn apply(
+    fn apply<'b>(
         &self,
         r: &LoadedRule,
         state: u32,
@@ -264,19 +294,18 @@ impl ConnectedTextures {
         face: Face,
         pos: [i32; 3],
         neighbour: &impl Fn([i32; 3]) -> u32,
-        biome: &impl Fn() -> Option<String>,
+        biome: &impl Fn() -> Option<&'b str>,
     ) -> Option<Pick> {
         let rule = &r.rule;
+        // `Rule::applies_at`, with the biome looked up only for rules that test one. Rules with
+        // a custom name are not loaded.
         if rule.faces & face.bit() == 0
             || rule.heights.as_ref().is_some_and(|h| !h.contains(pos[1]))
-            // Section meshes see no block entity, so no custom name.
-            || rule.name.is_some()
-            || rule.method.is_overlay()
         {
             return None;
         }
         if let Some(biomes) = &rule.biomes
-            && !biome().is_some_and(|b| biomes.matches(&b))
+            && !biome().is_some_and(|b| biomes.matches(b))
         {
             return None;
         }
@@ -323,7 +352,11 @@ impl ConnectedTextures {
             Method::HorizontalVertical => geometry::horizontal_vertical(mask()),
             Method::VerticalHorizontal => geometry::vertical_horizontal(mask()),
             Method::Top => {
-                if matches!(face, Face::Up | Face::Down) || !joins([0, 1, 0]) {
+                // Only sides join the block above: the top and bottom go on to the next rule.
+                if matches!(face, Face::Up | Face::Down) {
+                    return None;
+                }
+                if !joins([0, 1, 0]) {
                     return Some(Pick::Keep);
                 }
                 0
@@ -342,6 +375,7 @@ impl ConnectedTextures {
                 let face = geometry::symmetric_face(face, rule.symmetry);
                 geometry::repeat_index(pos, axes(face), rule.width, rule.height)
             }
+            // Overlays are not loaded yet.
             _ => return None,
         };
         match tile(index) {
@@ -559,11 +593,14 @@ mod tests {
             "door.properties",
             "matchBlocks=oak_door\nmethod=random\ntiles=0-7\nlinked=true",
         )]);
+        let mut tiles = std::collections::HashSet::new();
         for x in 0..20 {
             let lower = ctm.pick(5, 3, Face::North, [x, 64, 0], |_| 0, || None);
             let upper = ctm.pick(6, 3, Face::North, [x, 65, 0], |_| 0, || None);
             assert_eq!(lower, upper, "{x}");
+            tiles.insert(format!("{lower:?}"));
         }
+        assert!(tiles.len() > 3, "the doors are not all alike");
     }
 
     #[test]
@@ -572,12 +609,105 @@ mod tests {
             "glass.properties",
             "matchBlocks=glass\nmethod=fixed\ntiles=0\nheights=0-63\nbiomes=desert",
         )]);
-        let at = |y, biome: &'static str| {
-            ctm.pick(1, 3, Face::Up, [0, y, 0], |_| 0, || Some(biome.into()))
-        };
+        let at =
+            |y, biome: &'static str| ctm.pick(1, 3, Face::Up, [0, y, 0], |_| 0, || Some(biome));
         assert_eq!(at(10, "minecraft:desert"), tile(1000));
         assert_eq!(at(64, "minecraft:desert"), Pick::Keep);
         assert_eq!(at(10, "minecraft:plains"), Pick::Keep);
+    }
+
+    #[test]
+    fn connect_by_tile_reads_the_neighbours_same_side() {
+        let mut ctm = world(&[(
+            "glass.properties",
+            "matchBlocks=glass\nmethod=horizontal\nconnect=tile\ntiles=0-3",
+        )]);
+        // Stone shows the glass sprite (3) on its north side; the door only on its south.
+        let mut faces = vec![[9u16; 6]; 7];
+        faces[1][Face::North as usize] = 3;
+        faces[2][Face::North as usize] = 3;
+        faces[5][Face::South as usize] = 3;
+        ctm.face_layers = faces;
+        assert_eq!(
+            pick_in(&ctm, 1, 3, Face::North, &[([-1, 0, 0], 2)]),
+            tile(1000)
+        );
+        assert_eq!(
+            pick_in(&ctm, 1, 3, Face::North, &[([-1, 0, 0], 5)]),
+            tile(1003)
+        );
+    }
+
+    #[test]
+    fn repeat_and_rows_then_columns() {
+        let ctm = world(&[(
+            "glass.properties",
+            "matchBlocks=glass\nmethod=repeat\nwidth=2\nheight=2\ntiles=0-3",
+        )]);
+        let at = |pos| ctm.pick(1, 3, Face::North, pos, |_| 0, || None);
+        assert_eq!(at([0, 64, 0]), tile(1000));
+        // The north face's right is west; rows run down.
+        assert_eq!(at([-1, 64, 0]), tile(1001));
+        assert_eq!(at([0, 63, 0]), tile(1002));
+        let hv = world(&[(
+            "glass.properties",
+            "matchBlocks=glass\nmethod=horizontal+vertical\ntiles=0-6",
+        )]);
+        // Alone in its row, glass above: the column's bottom, tile 4.
+        assert_eq!(
+            pick_in(&hv, 1, 3, Face::North, &[([0, 1, 0], 1)]),
+            tile(1004)
+        );
+        assert_eq!(
+            pick_in(&hv, 1, 3, Face::North, &[([-1, 0, 0], 1)]),
+            tile(1000)
+        );
+    }
+
+    #[test]
+    fn skips_defaults_and_narrowed_rules() {
+        let ctm = world(&[
+            (
+                "a.properties",
+                "matchBlocks=glass\nmethod=ctm_compact\ntiles=<skip> 1-4",
+            ),
+            (
+                "b.properties",
+                "matchBlocks=glass\nmethod=fixed\ntiles=0\nfaces=sides",
+            ),
+            (
+                "c.properties",
+                "matchBlocks=glass\nmethod=fixed\ntiles=<default>",
+            ),
+            ("d.properties", "matchBlocks=glass\nmethod=fixed\ntiles=0"),
+            (
+                "e.properties",
+                "matchBlocks=stone\nmatchTiles=glass_pane_top\nmethod=fixed\ntiles=0",
+            ),
+        ]);
+        // A skipped quarter drops a: b draws the sides; on top c draws the glass itself, which
+        // stops d.
+        assert_eq!(pick_in(&ctm, 1, 3, Face::North, &[]), tile(2000));
+        assert_eq!(pick_in(&ctm, 1, 3, Face::Up, &[]), Pick::Keep);
+        // A rule naming blocks and tiles needs both (the pane sprite is not known here: e is
+        // only a block rule's list member, never a tile rule's).
+        assert_eq!(pick_in(&ctm, 2, 7, Face::Up, &[]), Pick::Keep);
+        let both = world(&[(
+            "e.properties",
+            "matchBlocks=glass\nmatchTiles=stone\nmethod=fixed\ntiles=0",
+        )]);
+        assert_eq!(pick_in(&both, 1, 7, Face::Up, &[]), tile(1000));
+        assert_eq!(pick_in(&both, 1, 3, Face::Up, &[]), Pick::Keep);
+        assert_eq!(pick_in(&both, 2, 7, Face::Up, &[]), Pick::Keep);
+        // `top` passes the top face on.
+        let top = world(&[
+            ("block_glass.properties", "method=top\ntiles=0"),
+            (
+                "z.properties",
+                "matchBlocks=glass\nmethod=fixed\ntiles=0\nfaces=top",
+            ),
+        ]);
+        assert_eq!(pick_in(&top, 1, 3, Face::Up, &[]), tile(2000));
     }
 
     #[test]
