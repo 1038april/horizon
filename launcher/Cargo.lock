@@ -2839,6 +2839,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "naga 30.0.1",
+ "png 0.18.1",
  "serde",
  "serde_json",
  "sha2 0.10.9",

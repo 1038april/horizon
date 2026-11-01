@@ -68,6 +68,12 @@ min = 0.0
 max = 2.0
 step = 0.05
 
+[[textures]]               # 8 at most: a PNG every stage reads as noise and noise_sampler
+id = "noise"
+file = "noise.png"
+filter = "linear"          # optional: linear (default) or nearest
+wrap = "repeat"            # optional: repeat (default) or clamp
+
 [[tags]]                   # 32 at most: bit i of MaterialInput.tags is the i-th tag
 id = "glass"
 sprites = ["block/glass", "block/*_stained_glass"]   # sprite names, at most one * each
@@ -103,6 +109,7 @@ stages.
 
 ## Changelog
 
+- 2026-11-01: API 0.1 (additions): `[[textures]]`, PNGs bound for every stage.
 - 2026-10-30: API 0.1 (additions): the manifest's `[reflection] option`, which draws the water
   mirror only while that option is on, and the mirror's own eye in facing culling.
 - 2026-10-30: API 0.1 (additions): the material stage's `reflection` and

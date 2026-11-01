@@ -93,6 +93,55 @@ pub struct Report {
     pub stages: Vec<CheckedStage>,
     /// The manifest's `[reflection]`.
     pub reflection: Option<crate::manifest::Reflection>,
+    /// The manifest's `[[textures]]`, and each image decoded, in that order.
+    pub textures: Vec<(crate::manifest::PackTexture, Image)>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Image {
+    pub width: u32,
+    pub height: u32,
+    /// RGBA, 8 bits a channel, rows from the top.
+    pub rgba: Vec<u8>,
+}
+
+/// Decodes the PNG `bytes` into RGBA8.
+pub fn decode_png(bytes: &[u8]) -> Result<Image, String> {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder.read_info().map_err(|e| e.to_string())?;
+    let (width, height) = (reader.info().width, reader.info().height);
+    let max = crate::manifest::MAX_TEXTURE_SIZE;
+    if width == 0 || height == 0 || width > max || height > max {
+        return Err(format!(
+            "{width}×{height}; a texture is at most {max}×{max}"
+        ));
+    }
+    let mut buffer = vec![0; reader.output_buffer_size().ok_or("too large")?];
+    let frame = reader.next_frame(&mut buffer).map_err(|e| e.to_string())?;
+    let data = &buffer[..frame.buffer_size()];
+    let pixels = (width * height) as usize;
+    let rgba = match frame.color_type {
+        png::ColorType::Rgba => data.to_vec(),
+        png::ColorType::Rgb => data
+            .chunks(3)
+            .flat_map(|c| [c[0], c[1], c[2], 255])
+            .collect(),
+        png::ColorType::GrayscaleAlpha => data
+            .chunks(2)
+            .flat_map(|c| [c[0], c[0], c[0], c[1]])
+            .collect(),
+        png::ColorType::Grayscale => data.iter().flat_map(|&g| [g, g, g, 255]).collect(),
+        png::ColorType::Indexed => return Err("indexed colour was not expanded".into()),
+    };
+    if rgba.len() != pixels * 4 {
+        return Err("unexpected pixel data".into());
+    }
+    Ok(Image {
+        width,
+        height,
+        rgba,
+    })
 }
 
 /// Checks every stage of `pack`, and that each option is an `override` of
@@ -136,9 +185,17 @@ pub fn check(pack: &Pack) -> Result<Report, Vec<Problem>> {
             }
         }
     }
+    let mut textures = Vec::new();
+    for t in &m.textures {
+        match decode_png(pack.source_bytes(&t.file).unwrap_or_default()) {
+            Ok(image) => textures.push((t.clone(), image)),
+            Err(e) => problems.push(problem(&t.file, e)),
+        }
+    }
     if problems.is_empty() {
         Ok(Report {
             stages: checked,
+            textures,
             reflection: m.reflection.clone(),
         })
     } else {
@@ -155,7 +212,7 @@ pub fn check_stage(pack: &Pack, kind: StageKind, file: &str) -> Result<CheckedSt
     own.text.truncate(entries.1.start);
     let module = parse(&own)?;
     let mut problems = signature(&module, kind, file);
-    problems.extend(api_rules(&module, kind, &own));
+    problems.extend(api_rules(&module, &own));
     problems.extend(options(&module, &pack.manifest.options, file));
     if !problems.is_empty() {
         return Err(problems);
@@ -304,8 +361,10 @@ fn names(module: &naga::Module) -> HashSet<String> {
 
 /// A pack's files declare no bindings, no entry points and no `horizon_`
 /// names: what the prelude doesn't define is the pack's.
-fn api_rules(module: &naga::Module, kind: StageKind, own: &Composed) -> Vec<Problem> {
-    let prelude = naga::front::wgsl::parse_str(&kind.prelude()).expect("the prelude parses");
+fn api_rules(module: &naga::Module, own: &Composed) -> Vec<Problem> {
+    // The prelude as composed: the stage's own, with the pack's `[[textures]]`.
+    let text = &own.text[own.parts[0].1.clone()];
+    let prelude = naga::front::wgsl::parse_str(text).expect("the prelude parses");
     let ours = names(&prelude);
     let file = &own.parts[own.parts.len() - 1].0;
     let mut problems = Vec::new();

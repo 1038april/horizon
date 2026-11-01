@@ -296,6 +296,27 @@ impl StageKind {
     }
 }
 
+/// The first binding of a pack's `[[textures]]` in group 3; their samplers follow at
+/// `TEXTURE_SAMPLER_BINDING`.
+pub const TEXTURE_BINDING: u32 = 16;
+pub const TEXTURE_SAMPLER_BINDING: u32 = 24;
+
+/// The declarations of a pack's `[[textures]]`, part of every stage's prelude.
+pub fn texture_declarations(textures: &[crate::manifest::PackTexture]) -> String {
+    let mut out = String::new();
+    for (i, t) in textures.iter().enumerate() {
+        out += &format!(
+            "@group({GROUP}) @binding({}) var {}: texture_2d<f32>;\n\
+             @group({GROUP}) @binding({}) var {}_sampler: sampler;\n",
+            TEXTURE_BINDING + i as u32,
+            t.id,
+            TEXTURE_SAMPLER_BINDING + i as u32,
+            t.id
+        );
+    }
+    out
+}
+
 /// A stage's WGSL, and where each part of it came from.
 #[derive(Debug)]
 pub struct Composed {
@@ -337,7 +358,8 @@ pub fn compose(pack: &Pack, kind: StageKind, file: &str) -> Composed {
             .parts
             .push((name.to_owned(), start..composed.text.len()));
     };
-    push("<prelude>", &kind.prelude());
+    let prelude = kind.prelude() + &texture_declarations(&pack.manifest.textures);
+    push("<prelude>", &prelude);
     for shared in pack.manifest.shared.iter().filter(|s| *s != file) {
         push(shared, pack.source(shared).unwrap_or_default());
     }

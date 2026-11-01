@@ -14,6 +14,9 @@ pub const MAX_POST_PASSES: usize = 8;
 pub const MAX_OPTIONS: usize = 64;
 /// The most GPU time a pack may declare for itself, in milliseconds.
 pub const MAX_GPU_MS: f32 = 16.0;
+/// `[[textures]]` a pack may declare, and the side of the largest.
+pub const MAX_TEXTURES: usize = 8;
+pub const MAX_TEXTURE_SIZE: u32 = 2048;
 /// Sprite tags a pack may declare: the bits of `MaterialInput.tags`.
 pub const MAX_TAGS: usize = 32;
 
@@ -38,6 +41,8 @@ pub struct Manifest {
     pub options: Vec<PackOption>,
     /// Sprite tags the material stage reads, in bit order.
     pub tags: Vec<SpriteTag>,
+    /// Images every stage reads, in order (`TEXTURE_BINDING` + their index).
+    pub textures: Vec<PackTexture>,
     pub budget: Budget,
     /// When the material stage's water mirror (`reflection`) is drawn.
     pub reflection: Option<Reflection>,
@@ -52,6 +57,19 @@ pub struct Reflection {
     /// if any.
     #[serde(default)]
     pub option: Option<String>,
+}
+
+/// `[[textures]]`: a PNG of the pack every stage reads, as `<id>` and `<id>_sampler`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PackTexture {
+    /// The WGSL name of the texture.
+    pub id: String,
+    /// The PNG, a plain path in the pack.
+    pub file: String,
+    /// Bilinear filtering (else the nearest texel).
+    pub linear: bool,
+    /// Coordinates outside 0..1 repeat the image (else they clamp to its edges).
+    pub repeat: bool,
 }
 
 /// A set of block sprites the material stage can tell apart: its bit in
@@ -154,6 +172,8 @@ struct Raw {
     options: Vec<RawOption>,
     #[serde(default)]
     tags: Vec<SpriteTag>,
+    #[serde(default)]
+    textures: Vec<RawTexture>,
     #[serde(default)]
     budget: RawBudget,
     reflection: Option<Reflection>,
@@ -266,6 +286,43 @@ impl Manifest {
                 )));
             }
         }
+        if raw.textures.len() > MAX_TEXTURES {
+            return Err(err(format!(
+                "{} [[textures]]; a pack may declare {MAX_TEXTURES}",
+                raw.textures.len()
+            )));
+        }
+        let mut textures: Vec<PackTexture> = Vec::new();
+        for t in raw.textures {
+            if !pack_identifier(&t.id) || textures.iter().any(|o| o.id == t.id) {
+                return Err(err(format!(
+                    "texture id {:?} is not a WGSL identifier, or is declared twice",
+                    t.id
+                )));
+            }
+            if !crate::package::plain_path(&t.file) || !t.file.ends_with(".png") {
+                return Err(err(format!(
+                    "{:?} is not a plain path to a .png file",
+                    t.file
+                )));
+            }
+            let linear = match t.filter.as_deref() {
+                None | Some("linear") => true,
+                Some("nearest") => false,
+                Some(f) => return Err(err(format!("texture filter {f:?}: linear or nearest"))),
+            };
+            let repeat = match t.wrap.as_deref() {
+                None | Some("repeat") => true,
+                Some("clamp") => false,
+                Some(w) => return Err(err(format!("texture wrap {w:?}: repeat or clamp"))),
+            };
+            textures.push(PackTexture {
+                id: t.id,
+                file: t.file,
+                linear,
+                repeat,
+            });
+        }
         let gpu_ms = match raw.budget.gpu_ms {
             Some(ms) if !(ms > 0.0 && ms <= f64::from(MAX_GPU_MS)) => {
                 return Err(err(format!(
@@ -298,6 +355,7 @@ impl Manifest {
             post: raw.post,
             options,
             tags: raw.tags,
+            textures,
             budget: Budget { gpu_ms },
             reflection: raw.reflection,
         })
@@ -347,6 +405,17 @@ pub fn pack_identifier(name: &str) -> bool {
         && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
         && name.len() <= 64
         && !name.starts_with("horizon_")
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTexture {
+    id: String,
+    file: String,
+    #[serde(default)]
+    filter: Option<String>,
+    #[serde(default)]
+    wrap: Option<String>,
 }
 
 impl RawOption {

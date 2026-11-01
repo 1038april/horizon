@@ -24,12 +24,14 @@ impl NativePack {
     /// refused.
     pub fn new(
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         terrain: &TerrainShape<'_>,
         report: Report,
         constants: &[(String, f64)],
     ) -> Result<(Self, Vec<String>), String> {
         let (globals, format) = (terrain.globals, terrain.format);
-        let mut frame = NativeFrame::new(device);
+        let textures = super::native_post::pack_textures(device, queue, &report);
+        let mut frame = NativeFrame::new(device, textures);
         // The mirror is drawn for a material that reads it, while `[reflection] option` is on.
         let option = report.reflection.as_ref().and_then(|r| r.option.as_ref());
         frame.reflects = report

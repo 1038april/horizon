@@ -19,6 +19,8 @@ type WorldViews = (wgpu::TextureView, wgpu::TextureView);
 pub struct NativePost {
     passes: Vec<(String, wgpu::RenderPipeline)>,
     layout: wgpu::BindGroupLayout,
+    /// The pack's textures.
+    textures: Vec<(wgpu::TextureView, wgpu::Sampler)>,
     frame: wgpu::Buffer,
     linear: wgpu::Sampler,
     nearest: wgpu::Sampler,
@@ -42,6 +44,8 @@ pub struct NativeFrame {
     pub(super) buffer: wgpu::Buffer,
     /// Group 3 of the sky and material stages.
     pub layout: wgpu::BindGroupLayout,
+    /// The pack's `[[textures]]` and their samplers, bound for every stage.
+    pub textures: Vec<(wgpu::TextureView, wgpu::Sampler)>,
     pub group: wgpu::BindGroup,
     /// The world's depth before translucent terrain (the material stage's `opaque_depth`,
     /// binding 6), copied each frame.
@@ -140,22 +144,24 @@ fn eased(value: f32, target: f32, half_life: f32, dt: f32) -> f32 {
 }
 
 impl NativeFrame {
-    pub fn new(device: &wgpu::Device) -> Self {
+    pub fn new(device: &wgpu::Device, textures: Vec<(wgpu::TextureView, wgpu::Sampler)>) -> Self {
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Native shader pack frame"),
             size: size_of::<FrameInputs>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let mut entries = vec![
+            frame_entry(wgpu::ShaderStages::VERTEX_FRAGMENT),
+            texture_entry(1, wgpu::TextureSampleType::Float { filterable: true }),
+            sampler_entry(2),
+            texture_entry(6, wgpu::TextureSampleType::Depth),
+            texture_entry(11, wgpu::TextureSampleType::Float { filterable: false }),
+        ];
+        entries.extend(pack_texture_entries(textures.len()));
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Native shader pack frame"),
-            entries: &[
-                frame_entry(wgpu::ShaderStages::VERTEX_FRAGMENT),
-                texture_entry(1, wgpu::TextureSampleType::Float { filterable: true }),
-                sampler_entry(2),
-                texture_entry(6, wgpu::TextureSampleType::Depth),
-                texture_entry(11, wgpu::TextureSampleType::Float { filterable: false }),
-            ],
+            entries: &entries,
         });
         let opaque_depth = depth_copy(device, [1, 1]);
         let opaque_color = color_copy(device, [1, 1], wgpu::TextureFormat::Rgba8Unorm);
@@ -179,8 +185,10 @@ impl NativeFrame {
             (&blank, &reflection_sampler),
             &opaque_depth,
             &opaque_color,
+            &textures,
         );
         Self {
+            textures,
             buffer,
             layout,
             group,
@@ -206,36 +214,37 @@ impl NativeFrame {
         (reflection, sampler): (&wgpu::TextureView, &wgpu::Sampler),
         opaque_depth: &wgpu::Texture,
         opaque_color: &wgpu::Texture,
+        textures: &[(wgpu::TextureView, wgpu::Sampler)],
     ) -> wgpu::BindGroup {
+        let opaque_depth = opaque_depth.create_view(&Default::default());
+        let opaque_color = opaque_color.create_view(&Default::default());
+        let mut entries = vec![
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(reflection),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: wgpu::BindingResource::TextureView(&opaque_depth),
+            },
+            wgpu::BindGroupEntry {
+                binding: 11,
+                resource: wgpu::BindingResource::TextureView(&opaque_color),
+            },
+        ];
+        entries.extend(pack_texture_group_entries(textures));
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Native shader pack frame"),
             layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(reflection),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: wgpu::BindingResource::TextureView(
-                        &opaque_depth.create_view(&Default::default()),
-                    ),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 11,
-                    resource: wgpu::BindingResource::TextureView(
-                        &opaque_color.create_view(&Default::default()),
-                    ),
-                },
-            ],
+            entries: &entries,
         })
     }
 
@@ -286,6 +295,7 @@ impl NativeFrame {
             (&self.reflection, &self.reflection_sampler),
             &self.opaque_depth,
             &self.opaque_color,
+            &self.textures,
         );
     }
 
@@ -397,17 +407,19 @@ impl NativePost {
         frame: &NativeFrame,
     ) -> Result<Self, String> {
         let float = wgpu::TextureSampleType::Float { filterable: true };
+        let mut entries = vec![
+            frame_entry(wgpu::ShaderStages::FRAGMENT),
+            texture_entry(1, float),
+            texture_entry(2, wgpu::TextureSampleType::Depth),
+            texture_entry(3, float),
+            sampler_entry(4),
+            sampler_entry(5),
+            texture_entry(8, float),
+        ];
+        entries.extend(pack_texture_entries(frame.textures.len()));
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Native shader pack post"),
-            entries: &[
-                frame_entry(wgpu::ShaderStages::FRAGMENT),
-                texture_entry(1, float),
-                texture_entry(2, wgpu::TextureSampleType::Depth),
-                texture_entry(3, float),
-                sampler_entry(4),
-                sampler_entry(5),
-                texture_entry(8, float),
-            ],
+            entries: &entries,
         });
         let mut groups: [Option<&wgpu::BindGroupLayout>; GROUP as usize + 1] = Default::default();
         groups[GROUP as usize] = Some(&layout);
@@ -470,6 +482,7 @@ impl NativePost {
         Ok(Self {
             passes,
             layout,
+            textures: frame.textures.clone(),
             frame: frame.buffer.clone(),
             linear: sampler("Native shader pack linear", wgpu::FilterMode::Linear),
             nearest: sampler("Native shader pack nearest", wgpu::FilterMode::Nearest),
@@ -552,39 +565,41 @@ impl NativePost {
                     (Some((_, t)), 1..) => &t[(i - 1) % 2],
                     _ => world.0,
                 };
+                let mut entries = vec![
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.frame.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(world.0),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(world.1),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(previous),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::Sampler(&self.linear),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::Sampler(&self.nearest),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 8,
+                        resource: wgpu::BindingResource::TextureView(&history),
+                    },
+                ];
+                entries.extend(pack_texture_group_entries(&self.textures));
                 device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("Native shader pack post"),
                     layout: &self.layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: self.frame.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::TextureView(world.0),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: wgpu::BindingResource::TextureView(world.1),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 3,
-                            resource: wgpu::BindingResource::TextureView(previous),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 4,
-                            resource: wgpu::BindingResource::Sampler(&self.linear),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 5,
-                            resource: wgpu::BindingResource::Sampler(&self.nearest),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 8,
-                            resource: wgpu::BindingResource::TextureView(&history),
-                        },
-                    ],
+                    entries: &entries,
                 })
             })
             .collect();
@@ -751,6 +766,109 @@ pub fn frame_inputs(frame: &Frame, size: [u32; 2], seconds: f32, index: u32) -> 
     }
 }
 
+/// The pack's `[[textures]]` (`check::Image`s), uploaded with samplers as the manifest says.
+pub fn pack_textures(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    report: &horizon_shader_api::Report,
+) -> Vec<(wgpu::TextureView, wgpu::Sampler)> {
+    report
+        .textures
+        .iter()
+        .map(|(t, image)| {
+            let texture = wgpu::util::DeviceExt::create_texture_with_data(
+                device,
+                queue,
+                &wgpu::TextureDescriptor {
+                    label: Some(&t.id),
+                    size: wgpu::Extent3d {
+                        width: image.width,
+                        height: image.height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                },
+                wgpu::util::TextureDataOrder::LayerMajor,
+                &image.rgba,
+            );
+            let filter = if t.linear {
+                wgpu::FilterMode::Linear
+            } else {
+                wgpu::FilterMode::Nearest
+            };
+            let address = if t.repeat {
+                wgpu::AddressMode::Repeat
+            } else {
+                wgpu::AddressMode::ClampToEdge
+            };
+            let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some(&t.id),
+                address_mode_u: address,
+                address_mode_v: address,
+                mag_filter: filter,
+                min_filter: filter,
+                ..Default::default()
+            });
+            (texture.create_view(&Default::default()), sampler)
+        })
+        .collect()
+}
+
+/// Layout entries of `count` pack textures and their samplers.
+pub(super) fn pack_texture_entries(count: usize) -> Vec<wgpu::BindGroupLayoutEntry> {
+    use horizon_shader_api::stages::{TEXTURE_BINDING, TEXTURE_SAMPLER_BINDING};
+    (0..count as u32)
+        .flat_map(|i| {
+            [
+                wgpu::BindGroupLayoutEntry {
+                    binding: TEXTURE_BINDING + i,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: TEXTURE_SAMPLER_BINDING + i,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ]
+        })
+        .collect()
+}
+
+/// Group entries of the pack's textures, as `pack_texture_entries` lays them out.
+pub(super) fn pack_texture_group_entries(
+    textures: &[(wgpu::TextureView, wgpu::Sampler)],
+) -> Vec<wgpu::BindGroupEntry<'_>> {
+    use horizon_shader_api::stages::{TEXTURE_BINDING, TEXTURE_SAMPLER_BINDING};
+    textures
+        .iter()
+        .enumerate()
+        .flat_map(|(i, (view, sampler))| {
+            [
+                wgpu::BindGroupEntry {
+                    binding: TEXTURE_BINDING + i as u32,
+                    resource: wgpu::BindingResource::TextureView(view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: TEXTURE_SAMPLER_BINDING + i as u32,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+            ]
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -814,7 +932,7 @@ mod tests {
             .into();
         let report = check(&Pack::from_files(files).unwrap()).unwrap();
         let format = wgpu::TextureFormat::Rgba8Unorm;
-        let frame = NativeFrame::new(&device);
+        let frame = NativeFrame::new(&device, Vec::new());
         queue.write_buffer(
             &frame.buffer,
             0,
@@ -933,7 +1051,7 @@ file = \"b.wgsl\"
             .into();
         let report = check(&Pack::from_files(files).unwrap()).unwrap();
         let format = wgpu::TextureFormat::Rgba8Unorm;
-        let frame = NativeFrame::new(&device);
+        let frame = NativeFrame::new(&device, Vec::new());
         let mut post = NativePost::new(&device, report.stages, &[], format, &frame).unwrap();
         let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
         let color = texture(&device, format, usage).create_view(&Default::default());
