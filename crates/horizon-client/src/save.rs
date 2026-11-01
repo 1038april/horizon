@@ -667,7 +667,7 @@ pub fn encode_block_entity(
         }
         BlockEntity::Sign(sign) => entries.extend(sign.encode()),
         BlockEntity::Jukebox(j) => {
-            if let Some(record) = &j.record {
+            if let Some(record) = j.record() {
                 entries.push(("RecordItem", item_to_nbt(record)));
             }
             entries.push(("ticks_since_song_started", Tag::Long(j.ticks)));
@@ -912,7 +912,7 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
         return Some((
             pos,
             BlockEntity::Jukebox(crate::containers::Jukebox {
-                record,
+                items: [record],
                 ticks,
                 playing,
             }),
@@ -3442,6 +3442,10 @@ pub struct Level {
     /// The player compound as loaded, for fields Horizon does not model
     /// (ender chest, effects, abilities, recipe book, attributes, ...).
     pub player_extra: Option<Tag>,
+    /// The player was read from the file level.dat names (`singleplayer_uuid`,
+    /// or its `.dat_old`): `PlayerList.loadPlayerData` gives the world's owner
+    /// that file, not their own.
+    pub singleplayer_file: bool,
 }
 impl Level {
     /// `PrimaryLevelData.setDifficulty`: the level data holds the world's
@@ -3599,6 +3603,7 @@ impl Level {
             read_dat(&player_dir.join(format!("{name}.dat")))
                 .or_else(|| read_dat(&player_dir.join(format!("{name}.dat_old"))))
         });
+        level.singleplayer_file = owner.is_some();
         let player = owner
             .or_else(|| {
                 fs::read_dir(&player_dir)
@@ -3749,9 +3754,8 @@ impl Level {
                 .collect(),
             _ => Vec::new(),
         };
-        // ServerPlayer.saveParentVehicle: the vehicle the player rides, by
-        // UUID. Horizon keeps the vehicle in the world, so the file names it
-        // instead of holding a second copy of it.
+        // ServerPlayer.saveParentVehicle: the mount the player rides, by
+        // UUID; the vehicle tree stays in the raw compound until it is back.
         self.root_vehicle = p
             .get("RootVehicle")
             .and_then(|r| uuid_from_tag(r.get("Attach")));
@@ -3969,9 +3973,9 @@ impl Level {
                 map.entry(key.into()).or_insert(value);
             }
         }
-        // ServerPlayer.saveParentVehicle: the vehicle the player rides, by
-        // UUID. Horizon keeps the vehicle in the world, so the file names it
-        // instead of holding a second copy of it.
+        // ServerPlayer.saveParentVehicle: the savers put the whole
+        // RootVehicle in the compound; a mount known by UUID alone (older
+        // Horizon files) is still named.
         if let Some(vehicle) = self.root_vehicle
             && p.get("RootVehicle").is_none()
         {
@@ -3991,6 +3995,18 @@ impl Level {
     /// Dedicated servers save connected players separately.
     pub fn write_without_player(&mut self, dir: &Path) -> Result<()> {
         self.write_internal(dir, false)
+    }
+
+    /// The player's file alone, `players/data/<singleplayer_uuid>.dat`
+    /// (`PlayerDataStorage.save`): the one level.dat names.
+    pub fn write_player(&mut self, dir: &Path) -> Result<()> {
+        let uuid = self.ensure_player_uuid();
+        let player_file = dir
+            .join("players")
+            .join("data")
+            .join(format!("{}.dat", uuid_text(uuid)));
+        back_up_unreadable_player(&player_file);
+        write_dat(&player_file, self.player_tag())
     }
 
     fn write_internal(&mut self, dir: &Path, write_player: bool) -> Result<()> {
@@ -4128,7 +4144,11 @@ impl Level {
                 map.insert("allowCommands".into(), Tag::Byte(i8::from(allow)));
             }
             map.entry("WasModded".into()).or_insert(Tag::Byte(0));
-            if !self.enabled_features.is_empty() {
+            // lenientOptionalFieldOf("enabled_features", DEFAULT_FLAGS): the
+            // tag is left out when the set is vanilla's default, so a
+            // `["minecraft:vanilla"]`-only list does not reach the file.
+            let vanilla_only = self.enabled_features == ["minecraft:vanilla"];
+            if !self.enabled_features.is_empty() && !vanilla_only {
                 map.insert(
                     "enabled_features".into(),
                     Tag::List(self.enabled_features.iter().map(|s| string(s)).collect()),
@@ -4192,12 +4212,7 @@ impl Level {
             write_saved_data(dir, "game_rules", rules)?;
         }
         if write_player {
-            let player_file = dir
-                .join("players")
-                .join("data")
-                .join(format!("{}.dat", uuid_text(uuid)));
-            back_up_unreadable_player(&player_file);
-            write_dat(&player_file, self.player_tag())?;
+            self.write_player(dir)?;
         }
         write_dat(&dir.join("level.dat"), Tag::compound([("Data", data)]))?;
         Ok(())
@@ -4445,7 +4460,7 @@ fn decode_lod_surfaces(
     let mut columns: Box<[crate::lod::Column; 256]> =
         Box::new(std::array::from_fn(|_| crate::lod::Column {
             surface: None,
-            spans: Vec::new(),
+            spans: crate::lod::Spans::new(),
         }));
     let mut water = [None; 256];
     let light = lod_light_layers(&sections, layout, sky_light);
@@ -6557,6 +6572,48 @@ mod tests {
                 .get("minecraft:iron_ingot_from_smelting_iron_ore"),
             Some(&5)
         );
+    }
+
+    /// `WorldDataConfiguration.MAP_CODEC`'s `lenientOptionalFieldOf
+    /// ("enabled_features", DEFAULT_FLAGS)`: a picked experiment's list
+    /// round-trips, a vanilla-only selection leaves the tag out.
+    #[test]
+    fn enabled_features_round_trip_and_omit_the_vanilla_default() {
+        let dir = gen_world("enabled-features");
+        let mut level = Level {
+            name: "Features".into(),
+            enabled_features: vec![
+                "minecraft:vanilla".into(),
+                "minecraft:minecart_improvements".into(),
+            ],
+            ..Level::default()
+        };
+        level.write(&dir).unwrap();
+        let back = Level::read(&dir).unwrap();
+        assert_eq!(back.enabled_features, level.enabled_features);
+        // The tag is in the file.
+        let raw = crate::save::read_level_dat(&dir).unwrap();
+        if let Tag::Compound(data) = &raw {
+            let data = data.get(&JavaString::from("Data")).unwrap();
+            assert!(matches!(data.get("enabled_features"), Some(Tag::List(_))));
+        }
+        // A vanilla-only selection writes no tag, and reads back as the
+        // same vanilla-only list. A fresh folder: write_internal keeps an
+        // older file's fields.
+        let dir2 = gen_world("enabled-features-vanilla");
+        level.enabled_features = vec!["minecraft:vanilla".into()];
+        level.write(&dir2).unwrap();
+        let raw = crate::save::read_level_dat(&dir2).unwrap();
+        if let Tag::Compound(data) = &raw {
+            let data = data.get(&JavaString::from("Data")).unwrap();
+            assert!(data.get("enabled_features").is_none());
+        }
+        let back = Level::read(&dir2).unwrap();
+        // The read side keeps its own convention: empty is the vanilla
+        // default the file omitted.
+        assert!(back.enabled_features.is_empty());
+        let _ = fs::remove_dir_all(dir);
+        let _ = fs::remove_dir_all(dir2);
     }
 
     fn gen_world(name: &str) -> PathBuf {

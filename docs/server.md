@@ -469,19 +469,33 @@ runtime or new dependency. Server-sent events can replace the polling later if a
   `set_config`, `start`, `restart` and `stop` (needs `confirm: true`). Tools that send someone away or can't be
   undone carry MCP's `destructiveHint`. It's the same idea as the game's `horizon-ctl`
   (docs/agent-control.md): an AI can run and diagnose a server, and every action it takes shows in the log.
+- **RCON.** `enable-rcon`, `rcon.port` and `rcon.password` turn on vanilla's remote console, for the hosting panels,
+  Discord bridges and scripts written for it. The supervisor serves it (`rcon.rs`, std only like `http.rs`), so it
+  answers while the game restarts (a command then says the game isn't running), and it reads its settings as
+  `RconThread.create` does: no password or a port outside 1 to 65535 leaves it off with vanilla's warning. The
+  packets are `RconClient`'s: login (3), command (2), the output in packets of 4096 characters, `-1` for a refused
+  login, `Unknown request <hex>` for another type, `Error executing: <command> (<reason>)` for a command that failed.
+  A command goes to the game as `horizon-server cmd` sends it (`console <line>` on the control endpoint), so the
+  output is what the console prints, its messages joined as `RconConsoleSource` joins them. Differences, each one
+  named in `rcon.rs`: the packets are read from the stream, the password is compared in constant time, a
+  connection that hasn't logged in within 30 seconds is closed and at most 16 are open. Not yet: the sender
+  `Rcon` and `broadcast-rcon-to-ops` (a command shows as the console's).
 - **Vanilla's own management protocol.** Vanilla 26.3 has a server management protocol: JSON-RPC over a
   WebSocket, set up by the `management-server-*` keys in server.properties, so tools written for vanilla can
   manage a Horizon server too. The supervisor serves it (`management.rs`, the WebSocket in `websocket.rs`, std
-  only like `http.rs`), so it answers while the game restarts (`server/status` says `started: false` then);
-  calls that change the game will go through its console. Authentication, errors and replies follow vanilla's
-  `net.minecraft.server.jsonrpc` (`AuthenticationHandler`, `Connection`, `methods/*Service`), and
-  `rpc.discover` gives vanilla's OpenRPC document (`management_schema.rs`).
-  `tools/test_management_protocol_parity.py` sends vanilla's server and Horizon's the same messages and
-  compares the answers, and the document with the data generator's `json-rpc-api-schema.json`.
-  - built: the WebSocket and its authentication, the JSON-RPC errors and parameter checks, `rpc.discover`;
-  - planned: `players`, `players/kick`, `server/{status,save,stop,system_message}`, the lists' getters (next);
-    changing the lists (through the game, so the source, expiry and kicks are vanilla's),
-    `serversettings/*` and `gamerules`, the notifications and heartbeat (from the event stream), TLS.
+  only like `http.rs`; TLS, on by default as in vanilla, through rustls in `management_tls.rs`, from a PKCS12
+  keystore, or a self-signed one Horizon makes when none is set), so it answers while the game restarts
+  (`server/status` says `started: false` then); calls that change the game go through its console.
+  Authentication, errors and replies follow vanilla's `net.minecraft.server.jsonrpc` (`AuthenticationHandler`,
+  `Connection`, `methods/*Service`), and `rpc.discover` gives vanilla's OpenRPC document (`management_schema.rs`).
+  `tools/test_management_protocol_parity.py` sends vanilla's server and Horizon's the same messages over TLS
+  (one keystore for both) and compares the answers, and the document with the data generator's
+  `json-rpc-api-schema.json`.
+  - built: the WebSocket and its authentication, TLS, `rpc.discover`, `players`, `players/kick`,
+    `server/{status,save,stop,system_message}`, and the four lists (`allowlist/*`, `bans/*`, `ip_bans/*`,
+    `operators/*`), whose changes the game applies itself (its control endpoint's `management` request, in
+    `game/dedicated/management.rs`), so the source, expiry, log lines and kicks are vanilla's;
+  - planned: `serversettings/*` and `gamerules`, the notifications and heartbeat (from the event stream).
 
 ## 9. Benchmark plan (bots against vanilla and Paper)
 

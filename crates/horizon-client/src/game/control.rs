@@ -37,6 +37,7 @@ const HELP: &[&str] = &[
     "chat-log [N]                   the newest N chat messages (default 10)",
     "options [PAGE]                 open the options (video sound controls keybinds mouse chat accessibility language font packs mods graphics graphics-advanced graphics-hdr)",
     "stats [reset]                  frame-time summary since the last reset",
+    "narration                      the narrator's status and the last messages it was asked to say",
     "bench SECONDS                  reset stats, wait, then reply with the summary",
     "fly X1 Y1 Z1 X2 Y2 Z2 SECONDS [PITCH [raw]]  fly the camera along a line at constant speed, then reply with the frame summary (raw: every frame time too)",
     "open WORLD [SEED] [creative]   open or create a world from the title screen",
@@ -117,6 +118,7 @@ impl Game<'_> {
             }
         }
         horizon_client::widgets::end_frame(self.frames);
+        self.narrate_screen();
         self.advance_agent();
         for request in self.ui_wait.ready() {
             self.answer(request, event_loop);
@@ -318,6 +320,8 @@ impl Game<'_> {
                     return ok();
                 }
                 self.require_world()?;
+                // KeyboardHandler.keyPress: the open screen's narration hears it.
+                super::narrator::narrate_key(&mut self.narration, key, arg(2)? != "up");
                 // The sign editor takes raw presses (Enter, arrows, Backspace, Escape).
                 if self.sign_edit.is_some() {
                     if arg(2)? != "up" {
@@ -640,6 +644,7 @@ impl Game<'_> {
                 renderer.screenshot = Some(horizon_client::gfx::ScreenshotRequest {
                     path: path.trim().into(),
                     size: None,
+                    scaled: false,
                 });
                 self.pending_screenshot = Some(reply.clone());
                 Ok(None)
@@ -668,6 +673,8 @@ impl Game<'_> {
                     return ok();
                 }
                 self.require_world()?;
+                // Typed keys: the open screen's narration hears them.
+                self.narration.keyboard_action();
                 if self.book.is_some() {
                     self.book_type(text);
                     return ok();
@@ -756,6 +763,15 @@ impl Game<'_> {
                     .remote_chat(n)
                     .unwrap_or_else(|| self.ui.chat.recent_lines(n));
                 Ok(Some(json!({ "chat": lines })))
+            }
+            "narration" => {
+                // NarratorStatus's options.txt names: off, all, chat, system.
+                let status = horizon_narrator::status().key().rsplit('.').next();
+                Ok(Some(json!({
+                    "status": status,
+                    "active": horizon_narrator::is_active(),
+                    "recent": horizon_narrator::recent(),
+                })))
             }
             "stats" => {
                 let summary = self.frame_stats.summary();
@@ -878,6 +894,15 @@ impl Game<'_> {
                     horizon_client::mobs::DamageKind::PlayerAttack,
                     None,
                 );
+                ok()
+            }
+            // A splitscreen player leaves splitscreen; only P1's game ends the process.
+            "quit" if self.options.split_guest => {
+                if self.remote.is_some() {
+                    self.leave_server(None)?;
+                } else if let Some(title) = self.title.as_mut() {
+                    title.escape();
+                }
                 ok()
             }
             "quit" => {

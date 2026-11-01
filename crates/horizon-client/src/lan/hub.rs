@@ -39,6 +39,7 @@ use std::sync::{Arc, Mutex, atomic::Ordering};
 
 /// GameEvent types (ClientboundGameEventPacket).
 pub mod chat;
+pub mod chat_filter;
 
 pub mod game_event {
     pub const NO_RESPAWN_BLOCK_AVAILABLE: u8 = 0;
@@ -175,10 +176,27 @@ pub enum HostEvent {
         sender: u128,
         text: String,
     },
+    /// A player's text the chat filter refused (docs/chat-filter.md): relayed to nobody, for the
+    /// game to log and to carry out `action`.
+    ChatFiltered {
+        sender: u128,
+        name: String,
+        place: chat_filter::Place,
+        text: String,
+        /// The hit's number in the filter's window.
+        count: u32,
+        action: horizon_chat_filter::Action,
+    },
     /// A server log warning (ServerGamePacketListenerImpl's LOGGER.warn).
     Warn(String),
     /// A server log error (LOGGER.error).
     Error(String),
+    /// The anticheat bans this player (`banned-players.json`, then the ban's kick).
+    Ban {
+        uuid: u128,
+        name: String,
+        reason: String,
+    },
 }
 
 pub struct Hub {
@@ -197,6 +215,8 @@ pub struct Hub {
     pub movement_checks: (bool, bool),
     /// The anticheat, when `server.toml` turns it on (dedicated servers).
     pub anticheat: Option<Box<super::anticheat::Anticheat>>,
+    /// The chat filter, when `server.toml` turns it on (dedicated servers).
+    pub chat_filter: Option<Box<horizon_chat_filter::Guard>>,
     /// The far ring, when `server.toml`'s `max_view_distance` turns it on (dedicated servers).
     pub far: Option<super::far::Far>,
     /// The `immediate_respawn` game rule, as the players were last told.
@@ -212,6 +232,10 @@ pub struct Hub {
     /// The scoreboard's teams, set by the game each tick, for players'
     /// display names.
     pub teams: Vec<crate::scoreboard::Team>,
+    /// Names a server mod shows for players in chat and the Tab list
+    /// (`native_set_nickname`), by UUID. Their real name stays everywhere
+    /// else: the log, commands, the hover of the shown name.
+    pub nicknames: std::collections::HashMap<u128, String>,
     last_clock: i64,
     last_rate: f32,
     ticking: (f32, bool),
@@ -233,6 +257,10 @@ pub struct Hub {
     pub chat_spam_threshold: i32,
     /// `command-spam-threshold-seconds`, as `chat_spam_threshold`.
     pub command_spam_threshold: i32,
+    /// `server.toml`'s `admin_feedback_to_ops` (dedicated servers): whether
+    /// the other operators get a command's `[name: ...]` line (vanilla's
+    /// broadcastToAdmins). False keeps it to the console's log.
+    pub admin_feedback_to_ops: bool,
     chat_type: i32,
     dimension_type: i32,
     clock_ids: Vec<i32>,
@@ -315,11 +343,18 @@ impl Hub {
     /// Player.getDisplayName: the name formatted for the player's team
     /// (PlayerTeam.formatNameForTeam), suggesting `/tell NAME `, showing the
     /// player on hover and inserting the name.
+    /// A nickname (`nicknames`) takes the name's place in the text; the
+    /// hover, the suggested `/tell` and the insertion keep the real name.
     pub fn player_display_name(&self, uuid: u128, name: &str) -> Tag {
-        let Some(team) = self.teams.iter().find(|t| t.players.contains(name)) else {
+        let shown = self.nicknames.get(&uuid).map_or(name, String::as_str);
+        let team = self.teams.iter().find(|t| t.players.contains(name));
+        if team.is_none() && shown == name {
             return display_name(uuid, name);
+        }
+        let mut c = match team {
+            Some(team) => team.formatted_name_comp(&crate::scoreboard::literal(shown)),
+            None => serde_json::json!({ "text": shown }),
         };
-        let mut c = team.formatted_name_comp(&crate::scoreboard::literal(name));
         c["click_event"] =
             serde_json::json!({"action": "suggest_command", "command": format!("/tell {name} ")});
         c["hover_event"] = serde_json::json!({"action": "show_entity", "id": "minecraft:player",
@@ -475,6 +510,7 @@ impl Hub {
             immediate_respawn: false,
             movement_checks: (true, true),
             anticheat: None,
+            chat_filter: None,
             far: None,
             singleplayer_owner: None,
             flat_world: false,
@@ -488,6 +524,7 @@ impl Hub {
             spawn_protection: 0,
             chat_spam_threshold: 0,
             command_spam_threshold: 0,
+            admin_feedback_to_ops: true,
             weather: (false, 0.0, 0.0),
             level_sync: Default::default(),
             chat_type,
@@ -501,6 +538,7 @@ impl Hub {
             mod_commands: (serde_json::Value::Null, None),
             native_menu_events: Vec::new(),
             teams: Vec::new(),
+            nicknames: std::collections::HashMap::new(),
         }
     }
 
@@ -786,7 +824,7 @@ impl Hub {
             game_mode: Some(mode),
             listed: Some(true),
             latency: Some(latency),
-            display_name: Some(None),
+            display_name: Some(self.nicknames.get(&uuid).map(|n| literal(n))),
             list_order: Some(0),
             show_hat: Some(guest.is_none_or(|g| g.info.model_customisation & 0x40 != 0)),
         }
@@ -1322,6 +1360,7 @@ impl Hub {
     /// players' latencies.
     pub fn tick(&mut self, ctx: &mut TickCtx) -> Vec<HostEvent> {
         let mut events = self.poll(ctx);
+        events.extend(self.drain_packets(ctx));
         events.extend(self.tick_level(ctx));
         self.end_tick();
         events
@@ -2332,7 +2371,8 @@ impl Hub {
         }
         // ServerEntity.sendDirtyEntityData on the player's first tick: the
         // health its creation set is still dirty, and goes to the player too.
-        if self.guests[i].sent_health.is_none() {
+        let first_tick = self.guests[i].sent_health.is_none();
+        if first_tick {
             let g = &self.guests[i];
             g.send(&C::SetEntityData(play::SetEntityData {
                 id: g.entity_id,
@@ -2364,9 +2404,12 @@ impl Hub {
         }
         // ServerEntity.sendDirtyEntityData: the player's changed attribute
         // instances go to the player too (its trackers get them from
-        // track_entities).
+        // track_entities). On the first tick vanilla's ran before
+        // ServerPlayer.tick, whose updatePlayerAttributes (and doTick's
+        // removeFrost) created the instances the guest's tick just made: they
+        // go out on the next tick, after the first chunk batch (#5560).
         let g = &mut self.guests[i];
-        if let Some(m) = g.motion.as_mut() {
+        if let Some(m) = g.motion.as_mut().filter(|_| !first_tick) {
             let values = super::attributes::take_dirty(&mut m.attributes);
             if !values.is_empty() {
                 g.send(&C::UpdateAttributes(play::UpdateAttributes {
@@ -2596,6 +2639,17 @@ impl Hub {
         })
     }
 
+    /// handlePlayerCommand's START_SPRINTING and STOP_SPRINTING: `setSprinting`, whose movement
+    /// speed modifier the attributes then sync to the client (which takes the modifiers as sent:
+    /// one without it would slow a sprinting client to a walk).
+    fn set_sprinting(&mut self, i: usize, sprinting: bool) {
+        let g = &mut self.guests[i];
+        g.sprinting = sprinting;
+        if let Some(m) = g.motion.as_mut() {
+            let _ = m.set_sprint_modifier(sprinting);
+        }
+    }
+
     fn process_inbox(&mut self, i: usize, ctx: &mut TickCtx, events: &mut Vec<HostEvent>) {
         // ServerGamePacketListenerImpl.tickPlayer ran between the last
         // tick's packets and these: resetPosition, and the moves it counted.
@@ -2788,8 +2842,7 @@ impl Hub {
                     events.push(HostEvent::Packet(conn, Box::new(S::PlayerCommand(p))));
                 }
                 S::PlayerCommand(p) => match p.action {
-                    1 => self.guests[i].sprinting = true,
-                    2 => self.guests[i].sprinting = false,
+                    1 | 2 => self.set_sprinting(i, p.action == 1),
                     // STOP_SLEEPING.
                     0 => self.wake(i),
                     _ => {}
@@ -2974,7 +3027,7 @@ impl Hub {
         }
         // The anticheat's `ground`: a claim of the ground with nothing to
         // stand on is dropped (no-fall, walking on water).
-        let mut flags = flags;
+        let (mut flags, mut corrected) = (flags, false);
         if flags & 1 != 0 && self.anticheat.is_some() {
             match self.anticheat_ground(i, to, stands, ctx, events) {
                 Some(true) => {
@@ -2982,15 +3035,16 @@ impl Hub {
                     (g.yaw, g.pitch) = (yaw, pitch);
                     return;
                 }
-                Some(false) => flags &= !1,
+                Some(false) => (flags, corrected) = (flags & !1, true),
                 None => {}
             }
         }
         // clientIsFloating, from the move that is accepted: no upward-or-level
         // step onto something, nothing but air around the body, and nothing
         // that lets the player hover (the server's allow-flight, mayfly,
-        // levitation, gliding, riptide).
-        let floating = ctx.collision.is_some() && {
+        // levitation, gliding, riptide). A move whose ground claim the anticheat dropped never counts:
+        // a false claim ends in the anticheat's own kick, logged and told to the operators, or not at all.
+        let floating = !corrected && ctx.collision.is_some() && {
             let g = &self.guests[i];
             to[1] - g.position[1] >= -0.03125
                 && !stands
@@ -3209,6 +3263,24 @@ impl Hub {
             entries: vec![play::PlayerInfo {
                 uuid,
                 game_mode: Some(mode),
+                ..Default::default()
+            }],
+        }));
+    }
+
+    /// A player's nickname changed (None: their name again): kept for chat,
+    /// and the Tab list shows it (PlayerInfo UPDATE_DISPLAY_NAME for
+    /// everyone).
+    pub fn set_nickname(&mut self, uuid: u128, nickname: Option<String>) {
+        match nickname {
+            Some(n) => self.nicknames.insert(uuid, n),
+            None => self.nicknames.remove(&uuid),
+        };
+        self.broadcast(&C::PlayerInfoUpdate(play::PlayerInfoUpdate {
+            actions: 0x20,
+            entries: vec![play::PlayerInfo {
+                uuid,
+                display_name: Some(self.nicknames.get(&uuid).map(|n| literal(n))),
                 ..Default::default()
             }],
         }));
