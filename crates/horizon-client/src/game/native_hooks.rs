@@ -282,6 +282,7 @@ use super::{
 };
 use horizon_client::{
     atlas_sources::qualified,
+    biome::BiomeColors,
     block_entities::Pos,
     chat::ChatSource,
     containers::{BlockEntity, MOD_MENUS, ModBlockEntity, ModContainer, ModFluidTanks},
@@ -693,8 +694,12 @@ pub(crate) struct NativeLootDrops<'a> {
     /// A player's use dropped them rather than a break or a death: shears on a
     /// sheep, a mooshroom, a snow golem or a bogged, a brush on an armadillo or
     /// a suspicious block, shears carving a pumpkin, picking sweet berries or
-    /// cave vines, or a hit taking an item frame or its item. `player` names
-    /// them; `block` or `entity` says what dropped them. API @API:use_drops@.
+    /// cave vines, a hit taking an item frame or its item, or untying a lead
+    /// or cutting it with shears. `player` names them; `block` or `entity` says
+    /// what dropped them. API @API:use_drops@. A mob that a player killed while
+    /// leashed drops its lead on its next tick as a call of its own (`entity`
+    /// the mob, `player` its killer, `table` empty, `used` false). API
+    /// @API:lead_drops@.
     pub(crate) used: bool,
 }
 
@@ -1179,6 +1184,22 @@ impl Game<'_> {
     ) {
         let _ = (context, phase, error_text);
     }
+    /// The server is assembling its data tables from the world's data packs
+    /// (`ReloadableServerResources`): a world is opening, or `/reload` was
+    /// run, and the recipes, tags, loot and advancements are built after
+    /// this. Push `(path, bytes)` pack files and they join this load. `path`
+    /// is the overlay's key, `<kind>/<namespace>:<path>` without `.json`, over
+    /// the kinds the tables read: `recipe/mymod:thing`,
+    /// `tags/mymod:block/thing`, `loot_table/…`, `advancement/…`,
+    /// `trade_set/…`, `villager_trade/…`, `dialog/…`. A file that isn't JSON
+    /// is skipped with a warning. Asked once per load on both paths, so this
+    /// is where a mod recomputes them.
+    /// Contributed files sit below the world's own data packs: a pack's file
+    /// for the same path still overrides a mod's. Server-side (the single
+    /// player's integrated server included). API @API:data_pack_files@.
+    pub(super) fn native_data_pack_files(&self, files: &mut Vec<(String, Vec<u8>)>) {
+        let _ = files;
+    }
     /// The server is about to open its worlds: nothing of the world is
     /// loaded yet (NeoForge's `ServerAboutToStartEvent`, "called before the
     /// server begins loading anything"). Vanilla's `MinecraftServer.loadLevel`
@@ -1342,6 +1363,17 @@ impl Game<'_> {
     /// one that pack is for. Asked once a frame while a pack is on; a value
     /// that isn't finite reads as 0 (`native_shader_params_now`). API
     /// @API:native_shader_params@.
+    /// Change the colours of `biome` (`minecraft:plains`) on this client: the
+    /// grass, foliage (leaves, vines), dry foliage (leaf litter) and water
+    /// tints, 0xRRGGBB, as its biome file and the colormaps set them. Asked
+    /// for every biome when a mod calls `native_refresh_biome_colors`, which
+    /// rebuilds the terrain with them; a season mod answers from its season
+    /// and calls that when the season turns. The dark forest's modifier
+    /// still applies to the grass set here; the swamp's noise colours
+    /// replace it. API @API:biome_colors@.
+    pub(super) fn native_biome_colors(&self, biome: &str, colors: &mut BiomeColors) {
+        let _ = (biome, colors);
+    }
     pub(super) fn native_shader_params(&self, partial: f32, params: &mut [[f32; 4]; 8]) {
         let _ = (partial, params);
     }
@@ -2664,6 +2696,10 @@ impl GameLevel<'_> {
     /// directional particle. The return value means accepted, not delivered.
     /// Block particle types require their block state; item, trail and
     /// vibration particles are not supported by the current network dispatch.
+    /// `ParticleOptions::named("mymod:spark")` sends a mod's own type
+    /// (API @API:mod_particle_types@): Horizon clients draw it from the sprite
+    /// set in the mod's `assets/<namespace>/particles/<path>.json`, a client
+    /// without that file draws nothing, and vanilla clients aren't sent it.
     pub(super) fn native_send_particles(
         &mut self,
         options: &ParticleOptions,
@@ -2674,6 +2710,16 @@ impl GameLevel<'_> {
         count: i32,
     ) -> bool {
         use ParticleType as T;
+        // A native mod's own type: the name has to be namespaced, and a client
+        // draws it only when its pack has the sprite set.
+        if let Some(name) = &options.mod_particle {
+            let namespaced = name
+                .split_once(':')
+                .is_some_and(|(ns, path)| !ns.is_empty() && !path.is_empty());
+            if !self.native_authoritative || !namespaced {
+                return false;
+            }
+        }
         let supported = match options.ty {
             T::Block | T::BlockMarker | T::FallingDust | T::DustPillar | T::BlockCrumble => {
                 state.is_some_and(|id| self.registry.state(id).is_some())
@@ -4867,7 +4913,11 @@ mod tests {
         // From its doc comment's last line, so an attribute above it counts.
         let hook = source.find("pub fn native_loot_table_load(").unwrap();
         let start = source[..hook].rfind("///").unwrap();
-        let body = &source[start..start + source[start..].find("\n}\n").unwrap()];
+        let end = source[start..]
+            .find("\n}\n")
+            .or_else(|| source[start..].find("\r\n}\r\n"))
+            .unwrap();
+        let body = &source[start..start + end];
         for line in body.lines() {
             assert!(
                 !line.contains("cfg"),
