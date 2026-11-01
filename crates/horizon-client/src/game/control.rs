@@ -1059,6 +1059,7 @@ impl Game<'_> {
             Screen::BlockEditor => "block-editor",
             Screen::Win => "win",
             Screen::DebugOptions => "debug-options",
+            Screen::Mod => "mod",
         }
     }
 

@@ -3352,6 +3352,94 @@ impl Game<'_> {
         batch.scale_since(start, at[0], at[1], size / 16.0, size / 16.0);
         true
     }
+    /// Item `item`'s icon drawn with model `model` (`minecraft:paper` as
+    /// `mymod:wheel_icon`, an `item_model` of a content mod's), as `native_item`
+    /// draws one; false for an unknown item. API @API:native_mod_screen@.
+    pub(super) fn native_item_model(
+        &self,
+        batch: &mut HudBatch,
+        item: &str,
+        model: &str,
+        at: [f32; 2],
+        size: f32,
+    ) -> bool {
+        if self.res.items().get(item).is_none() {
+            return false;
+        }
+        let mut stack = ItemStack::new(item, 1);
+        let mut data = horizon_client::item_data::StackData::default();
+        data.set_other(
+            "minecraft:item_model",
+            Some(horizon_world::nbt::Tag::String(model.into())),
+        );
+        stack.extra = Some(Box::new(data));
+        let start = batch.vertices.len();
+        self.draw_item_model(batch, &stack, at[0], at[1]);
+        batch.scale_since(start, at[0], at[1], size / 16.0, size / 16.0);
+        true
+    }
+    /// A quad of corners `points` (in order round it) in GUI pixels, `argb`:
+    /// a wedge, a slanted bar, what `native_fill`'s rectangles can't draw.
+    /// API @API:native_mod_screen@.
+    pub(super) fn native_quad(&self, batch: &mut HudBatch, points: [[f32; 2]; 4], argb: u32) {
+        let [a, r, g, b] = argb.to_be_bytes();
+        batch.fill_quad(&self.gui.atlas, points, rgba(r, g, b, a));
+    }
+    /// Opens a screen of mod `mod_id`'s own over the world: the screen hooks
+    /// fire over it as over any other, so the mod draws it in
+    /// `native_screen_render_post` and takes its clicks, scroll, keys and
+    /// typing there; the mouse is freed, and Escape closes it. Every mod's own
+    /// screen has the `NativeScreenView.id` `mod`, so a mod's screen hooks
+    /// check `native_mod_screen()` is its own before drawing. It doesn't pause
+    /// a single-player game (as the inventory doesn't). True when it is open:
+    /// false while another screen is (or another mod's), over the title
+    /// screen, a book, a sign editor, a dialog or a prompt, while the world
+    /// loads, and anywhere but the window's own client (the server thread, a
+    /// dedicated server). A gamepad can close it (B, Start) but not click on
+    /// it: its clicks don't reach the mouse hooks. API @API:native_mod_screen@.
+    pub(super) fn native_mod_screen_open(&mut self, mod_id: &str) -> bool {
+        // What `screen_hooks_open` would refuse over the world: the mod's
+        // screen would be up with no hook to draw or click it.
+        let blocked = self.title.is_some()
+            || self.renderer.is_none()
+            || self.lan_acting.is_some()
+            || self.player.is_none()
+            || self.screen_over_playing()
+            || self.remote_loading();
+        let owner = self.native_mod_screen();
+        if let Some(open) = mod_screen_opens(self.screen, blocked, owner, mod_id) {
+            return open;
+        }
+        self.native_mod_screen = Some(mod_id.to_owned());
+        self.screen = Screen::Mod;
+        self.keys.clear();
+        self.left = false;
+        self.right = false;
+        self.mining = None;
+        self.capture(false);
+        true
+    }
+    /// Closes mod `mod_id`'s own screen, if it is open. API @API:native_mod_screen@.
+    pub(super) fn native_mod_screen_close(&mut self, mod_id: &str) {
+        if self.native_mod_screen().is_some_and(|id| id == mod_id) {
+            self.close_mod_screen();
+        }
+    }
+    /// The mod whose own screen is open, if one is (Escape, or another screen
+    /// replacing it, closes it). API @API:native_mod_screen@.
+    pub(super) fn native_mod_screen(&self) -> Option<&str> {
+        self.native_mod_screen
+            .as_deref()
+            .filter(|_| self.screen == Screen::Mod)
+    }
+    /// A mod's own screen closes (Escape, or `native_mod_screen_close`).
+    pub(super) fn close_mod_screen(&mut self) {
+        self.native_mod_screen = None;
+        if self.screen == Screen::Mod {
+            self.screen = Screen::Playing;
+            self.capture(true);
+        }
+    }
     /// The open menu's title (the block's name, or the one it was given),
     /// as plain text. API 20.
     pub(super) fn native_screen_title(&self) -> Option<String> {
@@ -4563,8 +4651,56 @@ fn box_meets(b: &horizon_core::geometry::Aabb, min: [f64; 3], max: [f64; 3]) -> 
         && hi.z > min[2]
 }
 
+/// What `native_mod_screen_open(mod_id)` does over `screen` (`blocked`: an
+/// overlay, the title screen, no window or no player; `owner`'s own screen
+/// open): `None` opens it, `Some` answers without changing anything (true:
+/// `mod_id`'s is already open).
+fn mod_screen_opens(
+    screen: Screen,
+    blocked: bool,
+    owner: Option<&str>,
+    mod_id: &str,
+) -> Option<bool> {
+    if screen == Screen::Mod {
+        return Some(owner == Some(mod_id));
+    }
+    if screen != Screen::Playing || blocked {
+        return Some(false);
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// A mod's own screen opens only over the world, never over another
+    /// screen, an overlay (the title screen, a book, loading, no window) or
+    /// another mod's; opening it again is a no-op.
+    #[test]
+    fn a_mod_screen_opens_only_over_the_world() {
+        use super::{Screen, mod_screen_opens};
+        assert_eq!(mod_screen_opens(Screen::Playing, false, None, "a"), None);
+        assert_eq!(
+            mod_screen_opens(Screen::Playing, true, None, "a"),
+            Some(false)
+        );
+        for other in [
+            Screen::Paused,
+            Screen::Inventory,
+            Screen::Chat,
+            Screen::Options,
+        ] {
+            assert_eq!(mod_screen_opens(other, false, None, "a"), Some(false));
+        }
+        assert_eq!(
+            mod_screen_opens(Screen::Mod, false, Some("a"), "a"),
+            Some(true)
+        );
+        assert_eq!(
+            mod_screen_opens(Screen::Mod, false, Some("b"), "a"),
+            Some(false)
+        );
+    }
 
     /// The characters a `ScreenEvent.CharacterTyped.Pre` sees are the
     /// printable ones of a text: a cancelled one leaves that text and a
