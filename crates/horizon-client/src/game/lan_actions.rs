@@ -1398,7 +1398,9 @@ impl Game<'_> {
     fn tick_mod_container_viewers(&mut self, host: &LanHost) {
         let mut now: HashMap<(i32, i32, i32), u32> = HashMap::new();
         for g in host.hub.guests.iter().filter(|g| host.hub.here(g)) {
-            if let Some(m) = &g.menu
+            // `BarrelBlockEntity.startOpen`: a spectator does not open it.
+            if !g.spectator()
+                && let Some(m) = &g.menu
                 && let Slots::Block(pos) = m.slots
                 && self.mod_menu_at(pos).is_some()
             {
