@@ -106,6 +106,10 @@ pub struct Extras {
     pub sort: bool,
     /// A vanilla key name: sorts the part under the cursor.
     pub sort_key: String,
+    /// A new chat line slides in from the left while it fades in (`Chat::layout`).
+    pub chat_animation: bool,
+    /// The indicator bar at the left of a chat line (on by default, as vanilla).
+    pub chat_indicator: bool,
     /// No AI: every AI feature hidden and off (`horizon_core::no_ai`; the launcher writes it too).
     pub no_ai: bool,
     /// Agents may control the game the player starts: it opens its control socket for
@@ -143,6 +147,8 @@ impl Default for Extras {
             mouse_tweaks_wheel: true,
             sort: false,
             sort_key: "key.keyboard.unknown".into(),
+            chat_animation: false,
+            chat_indicator: true,
             no_ai: false,
             agent_control: false,
             discord_presence: true,
@@ -218,6 +224,8 @@ impl Extras {
                 "mouseTweaksWheel" => e.mouse_tweaks_wheel = flag(e.mouse_tweaks_wheel),
                 "sort" => e.sort = flag(e.sort),
                 "sortKey" if value.starts_with("key.") => e.sort_key = value.to_owned(),
+                "chatAnimation" => e.chat_animation = flag(e.chat_animation),
+                "chatIndicator" => e.chat_indicator = flag(e.chat_indicator),
                 horizon_core::no_ai::KEY => e.no_ai = flag(e.no_ai),
                 "agentControl" => e.agent_control = flag(e.agent_control),
                 "discordPresence" => e.discord_presence = flag(e.discord_presence),
@@ -228,7 +236,7 @@ impl Extras {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "fullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nownNameTag:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\n{}:{}\nagentControl:{}\ndiscordPresence:{}\n",
+            "fullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nownNameTag:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\nchatAnimation:{}\nchatIndicator:{}\n{}:{}\nagentControl:{}\ndiscordPresence:{}\n",
             bool_text(self.fullbright),
             bool_text(self.dynamic_lights),
             bool_text(self.zoom),
@@ -259,6 +267,8 @@ impl Extras {
             bool_text(self.mouse_tweaks_wheel),
             bool_text(self.sort),
             self.sort_key,
+            bool_text(self.chat_animation),
+            bool_text(self.chat_indicator),
             horizon_core::no_ai::KEY,
             bool_text(self.no_ai),
             bool_text(self.agent_control),
@@ -388,6 +398,10 @@ pub enum Item {
     MouseTweaksWheel,
     Sort,
     SortKey,
+    /// A new chat line slides in and fades in (`Chat::layout`).
+    ChatAnimation,
+    /// The coloured bar at the left of a chat line.
+    ChatIndicator,
     /// Not on the Extras page: Horizon Settings shows No AI, its AI Agent page Agent Control.
     NoAi,
     AgentControl,
@@ -408,6 +422,9 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
         Ok(MouseTweaksWheel),
         Ok(Sort),
         Ok(SortKey),
+        Err("Chat"),
+        Ok(ChatAnimation),
+        Ok(ChatIndicator),
         Err("Multiplayer"),
         Ok(AutoReconnect),
     ]
@@ -423,6 +440,8 @@ impl Item {
             Item::MouseTweaksWheel => "Scroll wheel moves items",
             Item::Sort => "Sort buttons",
             Item::SortKey => "Sort key",
+            Item::ChatAnimation => "Smooth chat",
+            Item::ChatIndicator => "Message indicator",
             Item::NoAi => "No AI",
             Item::AgentControl => "Agent Control",
             Item::DiscordPresence => "Discord Rich Presence",
@@ -434,8 +453,9 @@ impl Item {
         Some(match self {
             MouseTweaksWheel => MouseTweaks,
             SortKey => Sort,
+            ChatIndicator => ChatAnimation,
             Fullbright | DynamicLights | OwnNameTag | MouseTweaks | Sort | AutoReconnect | NoAi
-            | AgentControl | DiscordPresence => {
+            | AgentControl | DiscordPresence | ChatAnimation => {
                 return None;
             }
         })
@@ -465,6 +485,10 @@ impl Item {
             Item::SortKey => {
                 "Sorts the part under the cursor. Click, then press a key; Escape unbinds it."
             }
+            Item::ChatAnimation => {
+                "A new chat line slides in from the left while it fades in, instead of appearing whole."
+            }
+            Item::ChatIndicator => "The coloured bar at the left of a chat line.",
             Item::NoAi => {
                 "Hides and turns off every AI feature: agent control, horizon-ctl and the MCP servers. The launcher's switch too."
             }
@@ -482,6 +506,7 @@ impl Item {
         match self {
             Item::Fullbright => Some(Cost::None),
             Item::DynamicLights => Some(Cost::Low),
+            Item::ChatAnimation => Some(Cost::None),
             Item::OwnNameTag | Item::AutoReconnect | Item::MouseTweaks | Item::Sort => {
                 Some(Cost::None)
             }
@@ -498,6 +523,8 @@ impl Item {
             Item::MouseTweaks => e.mouse_tweaks,
             Item::MouseTweaksWheel => e.mouse_tweaks_wheel,
             Item::Sort => e.sort,
+            Item::ChatAnimation => e.chat_animation,
+            Item::ChatIndicator => e.chat_indicator,
             Item::NoAi => e.no_ai,
             Item::AgentControl => e.agent_control,
             Item::DiscordPresence => e.discord_presence,
@@ -525,6 +552,8 @@ impl Item {
             Item::MouseTweaks => e.mouse_tweaks = !e.mouse_tweaks,
             Item::MouseTweaksWheel => e.mouse_tweaks_wheel = !e.mouse_tweaks_wheel,
             Item::Sort => e.sort = !e.sort,
+            Item::ChatAnimation => e.chat_animation = !e.chat_animation,
+            Item::ChatIndicator => e.chat_indicator = !e.chat_indicator,
             Item::NoAi => e.no_ai = !e.no_ai,
             Item::AgentControl => e.agent_control = !e.agent_control,
             Item::DiscordPresence => e.discord_presence = !e.discord_presence,
@@ -579,6 +608,8 @@ mod tests {
         e.mouse_tweaks_wheel = false;
         e.sort = true;
         e.sort_key = "key.keyboard.r".into();
+        e.chat_animation = true;
+        e.chat_indicator = false;
         e.discord_presence = false;
         assert_eq!(Extras::parse(&e.serialize()), e);
     }
