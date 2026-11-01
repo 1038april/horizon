@@ -695,6 +695,69 @@ impl Game<'_> {
             count,
         )
     }
+    /// Gives `stack` whole (its damage, name, enchantments... kept) to the
+    /// player `uuid`, as `Inventory.add` places it: onto equal stacks first,
+    /// then into empty inventory slots, never the armour or an empty off
+    /// hand. What did not fit comes back (nothing is dropped): all of it for
+    /// a player who isn't here, is dead, or whose state is swapped out by
+    /// another player's (inside that player's hook, only they are reached).
+    /// The player's screen follows as for any change to their inventory.
+    /// What an auto-pickup or a machine's output to a player needs, from any
+    /// server hook. API @API:give_stack@.
+    pub(super) fn native_give_stack(
+        &mut self,
+        uuid: u128,
+        mut stack: ItemStack,
+    ) -> Option<ItemStack> {
+        if stack.count == 0 {
+            return None;
+        }
+        if uuid == self.native_acting_id() {
+            // Their state is in place: the host's, or a guest's swapped in.
+            if self
+                .player
+                .as_ref()
+                .is_none_or(|p| p.health.health() <= 0.0)
+            {
+                return Some(stack);
+            }
+            return self.give(stack);
+        }
+        // Inside a player's hook their state is in place and the records of
+        // the others may hold swapped state (turns nest): only they are
+        // reached, as the doc says.
+        if self.lan_acting.is_some() {
+            return Some(stack);
+        }
+        let max = self
+            .res
+            .items()
+            .get(&stack.item)
+            .map_or(64, |i| i.max_stack);
+        let Some(host) = self.lan.as_mut() else {
+            return Some(stack);
+        };
+        let Some(g) = host
+            .hub
+            .guests
+            .iter_mut()
+            .find(|g| g.placed && !g.dead && g.uuid == uuid)
+        else {
+            return Some(stack);
+        };
+        // inventory_add indexes the 36 main slots.
+        if g.inventory.len() < 36 {
+            g.inventory.resize(36, None);
+        }
+        let left = super::inventory_add(
+            &mut g.inventory,
+            &mut g.offhand,
+            g.selected,
+            max,
+            &mut stack,
+        );
+        left.then_some(stack)
+    }
 }
 
 /// An experience orb as a server mod reads it (`native_experience_orbs`).
@@ -971,6 +1034,41 @@ mod tests {
         assert!(!orb_meets([11.25, 64.0, -2.5], min, max), "a face touching");
         assert!(!orb_meets([10.5, 63.5, -2.5], min, max), "its top touching");
         assert!(!orb_meets([10.5, 65.0, -2.5], min, max), "standing on top");
+    }
+
+    #[test]
+    fn whole_stacks_are_given_onto_equal_stacks_only() {
+        use super::super::inventory_add;
+        let mut inv = vec![stack("minecraft:dirt", 64); 36];
+        inv[2] = stack("minecraft:iron_sword", 1);
+        inv[2].as_mut().unwrap().damage = 5;
+        inv[5] = stack("minecraft:arrow", 60);
+        inv[7] = None;
+        inv[20] = None;
+        let mut off = stack("minecraft:arrow", 62);
+
+        // A damaged sword never joins another stack: the first free slot.
+        let mut sword = stack("minecraft:iron_sword", 1).unwrap();
+        sword.damage = 40;
+        assert!(!inventory_add(&mut inv, &mut off, 5, 1, &mut sword));
+        assert_eq!(inv[7].as_ref().unwrap().damage, 40, "its damage is kept");
+        assert_eq!(inv[2].as_ref().unwrap().damage, 5);
+
+        // Arrows: the selected slot, then the off hand, then a free slot,
+        // and what is left over comes back.
+        let mut arrows = stack("minecraft:arrow", 80).unwrap();
+        assert!(inventory_add(&mut inv, &mut off, 5, 64, &mut arrows));
+        assert_eq!(inv[5].as_ref().unwrap().count, 64);
+        assert_eq!(off.as_ref().unwrap().count, 64);
+        assert_eq!(inv[20].as_ref().unwrap().count, 64);
+        assert_eq!(arrows.count, 80 - 4 - 2 - 64);
+
+        // A full inventory with an empty off hand takes nothing.
+        let mut off = None;
+        let mut apple = stack("minecraft:apple", 3).unwrap();
+        assert!(inventory_add(&mut inv, &mut off, 0, 64, &mut apple));
+        assert!(off.is_none(), "never into an empty off hand (getFreeSlot)");
+        assert_eq!(apple.count, 3);
     }
 
     #[test]

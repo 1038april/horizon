@@ -2410,9 +2410,16 @@ impl Hub {
         // track_entities). On the first tick vanilla's ran before
         // ServerPlayer.tick, whose updatePlayerAttributes (and doTick's
         // removeFrost) created the instances the guest's tick just made: they
-        // go out on the next tick, after the first chunk batch (#5560).
+        // go out on the next tick, after the first chunk batch (#5560). This
+        // server's first batch waits for the player's chunks to be ready, so
+        // they wait for it too: a slow load must not put them before it.
         let g = &mut self.guests[i];
-        if let Some(m) = g.motion.as_mut().filter(|_| !first_tick) {
+        let after_first_batch = g.unacknowledged > 0 || g.max_unacknowledged > 1;
+        if let Some(m) = g
+            .motion
+            .as_mut()
+            .filter(|_| !first_tick && after_first_batch)
+        {
             let values = super::attributes::take_dirty(&mut m.attributes);
             if !values.is_empty() {
                 g.send(&C::UpdateAttributes(play::UpdateAttributes {
