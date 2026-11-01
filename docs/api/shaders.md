@@ -54,6 +54,7 @@ file = "sky.wgsl"
 
 [material]
 file = "material.wgsl"
+files = ["pbr.wgsl"]       # optional, on any stage: WGSL put after `shared`, before this stage's file
 
 [shadow]                   # optional, needs [material] or [[post]]: a shadow map from the sun (the moon by night)
 resolution = 2048          # its side in texels, 256 to 8192
@@ -154,3 +155,4 @@ stages.
 - 2026-10-25: the stages of API 0.1 (sky, material, post), their inputs and the generated reference.
 - 2026-10-25: the pack format, schema 1: `horizon-shaders.toml` and the `.hshader` package.
 - 2026-10-24: the earlier shader pack code was removed; this API is designed from scratch.
+- 2026-11-01: API 0.1 (additions): a stage's `files`.
