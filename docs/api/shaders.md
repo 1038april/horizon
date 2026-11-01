@@ -95,6 +95,12 @@ description = "How colourful the picture is."   # optional: the button's tooltip
 columns = 1                # optional: 1 or 2 (default) buttons a row
 items = ["saturation"]
 
+[[textures]]               # 8 at most: a PNG every stage reads as noise and noise_sampler
+id = "noise"
+file = "noise.png"
+filter = "linear"          # optional: linear (default) or nearest
+wrap = "repeat"            # optional: repeat (default) or clamp
+
 [[tags]]                   # 32 at most: bit i of MaterialInput.tags is the i-th tag
 id = "glass"
 sprites = ["block/glass", "block/*_stained_glass"]   # sprite names, at most one * each
@@ -140,6 +146,7 @@ stages.
 - 2026-11-01: API 0.1 (additions): `[[pages]]`, the layout of a pack's options page.
 - 2026-11-01: API 0.1 (additions): the `[weather]` stage
   (`fn weather(input: WeatherInput) -> vec4<f32>`) colours rain and snow streaks.
+- 2026-11-01: API 0.1 (additions): `[[textures]]`, PNGs bound for every stage.
 - 2026-10-31: API 0.1 (additions): translucent terrain in the shadow pass: `shadow_map_translucent`
   and `shadow_color`, so a pack can tint the light that passes through water and stained glass.
 - 2026-10-31: API 0.1 (additions): `Frame.mods`, eight `vec4<f32>` a native mod hands the pack it bundles each

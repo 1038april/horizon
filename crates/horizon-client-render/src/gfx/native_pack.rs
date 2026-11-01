@@ -32,16 +32,18 @@ impl NativePack {
     /// refused.
     pub fn new(
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         terrain: &TerrainShape<'_>,
         report: Report,
         constants: &[(String, f64)],
     ) -> Result<(Self, Vec<String>), String> {
         let (globals, format) = (terrain.globals, terrain.format);
+        let textures = super::native_post::pack_textures(device, queue, &report);
         let settings = report
             .shadow
             .as_ref()
             .map(|settings| super::native_shadow::fitted(device, settings));
-        let mut frame = NativeFrame::new(device, settings.as_ref());
+        let mut frame = NativeFrame::new(device, settings.as_ref(), textures);
         let shadow = report
             .shadow
             .as_ref()
