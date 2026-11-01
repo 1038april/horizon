@@ -2287,10 +2287,21 @@ const THROWABLES: [(ProjectileKind, &str); 3] = [
     (ProjectileKind::EnderPearl, "minecraft:ender_pearl"),
 ];
 fn throwable_item(kind: &ProjectileKind) -> Option<&'static str> {
+    if let ProjectileKind::Thrown(t) = kind {
+        return Some(t.item);
+    }
     THROWABLES
         .iter()
         .find(|(k, _)| k == kind)
         .map(|&(_, id)| id)
+}
+
+/// The thrown kind an entity id names: vanilla's, or a content mod's type.
+pub fn throwable_kind(id: &str) -> Option<ProjectileKind> {
+    match THROWABLES.iter().find(|(_, i)| *i == id) {
+        Some((kind, _)) => Some(kind.clone()),
+        None => crate::projectiles::thrown_type(id).map(ProjectileKind::Thrown),
+    }
 }
 
 /// Whether its chunk saves it: the kinds `arrow_to_nbt`, `fireball_to_nbt`
@@ -2323,6 +2334,10 @@ pub fn throwable_to_nbt(
     };
     let mut tag = base.tag(raw);
     put_projectile(&mut tag, p, owner);
+    // Entity.saveWithoutId writes NoGravity only when set.
+    if p.no_gravity {
+        put(&mut tag, "NoGravity", Tag::Byte(1));
+    }
     // the loaded item stays (a blue egg's, a renamed one's).
     if tag.get("Item").is_none() {
         put(
@@ -2337,8 +2352,7 @@ pub fn throwable_to_nbt(
 /// `ThrowableItemProjectile.readAdditionalSaveData` for the kinds
 /// [`throwable_to_nbt`] writes; the owner is the player when it is theirs.
 pub fn throwable_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Projectile> {
-    let id = kind(tag)?;
-    let (kind, _) = THROWABLES.iter().find(|(_, i)| *i == id)?.clone();
+    let kind = throwable_kind(&kind(tag)?)?;
     let owner = owner_uuid(tag);
     let from_player = player.is_some() && owner == player;
     let mut p = Projectile::new(kind, position(tag)?, from_player.then_some(Who::Player));
@@ -2346,6 +2360,7 @@ pub fn throwable_from_nbt(tag: &Tag, player: Option<[i32; 4]>) -> Option<Project
     [p.yaw, p.pitch] = rotation(tag);
     p.left_owner = flag(tag, "LeftOwner");
     p.owner_uuid = owner;
+    p.no_gravity = flag(tag, "NoGravity");
     Some(p)
 }
 
@@ -4313,6 +4328,22 @@ mod fireball_nbt_tests {
         assert_eq!(number(tag.get("HasBeenShot")), Some(0));
         let wind = Projectile::new(ProjectileKind::WindCharge, Vec3::ZERO, None);
         assert!(throwable_to_nbt(&wind, [1; 4], None, None).is_none());
+        // NoGravity is loaded and saved again (a summoned pearl that floats).
+        let floating = Tag::compound([
+            ("id", Tag::String("minecraft:ender_pearl".into())),
+            ("Pos", doubles(&[0.0, 64.0, 0.0])),
+            ("NoGravity", Tag::Byte(1)),
+        ]);
+        let pearl = throwable_from_nbt(&floating, None).unwrap();
+        assert!(pearl.no_gravity);
+        let tag = throwable_to_nbt(&pearl, [1; 4], None, None).unwrap();
+        assert_eq!(number(tag.get("NoGravity")), Some(1));
+        assert!(
+            throwable_to_nbt(&egg, [1; 4], None, None)
+                .unwrap()
+                .get("NoGravity")
+                .is_none()
+        );
     }
 }
 
@@ -4449,5 +4480,35 @@ mod held_item_name_tests {
                 .custom_name()
                 .is_none()
         );
+    }
+}
+
+#[cfg(test)]
+mod mod_thrown_nbt_tests {
+    use super::*;
+
+    #[test]
+    fn a_mod_thrown_type_saves_its_id_and_item_and_loads_back() {
+        crate::projectiles::register_test_types();
+        let bolt = crate::projectiles::thrown_type("ruby:bolt").unwrap();
+        let mut p = Projectile::new(
+            ProjectileKind::Thrown(bolt),
+            Vec3::new(1.0, 80.0, 2.0),
+            None,
+        );
+        p.velocity = Vec3::new(0.0, 0.5, 1.0);
+        assert!(saved_with_chunk(&p));
+        let tag = throwable_to_nbt(&p, [1; 4], None, None).unwrap();
+        assert_eq!(super::kind(&tag).as_deref(), Some("ruby:bolt"));
+        let item = tag.get("Item").and_then(item_from_nbt).unwrap();
+        assert_eq!(&*item.item, "ruby:gem");
+        let back = throwable_from_nbt(&tag, None).unwrap();
+        assert_eq!((&back.kind, back.velocity), (&p.kind, p.velocity));
+        // NoGravity comes back too, as for vanilla's (a summoned bolt that floats).
+        p.no_gravity = true;
+        let tag = throwable_to_nbt(&p, [1; 4], None, None).unwrap();
+        assert!(throwable_from_nbt(&tag, None).unwrap().no_gravity);
+        // a type no mod declares now is not a thrown kind.
+        assert!(throwable_kind("gone:bolt").is_none());
     }
 }
