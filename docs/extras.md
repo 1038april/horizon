@@ -104,6 +104,18 @@ The game still draws the minimap, for the native mod (`native_minimap` in `nativ
   with, held in memory for the whole run (`auth::current()`); nothing is
   written to disk.
 
+### Keep channels for UI sounds (`uiSoundReserve`, default off)
+- Positional sounds (a block breaking, a mob, an explosion) start only while at
+  least 16 of the 247 static sound channels are free; sounds played to the
+  listener (`relative`, or no attenuation: UI clicks, toasts) may take those 16.
+  A flood of world sounds (a big explosion, `/fill … destroy`, a mod breaking
+  hundreds of blocks at once) then can't stop the pause menu's clicks.
+- Vanilla 26.3 gives all 247 to whatever starts first
+  (`Library.acquireChannel` returns null once the pool is full); with the
+  extra off Horizon does exactly that. Below 231 sounds at once nothing
+  changes either way. Streaming sounds (music, records) are untouched
+  (`sound_engine.rs`, `listener_reserve`). Client-only.
+
 ### Mouse Tweaks controls (`mouseTweaks`, default off; `mouseTweaksWheel`, default on)
 In the player inventory, chest-like containers (chests, barrels, ender chests,
 shulker boxes, hoppers, dispensers and droppers), furnaces (also blast furnaces
@@ -156,6 +168,20 @@ and the container screen tests are unchanged).
   history is drawn as vanilla draws it, so clicking a line lands on its text.
 - `chatIndicator` off removes the coloured bar at the left of a line. It hides
   the bar only, never the message.
+
+### Splitscreen (`splitscreen`, default off)
+
+**Options → Horizon Settings... → Splitscreen...** turns local joining on or off at once.
+In P1's single-player world, another controller can press a button, then A to join. Each
+player picks an instance-local profile with its own options and saved progress. LB/RB on
+the profile page move the view between shared positions, a new window or another monitor.
+A joined player's **Splitscreen Settings** in the pause menu switches profiles in place;
+Cancel keeps the current one. The switch is disabled while another player is joined; once
+P1 is alone, turning it off restores the normal controller reader. Leaving it on while
+alone keeps watching for joins without a compositor.
+
+`HORIZON_SPLIT=N` remains a testing shortcut to enable it and add N-1 players.
+The Setup map and joining P1 on an external server are separate follow-ups.
 
 ## Shared rules
 
