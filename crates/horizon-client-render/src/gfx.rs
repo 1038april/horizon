@@ -3638,7 +3638,8 @@ impl Renderer {
     /// origins bound: one indirect multi-draw, or a loop without it.
     /// Consecutive draws in one arena page share a vertex buffer binding,
     /// keeping the list's order (translucent sections go back to front).
-    /// `indirect` holds the list's draws from `base`.
+    /// `indirect` holds the list's draws from `base`. Leaves the quad
+    /// indices bound, as the draws after it expect.
     fn draw_sections(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
@@ -3667,6 +3668,12 @@ impl Renderer {
                 }
             }
             i += run;
+        }
+        if pages[first as usize..end]
+            .iter()
+            .any(|(_, sorted)| sorted.is_some())
+        {
+            pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
         }
     }
     fn release_section(&mut self, key: SectionKey) {
