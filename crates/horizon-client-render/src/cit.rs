@@ -27,7 +27,10 @@ pub fn load_rules(root: &Path) -> Vec<Rule> {
         .into_iter()
         .filter(|path| !path.ends_with("/cit.properties"))
         .filter_map(|path| {
-            let text = fs::read_to_string(root.join(&path)).ok()?;
+            // Java reads `.properties` as Latin-1: a pack saved that way still loads.
+            let bytes = fs::read(root.join(&path)).ok()?;
+            let text = String::from_utf8(bytes)
+                .unwrap_or_else(|e| e.into_bytes().iter().map(|&b| char::from(b)).collect());
             let rule = Rule::parse(&path, &Properties::parse_equals_first(&text), |p| {
                 root.join(p).is_file()
             });
@@ -278,6 +281,23 @@ fn component_test(
             );
             (Some(&legacy), None)
         }
+    };
+    // Fields the component leaves out when 0, which pre-1.20.5 items always wrote.
+    let defaulted;
+    let root = match (&test.source, root, test.path.first()) {
+        (Source::Component(id), Some(Tag::Compound(map)), Some(field))
+            if matches!(
+                (id.as_str(), field.as_str()),
+                ("minecraft:written_book_content", "generation")
+                    | ("minecraft:fireworks", "flight_duration")
+            ) && !map.contains_key(&JavaString::from(field.as_str())) =>
+        {
+            let mut map = map.clone();
+            map.insert(JavaString::from(field.as_str()), Tag::Int(0));
+            defaulted = Tag::Compound(map);
+            Some(&defaulted)
+        }
+        (_, root, _) => root,
     };
     let Some(root) = root else {
         return matches!(test.value, ValueTest::Exists(false));
@@ -575,6 +595,16 @@ mod tests {
         assert_eq!(item(&cit, model("stone", 3.5)), None);
         assert_eq!(item(&cit, model("dirt", 3.0)), Some("cmd_snbt"));
         assert_eq!(item(&cit, model("dirt", 2.0)), None);
+    }
+
+    #[test]
+    fn fields_left_out_at_zero_read_as_zero() {
+        let cit = rules(&[("zero", "items=firework_rocket\nnbt.Fireworks.Flight=0")]);
+        let mut rocket = new("firework_rocket");
+        rocket.data_mut().fireworks = Some((0, Vec::new()));
+        assert_eq!(item(&cit, rocket.clone()), Some("zero"));
+        rocket.data_mut().fireworks = Some((2, Vec::new()));
+        assert_eq!(item(&cit, rocket), None);
     }
 
     #[test]
