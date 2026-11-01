@@ -409,10 +409,35 @@ impl Graphics {
     pub fn vanilla_models(&self, resource_packs: &[String]) -> bool {
         resource_packs.iter().all(|id| id == "vanilla")
     }
+    /// The same check including packs overlaid by the connected server.
+    /// Their ids are namespaced as `server/...`, so an active server pack
+    /// disables model-dependent occlusion assumptions.
+    pub fn vanilla_models_with_server_packs<'a>(
+        &self,
+        resource_packs: impl IntoIterator<Item = &'a str>,
+        server_packs: impl IntoIterator<Item = &'a str>,
+    ) -> bool {
+        resource_packs
+            .into_iter()
+            .chain(server_packs)
+            .all(|id| id == "vanilla")
+    }
     /// The leaf culling the mesher may apply. A pack that can replace leaf
     /// models falls back to `Off`, which draws exactly vanilla's leaves.
     pub fn leaf_culling_effective(&self, resource_packs: &[String]) -> LeafCullingMode {
         if self.vanilla_models(resource_packs) {
+            self.leaf_culling
+        } else {
+            LeafCullingMode::Off
+        }
+    }
+    /// The effective mode when local and server resource packs are active.
+    pub fn leaf_culling_effective_with_server_packs<'a>(
+        &self,
+        resource_packs: impl IntoIterator<Item = &'a str>,
+        server_packs: impl IntoIterator<Item = &'a str>,
+    ) -> LeafCullingMode {
+        if self.vanilla_models_with_server_packs(resource_packs, server_packs) {
             self.leaf_culling
         } else {
             LeafCullingMode::Off
@@ -919,6 +944,30 @@ mod tests {
             LeafCullingMode::Off
         );
         assert_eq!(g.leaf_culling_effective(&[]), LeafCullingMode::Hollow);
+    }
+
+    #[test]
+    fn server_pack_apply_disables_leaf_culling_and_removal_restores_it() {
+        let g = Graphics {
+            leaf_culling: LeafCullingMode::Solid,
+            ..Graphics::default()
+        };
+        let selected = ["vanilla"];
+        let applied_server_pack = ["server/0123456789abcdef/model-pack.zip"];
+
+        assert_eq!(
+            g.leaf_culling_effective_with_server_packs(selected, applied_server_pack),
+            LeafCullingMode::Off,
+            "an applied server pack can replace block models"
+        );
+        assert!(!g.vanilla_models_with_server_packs(selected, applied_server_pack));
+
+        assert_eq!(
+            g.leaf_culling_effective_with_server_packs(selected, []),
+            LeafCullingMode::Solid,
+            "removing the server pack restores the selected local mode"
+        );
+        assert!(g.vanilla_models_with_server_packs(selected, []));
     }
 
     #[test]

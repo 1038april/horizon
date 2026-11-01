@@ -13269,10 +13269,7 @@ impl Game<'_> {
         self.streaming.radius = self.settings.render_distance;
         // Options.biomeBlendRadius, ambientOcclusion, cutoutLeaves and the
         // leaf-culling mode: LevelExtractor.allChanged when they change.
-        let leaf_culling = self
-            .settings
-            .horizon
-            .leaf_culling_effective(&self.settings.resource_packs);
+        let leaf_culling = self.effective_leaf_culling();
         let (s, st) = (&self.settings, &self.streaming);
         let remesh = (
             s.biome_blend,
