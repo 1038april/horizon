@@ -187,6 +187,7 @@ mod moving_pistons;
 mod music;
 mod names;
 mod narrator;
+mod native_biome_colors;
 mod native_block_entity_draw;
 mod native_components;
 mod native_criteria;
@@ -196,6 +197,7 @@ mod native_falling;
 mod native_hooks;
 mod native_lifecycle;
 mod native_menus;
+mod native_mob_draw;
 mod native_mobs;
 mod native_motion;
 mod native_net;
@@ -2219,6 +2221,8 @@ struct Game<'a> {
     /// Minecraft.pause: a single-player screen that pauses the game is open.
     pause: bool,
     debug: bool,
+    /// `horizon-ctl gpu-passes`: time Horizon's own passes on the GPU with F3 shut.
+    gpu_passes: bool,
     screen: Screen,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
@@ -2817,6 +2821,8 @@ struct Game<'a> {
     border: horizon_client::worldborder::WorldBorder,
     /// `WorldBorderRenderer` and its render state.
     border_renderer: horizon_client::border_render::BorderRenderer,
+    /// The camera's 16-block section when the wall was last invalidated.
+    border_section: Option<[i32; 3]>,
     border_state: horizon_client::border_render::BorderRenderState,
     /// `Hud.tabList`: the player list's header, footer and heart states.
     tab_list: horizon_client::tab_list::TabList,
@@ -11404,6 +11410,9 @@ impl Game<'_> {
             &self.options.resources,
             &pack_files(&self.world_tables),
         );
+        // TagsUpdatedEvent (SERVER_DATA_LOAD): the world's data is in, before
+        // its chunks and players are.
+        self.native_server_data_loaded(false);
         self.sync_recipe_content();
         self.bosses = Default::default();
         reset_world_progress(&mut self.adv, &mut self.stats);
@@ -14352,6 +14361,8 @@ impl Game<'_> {
         });
     }
     fn render(&mut self) -> Result<bool> {
+        // Before any text of this frame: a full glyph region starts over.
+        self.gui.atlas.font.begin_frame();
         self.glint_frame = self.capture_glint_frame();
         if self.renderer.as_mut().is_some_and(|r| r.display_changed()) {
             self.apply_ui_settings();
@@ -14968,7 +14979,7 @@ impl Game<'_> {
         };
         let result = match self.renderer.as_mut() {
             Some(renderer) => {
-                renderer.set_pass_timing(self.debug);
+                renderer.set_pass_timing(self.debug || self.gpu_passes);
                 horizon_client::spans::time("renderer", || renderer.render(&frame))
             }
             None => Err("renderer".into()),
@@ -15104,6 +15115,13 @@ impl Game<'_> {
             distance,
             &mut self.border_state,
         );
+        // `LevelRenderer.repositionCamera`: the wall is rebuilt when the camera
+        // enters another `SectionPos` (it only holds the stretch in range).
+        let section = camera.map(|c| (c.floor() as i32) >> 4);
+        if self.border_section != Some(section) {
+            self.border_renderer.invalidate();
+            self.border_section = Some(section);
+        }
         // Camera.depthFar, as the renderer's far plane.
         let depth_far =
             horizon_client::camera::depth_far(self.terrain_distance(), self.settings.cloud_range);
@@ -17309,6 +17327,7 @@ impl<'a> Game<'a> {
             was_playing: false,
             pause: false,
             debug: false,
+            gpu_passes: false,
             screen: Screen::Playing,
             window: None,
             renderer: None,
@@ -17650,6 +17669,7 @@ impl<'a> Game<'a> {
             brushing: Default::default(),
             border: Default::default(),
             border_renderer: Default::default(),
+            border_section: None,
             border_state: Default::default(),
             tab_list: Default::default(),
             subtitles: Default::default(),
@@ -18045,6 +18065,7 @@ impl Game<'_> {
             &overlay,
         ));
         self.adv.reset_tree();
+        self.native_server_data_loaded(true);
     }
 
     fn join_world_rest(&mut self) -> Result<()> {

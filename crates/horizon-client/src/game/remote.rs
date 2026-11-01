@@ -5541,6 +5541,10 @@ impl Game<'_> {
         } else {
             Keys::default()
         };
+        // The held lead's end eases from the look at the start of the tick
+        // (`yRotO`/`xRotO`), as the local tick does; `tick` returns before it
+        // reaches its own write when this window is a server client.
+        self.rope_rot_old = (self.yaw, self.pitch);
         // A passenger moves with its vehicle (Entity.rideTick), not by itself.
         let riding = self.screen != Screen::Dead && self.remote_ride(keys);
         // The server sends no passenger's position: they sit where their
