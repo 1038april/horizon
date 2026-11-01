@@ -1223,6 +1223,25 @@ impl LevelAccess for GameLevel<'_> {
     fn is_client_side(&self) -> bool {
         self.client_side
     }
+    fn is_valid_bonemeal_target(&self, pos: BlockPos, state: BlockStateId) -> Option<bool> {
+        // Asked on both sides, as vanilla asks `isValidBonemealTarget`: a
+        // client predicts the use with it. Only a mod answers.
+        let mut valid = None;
+        self.native_is_valid_bonemeal_target(self.dimension, pos, state, &mut valid);
+        valid
+    }
+    fn is_bonemeal_success(&mut self, pos: BlockPos, state: BlockStateId) -> bool {
+        let mut success = false;
+        if self.native_authoritative {
+            self.native_is_bonemeal_success(self.dimension, pos, state, &mut success);
+        }
+        success
+    }
+    fn perform_bonemeal(&mut self, ticks: &mut Ticks, pos: BlockPos, state: BlockStateId) {
+        if self.native_authoritative {
+            self.native_perform_bonemeal(ticks, self.dimension, pos, state);
+        }
+    }
     fn world_surface(&self, x: i32, z: i32) -> i32 {
         self.world.world_surface(x, z, |s| self.facts.is_air(s))
     }

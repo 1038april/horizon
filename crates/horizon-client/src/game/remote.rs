@@ -9183,6 +9183,16 @@ impl horizon_world::level::LevelAccess for DryLevel<'_> {
     fn random(&mut self) -> &mut horizon_core::random::LegacyRandom {
         &mut self.random
     }
+    /// A mod's bone meal answer is read, never grown here: the preview asks
+    /// the level it stands in for, as `isValidBonemealTarget` is read on both
+    /// sides.
+    fn is_valid_bonemeal_target(
+        &self,
+        pos: horizon_core::position::BlockPos,
+        state: BlockStateId,
+    ) -> Option<bool> {
+        self.base.is_valid_bonemeal_target(pos, state)
+    }
     fn game_time(&self) -> i64 {
         self.base.game_time()
     }

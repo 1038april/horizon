@@ -376,6 +376,31 @@ pub trait LevelAccess {
         _handled: &mut bool,
     ) {
     }
+    /// `BonemealableBlock.isValidBonemealTarget` for the block `state` at
+    /// `pos`, a block the port knows no `BonemealableBlock` for: a native mod
+    /// answers it for its own blocks, and bone meal is then used up on one as
+    /// vanilla uses it up (the caller fires the growth particles and consumes
+    /// the meal). Asked on both sides, as vanilla asks it on both (a client
+    /// predicts the use with it), so a mod that can only grow on a server says
+    /// so with `is_client_side`. `Some(false)` refuses it, even a block whose
+    /// template takes bone meal; `None` (the default) leaves the block its own
+    /// `BonemealableBlock`, or none.
+    fn is_valid_bonemeal_target(&self, _pos: BlockPos, _state: BlockStateId) -> Option<bool> {
+        None
+    }
+    /// `BonemealableBlock.isBonemealSuccess` for the block `state` at `pos`,
+    /// after `is_valid_bonemeal_target` said yes: whether it grows this time.
+    /// Vanilla draws the level's random here, so a mod's draws through
+    /// [`LevelAccess::random`] stay in vanilla's order. The default says no.
+    fn is_bonemeal_success(&mut self, _pos: BlockPos, _state: BlockStateId) -> bool {
+        false
+    }
+    /// `BonemealableBlock.performBonemeal` for the block `state` at `pos`:
+    /// the growth itself, after `is_bonemeal_success` said yes. The meal is
+    /// used up either way, as vanilla uses it up. `ticks` schedules the ticks
+    /// the growth schedules, as `before_update_shape` hands them. The default
+    /// does nothing.
+    fn perform_bonemeal(&mut self, _ticks: &mut Ticks, _pos: BlockPos, _state: BlockStateId) {}
     /// `BlockState.updateShape` for `state` at `pos` after its neighbour in
     /// `direction` became `neighbour`, before the block computes it. `state`
     /// may not be in the level yet (a piston landing it). A state put in

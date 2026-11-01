@@ -513,6 +513,65 @@ impl GameLevel<'_> {
     ) {
         let _ = (ticks, dimension, pos, state, handled);
     }
+
+    /// A block nothing in Horizon knows a `BonemealableBlock` for is about to
+    /// take bone meal: vanilla's `BonemealableBlock.isValidBonemealTarget`,
+    /// `state` the block's own state at `pos`. Answer `valid` for your own
+    /// blocks: the meal is used up on one as vanilla uses it up (the growth
+    /// particles and the sound follow, whether or not the roll below grows
+    /// it), from a player's `BoneMealItem.useOn`, from a dispenser and, on a
+    /// crop (a villager bonemeals only a `CropBlock`), from a villager. Asked
+    /// on both sides, as vanilla asks it on both, so a client predicts the
+    /// use with your answer: say no where you can only grow on a server
+    /// (`is_client_side`). `Some(false)` refuses the meal, even on a block
+    /// whose template takes it (vanilla's `growCrop` then keeps the meal);
+    /// left `None`, the block keeps the `BonemealableBlock` its template gives
+    /// it, or takes no bone meal.
+    /// @API:bonemeal@.
+    #[inline(always)]
+    pub(super) fn native_is_valid_bonemeal_target(
+        &self,
+        dimension: LevelDimension,
+        pos: BlockPos,
+        state: BlockStateId,
+        valid: &mut Option<bool>,
+    ) {
+        let _ = (dimension, pos, state, valid);
+    }
+
+    /// `BonemealableBlock.isBonemealSuccess` for a block that answered
+    /// `native_is_valid_bonemeal_target`, after it did: set `success` to grow
+    /// it this time. Vanilla draws the level's random here
+    /// (`isBonemealSuccess(Level, RandomSource, BlockPos, BlockState)`), so
+    /// draw from `native_level_random` to keep vanilla's order.
+    /// Authoritative servers only. @API:bonemeal@.
+    #[inline(always)]
+    pub(super) fn native_is_bonemeal_success(
+        &mut self,
+        dimension: LevelDimension,
+        pos: BlockPos,
+        state: BlockStateId,
+        success: &mut bool,
+    ) {
+        let _ = (dimension, pos, state, success);
+    }
+
+    /// `BonemealableBlock.performBonemeal` for a block that answered
+    /// `native_is_valid_bonemeal_target` and whose `native_is_bonemeal_success`
+    /// said yes: grow it here, `state` its state at `pos`. The meal is used up
+    /// either way. Change the block with the level's
+    /// `native_set_block_property`, and schedule with `native_schedule_block_tick`
+    /// (`ticks` is the hook's). Authoritative servers only. @API:bonemeal@.
+    #[inline(always)]
+    pub(super) fn native_perform_bonemeal(
+        &mut self,
+        ticks: &mut Ticks,
+        dimension: LevelDimension,
+        pos: BlockPos,
+        state: BlockStateId,
+    ) {
+        let _ = (ticks, dimension, pos, state);
+    }
 }
 
 /// A depth-tested outline of the client's block selection shape.
@@ -1867,6 +1926,16 @@ impl GameLevel<'_> {
         let at = BlockPos::new(pos[0], pos[1], pos[2]);
         let time = self.game_time();
         ticks.schedule_fluid(time, at, kind, delay) != ScheduleResult::MissingChunk
+    }
+    /// This level's own random (vanilla's `Level.random`): the stream
+    /// `native_level_random(dimension)` hands a server hook, for a world hook
+    /// that draws as a vanilla block does (`isBonemealSuccess`), so the mod's
+    /// draws shift vanilla's as a Java mod's would. `None` where this level
+    /// isn't the server's copy. API @API:bonemeal@.
+    pub(super) fn native_level_random(
+        &mut self,
+    ) -> Option<&mut horizon_core::random::LegacyRandom> {
+        self.native_authoritative.then_some(&mut self.world.random)
     }
 }
 
