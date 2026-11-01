@@ -136,17 +136,21 @@ one is selected. "Sign out" deletes the account's secrets from the keychain.
   other apps' items.
 - `accounts.json` in the launcher's data folder keeps only public data: UUID, name, skin URL, which
   account is selected. Never a token.
-- No keychain available (a Linux box without a Secret Service, a locked keychain, #5095): the
-  secrets go to `account-secrets.json` in the launcher's data folder instead, readable and writable
-  by the player only (0600 on Unix), as most launchers keep them. Every change holds
-  `account-secrets.lock` across its read and replace, so launcher and CLI processes signing in or out
-  at once lose nothing, and each write goes through a temporary file of its own. At the first start
-  the keychain answers again, the file's secrets move into it (they are the newer ones) and the file
-  is removed, so accounts signed in on a start the keychain missed sit beside the ones it always
-  held; if the keychain refuses any of them, the file stays whole and in use for that run. A broken
-  file is an error naming only its line and column, never what it holds. `HORIZON_NO_KEYCHAIN` keeps
-  secrets in memory for the run instead (the launcher's own tests), and the launcher then says "No
-  keychain available: you are signed in until the launcher closes".
+- Linux and FreeBSD with no keychain answering (no Secret Service, a locked keychain, #5095): the
+  secrets the keychain refuses go to `account-secrets.json` in the launcher's data folder instead,
+  readable and writable by the player only (0600 on Unix), as most launchers keep them. The
+  launcher never picks one store for a run: every read takes the file's copy first (it was written
+  while the keychain was away, so it is the newer one) and the keychain's otherwise, and every write
+  goes to the keychain and to the file only when it refuses. Each call holds `account-secrets.lock`
+  across its read and replace, and each write goes through a temporary file of its own, so launcher
+  and CLI processes running at once lose nothing and a secret is never in two places. Every start
+  hands the keychain what the file kept, one secret at a time; what it refuses stays in the file,
+  which goes once it is empty. Signing out while the keychain is away leaves an empty entry for the
+  account, which hides the keychain's copy until it can be deleted. A broken file is an error naming
+  only its line and column, never what it holds.
+- No keychain on macOS or Windows, or `HORIZON_NO_KEYCHAIN` (the launcher's own tests): secrets
+  stay in memory for the run, and the launcher says "No keychain available: you are signed in until
+  the launcher closes".
 - Tokens never appear in logs, errors, `horizon-launcher` CLI output, MCP results or crash reports.
   Requests are logged by endpoint name only.
 

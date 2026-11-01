@@ -591,7 +591,7 @@ impl SecretStore for MemoryStore {
 /// systems run no Secret Service, and sign-ins would otherwise last one run. One JSON object, key
 /// to secret, readable and writable by the player only (0600 on Unix), replaced whole on every
 /// write. A lock file beside it keeps each read-modify-replace whole across every launcher and CLI
-/// process. The keychain takes its secrets back at the first start it answers ([`store`]).
+/// process. The keychain takes its secrets back at the first start it answers ([`Layered`]).
 pub struct FileStore {
     path: PathBuf,
 }
@@ -676,22 +676,32 @@ impl FileStore {
         Ok(())
     }
 
-    /// Moves every secret into `keychain`, then removes the file. Nothing is removed unless the
-    /// keychain took them all, and the file's copy wins: it was written while the keychain was
-    /// away, so it is the newer one.
-    fn move_into(&self, keychain: &dyn SecretStore) -> Result<(), String> {
+    /// Hands the file's secrets to `keychain` one by one, each leaving the file once the keychain
+    /// took it (the file's copy is the newer one: it was written while the keychain was away), and
+    /// sign-outs the keychain missed are done there too. What the keychain refuses stays in the
+    /// file, and the file goes once it is empty. Whatever stops it, every secret is in one place.
+    fn move_into(&self, keychain: &dyn SecretStore) {
         if !self.path.exists() {
-            return Ok(());
+            return;
         }
-        self.locked(|| {
-            let secrets = self.read()?;
-            for (key, secret) in &secrets {
-                keychain.set(key, secret)?;
-            }
-            self.write(&Default::default())
-        })
+        let _ = self.locked(|| {
+            let mut secrets = self.read()?;
+            secrets.retain(|key, secret| {
+                let moved = if secret.as_str() == SIGNED_OUT {
+                    keychain.delete(key)
+                } else {
+                    keychain.set(key, secret)
+                };
+                moved.is_err()
+            });
+            self.write(&secrets)
+        });
     }
 }
+
+/// A file entry for an account signed out while the keychain was away: the keychain's copy, if any,
+/// counts as gone, and goes at the first start it answers.
+const SIGNED_OUT: &str = "";
 
 impl SecretStore for FileStore {
     fn get(&self, key: &str) -> Result<Option<String>, String> {
@@ -1068,30 +1078,70 @@ pub fn no_keychain() -> Option<String> {
     })
 }
 
-/// Where [`store`] keeps secrets.
-#[derive(Debug, PartialEq, Eq)]
-enum Kept {
-    Keychain,
-    File,
-    Memory,
+/// The keychain, with the secrets file for what it can't keep (#5095). Each call asks both, never a
+/// choice made once: a launcher that wrote to the file while the keychain was away still finds its
+/// secrets after another process handed them to the keychain. Reads take the file's copy first (it
+/// is the newer one), writes go to the keychain and to the file only when it refuses, and every call
+/// holds the file's lock, so a secret is in one place whatever runs at once.
+pub struct Layered {
+    keychain: Box<dyn SecretStore>,
+    file: FileStore,
 }
 
-/// `HORIZON_NO_KEYCHAIN` keeps secrets in memory (the launcher's own tests). Otherwise the keychain
-/// if it answers, once the secrets the file kept while it didn't have moved into it: an account
-/// signed in on a start the keychain missed comes back beside the ones it always held. Else the
-/// file, which then holds only what this run signs in.
-fn keep_in(no_keychain: bool, keychain: &dyn SecretStore, file: &FileStore) -> Kept {
-    if no_keychain {
-        Kept::Memory
-    } else if keychain.get("probe").is_err() || file.move_into(keychain).is_err() {
-        Kept::File
-    } else {
-        Kept::Keychain
+impl Layered {
+    /// Starts by handing the keychain what the file kept while it was away.
+    pub fn new(keychain: Box<dyn SecretStore>, file: FileStore) -> Self {
+        file.move_into(keychain.as_ref());
+        Self { keychain, file }
     }
 }
 
-/// The keychain if it answers, else [`FileStore`] (#5095); memory with `HORIZON_NO_KEYCHAIN` (said
-/// in the UI with [`no_keychain`]).
+impl SecretStore for Layered {
+    fn get(&self, key: &str) -> Result<Option<String>, String> {
+        if self.file.path.exists() {
+            match self.file.locked(|| Ok(self.file.read()?.remove(key)))? {
+                Some(secret) if secret == SIGNED_OUT => return Ok(None),
+                Some(secret) => return Ok(Some(secret)),
+                None => {}
+            }
+        }
+        self.keychain.get(key)
+    }
+    fn set(&self, key: &str, secret: &str) -> Result<(), String> {
+        self.file.locked(|| {
+            let mut secrets = self.file.read()?;
+            match self.keychain.set(key, secret) {
+                Ok(()) if secrets.remove(key).is_none() => return Ok(()),
+                Ok(()) => {}
+                Err(_) => {
+                    secrets.insert(key.into(), secret.into());
+                }
+            }
+            self.file.write(&secrets)
+        })
+    }
+    fn delete(&self, key: &str) -> Result<(), String> {
+        self.file.locked(|| {
+            let mut secrets = self.file.read()?;
+            match self.keychain.delete(key) {
+                Ok(()) if secrets.remove(key).is_none() => return Ok(()),
+                Ok(()) => {}
+                // The keychain may hold a copy: the mark hides it until it can go.
+                Err(_) => {
+                    secrets.insert(key.into(), SIGNED_OUT.into());
+                }
+            }
+            self.file.write(&secrets)
+        })
+    }
+    fn persistent(&self) -> bool {
+        true
+    }
+}
+
+/// Linux and FreeBSD: the Secret Service with the secrets file beside it ([`Layered`], #5095).
+/// macOS and Windows: the keychain if it answers. Memory with `HORIZON_NO_KEYCHAIN` (the launcher's
+/// own tests) or no keychain on macOS and Windows (said in the UI with [`no_keychain`]).
 pub fn store() -> &'static dyn SecretStore {
     static STORE: OnceLock<Box<dyn SecretStore>> = OnceLock::new();
     STORE
@@ -1107,15 +1157,19 @@ pub fn store() -> &'static dyn SecretStore {
                 )
             ))]
             {
-                let file = FileStore::launcher();
-                let no_keychain = std::env::var_os("HORIZON_NO_KEYCHAIN").is_some();
-                match keep_in(no_keychain, &SystemStore, &file) {
-                    Kept::Keychain => return Box::new(SystemStore),
-                    Kept::File => return Box::new(file),
-                    Kept::Memory => {
-                        let _ = NO_KEYCHAIN_WHY.set("HORIZON_NO_KEYCHAIN is set.".into());
+                let why = match std::env::var_os("HORIZON_NO_KEYCHAIN") {
+                    Some(_) => "HORIZON_NO_KEYCHAIN is set.".to_string(),
+                    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+                    None => {
+                        return Box::new(Layered::new(Box::new(SystemStore), FileStore::launcher()))
                     }
-                }
+                    #[cfg(any(target_os = "macos", target_os = "windows"))]
+                    None => match SystemStore.get("probe") {
+                        Ok(_) => return Box::new(SystemStore),
+                        Err(e) => e,
+                    },
+                };
+                let _ = NO_KEYCHAIN_WHY.set(why);
             }
             Box::<MemoryStore>::default()
         })

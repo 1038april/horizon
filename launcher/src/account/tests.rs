@@ -1088,21 +1088,6 @@ fn the_secrets_file_keeps_sign_ins_across_starts() {
 }
 
 #[test]
-fn the_secrets_file_keeps_each_key_apart() {
-    let path = secrets_file("keys");
-    let store = FileStore::new(path.clone());
-    store.set("a", "one").unwrap();
-    store.set("b", "two").unwrap();
-    store.set("a", "three").unwrap();
-    store.delete("b").unwrap();
-    assert_eq!(
-        (store.get("a").unwrap(), store.get("b").unwrap()),
-        (Some("three".into()), None)
-    );
-    remove_secrets_dir(&path);
-}
-
-#[test]
 fn a_broken_secrets_file_is_an_error_that_never_shows_it() {
     let path = secrets_file("broken");
     let store = FileStore::new(path.clone());
@@ -1124,32 +1109,54 @@ fn a_broken_secrets_file_is_an_error_that_never_shows_it() {
     remove_secrets_dir(&path);
 }
 
-/// Separate stores share nothing but the files, as separate launcher and CLI processes do.
+const WRITER: &str = "HORIZON_TEST_SECRETS_WRITER";
+
+/// One of the processes [`processes_sharing_the_secrets_file_lose_nothing`] starts: does nothing
+/// unless it gives the file and the writer's number.
+#[test]
+#[ignore = "a child process of processes_sharing_the_secrets_file_lose_nothing"]
+fn secrets_file_writer() {
+    let Some(spec) = std::env::var_os(WRITER) else {
+        return;
+    };
+    let spec = spec.into_string().unwrap();
+    let (w, path) = spec.split_once(':').unwrap();
+    let store = FileStore::new(PathBuf::from(path));
+    for i in 0..25 {
+        store
+            .set(&format!("{w}-{i}"), &format!("secret-{w}-{i}"))
+            .unwrap();
+    }
+    if w == "0" {
+        store.delete("signed-out").unwrap();
+    }
+}
+
 #[test]
 fn processes_sharing_the_secrets_file_lose_nothing() {
     let path = secrets_file("processes");
     FileStore::new(path.clone()).set("signed-out", "x").unwrap();
-    let writers: Vec<_> = (0..8)
+    let exe = std::env::current_exe().unwrap();
+    let writers: Vec<_> = (0..6)
         .map(|w| {
-            let path = path.clone();
-            std::thread::spawn(move || {
-                let store = FileStore::new(path);
-                for i in 0..25 {
-                    store
-                        .set(&format!("{w}-{i}"), &format!("secret-{w}-{i}"))
-                        .unwrap();
-                }
-                if w == 0 {
-                    store.delete("signed-out").unwrap();
-                }
-            })
+            std::process::Command::new(&exe)
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "account::tests::secrets_file_writer",
+                    "--test-threads=1",
+                ])
+                .env(WRITER, format!("{w}:{}", path.display()))
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap()
         })
         .collect();
-    for writer in writers {
-        writer.join().unwrap();
+    for mut writer in writers {
+        assert!(writer.wait().unwrap().success());
     }
     let store = FileStore::new(path.clone());
-    for w in 0..8 {
+    for w in 0..6 {
         for i in 0..25 {
             assert_eq!(
                 store.get(&format!("{w}-{i}")).unwrap(),
@@ -1165,12 +1172,12 @@ fn processes_sharing_the_secrets_file_lose_nothing() {
     remove_secrets_dir(&path);
 }
 
-/// A keychain that can be away, as a Secret Service that didn't start.
+/// A keychain that can be away, as a Secret Service that didn't start, or refuse some keys.
 #[derive(Default)]
 struct Keychain {
     kept: MemoryStore,
     away: std::sync::atomic::AtomicBool,
-    refuses_writes: std::sync::atomic::AtomicBool,
+    refuses: Mutex<Vec<String>>,
 }
 
 impl Keychain {
@@ -1180,72 +1187,148 @@ impl Keychain {
         }
         Ok(())
     }
+    fn set_away(&self, away: bool) {
+        self.away.store(away, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
-impl SecretStore for Keychain {
+/// One keychain seen by several launchers.
+struct Shared(Arc<Keychain>);
+
+impl SecretStore for Shared {
     fn get(&self, key: &str) -> Result<Option<String>, String> {
-        self.answer()?;
-        self.kept.get(key)
+        self.0.answer()?;
+        self.0.kept.get(key)
     }
     fn set(&self, key: &str, secret: &str) -> Result<(), String> {
-        self.answer()?;
-        if self
-            .refuses_writes
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
+        self.0.answer()?;
+        if self.0.refuses.lock().unwrap().iter().any(|k| k == key) {
             return Err("the keychain is full".into());
         }
-        self.kept.set(key, secret)
+        self.0.kept.set(key, secret)
     }
     fn delete(&self, key: &str) -> Result<(), String> {
-        self.answer()?;
-        self.kept.delete(key)
+        self.0.answer()?;
+        self.0.kept.delete(key)
     }
     fn persistent(&self) -> bool {
         true
     }
 }
 
+/// A launcher starting with this keychain and secrets file.
+fn launcher_with(keychain: &Arc<Keychain>, path: &Path) -> Layered {
+    Layered::new(
+        Box::new(Shared(keychain.clone())),
+        FileStore::new(path.to_path_buf()),
+    )
+}
+
 #[test]
 fn the_keychain_takes_back_what_the_file_kept_while_it_was_away() {
-    use std::sync::atomic::Ordering::Relaxed;
     let path = secrets_file("recovery");
-    let file = FileStore::new(path.clone());
-    let keychain = Keychain::default();
-    // HORIZON_NO_KEYCHAIN: memory, whatever answers.
-    assert_eq!(keep_in(true, &keychain, &file), Kept::Memory);
+    let keychain = Arc::new(Keychain::default());
     // A is signed in while the keychain answers: no file.
-    assert_eq!(keep_in(false, &keychain, &file), Kept::Keychain);
-    keychain.set("A", "secret-a").unwrap();
+    launcher_with(&keychain, &path)
+        .set("A", "secret-a")
+        .unwrap();
     assert!(!path.exists());
-    // A start the keychain misses: B goes to the file.
-    keychain.away.store(true, Relaxed);
-    assert_eq!(keep_in(false, &keychain, &file), Kept::File);
-    file.set("B", "secret-b").unwrap();
-    // The keychain is back: it holds both, and the file is gone.
-    keychain.away.store(false, Relaxed);
-    assert_eq!(keep_in(false, &keychain, &file), Kept::Keychain);
+    // A start the keychain misses: B goes to the file, and A can't be read.
+    keychain.set_away(true);
+    let missed = launcher_with(&keychain, &path);
+    missed.set("B", "secret-b").unwrap();
+    assert!(missed.get("A").is_err());
+    assert_eq!(missed.get("B").unwrap(), Some("secret-b".into()));
+    // The keychain is back: the next start hands it B, and the file is gone.
+    keychain.set_away(false);
+    let back = launcher_with(&keychain, &path);
     assert_eq!(
-        (keychain.get("A").unwrap(), keychain.get("B").unwrap()),
+        (
+            keychain.kept.get("A").unwrap(),
+            keychain.kept.get("B").unwrap()
+        ),
         (Some("secret-a".into()), Some("secret-b".into()))
+    );
+    assert_eq!(back.get("B").unwrap(), Some("secret-b".into()));
+    assert!(!path.exists());
+    remove_secrets_dir(&path);
+}
+
+#[test]
+fn a_launcher_on_the_file_keeps_working_after_another_hands_it_to_the_keychain() {
+    let path = secrets_file("running");
+    let keychain = Arc::new(Keychain::default());
+    keychain.set_away(true);
+    let running = launcher_with(&keychain, &path);
+    running.set("A", "secret-a").unwrap();
+    // The keychain comes back and a second launcher (or the CLI) starts.
+    keychain.set_away(false);
+    let second = launcher_with(&keychain, &path);
+    assert!(!path.exists());
+    // The first one still reads, renews and signs out.
+    assert_eq!(running.get("A").unwrap(), Some("secret-a".into()));
+    running.set("A", "renewed-a").unwrap();
+    assert_eq!(second.get("A").unwrap(), Some("renewed-a".into()));
+    running.delete("A").unwrap();
+    assert_eq!(
+        (second.get("A").unwrap(), keychain.kept.get("A").unwrap()),
+        (None, None)
     );
     assert!(!path.exists());
     remove_secrets_dir(&path);
 }
 
 #[test]
-fn a_keychain_that_refuses_the_move_leaves_the_file_whole() {
-    use std::sync::atomic::Ordering::Relaxed;
-    let path = secrets_file("refused");
-    let file = FileStore::new(path.clone());
-    file.set("A", "secret-a").unwrap();
-    file.set("B", "secret-b").unwrap();
-    let keychain = Keychain::default();
-    keychain.refuses_writes.store(true, Relaxed);
-    assert_eq!(keep_in(false, &keychain, &file), Kept::File);
+fn a_move_the_keychain_half_refuses_leaves_each_secret_in_one_place() {
+    let path = secrets_file("half");
+    let keychain = Arc::new(Keychain::default());
+    keychain.set_away(true);
+    let away = launcher_with(&keychain, &path);
+    away.set("A", "secret-a").unwrap();
+    away.set("B", "secret-b").unwrap();
+    // Back, but it refuses B: A moves, B stays in the file.
+    keychain.set_away(false);
+    keychain.refuses.lock().unwrap().push("B".into());
+    let back = launcher_with(&keychain, &path);
     assert_eq!(
-        (file.get("A").unwrap(), file.get("B").unwrap()),
+        (
+            keychain.kept.get("A").unwrap(),
+            keychain.kept.get("B").unwrap()
+        ),
+        (Some("secret-a".into()), None)
+    );
+    assert_eq!(
+        (back.get("A").unwrap(), back.get("B").unwrap()),
         (Some("secret-a".into()), Some("secret-b".into()))
     );
+    // Signing A out leaves no copy anywhere; B is still kept.
+    back.delete("A").unwrap();
+    assert_eq!(
+        (back.get("A").unwrap(), keychain.kept.get("A").unwrap()),
+        (None, None)
+    );
+    assert_eq!(back.get("B").unwrap(), Some("secret-b".into()));
+    remove_secrets_dir(&path);
+}
+
+#[test]
+fn signing_out_while_the_keychain_is_away_forgets_its_copy() {
+    let path = secrets_file("sign-out");
+    let keychain = Arc::new(Keychain::default());
+    launcher_with(&keychain, &path)
+        .set("A", "secret-a")
+        .unwrap();
+    keychain.set_away(true);
+    let away = launcher_with(&keychain, &path);
+    away.delete("A").unwrap();
+    assert_eq!(away.get("A").unwrap(), None);
+    // The keychain's copy goes at the first start it answers, and the file with it.
+    keychain.set_away(false);
+    let back = launcher_with(&keychain, &path);
+    assert_eq!(
+        (back.get("A").unwrap(), keychain.kept.get("A").unwrap()),
+        (None, None)
+    );
+    assert!(!path.exists());
     remove_secrets_dir(&path);
 }
