@@ -773,6 +773,30 @@ impl Game<'_> {
     }
 }
 
+impl Game<'_> {
+    /// A console line for the mods: true when a mod registered its command
+    /// (`native_register_commands`). The console is level 4, so a registered
+    /// usage is always allowed; a command no mod takes answers as vanilla's
+    /// unknown command.
+    pub(super) fn perform_native_console_command(&mut self, line: &str) -> bool {
+        let Some(host) = &self.lan else {
+            return false;
+        };
+        if Self::native_command_level(host, line).is_none() {
+            return false;
+        }
+        let mut ran = false;
+        self.native_perform_console_command(line, &mut ran);
+        if !ran {
+            self.native_feedback(
+                Text::translate("command.unknown.command", &[])
+                    .with_color(horizon_client::text::RED),
+            );
+        }
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
