@@ -191,9 +191,11 @@ impl ShadowMap {
         &self,
         encoder: &'e mut wgpu::CommandEncoder,
         label: &str,
+        timing: Option<&mut super::pack_timing::PassTiming>,
     ) -> wgpu::RenderPass<'e> {
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some(label),
+            timestamp_writes: timing.and_then(|t| t.writes(label)),
             color_attachments: &[],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &self.view,
@@ -213,6 +215,7 @@ impl ShadowMap {
         &self,
         encoder: &'e mut wgpu::CommandEncoder,
         label: &str,
+        timing: Option<&mut super::pack_timing::PassTiming>,
     ) -> wgpu::RenderPass<'e> {
         encoder.copy_texture_to_texture(
             self.depth.as_image_copy(),
@@ -221,6 +224,7 @@ impl ShadowMap {
         );
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some(label),
+            timestamp_writes: timing.and_then(|t| t.writes(label)),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &self.color_view,
                 resolve_target: None,
@@ -245,8 +249,12 @@ impl ShadowMap {
     /// Clears the 1×1 map of a pack without `[shadow]` once.
     pub fn clear_blank(&mut self, encoder: &mut wgpu::CommandEncoder) {
         if std::mem::take(&mut self.blank_uncleared) {
-            drop(self.begin(encoder, "Native shader pack shadow map clear"));
-            drop(self.begin_translucent(encoder, "Native shader pack shadow colour clear"));
+            drop(self.begin(encoder, "Native shader pack shadow map clear", None));
+            drop(self.begin_translucent(
+                encoder,
+                "Native shader pack shadow colour clear",
+                None,
+            ));
         }
     }
 }

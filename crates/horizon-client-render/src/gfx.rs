@@ -108,7 +108,7 @@ mod pack_post;
 mod pack_shadow;
 mod pack_sky;
 mod pack_textures;
-mod pack_timing;
+pub(crate) mod pack_timing;
 pub mod pack_uniforms;
 mod pack_weather;
 mod page_runs;
@@ -143,9 +143,12 @@ fn world_pass_after_culling<'e>(
     view: &wgpu::TextureView,
     depth: &wgpu::TextureView,
     keep_depth: bool,
+    timing: Option<&mut pack_timing::PassTiming>,
+    name: &str,
 ) -> wgpu::RenderPass<'e> {
     encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("Horizon world, after culling"),
+        timestamp_writes: timing.and_then(|t| t.writes(name)),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view,
             resolve_target: None,
@@ -722,6 +725,8 @@ pub struct Renderer {
     native: Option<native_pack::NativePack>,
     /// Time the shader pack's passes on the GPU (F3, or `HORIZON_SHADER_PACK_TIMING`).
     pass_timing: bool,
+    /// Times Horizon's own passes on the GPU, as `pass_timing` does (`own_pass_times`).
+    own_timing: Option<pack_timing::PassTiming>,
     /// The entity vertices Horizon draws itself while a shader pack draws the others.
     pack_entity_rest: Vec<Vertex>,
     /// Set 1 of the cloud pipeline, for a shader pack's `gbuffers_clouds`.
@@ -3234,6 +3239,7 @@ impl Renderer {
             pack_post: None,
             native: None,
             pass_timing: pack_timing::PassTiming::logging(),
+            own_timing: None,
             pack_entity_rest: Vec::new(),
             cloud_bindings,
             pack_weather: None,
@@ -4288,6 +4294,14 @@ impl Renderer {
             .map(pack_timing::PassTiming::medians)
             .unwrap_or_default()
     }
+    /// Each of Horizon's own passes with its median GPU time in milliseconds, while they are
+    /// timed (`set_pass_timing`).
+    pub fn own_pass_times(&self) -> Vec<(String, f32)> {
+        self.own_timing
+            .as_ref()
+            .map(pack_timing::PassTiming::medians)
+            .unwrap_or_default()
+    }
     /// The macros of the GL extensions this device gives shader packs: subgroups, when it
     /// has them.
     pub fn define_pack_macros(&self, macros: &mut horizon_shaders::Macros) {
@@ -4459,7 +4473,13 @@ impl Renderer {
     fn animate(&mut self, encoder: &mut wgpu::CommandEncoder, tick: u64, cull_inactive: bool) {
         let active = cull_inactive.then_some(&self.active_animated_layers[..]);
         self.animations
-            .animate(encoder, &mut self.uploads, tick, active);
+            .animate(
+                encoder,
+                &mut self.uploads,
+                tick,
+                active,
+                self.own_timing.as_mut(),
+            );
         if let Some(atlas) = &self.pack_atlas {
             atlas.copy(
                 encoder,
@@ -4660,6 +4680,16 @@ impl Renderer {
                     label: Some("Horizon frame"),
                 })
         });
+        // Horizon's own passes are timed like a shader pack's, from the frame's first pass.
+        if self.own_timing.is_some() != self.pass_timing {
+            self.own_timing = self
+                .pass_timing
+                .then(|| pack_timing::PassTiming::new(&self.device, &self.queue))
+                .flatten();
+        }
+        if let Some(t) = &mut self.own_timing {
+            t.begin(&self.device, &self.queue);
+        }
         if self.animated_textures {
             self.hud
                 .animate_sprites(&mut self.uploads, &mut encoder, frame.ticks);
@@ -5683,6 +5713,7 @@ impl Renderer {
                                 Some((id, lod::instance(v.origin, v.fade)))
                             })),
                         |page| sorted.buffer(page).clone(),
+                        self.own_timing.as_mut(),
                     )
                 })
             }
@@ -5881,7 +5912,7 @@ impl Renderer {
             let mut pass = native
                 .frame
                 .shadow_map
-                .begin(&mut encoder, "Native shader pack shadow");
+                .begin(&mut encoder, "Native shader pack shadow", self.own_timing.as_mut());
             pass.set_bind_group(0, &self.group, &[]);
             pass.set_bind_group(horizon_shader_api::stages::GROUP, &shadow.group, &[]);
             if flat_frame
@@ -5903,7 +5934,11 @@ impl Renderer {
             let mut pass = native
                 .frame
                 .shadow_map
-                .begin_translucent(&mut encoder, "Native shader pack translucent shadow");
+                .begin_translucent(
+                    &mut encoder,
+                    "Native shader pack translucent shadow",
+                    self.own_timing.as_mut(),
+                );
             pass.set_bind_group(0, &self.group, &[]);
             pass.set_bind_group(horizon_shader_api::stages::GROUP, &shadow.group, &[]);
             if flat_frame
@@ -6028,6 +6063,10 @@ impl Renderer {
                 );
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Water mirror"),
+                    timestamp_writes: self
+                        .own_timing
+                        .as_mut()
+                        .and_then(|t| t.writes("Water mirror")),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: &mirror.color,
                         resolve_target: None,
@@ -6118,6 +6157,7 @@ impl Renderer {
             })];
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Horizon world"),
+                timestamp_writes: self.own_timing.as_mut().and_then(|t| t.writes("World")),
                 color_attachments: &attachments,
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: world_depth,
@@ -6192,13 +6232,15 @@ impl Renderer {
                             flat.draw(&mut pass, &flat.calls[..flat.phase1_calls], vertices);
                             cull.test(&mut pass);
                             drop(pass);
-                            cull.test_pass(&mut encoder);
-                            flat.flatten_phase2(&mut encoder);
+                            cull.test_pass(&mut encoder, self.own_timing.as_mut());
+                            flat.flatten_phase2(&mut encoder, self.own_timing.as_mut());
                             pass = world_pass_after_culling(
                                 &mut encoder,
                                 world_view,
                                 world_depth,
                                 keep_depth,
+                                self.own_timing.as_mut(),
+                                "World after culling",
                             );
                             pass.set_bind_group(0, &self.group, &[]);
                             pack_frame(&mut pass);
@@ -6223,12 +6265,14 @@ impl Renderer {
                             self.draw_sections(&mut pass, &self.indirect, 0, 0, phase1_draws);
                             cull.test(&mut pass);
                             drop(pass);
-                            cull.test_pass(&mut encoder);
+                            cull.test_pass(&mut encoder, self.own_timing.as_mut());
                             pass = world_pass_after_culling(
                                 &mut encoder,
                                 world_view,
                                 world_depth,
                                 keep_depth,
+                                self.own_timing.as_mut(),
+                                "World after culling",
                             );
                             pass.set_bind_group(0, &self.group, &[]);
                             pack_frame(&mut pass);
@@ -6391,7 +6435,14 @@ impl Renderer {
                         color.size(),
                     );
                 }
-                pass = world_pass_after_culling(&mut encoder, world_view, world_depth, keep_depth);
+                pass = world_pass_after_culling(
+                    &mut encoder,
+                    world_view,
+                    world_depth,
+                    keep_depth,
+                    self.own_timing.as_mut(),
+                    "World after copy",
+                );
                 pass.set_bind_group(0, &self.group, &[]);
                 pack_frame(&mut pass);
             }
@@ -6519,6 +6570,8 @@ impl Renderer {
                         clouds: (cloud_quads > 0).then_some(&clouds as _),
                         features: Some(&features),
                     };
+                    // The draw closure below borrows all of `self`, so the timer is taken out.
+                    let mut own_timing = self.own_timing.take();
                     oit.run(
                         &mut encoder,
                         world_view,
@@ -6546,8 +6599,17 @@ impl Renderer {
                             );
                         },
                         &extras,
+                        own_timing.as_mut(),
                     );
-                    pass = world_pass_after_culling(&mut encoder, world_view, world_depth, true);
+                    self.own_timing = own_timing;
+                    pass = world_pass_after_culling(
+                        &mut encoder,
+                        world_view,
+                        world_depth,
+                        true,
+                        self.own_timing.as_mut(),
+                        "World after OIT",
+                    );
                     pass.set_bind_group(0, &self.group, &[]);
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                     // HDR output's mark on what shines in the stages, as the classic
@@ -6803,7 +6865,7 @@ impl Renderer {
             );
         } else if scaled.is_some() {
             self.world_post
-                .finish(&self.queue, &mut encoder, &view_target);
+                .finish(&self.queue, &mut encoder, &view_target, self.own_timing.as_mut());
         }
         if !frame.title {
             let (depth, depth_size) = match &scaled {
@@ -6830,7 +6892,7 @@ impl Renderer {
             });
         }
         if let Some(hdr) = &self.hdr {
-            hdr.keep_world(&mut encoder);
+            hdr.keep_world(&mut encoder, self.own_timing.as_mut());
         }
         if hand_quads > 0 && !pack_draws_hand {
             let attachments = [Some(wgpu::RenderPassColorAttachment {
@@ -6844,6 +6906,7 @@ impl Renderer {
             })];
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("First-person hand"),
+                timestamp_writes: self.own_timing.as_mut().and_then(|t| t.writes("Hand")),
                 color_attachments: &attachments,
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth,
@@ -6866,7 +6929,7 @@ impl Renderer {
             );
             drop(pass);
             if let Some(hdr) = &self.hdr {
-                hdr.mark_hand(&mut encoder);
+                hdr.mark_hand(&mut encoder, self.own_timing.as_mut());
             }
         }
         // GameRenderer.render: LevelRenderer.blitEntityOutline after the level and the hand.
@@ -6875,6 +6938,7 @@ impl Renderer {
             &view_target,
             &self.entity_group,
             &self.indices,
+            self.own_timing.as_mut(),
         );
         // The world icon grabs here: after the level and the hand, before
         // the effects and the HUD draw over them (`tryTakeScreenshotIfNeeded`
@@ -6903,6 +6967,7 @@ impl Renderer {
                     // The scaled world pass drew its own depth buffer.
                     scaled.is_none().then_some(&self.depth),
                     &frame.post_effects,
+                    self.own_timing.as_mut(),
                 );
         }
         if !frame.screen.is_empty() {
@@ -6917,6 +6982,10 @@ impl Renderer {
             })];
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Screen effects"),
+                timestamp_writes: self
+                    .own_timing
+                    .as_mut()
+                    .and_then(|t| t.writes("Screen effects")),
                 color_attachments: &attachments,
                 ..Default::default()
             });
@@ -6946,6 +7015,7 @@ impl Renderer {
             })];
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("3d crosshair"),
+                timestamp_writes: self.own_timing.as_mut().and_then(|t| t.writes("Crosshair")),
                 color_attachments: &attachments,
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth,
@@ -6974,6 +7044,7 @@ impl Renderer {
             frame.hud,
             [self.config.width, self.config.height],
             0..blur_at,
+            self.own_timing.as_mut(),
         );
         if let Some(radius) = menu_blur {
             let format = self.config.format;
@@ -6988,6 +7059,7 @@ impl Renderer {
                     &view_target,
                     [self.config.width, self.config.height],
                     radius,
+                    self.own_timing.as_mut(),
                 );
         }
         self.hud.draw_range(
@@ -6997,6 +7069,7 @@ impl Renderer {
             frame.hud,
             [self.config.width, self.config.height],
             blur_at..frame.hud.vertices.len() as u32,
+            self.own_timing.as_mut(),
         );
         if culling && let Some(cull) = &mut self.cull {
             cull.end(&self.device, &mut encoder);
@@ -7023,7 +7096,13 @@ impl Renderer {
                 .present(&self.device, &mut encoder, &f.texture);
         }
         if let (Some(hdr), Some(f)) = (&self.hdr, &surface_frame) {
-            hdr.present(&self.queue, &mut encoder, &f.texture, !frame.title);
+            hdr.present(
+                &self.queue,
+                &mut encoder,
+                &f.texture,
+                !frame.title,
+                self.own_timing.as_mut(),
+            );
         }
         // With HDR on, a full-frame screenshot gets an HDR10 copy beside it.
         let hdr_readback = readback
@@ -7050,6 +7129,9 @@ impl Renderer {
             timer.collect(&self.device, &mut self.gpu_times);
         }
         if let Some(Some(timer)) = Self::pass_timer(&mut self.pack_post, &mut self.native) {
+            timer.submitted(&self.queue);
+        }
+        if let Some(timer) = &mut self.own_timing {
             timer.submitted(&self.queue);
         }
         let failed = checks.and_then(GpuChecks::pop);
