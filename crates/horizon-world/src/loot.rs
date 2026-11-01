@@ -408,6 +408,7 @@ pub fn shared_tables(
 /// `minecraft:entities/zombie`) as it loads, its JSON after the data packs', before anything
 /// rolls it (NeoForge's `LootTableLoadEvent`, Fabric's `LootTableEvents.MODIFY`). Add pools to
 /// `table["pools"]` or entries to a pool's `entries`, change or replace it (no pools: it drops
+/// nothing; keep its `random_sequence` when replacing it, as a mob's table without one drops
 /// nothing). Called once per table and load, in id order, wherever the tables load: the server,
 /// and a client too, so make the same change each time, and don't load loot tables from here.
 /// Two loads may run at once on two threads. A `/reload` or a world opened with other packs

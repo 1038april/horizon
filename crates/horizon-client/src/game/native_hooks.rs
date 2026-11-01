@@ -3398,6 +3398,19 @@ mod tests {
     }
 
     #[test]
+    fn loot_table_load_stays_hookable() {
+        let source = include_str!("../../../horizon-world/src/loot.rs");
+        let start = source.find("pub fn native_loot_table_load(").unwrap();
+        let body = &source[start..start + source[start..].find("\n}\n").unwrap()];
+        for line in body.lines() {
+            assert!(!line.contains("cfg"), "a cfg in the loot hook point: {line}");
+            for mac in ["!(", "![", "! {", "!{"] {
+                assert!(!line.contains(mac), "a macro in the loot hook point: {line}");
+            }
+        }
+    }
+
+    #[test]
     fn lifecycle_source_stays_hookable() {
         let source = include_str!("native_lifecycle.rs");
         let code = source.split("#[cfg(test)]").next().unwrap_or_default();
