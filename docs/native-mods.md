@@ -1133,6 +1133,22 @@ explosion's centre (camera-relative, from `frame.camera_position`) and its age i
 ray marched in a post pass against `scene_depth`. A value that isn't finite reads as 0, and all are 0 when no mod sets
 them. The mod's server half can send what happened to each client half with mod messages (API 40).
 
+### Biome colours
+
+`crates/horizon-client/src/game/native_biome_colors.rs`: the grass, leaf and water colours a client mod changes while the
+game runs, for seasons (a golden autumn, a pale winter) or a world that greens as it heals.
+
+- `native_biome_colors(biome, colors)` (client) changes a biome's `BiomeColors`: `grass`, `foliage` (leaves, vines),
+  `dry_foliage` (leaf litter) and `water`, 0xRRGGBB, starting from the biome file and the colormaps. The dark forest's
+  modifier still darkens the grass set here; the swamp's noise colours replace it.
+- It is asked for every biome when a mod calls `native_refresh_biome_colors()`. When the colours differ from those in use,
+  every loaded section and the far terrain are rebuilt with them, as changing Biome Blend does. Call it when your colours
+  change and once when the player joins, not every tick: a rebuild takes the workers a few seconds. A slow fade is a
+  call a day, not a frame.
+- Block-breaking and falling-leaf particles keep the biome's own colours for now.
+- A season's mood in a shader pack (warmer grading, a lower sun, more haze) comes from the same mod through
+  `native_shader_params` (`frame.mods`); its server half can send the season to each client with mod messages.
+
 ### Sounds a client mod plays
 
 `native_play_local_sound(sound, at, volume, pitch, delay)` (client) plays sound event `sound` at `at` for this player only,
