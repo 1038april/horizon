@@ -154,6 +154,9 @@ pub struct Projectile {
     pub id: u32,
     pub kind: ProjectileKind,
     pub owner: Option<Who>,
+    /// `Projectile.owner`'s UUID, kept while the owner is away (a guest who
+    /// left, a mob not loaded): what its save writes as `Owner`.
+    pub owner_uuid: Option<[i32; 4]>,
     /// On a server, the guest (by connection) who shot it: `Who::Player`
     /// then means them, not the host.
     pub guest: Option<u32>,
@@ -179,6 +182,8 @@ pub struct Projectile {
     /// `updateFluidInteraction` found around the box after the move, read by
     /// the next tick's inertia (false until the first tick has moved it).
     pub touching_water: bool,
+    /// `Entity.noGravity` (`NoGravity` in its save): `getGravity` is 0.
+    pub no_gravity: bool,
 }
 /// What a projectile struck this tick.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -202,6 +207,8 @@ pub trait ProjectileWorld {
     /// block's surface reaches the bottom of the box (deflated by 0.001).
     fn in_water(&self, bounds: Aabb) -> bool;
     fn targets(&self) -> &[(Who, Aabb)];
+    /// Server-only mod-block contacts along the completed movement.
+    fn block_contacts(&self, _entity: i32, _kind: &str, _from: Vec3, _to: Vec3, _bounds: Aabb) {}
     /// `Level.isEmptyBlock`.
     fn empty(&self, _p: [i32; 3]) -> bool {
         true
@@ -252,6 +259,7 @@ impl Projectile {
             id: 0,
             kind,
             owner,
+            owner_uuid: None,
             guest: None,
             position,
             previous: position,
@@ -265,6 +273,7 @@ impl Projectile {
             acceleration,
             needs_sync: false,
             touching_water: false,
+            no_gravity: false,
             arrow: kind_is_arrow.then(|| {
                 // Entity.random: seeded unpredictably, the position stands in.
                 Box::new(crate::arrows::ArrowState::new(
@@ -393,7 +402,11 @@ impl Projectile {
                 | ProjectileKind::WitherSkull { .. }
         )
     }
+    /// `Entity.getGravity`: none with `NoGravity`, else the kind's default.
     fn gravity(&self) -> f64 {
+        if self.no_gravity {
+            return 0.0;
+        }
         match self.kind {
             ProjectileKind::Arrow { .. } | ProjectileKind::Trident => 0.05,
             ProjectileKind::SmallFireball
@@ -736,6 +749,18 @@ impl Projectile {
 
     /// One tick: returns whether to keep the projectile and what it hit.
     pub fn tick(&mut self, w: &impl ProjectileWorld) -> (bool, Hit) {
+        let from = self.position;
+        let result = self.tick_inner(w);
+        w.block_contacts(
+            self.id as i32,
+            self.kind.id(),
+            from,
+            self.position,
+            self.bounds(),
+        );
+        result
+    }
+    fn tick_inner(&mut self, w: &impl ProjectileWorld) -> (bool, Hit) {
         self.previous = self.position;
         self.age += 1;
         if matches!(self.kind, ProjectileKind::ShulkerBullet { .. }) {
@@ -945,6 +970,18 @@ mod tests {
         // ThrowableProjectile: gravity before inertia, then move.
         assert!((p.velocity.y - (-0.03 * 0.99)).abs() < 1e-9);
         assert!((p.position.x - 0.99).abs() < 1e-9);
+    }
+    #[test]
+    fn a_snowball_with_no_gravity_stays_where_it_was_summoned() {
+        // Entity.getGravity is 0 with NoGravity: at rest, it never moves.
+        let start = Vec3::new(0.5, 100.0, 0.5);
+        let mut p = Projectile::new(ProjectileKind::Snowball, start, None);
+        p.no_gravity = true;
+        let w = Empty(vec![]);
+        for _ in 0..20 {
+            p.tick(&w);
+        }
+        assert_eq!((p.position, p.velocity), (start, Vec3::ZERO));
     }
     #[test]
     fn a_mod_thrown_type_flies_tick_for_tick_as_a_snowball() {
