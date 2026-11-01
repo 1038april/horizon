@@ -1006,7 +1006,11 @@ Changing loot a mod didn't make, as NeoForge's `LootTableLoadEvent` and global l
   it (a mob names one only while it remembers the player's hit, 100 ticks), the tool and an explosion's radius. It hears blocks
   that a player, an explosion or a mob breaks, not other breaks (leaves decaying, a torch losing its wall, a piston,
   `/setblock ... destroy`), nor a creative break or a tool that can't harvest the block. A block's stacks get its block entity's data (a
-  shulker box's items) after the hook, and a container's contents spill on their own, not through it.
+  shulker box's items) after the hook, and a container's contents spill on their own, not through it. A player's use drops
+  through it too, with `used` set and that player named: shears on a sheep, a mooshroom, a snow golem or a bogged (its shearing
+  table), a brush on an armadillo (`minecraft:brush/armadillo`) or a suspicious block (its item, no table), shears carving a
+  pumpkin, picking sweet berries or cave vines (their harvest table), and a player's hit taking an item frame or its item (the
+  frame's entity, no table). A dispenser's shears and an explosion's frames aren't told.
 
 ### A block's items
 

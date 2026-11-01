@@ -678,7 +678,9 @@ pub(crate) struct NativeLootDrops<'a> {
     pub(crate) origin: [f64; 3],
     /// The block broken: its position and state.
     pub(crate) block: Option<([i32; 3], BlockStateId)>,
-    /// The mob that died: its entity ID and type (`minecraft:zombie`).
+    /// The mob that died, or the entity a player's use dropped them from (the
+    /// sheep sheared, the item frame broken): its entity ID and type
+    /// (`minecraft:zombie`).
     pub(crate) entity: Option<(u32, &'a str)>,
     /// The player who broke the block or killed the mob, when known. A mob
     /// names one only while it remembers the player's hit (100 ticks), so one
@@ -688,6 +690,12 @@ pub(crate) struct NativeLootDrops<'a> {
     pub(crate) tool: Option<&'a ItemStack>,
     /// The radius of the explosion that broke the block.
     pub(crate) explosion: Option<f32>,
+    /// A player's use dropped them rather than a break or a death: shears on a
+    /// sheep, a mooshroom, a snow golem or a bogged, a brush on an armadillo or
+    /// a suspicious block, shears carving a pumpkin, picking sweet berries or
+    /// cave vines, or a hit taking an item frame or its item. `player` names
+    /// them; `block` or `entity` says what dropped them. API @API:use_drops@.
+    pub(crate) used: bool,
 }
 
 /// A depth-tested outline of the client's block selection shape.
@@ -2161,7 +2169,9 @@ impl Game<'_> {
     /// entity's data (a shulker box's items) after this. Add, change or take out
     /// stacks; empty ones don't drop (NeoForge's global loot modifiers, Fabric's
     /// `LootTableEvents.MODIFY_DROPS`); `context` says what dropped them and
-    /// how, and it is called even when `drops` is empty. It hears blocks that a
+    /// how, and it is called even when `drops` is empty. A player's use drops
+    /// through it too (`NativeLootDrops::used`: shears, a brush, an item
+    /// frame), with that player named. It hears blocks that a
     /// player, an explosion or a mob breaks, not other breaks (leaves decaying,
     /// a torch losing its wall, a piston, `/setblock ... destroy`), nor a
     /// creative break or a tool that can't harvest the block, nor experience.
@@ -3409,6 +3419,33 @@ impl Game<'_> {
             player,
             tool,
             explosion,
+            used: false,
+        };
+        self.native_loot_drops(&context, drops);
+        drops.retain(|stack| stack.count > 0 && &*stack.item != "minecraft:air");
+    }
+    /// The mods' say on what the acting player's use drops
+    /// (`NativeLootDrops::used`): `table` is the loot table rolled, if any.
+    pub(super) fn native_use_drops(
+        &mut self,
+        table: &str,
+        origin: [f64; 3],
+        block: Option<([i32; 3], BlockStateId)>,
+        entity: Option<(u32, &str)>,
+        tool: Option<&ItemStack>,
+        drops: &mut Vec<ItemStack>,
+    ) {
+        let player = Some(self.native_acting_id());
+        let context = NativeLootDrops {
+            table,
+            dimension: self.dim.id(),
+            origin,
+            block,
+            entity,
+            player,
+            tool,
+            explosion: None,
+            used: true,
         };
         self.native_loot_drops(&context, drops);
         drops.retain(|stack| stack.count > 0 && &*stack.item != "minecraft:air");
