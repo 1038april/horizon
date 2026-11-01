@@ -6,21 +6,24 @@
 //!
 //! 1. ETF's `assets/<ns>/etf/random/<path>`
 //! 2. `assets/<ns>/optifine/random/<path>`
-//! 3. the legacy `assets/<ns>/optifine/mob/` and `assets/<ns>/mcpatcher/mob/`
-//! 4. beside the texture itself under `textures/entity/`, ETF's extra: only when a
-//!    `<name>.properties` sits there, so a pack without OptiFine files never changes a texture.
+//! 3. the legacy `assets/<ns>/optifine/mob/`, then `assets/<ns>/mcpatcher/mob/`
+//! 4. beside the texture itself under `textures/entity/` (ETF's extra). Horizon uses this
+//!    folder only for a texture with rules there (its own `.properties` or the one of the name
+//!    it extends), so that a pack without OptiFine files never changes a texture.
 //!
-//! Variant `N` of `creeper` is `creeper<N>.png`; of a name ending in a digit
-//! (`warden_pulsating_spots_2`), `warden_pulsating_spots_2.<N>.png`. Variant 1 is the texture
-//! itself unless a `<name>1.png` exists. `<name>.properties` holds the rules; a texture without
-//! its own uses the one of the name it extends (`wolf_tame` and `wolf_angry` use
-//! `wolf.properties`, `spider_eyes` uses `spider.properties`). With no rules at all, an entity
-//! picks evenly between the texture and its variants 2, 3... up to the first missing number.
+//! Variant `N` (1 to [`MAX_INDEX`]) of `creeper` is `creeper<N>.png`; of a name ending in a
+//! digit (`warden_pulsating_spots_2`), `warden_pulsating_spots_2.<N>.png`. Variant 1 is the
+//! texture itself unless a `<name>1.png` exists. `<name>.properties` holds the rules; a texture
+//! without its own uses the one of the name it extends in the same folder (`wolf_tame` and
+//! `wolf_angry` use `wolf.properties`, `spider_eyes` uses `spider.properties`). With no rules
+//! at all, an entity picks evenly between the texture and its variants 2, 3... up to the first
+//! missing number.
 //!
-//! Textures are named as the entity atlas names them: a vanilla texture by its path under
-//! `textures/` (`entity/zombie/zombie`), another namespace's as `<ns>:<path>`, and a file
-//! outside `textures/` by its namespace and its path under the namespace
-//! (`minecraft:optifine/random/entity/zombie/zombie2`).
+//! Textures have the names the entity atlas gives them: a vanilla texture its path under
+//! `textures/` (`entity/zombie/zombie`), another namespace's `<ns>:<path>`, and a file outside
+//! `textures/` its namespace and its path under the namespace
+//! (`minecraft:optifine/random/entity/zombie/zombie2`), which [`RandomTextures::files`] lists
+//! for the atlas to pack.
 //!
 //! Written from OptiFine's `random_entities.properties` and ETF's `RANDOM_GUIDE.md`; no mod's
 //! source was read.
@@ -45,13 +48,38 @@ pub struct RandomTextures {
 pub struct Entry {
     /// Index into [`RandomTextures::rules`]: the rules that choose this texture's variant.
     pub rules: Option<usize>,
-    /// Atlas names by variant index.
-    variants: BTreeMap<u32, String>,
+    variants: BTreeMap<u32, Variant>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct Variant {
+    /// Its atlas name.
+    name: String,
+    /// Its path from the resource root.
+    file: String,
+}
+
+/// The folders under `assets/<ns>/` that hold variants, in priority order, and the folder under
+/// `assets/<ns>/` each mirrors. The last is the texture's own folder.
+const FOLDERS: [(&str, &str); 5] = [
+    ("etf/random", "textures"),
+    ("optifine/random", "textures"),
+    ("optifine/mob", "textures/entity"),
+    ("mcpatcher/mob", "textures/entity"),
+    ("textures/entity", "textures/entity"),
+];
+/// The texture's own folder, last in priority.
+const BESIDE: usize = FOLDERS.len() - 1;
+
+#[derive(Clone, Debug, Default)]
+struct Source {
+    properties: Option<String>,
+    variants: BTreeMap<u32, Variant>,
 }
 
 impl RandomTextures {
     pub fn scan(root: &Path) -> Self {
-        let mut found: HashMap<String, [Source; SOURCES]> = HashMap::new();
+        let mut found: HashMap<String, [Source; FOLDERS.len()]> = HashMap::new();
         let Ok(namespaces) = fs::read_dir(root.join("assets")) else {
             return Self::default();
         };
@@ -61,66 +89,47 @@ impl RandomTextures {
             .collect();
         namespaces.sort();
         for ns in &namespaces {
+            let prefix = format!("assets/{ns}/");
             for (source, (folder, mirror)) in FOLDERS.iter().enumerate() {
-                let folder = format!("assets/{ns}/{folder}");
-                let files = files_under(root, &folder, &[".png", ".properties"]);
-                for file in files {
-                    let Some(inner) = file.strip_prefix(folder.as_str()) else {
-                        continue;
-                    };
-                    add(&mut found, source, ns, &format!("{mirror}{inner}"), &file);
-                }
-            }
-            // ETF: rules beside the entity texture, with variants there too.
-            let textures = format!("assets/{ns}/textures/entity");
-            for file in files_under(root, &textures, &[".properties"]) {
-                let base = file.strip_suffix(".properties").unwrap_or(&file);
-                let Some((dir, name)) = base.rsplit_once('/') else {
-                    continue;
-                };
-                let inner = &file[format!("assets/{ns}/").len()..];
-                add(&mut found, BESIDE, ns, inner, &file);
-                for n in 1..=MAX_INDEX {
-                    let png = format!("{dir}/{}.png", variant_stem(name, n));
-                    if root.join(&png).is_file() {
-                        let inner = &png[format!("assets/{ns}/").len()..];
-                        add(&mut found, BESIDE, ns, inner, &png);
-                    } else if n > 1 {
-                        break;
-                    }
+                let folder = format!("{prefix}{folder}");
+                for file in files_under(root, &folder, &[".png", ".properties"]) {
+                    let inner = format!("{mirror}{}", &file[folder.len()..]);
+                    let own = &file[prefix.len()..];
+                    add(&mut found, source, ns, &inner, own, &file);
                 }
             }
         }
         let mut out = Self::default();
         let mut rules_by_file: HashMap<String, usize> = HashMap::new();
         for (texture, sources) in &found {
-            let Some(source) = sources.iter().position(|s| match s.properties {
-                Some(_) => true,
-                None => !s.variants.is_empty(),
-            }) else {
+            let Some(source) = sources
+                .iter()
+                .position(|s| s.properties.is_some() || !s.variants.is_empty())
+            else {
                 continue;
             };
             let chosen = &sources[source];
-            if source == BESIDE && chosen.properties.is_none() {
+            // Its own rules, or those of the name it extends: `_`-parts cut from the file name.
+            let (dir, mut name) = texture.rsplit_once('/').unwrap_or(("", texture));
+            let mut rules_file = chosen.properties.clone();
+            while rules_file.is_none()
+                && let Some((shorter, _)) = name.rsplit_once('_')
+            {
+                name = shorter;
+                rules_file = found
+                    .get(&format!("{dir}/{name}"))
+                    .and_then(|s| s[source].properties.clone());
+            }
+            if source == BESIDE && rules_file.is_none() {
                 continue;
             }
-            // Its own rules, or those of the name it extends, in the same folder.
-            let rules_file = chosen.properties.clone().or_else(|| {
-                let mut name = texture.as_str();
-                while let Some((shorter, _)) = name.rsplit_once('_') {
-                    name = shorter;
-                    if let Some(p) = found.get(name).and_then(|s| s[source].properties.clone()) {
-                        return Some(p);
-                    }
-                }
-                None
-            });
             let rules = rules_file.and_then(|file| {
                 if let Some(&id) = rules_by_file.get(&file) {
                     return Some(id);
                 }
-                let text = fs::read_to_string(root.join(&file)).ok()?;
-                out.rules.push(Rules::parse(&Properties::parse(&text)));
+                let bytes = fs::read(root.join(&file)).ok()?;
+                out.rules
+                    .push(Rules::parse(&Properties::parse(&decode(bytes))));
                 rules_by_file.insert(file, out.rules.len() - 1);
                 Some(out.rules.len() - 1)
             });
@@ -148,11 +157,14 @@ impl RandomTextures {
         &self.rules[id]
     }
 
-    /// The atlas names of every variant texture, for the entity atlas to pack.
-    pub fn textures(&self) -> impl Iterator<Item = &str> {
-        self.entries
-            .values()
-            .flat_map(|e| e.variants.values().map(String::as_str))
+    /// Every variant's file (its path from the resource root) and atlas name, for the entity
+    /// atlas to pack.
+    pub fn files(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.entries.values().flat_map(|e| {
+            e.variants
+                .values()
+                .map(|v| (v.file.as_str(), v.name.as_str()))
+        })
     }
 }
 
@@ -160,7 +172,7 @@ impl Entry {
     /// The atlas name of variant `index`, or `None` for the texture itself: variant 0, 1 without
     /// a `<name>1.png`, and a variant whose file is missing.
     pub fn texture(&self, index: u32) -> Option<&str> {
-        self.variants.get(&index).map(String::as_str)
+        self.variants.get(&index).map(|v| v.name.as_str())
     }
 
     /// The even choice of an entity with this seed when no rules apply: the texture and its
@@ -174,32 +186,22 @@ impl Entry {
     }
 }
 
-/// The folders under `assets/<ns>/` that hold variants, in priority order, and the folder
-/// under `assets/<ns>/` each mirrors. The entity atlas packs their images.
-pub const FOLDERS: [(&str, &str); 4] = [
-    ("etf/random", "textures"),
-    ("optifine/random", "textures"),
-    ("optifine/mob", "textures/entity"),
-    ("mcpatcher/mob", "textures/entity"),
-];
-
-const SOURCES: usize = FOLDERS.len() + 1;
-/// The ETF source beside the vanilla texture, last in priority.
-const BESIDE: usize = 4;
-
-#[derive(Clone, Debug, Default)]
-struct Source {
-    properties: Option<String>,
-    variants: BTreeMap<u32, String>,
+/// UTF-8, or else ISO-8859-1 as Java's `Properties.load` reads a stream: a properties file
+/// saved in Latin-1 keeps its rules.
+fn decode(bytes: Vec<u8>) -> String {
+    String::from_utf8(bytes)
+        .unwrap_or_else(|e| e.into_bytes().iter().map(|&b| char::from(b)).collect())
 }
 
-/// Records `file` (a path from the root) as `inner`, its mirrored path under `assets/<ns>/`
-/// (`textures/entity/zombie/zombie2.png`): a texture's rules, or one of its variants.
+/// Records `file` (a path from the root), whose mirrored path under `assets/<ns>/` is `inner`
+/// (`textures/entity/zombie/zombie2.png`) and own path there `own`: a texture's rules, or one of
+/// its variants.
 fn add(
-    found: &mut HashMap<String, [Source; SOURCES]>,
+    found: &mut HashMap<String, [Source; FOLDERS.len()]>,
     source: usize,
     ns: &str,
     inner: &str,
+    own: &str,
     file: &str,
 ) {
     let Some((dir, name)) = inner.rsplit_once('/') else {
@@ -210,35 +212,29 @@ fn add(
         found.entry(key).or_default()[source].properties = Some(file.to_owned());
     } else if let Some((base, n)) = name.strip_suffix(".png").and_then(split_variant) {
         let key = atlas_name(ns, &format!("{dir}/{base}"));
-        let file = file.strip_suffix(".png").unwrap_or(file);
-        let variant = atlas_name(ns, &file[format!("assets/{ns}/").len()..]);
+        let variant = Variant {
+            name: atlas_name(ns, own.strip_suffix(".png").unwrap_or(own)),
+            file: file.to_owned(),
+        };
         found.entry(key).or_default()[source]
             .variants
             .insert(n, variant);
     }
 }
 
-/// `creeper7` → (`creeper`, 7); `spots_2.3` → (`spots_2`, 3). Not a variant: `creeper`,
-/// `spots_2` (a name ending in a digit numbers its variants after a `.`), indices past
-/// [`MAX_INDEX`].
+/// `creeper7` → (`creeper`, 7); `spots_2.3` → (`spots_2`, 3). Not a variant: `creeper`;
+/// `spots_22` (a name ending in a digit numbers its variants after a `.`); `spots_2`, `bed_1`
+/// (no texture name ends in `_`); index 0 (the texture itself) and indices past [`MAX_INDEX`].
 fn split_variant(stem: &str) -> Option<(&str, u32)> {
     let digits = stem.len() - stem.trim_end_matches(|c: char| c.is_ascii_digit()).len();
     let (base, n) = stem.split_at(stem.len() - digits);
-    let n: u32 = n.parse().ok().filter(|&n| n <= MAX_INDEX)?;
+    let n: u32 = n.parse().ok().filter(|n| (1..=MAX_INDEX).contains(n))?;
     match base.strip_suffix('.') {
         Some(b) if b.ends_with(|c: char| c.is_ascii_digit()) => Some((b, n)),
-        None if !base.is_empty() && !base.ends_with(|c: char| c.is_ascii_digit()) => {
+        None if !base.is_empty() && !base.ends_with(|c: char| c.is_ascii_digit() || c == '_') => {
             Some((base, n))
         }
         _ => None,
-    }
-}
-
-fn variant_stem(name: &str, n: u32) -> String {
-    if name.ends_with(|c: char| c.is_ascii_digit()) {
-        format!("{name}.{n}")
-    } else {
-        format!("{name}{n}")
     }
 }
 
@@ -329,7 +325,12 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(t.rules(tame.rules.unwrap()).select(&baby, 0), 2);
-        assert_eq!(t.textures().count(), 7);
+        // spots_22 is no variant at all: no texture is named `warden_pulsating_spots_`.
+        assert_eq!(t.files().count(), 6);
+        assert!(t.files().any(|(file, name)| {
+            file == "assets/minecraft/optifine/random/entity/wolf/wolf_tame2.png"
+                && name == "minecraft:optifine/random/entity/wolf/wolf_tame2"
+        }));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -373,6 +374,127 @@ mod tests {
     }
 
     #[test]
+    fn legacy_folders_after_optifine_random() {
+        let both = [
+            (format!("{RANDOM}/pig/pig2.png"), ""),
+            ("assets/minecraft/optifine/mob/pig/pig2.png".into(), ""),
+            ("assets/minecraft/mcpatcher/mob/pig/pig2.png".into(), ""),
+        ];
+        let files: Vec<(&str, &str)> = both.iter().map(|(p, t)| (p.as_str(), *t)).collect();
+        let (root, t) = pack(&files);
+        let pig = t.get("entity/pig/pig").unwrap();
+        assert_eq!(
+            pig.texture(2),
+            Some("minecraft:optifine/random/entity/pig/pig2")
+        );
+        let _ = fs::remove_dir_all(root);
+        let (root, t) = pack(&files[1..]);
+        let pig = t.get("entity/pig/pig").unwrap();
+        assert_eq!(pig.texture(2), Some("minecraft:optifine/mob/pig/pig2"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn inherited_rules_stay_in_their_folder() {
+        let (root, t) = pack(&[
+            (
+                &format!("{RANDOM}/spider/spider.properties"),
+                "textures.1=2",
+            ),
+            (&format!("{RANDOM}/spider/spider_eyes2.png"), ""),
+            (&format!("{RANDOM}/a/a.properties"), "textures.1=2"),
+            (&format!("{RANDOM}/a/a_b_c2.png"), ""),
+            // A flat legacy zombie's rules don't reach the zombie villager's folder.
+            (
+                "assets/minecraft/optifine/mob/zombie.properties",
+                "textures.1=2",
+            ),
+            (
+                "assets/minecraft/optifine/mob/zombie_villager/zombie_villager2.png",
+                "",
+            ),
+            // Nor do another folder's.
+            (&format!("{RANDOM}/wolf/wolf.properties"), "textures.1=2"),
+            ("assets/minecraft/etf/random/entity/wolf/wolf_tame2.png", ""),
+            (&format!("{RANDOM}/creeper/creeper1.png"), ""),
+            (&format!("{RANDOM}/creeper/creeper2.png"), ""),
+        ]);
+        let spider = t.get("entity/spider/spider").map(|e| e.rules);
+        assert!(spider.is_some_and(|r| r.is_some()));
+        assert_eq!(
+            t.get("entity/spider/spider_eyes").unwrap().rules,
+            spider.unwrap()
+        );
+        assert!(t.get("entity/a/a_b_c").unwrap().rules.is_some());
+        assert_eq!(
+            t.get("entity/zombie_villager/zombie_villager")
+                .unwrap()
+                .rules,
+            None
+        );
+        assert_eq!(t.get("entity/wolf/wolf_tame").unwrap().rules, None);
+        // creeper1.png replaces variant 1.
+        let creeper = t.get("entity/creeper/creeper").unwrap();
+        assert_eq!(
+            creeper.texture(1),
+            Some("minecraft:optifine/random/entity/creeper/creeper1")
+        );
+        assert_eq!(creeper.even(1), 2);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn beside_the_texture_with_rules() {
+        const WOLF: &str = "assets/minecraft/textures/entity/wolf";
+        let (root, t) = pack(&[
+            (&format!("{WOLF}/wolf.properties"), "textures.1=5"),
+            (&format!("{WOLF}/wolf.png"), ""),
+            (&format!("{WOLF}/wolf2.png"), ""),
+            (&format!("{WOLF}/wolf5.png"), ""),
+            (&format!("{WOLF}/wolf_tame2.png"), ""),
+        ]);
+        // A rule may name a variant past a gap.
+        assert_eq!(
+            t.get("entity/wolf/wolf").unwrap().texture(5),
+            Some("entity/wolf/wolf5")
+        );
+        let tame = t.get("entity/wolf/wolf_tame").unwrap();
+        assert!(
+            tame.rules.is_some(),
+            "wolf_tame beside uses wolf.properties"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn latin1_rules_are_read() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-random-latin1-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let dir = root.join(RANDOM).join("creeper");
+        fs::create_dir_all(&dir).unwrap();
+        // `# Créé` in ISO-8859-1: 0xE9 is no UTF-8.
+        fs::write(
+            dir.join("creeper.properties"),
+            b"# Cr\xe9\xe9\ntextures.1=2\nbiomes.1=desert\n",
+        )
+        .unwrap();
+        fs::write(dir.join("creeper2.png"), b"").unwrap();
+        let t = RandomTextures::scan(&root);
+        let id = t.get("entity/creeper/creeper").unwrap().rules.unwrap();
+        let plains = Facts {
+            biome: Some("plains"),
+            ..Default::default()
+        };
+        assert_eq!(
+            t.rules(id).select(&plains, 0),
+            1,
+            "only desert creepers vary"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn no_files_no_entries() {
         let (root, t) = pack(&[("assets/minecraft/textures/entity/pig/pig.png", "")]);
         assert!(t.is_empty());
@@ -384,12 +506,15 @@ mod tests {
         assert_eq!(split_variant("creeper12"), Some(("creeper", 12)));
         assert_eq!(split_variant("spots_2.3"), Some(("spots_2", 3)));
         assert_eq!(split_variant("creeper"), None);
-        // Variant 2 of `spots_`: a name ending in a digit is only ever a base texture.
-        assert_eq!(split_variant("spots_2"), Some(("spots_", 2)));
+        assert_eq!(
+            split_variant("spots_2"),
+            None,
+            "no texture is named `spots_`"
+        );
+        assert_eq!(split_variant("creeper1"), Some(("creeper", 1)));
+        assert_eq!(split_variant("creeper0"), None, "0 is the texture itself");
         assert_eq!(split_variant("2"), None);
         assert_eq!(split_variant("a.3"), None, "a `.` only follows a digit");
         assert_eq!(split_variant("x99999"), None);
-        assert_eq!(variant_stem("spots_2", 4), "spots_2.4");
-        assert_eq!(variant_stem("cat", 4), "cat4");
     }
 }

@@ -2,7 +2,8 @@
 //! textures, custom item textures, random and emissive entities, custom entity models, sky,
 //! colours): `.properties` files, the matchers their values hold, their texture paths, and the
 //! `optifine/` (or legacy `mcpatcher/`) folders that hold them. Each feature's own rules sit in
-//! a module of their own (`random`: random entity textures), free of the game's types.
+//! a module of their own, free of the game's types (`random`: random entity textures' rules;
+//! `random_textures`: where a pack keeps their variants).
 //!
 //! Written from OptiFine's public documentation of the file formats (and ETF's, for its additions
 //! to random entities); no mod's source was read.
