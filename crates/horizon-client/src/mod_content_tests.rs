@@ -1417,6 +1417,18 @@ fn content_root_registers_a_mod_entity_type() {
     ] {
         assert!(ids.as_array().unwrap().contains(&"example:bolt".into()));
     }
+    // its size and eyes are the snowball's, for `execute anchored eyes` and spawners.
+    let types: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("entity-types.json")).unwrap()).unwrap();
+    assert!(types["minecraft:snowball"].is_object());
+    assert_eq!(types["example:bolt"], types["minecraft:snowball"]);
+    // the rewritten table keeps vanilla's floats to the bit (a zombie's speed).
+    let speed = |root: &Path| {
+        let attributes =
+            crate::mobs::exact_attributes(&fs::read(root.join("entity-types.json")).unwrap());
+        attributes["minecraft:zombie"]["minecraft:movement_speed"]
+    };
+    assert_eq!(speed(&root).to_bits(), speed(&base).to_bits());
     assert!(root.join(crate::content_identity::MARKER).exists());
     let identity = crate::content_identity::identity;
     assert_ne!(identity(&root).unwrap(), identity(&base).unwrap());
