@@ -13905,7 +13905,7 @@ impl Game<'_> {
         // their own file (`PlayerDataStorage.save`); the level itself carries
         // no player.
         if self.options.dedicated.is_some()
-            && self.options.execution_role == execution_role::ExecutionRole::IntegratedServer
+            && !self.options.execution_role.is_client()
             && let Some(host) = self.lan.take()
         {
             // The vehicle tree goes into a player's file when they leave
