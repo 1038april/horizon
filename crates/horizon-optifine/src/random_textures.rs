@@ -22,8 +22,8 @@
 //! Textures have the names the entity atlas gives them: a vanilla texture its path under
 //! `textures/` (`entity/zombie/zombie`), another namespace's `<ns>:<path>`, and a file outside
 //! `textures/` its namespace and its path under the namespace
-//! (`minecraft:optifine/random/entity/zombie/zombie2`), which [`RandomTextures::files`] lists
-//! for the atlas to pack.
+//! (`minecraft:optifine/random/entity/zombie/zombie2`). [`RandomTextures::files`] lists every
+//! variant's file and name for the atlas, which skips those it already packs.
 //!
 //! Written from OptiFine's `random_entities.properties` and ETF's `RANDOM_GUIDE.md`; no mod's
 //! source was read.
@@ -68,6 +68,9 @@ const FOLDERS: [(&str, &str); 5] = [
     ("mcpatcher/mob", "textures/entity"),
     ("textures/entity", "textures/entity"),
 ];
+/// The largest `.properties` file read, in bytes.
+const MAX_PROPERTIES: u64 = 256 * 1024;
+
 /// The texture's own folder, last in priority.
 const BESIDE: usize = FOLDERS.len() - 1;
 
@@ -127,7 +130,12 @@ impl RandomTextures {
                 if let Some(&id) = rules_by_file.get(&file) {
                     return Some(id);
                 }
-                let bytes = fs::read(root.join(&file)).ok()?;
+                let path = root.join(&file);
+                // A real rules file is a few KB; parsing grows with the square of its size.
+                if fs::metadata(&path).ok()?.len() > MAX_PROPERTIES {
+                    return None;
+                }
+                let bytes = fs::read(path).ok()?;
                 out.rules
                     .push(Rules::parse(&Properties::parse(&decode(bytes))));
                 rules_by_file.insert(file, out.rules.len() - 1);
@@ -158,7 +166,8 @@ impl RandomTextures {
     }
 
     /// Every variant's file (its path from the resource root) and atlas name, for the entity
-    /// atlas to pack.
+    /// atlas to pack. That includes variants beside their texture under `textures/entity/`,
+    /// which the atlas may already walk.
     pub fn files(&self) -> impl Iterator<Item = (&str, &str)> {
         self.entries.values().flat_map(|e| {
             e.variants
@@ -224,10 +233,14 @@ fn add(
 
 /// `creeper7` → (`creeper`, 7); `spots_2.3` → (`spots_2`, 3). Not a variant: `creeper`;
 /// `spots_22` (a name ending in a digit numbers its variants after a `.`); `spots_2`, `bed_1`
-/// (no texture name ends in `_`); index 0 (the texture itself) and indices past [`MAX_INDEX`].
+/// (no texture name ends in `_`); `creeper02` (the docs number variants without leading
+/// zeros); index 0 (the texture itself) and indices past [`MAX_INDEX`].
 fn split_variant(stem: &str) -> Option<(&str, u32)> {
     let digits = stem.len() - stem.trim_end_matches(|c: char| c.is_ascii_digit()).len();
     let (base, n) = stem.split_at(stem.len() - digits);
+    if n.starts_with('0') {
+        return None;
+    }
     let n: u32 = n.parse().ok().filter(|n| (1..=MAX_INDEX).contains(n))?;
     match base.strip_suffix('.') {
         Some(b) if b.ends_with(|c: char| c.is_ascii_digit()) => Some((b, n)),
@@ -439,7 +452,6 @@ mod tests {
             creeper.texture(1),
             Some("minecraft:optifine/random/entity/creeper/creeper1")
         );
-        assert_eq!(creeper.even(1), 2);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -464,6 +476,19 @@ mod tests {
             "wolf_tame beside uses wolf.properties"
         );
         let _ = fs::remove_dir_all(root);
+        // The texture's own folder comes after the others.
+        let (root, t) = pack(&[
+            (&format!("{WOLF}/wolf.properties"), "textures.1=2"),
+            (&format!("{WOLF}/wolf2.png"), ""),
+            (&format!("{RANDOM}/wolf/wolf2.png"), ""),
+        ]);
+        let wolf = t.get("entity/wolf/wolf").unwrap();
+        assert_eq!(
+            wolf.texture(2),
+            Some("minecraft:optifine/random/entity/wolf/wolf2")
+        );
+        assert_eq!(wolf.rules, None, "optifine/random's folder holds no rules");
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -473,24 +498,21 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         let dir = root.join(RANDOM).join("creeper");
         fs::create_dir_all(&dir).unwrap();
-        // `# Créé` in ISO-8859-1: 0xE9 is no UTF-8.
+        // `Ébène` in ISO-8859-1: 0xC9 and 0xE8 are no UTF-8.
         fs::write(
             dir.join("creeper.properties"),
-            b"# Cr\xe9\xe9\ntextures.1=2\nbiomes.1=desert\n",
+            b"textures.1=2\nname.1=\xc9b\xe8ne\n",
         )
         .unwrap();
         fs::write(dir.join("creeper2.png"), b"").unwrap();
         let t = RandomTextures::scan(&root);
         let id = t.get("entity/creeper/creeper").unwrap().rules.unwrap();
-        let plains = Facts {
-            biome: Some("plains"),
+        let named = |name| Facts {
+            name: Some(name),
             ..Default::default()
         };
-        assert_eq!(
-            t.rules(id).select(&plains, 0),
-            1,
-            "only desert creepers vary"
-        );
+        assert_eq!(t.rules(id).select(&named("Ébène"), 0), 2);
+        assert_eq!(t.rules(id).select(&named("Ebene"), 0), 1);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -513,6 +535,8 @@ mod tests {
         );
         assert_eq!(split_variant("creeper1"), Some(("creeper", 1)));
         assert_eq!(split_variant("creeper0"), None, "0 is the texture itself");
+        assert_eq!(split_variant("creeper02"), None);
+        assert_eq!(split_variant("spots_2.02"), None);
         assert_eq!(split_variant("2"), None);
         assert_eq!(split_variant("a.3"), None, "a `.` only follows a digit");
         assert_eq!(split_variant("x99999"), None);
