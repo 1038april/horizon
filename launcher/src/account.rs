@@ -657,8 +657,8 @@ impl SecretStore for MemoryStore {
 
 /// The secrets file in the launcher's data folder, when no keychain answers (#5095): many Linux
 /// systems run no Secret Service, and sign-ins would otherwise last one run. One JSON object, key
-/// to secret, readable and writable by the player only (0600 on Unix), replaced whole on every
-/// write. A lock file beside it keeps each read-modify-replace whole across every launcher and CLI
+/// to secret, encrypted with a key of this computer's ([`seal`]), readable and writable by the
+/// player only (0600 on Unix), replaced whole on every write. A lock file beside it keeps each read-modify-replace whole across every launcher and CLI
 /// process. The keychain takes its secrets back at the first start it answers ([`Layered`]).
 pub struct FileStore {
     path: PathBuf,
@@ -711,7 +711,14 @@ impl FileStore {
     fn read(&self) -> Result<std::collections::BTreeMap<String, String>, String> {
         match std::fs::read(&self.path) {
             // Only where the file breaks: serde's own message can quote what the file holds.
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
+            Ok(bytes) => serde_json::from_slice(&unseal(&bytes).ok_or_else(|| {
+                format!(
+                    "{} can't be read on this computer: it was written on another one, or changed. \
+                     Remove it and sign in again.",
+                    self.path.display()
+                )
+            })?)
+            .map_err(|e| {
                 format!(
                     "{} can't be read ({:?} error at line {}, column {}).",
                     self.path.display(),
@@ -740,12 +747,13 @@ impl FileStore {
             .path
             .with_extension(format!("json.{}.{n}.tmp", std::process::id()));
         let json = serde_json::to_vec(secrets).map_err(|e| e.to_string())?;
+        let sealed = seal(&json)?;
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
         let written = options.open(&tmp).and_then(|mut file| {
-            std::io::Write::write_all(&mut file, &json)?;
+            std::io::Write::write_all(&mut file, &sealed)?;
             file.sync_all()
         });
         if let Err(e) = written.and_then(|()| std::fs::rename(&tmp, &self.path)) {
@@ -796,6 +804,50 @@ impl FileStore {
             Ok(secrets.contains_key(key))
         })
     }
+}
+
+/// The secrets file's first bytes: format 1, the JSON sealed with ChaCha20-Poly1305 under
+/// [`file_key`], then a random 12-byte nonce and the ciphertext with its tag.
+const SEALED: &[u8] = b"HZSECv1\n";
+
+/// The secrets file's key: this computer's identity (`/etc/machine-id` on Linux, `/etc/hostid` on
+/// FreeBSD) hashed with a constant of the launcher's. The tokens are never on disk in plain text,
+/// and a copy of the file taken off the computer (a backup, a synced home folder) can't be read
+/// elsewhere. On the computer itself, the file's mode (0600) is what keeps other users out.
+fn file_key() -> chacha20poly1305::Key {
+    use sha2::Digest;
+    let mut hash = sha2::Sha256::new();
+    hash.update(b"horizon-launcher account-secrets v1");
+    if let Some(id) = ["/etc/machine-id", "/var/lib/dbus/machine-id", "/etc/hostid"]
+        .iter()
+        .find_map(|path| std::fs::read(path).ok())
+    {
+        hash.update(id.trim_ascii());
+    }
+    hash.finalize()
+}
+
+/// `json` sealed for the secrets file ([`SEALED`]).
+fn seal(json: &[u8]) -> Result<Vec<u8>, String> {
+    use chacha20poly1305::{aead::Aead, KeyInit};
+    let mut nonce = [0u8; 12];
+    getrandom::fill(&mut nonce).map_err(|e| e.to_string())?;
+    let sealed = chacha20poly1305::ChaCha20Poly1305::new(&file_key())
+        .encrypt(&nonce.into(), json)
+        .map_err(|_| "the secrets couldn't be sealed".to_string())?;
+    Ok([SEALED, &nonce, &sealed].concat())
+}
+
+/// What [`seal`] sealed, or `None` for a file in another format, changed, or sealed on another
+/// computer.
+fn unseal(bytes: &[u8]) -> Option<Vec<u8>> {
+    use chacha20poly1305::{aead::Aead, KeyInit};
+    let rest = bytes.strip_prefix(SEALED)?;
+    let (nonce, sealed) = rest.split_at_checked(12)?;
+    let nonce: [u8; 12] = nonce.try_into().ok()?;
+    chacha20poly1305::ChaCha20Poly1305::new(&file_key())
+        .decrypt(&nonce.into(), sealed)
+        .ok()
 }
 
 /// A file entry for an account signed out while the keychain was away: the keychain's copy, if any,

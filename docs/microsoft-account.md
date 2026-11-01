@@ -138,7 +138,11 @@ one is selected. "Sign out" deletes the account's secrets from the keychain.
   account is selected. Never a token.
 - Linux and FreeBSD with no keychain answering (no Secret Service, a locked keychain, #5095): the
   secrets the keychain refuses go to `account-secrets.json` in the launcher's data folder instead,
-  readable and writable by the player only (0600 on Unix), as most launchers keep them. The
+  readable and writable by the player only (0600 on Unix) and never in plain text: the file is
+  encrypted (ChaCha20-Poly1305) with a key derived from the computer's identity (`/etc/machine-id`,
+  `/etc/hostid`), so a copy taken off the computer (a backup, a synced home folder) can't be read
+  elsewhere. On the computer itself the file's mode is what keeps other users out. A file that
+  doesn't open (another computer's, or changed) is never written over: remove it and sign in again. The
   launcher never picks one store for a run: every read takes the file's copy first (it was written
   while the keychain was away, so it is the newer one) and the keychain's otherwise, and every write
   goes to the keychain and to the file only when it refuses. Each change to the file holds

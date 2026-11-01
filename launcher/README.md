@@ -431,7 +431,7 @@ play LAN and offline-mode servers beside it. The game binary started directly (`
 `horizon-ctl launch`), the harnesses and the servers don't go through this check. Tokens live in the system keychain (Keychain,
 Credential Manager, or the Secret Service on Linux), never in a log or the command line;
 `accounts.json` in the data folder keeps only names and UUIDs. On Linux without a keychain they go
-to `account-secrets.json` in the data folder, readable by you only, and back to the keychain once it
+to `account-secrets.json` in the data folder, encrypted and readable by you only, and back to the keychain once it
 answers; on macOS and Windows without one you stay signed in until the launcher closes. The
 Tailscale access token never goes to that file: without a keychain it lasts until the launcher
 closes. When the game starts, it gets the session in a private file it

@@ -1154,13 +1154,40 @@ fn a_broken_secrets_file_is_an_error_that_never_shows_it() {
         "[\"leaked-secret\"]",
     ] {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, broken).unwrap();
+        let sealed = super::seal(broken.as_bytes()).unwrap();
+        std::fs::write(&path, &sealed).unwrap();
         let said = store.get("a").unwrap_err();
         assert!(!said.contains("leaked-secret"), "{said}");
         assert!(said.contains("line 1"), "{said}");
         // Never written over: the secrets in it aren't lost in silence.
         assert!(store.set("c", "four").is_err());
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
+        assert_eq!(std::fs::read(&path).unwrap(), sealed);
+    }
+    remove_secrets_dir(&path);
+}
+
+#[test]
+fn the_secrets_file_is_never_plain_text() {
+    let path = secrets_file("sealed");
+    let store = FileStore::new(path.clone());
+    store.set("a", "kept-secret").unwrap();
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(bytes.starts_with(super::SEALED));
+    assert!(
+        !bytes.windows(11).any(|w| w == b"kept-secret"),
+        "the secret is encrypted"
+    );
+    assert_eq!(store.get("a").unwrap().as_deref(), Some("kept-secret"));
+    // Plain JSON, or one byte changed in the sealed file: refused, never quoted, never written over.
+    let mut changed = bytes.clone();
+    *changed.last_mut().unwrap() ^= 1;
+    for other in [b"{\"a\":\"leaked-secret\"}".to_vec(), changed] {
+        std::fs::write(&path, &other).unwrap();
+        let said = store.get("a").unwrap_err();
+        assert!(!said.contains("leaked-secret"), "{said}");
+        assert!(said.contains("Remove it and sign in again"), "{said}");
+        assert!(store.set("c", "four").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), other);
     }
     remove_secrets_dir(&path);
 }
