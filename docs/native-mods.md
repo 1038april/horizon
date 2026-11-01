@@ -367,6 +367,37 @@ and the content mods that are on. `neoforge:true`, `not`, `and` and `or` combine
 does not know leaves the file out, so a future shape fails closed. Tags, loot tables and advancements
 do not answer the gate yet.
 
+### Recipe filters
+
+A content mod or a data pack can remove recipes, or swap one of their inputs or outputs, without knowing
+their ids: a file `data/<ns>/recipe_filter/<name>.json` holds `{"filters": [...]}`. Each filter has match
+keys, all of which must hold (a filter with none matches every recipe), and exactly one action:
+
+| Key | Meaning |
+|---|---|
+| `id` | the recipe id; `*` matches any run of characters (`minecraft:*_planks`) |
+| `type` | the recipe's `type`, with the same `*` (`mymod:*`) |
+| `input` | an item id or `#tag` among the recipe's inputs |
+| `output` | an item id among its outputs (anything under `result`, `results`, `output` or `outputs`) |
+| `remove` | `true`: the recipe is not loaded |
+| `replace_input` | `{"from": ..., "to": ...}`: every input that is `from` becomes `to` |
+| `replace_output` | the same, for the outputs |
+
+```json
+{"filters": [
+  {"id": "minecraft:*_planks", "remove": true},
+  {"type": "mymod:*", "replace_input": {"from": "minecraft:iron_ingot", "to": "#c:ingots/iron"}}
+]}
+```
+
+Filters run on each recipe after the packs are merged and its load conditions held, so they see the final
+set and reach every recipe type, mods' own included: they work on the recipe's JSON, every string outside
+`type`, `group`, `category` and the conditions (a `{"tag": ...}` object's tag reads as `#tag`). Every recipe
+loader applies them: crafting, the stations, brewing, the recipe book and what players are sent. Files apply
+in id order and each file's filters in order; a pack's file replaces a file of the same id, as any data file
+does. A filter with an unknown key or not exactly one action is skipped with a warning, so a typo never
+matches every recipe.
+
 ### A mod's own enchantment effect kinds
 
 A `minecraft:post_attack` entry with `enchanted` attacker and `affected` victim whose `effect.type` is in a
@@ -1052,6 +1083,24 @@ names the level it means by its `dimension` (`minecraft:overworld`), as `native_
 A model that moves (a turning gun barrel, a thrown projectile) is an `item_display` showing an item whose model comes from
 the mod's `.hmod` assets: summon it once, then move and pose it from a tick hook. Easing between ticks happens on each
 client, so a call a tick looks smooth.
+
+### Mobs drawn by a mod
+
+`crates/horizon-client/src/game/native_mob_draw.rs`: `native_mob_submit(mob, draw, drawn)` (client) is asked once a frame for
+every mob in view but players (vanilla's `EntityRenderer.submit`). Set `drawn` and the mob's vanilla model, armour and held
+items are left out (NeoForge's `RenderLivingEvent.Pre`, cancelled); its name tag, shadow, flames and glowing outline still draw.
+
+- `mob` (`NativeMobRender`) is the frame's `LivingEntityRenderState`: the id, kind, custom name and `baby`, the partial tick,
+  `age` (ticks lived plus the partial tick), `body_yaw`, `head_yaw` (from the body) and `pitch` in degrees, the walk cycle
+  (`walk_position`, `walk_speed`: a vanilla quadruped's legs swing `cos(walk_position * 0.6662) * 1.4 * walk_speed` radians), `hurt_time`,
+  `death_time` and `on_ground`.
+- `draw` is a block entity's frame (`native_block_entity_submit`): draw with `native_draw_cube`, `native_draw_quad`,
+  `native_draw_block` and `native_draw_item` under its pose stack, which starts at the mob's feet turned with its body: +z
+  is the way it faces, +x its left, +y up, in blocks. Turn a head or swing a leg with `rotate_about` and a pivot. It holds
+  the mob's light.
+- A mod's own creature is an ordinary mob (`native_spawn_mob`, API 37) drawn this way: a quiet villager, an allay or a bat
+  gives it movement, sounds and saving, and the mod gives it a model and animations of its own. Tell yours apart by the
+  ids the server half sends with mod messages (API 40), or by its custom name.
 
 ### Advancement triggers
 

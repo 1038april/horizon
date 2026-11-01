@@ -6090,13 +6090,17 @@ impl Game<'_> {
             // The particles these mobs' own ticks draw on the client side.
             {
                 use horizon_client::mobs::{
-                    Species as S, cube, illusioner, nautilus, tame, wither,
+                    Species as S, cube, illager, illusioner, nautilus, tame, wither,
                 };
                 match m.species() {
                     S::Wolf => tame::client_tick(m, rain, &mut mob_fx),
                     S::Slime | S::MagmaCube | S::SulfurCube => cube::client_tick(m, &mut mob_fx),
                     S::Nautilus | S::ZombieNautilus => nautilus::client_tick(m, &mut mob_fx),
-                    S::Illusioner => illusioner::client_tick(m, &mut mob_fx),
+                    S::Illusioner => {
+                        illusioner::client_tick(m, &mut mob_fx);
+                        illager::cast_particles(m, &mut mob_fx);
+                    }
+                    S::Evoker => illager::cast_particles(m, &mut mob_fx),
                     S::Wither => wither::client_smoke(m, &mut mob_fx),
                     _ => {}
                 }
@@ -7186,6 +7190,11 @@ impl Game<'_> {
             // CushionItem.useOn on a client level: SUCCESS once
             // `canBePlacedAt` holds, before the server's own checks.
             self.cushion_spawn(hit).is_some()
+        } else if &*stack.item == "minecraft:painting" {
+            // HangingEntityItem.useOn on a client level: SUCCESS once
+            // `Painting.create` finds a surviving variant, before the
+            // server spawns it.
+            self.painting_fits(hit, stack)
         } else {
             false
         }
