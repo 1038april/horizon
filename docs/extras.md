@@ -88,6 +88,13 @@ The game still draws the minimap, for the native mod (`native_minimap` in `nativ
   whenever the team's name tag visibility would hide it, exactly as the other
   players' tags (`game/names.rs`, `own_name_tag`). Client-only: nothing is sent.
 
+### Hide block-break particles (`hideBlockParticles`, default off)
+- Hides the debris particles that burst from a block when it breaks
+  (`ClientLevel.addDestroyBlockEffect`) and the crumbs off the face you mine
+  (`addBreakingParticles`). Other particles (critical hits, smoke, rain...) are
+  unchanged, and the block still breaks and drops as usual. Client-only:
+  nothing is sent (`game.rs`, `destroy_particles` and `crack_particle`).
+
 ### Auto-reconnect (`autoReconnect`, default off)
 - On the "Connection lost" screen after a multiplayer connection drops, a
   countdown "Reconnecting in N s" with a Cancel button, then a new connection
