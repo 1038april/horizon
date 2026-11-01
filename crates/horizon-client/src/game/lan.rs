@@ -150,6 +150,8 @@ pub struct LanSettings {
 
 pub(super) struct LanHost {
     pub hub: Hub,
+    /// The mods heard that everyone still here leaves with the server.
+    pub players_told_left: bool,
     pub settings: LanSettings,
     pub host_entity: i32,
     /// The host's swings the guests were told of (`Game::swings_started`).
@@ -187,6 +189,9 @@ pub(super) struct LanHost {
     /// Native mods' commands and the level each needs, once asked
     /// (game/native_server.rs).
     pub native_commands: Option<HashMap<String, u8>>,
+    /// The players a native mod leaves out of the sleep count when they
+    /// aren't in bed (`native_sleep_ignored`).
+    pub sleep_ignored: std::collections::HashSet<u128>,
     /// The entities the guests track, described again every tick
     /// (`lan_entities`) over last tick's states.
     pub(super) states: lan::entity::States,
@@ -484,7 +489,7 @@ fn mob_meta(
         hub.effect_meta(
             (m.extra.effects.iter())
                 .filter(|e| !m.extra.hidden_effects.contains(&e.0))
-                .map(|e| (e.0, false)),
+                .map(|e| (e.0, m.extra.ambient_effects.contains(&e.0))),
         ),
     );
     defaults.push((10, serializer::PARTICLES, Value::Particles(Vec::new())));
@@ -726,6 +731,13 @@ fn mob_meta(
                 ));
             }
         }
+        // Phantom.ID_SIZE (after Mob's flags).
+        "minecraft:phantom" => {
+            if e.size > 0 {
+                meta.push((16, serializer::INT, Value::Int(e.size)));
+            }
+            defaults.push((16, serializer::INT, Value::Int(0)));
+        }
         // AbstractCubeMob.ID_SIZE; SulfurCube also syncs FROM_BUCKET and
         // MAX_FUSE (clients tick the fuse for the swell / white flash).
         "minecraft:slime" | "minecraft:magma_cube" | "minecraft:sulfur_cube" => {
@@ -856,6 +868,34 @@ fn mob_meta(
                 meta.push((18, serializer::INT, Value::Int(ticks)));
             }
             defaults.push((18, serializer::INT, Value::Int(0)));
+        }
+        // Ocelot.DATA_TRUSTING (after AgeableMob's two).
+        "minecraft:ocelot" => {
+            if e.trusting {
+                meta.push((18, serializer::BOOLEAN, Value::Bool(true)));
+            }
+            defaults.push((18, serializer::BOOLEAN, Value::Bool(false)));
+        }
+        // Mannequin.DATA_PROFILE, DATA_IMMOVABLE and DATA_DESCRIPTION (after Avatar's two):
+        // `updateDescription` keeps the last as a component, or none when hidden.
+        "minecraft:mannequin" => {
+            if let Some(profile) = &m.profile {
+                meta.push((
+                    17,
+                    serializer::RESOLVABLE_PROFILE,
+                    Value::Profile(profile.clone()),
+                ));
+            }
+            if e.immovable {
+                meta.push((18, serializer::BOOLEAN, Value::Bool(true)));
+            }
+            defaults.push((18, serializer::BOOLEAN, Value::Bool(false)));
+            let default = horizon_client::mobs::MannequinDescription::Default.component();
+            let shown = e.description.component();
+            if shown != default {
+                meta.push((19, serializer::OPTIONAL_COMPONENT, Value::OptText(shown)));
+            }
+            defaults.push((19, serializer::OPTIONAL_COMPONENT, Value::OptText(default)));
         }
         // Creaking.CAN_MOVE, IS_ACTIVE and IS_TEARING_DOWN.
         "minecraft:creaking" => {
@@ -1319,9 +1359,10 @@ impl Game<'_> {
     ) -> Result<()> {
         let sync = sync_data(&self.options.resources, &self.pack_files())?;
         self.sync_dialog_ids(&sync);
-        let biome_names: Vec<String> = self
-            .res
-            .biomes()
+        // The table the world plays with (`world_biomes!`): a world with
+        // biome data packs sends their ids past the built-in list, as the
+        // encoder's `SectionCoder` expects.
+        let biome_names: Vec<String> = world_biomes!(self)
             .list
             .iter()
             .map(|b| b.name.clone())
@@ -1348,6 +1389,11 @@ impl Game<'_> {
                 .get_or_init(|| Arc::new(horizon_client::save::SaveTables::new(&self.pack.assets)))
                 .clone(),
         );
+        encoder.mod_update_tag = Some(|pos, entity| {
+            let mut tag = None;
+            Game::native_block_entity_update_tag(pos, entity, &mut tag);
+            tag
+        });
         let lan = Lan::start_with(sync.clone(), net)?;
         if let Some(uuid) = host {
             lan.reserve(uuid);
@@ -1361,6 +1407,7 @@ impl Game<'_> {
         self.world.block_log = Some(Vec::new());
         self.world.light_log = Some(Default::default());
         self.lan = Some(LanHost {
+            players_told_left: false,
             hub,
             settings: LanSettings { port, ..settings },
             host_entity,
@@ -1381,6 +1428,7 @@ impl Game<'_> {
             commands: Vec::new(),
             quiet: std::collections::VecDeque::new(),
             native_commands: None,
+            sleep_ignored: Default::default(),
             states: Default::default(),
         });
         self.audio.capture = Some(Vec::new());
@@ -1406,13 +1454,12 @@ impl Game<'_> {
             return;
         }
         self.friends_lan_closed();
+        self.native_players_leaving();
         let Some(mut host) = self.lan.take() else {
             return;
         };
         host.award_leave_game_to_all();
-        for g in &host.hub.guests {
-            self.save_guest(&host, g);
-        }
+        self.save_leaving_guests(&mut host);
         host.hub.disconnect_all();
         // Give the writer threads a moment to flush the disconnect packets.
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -1432,19 +1479,113 @@ impl Game<'_> {
         }
     }
 
-    /// Save a guest when they leave or the world closes: an integrated
-    /// server's owner with the world (`save_game`), anyone else in their file.
+    /// `PlayerList.removeAll`: every guest leaves in turn, the vehicle it
+    /// alone rides with it (`PlayerList.remove`), and is saved.
+    pub(super) fn save_leaving_guests(&mut self, host: &mut LanHost) {
+        for i in 0..host.hub.guests.len() {
+            let mut g = host.hub.guests.remove(i);
+            self.take_parent_vehicle(host, &mut g);
+            self.save_guest(host, &g);
+            host.hub.guests.insert(i, g);
+        }
+    }
+    /// Save a guest when they leave or the world closes (after
+    /// `take_parent_vehicle`): an integrated server's owner with the world
+    /// (`save_game`), anyone else in their file.
     pub(super) fn save_guest(&mut self, host: &LanHost, guest: &horizon_client::lan::guest::Guest) {
-        // The vehicle the guest rides, for the file that names it.
-        let vehicle = self.root_vehicle_uuid(guest.vehicle);
-        if host.owner.as_ref().is_some_and(|o| o.uuid == guest.uuid) {
-            if guest.placed {
-                playerdata::store(guest, &mut self.level, vehicle);
-            }
-        } else {
-            playerdata::save(guest, &self.world_root, vehicle);
+        if host.owner.as_ref().is_some_and(|o| o.uuid == guest.uuid) && guest.placed {
+            // The world's own player state rides in the level (`/data`).
+            playerdata::store(guest, &mut self.level, None);
+        }
+        if guest.placed {
+            // PlayerList.save/remove: every player saves to their own file.
+            playerdata::save(guest, &self.world_root);
         }
         self.save_guest_records(host, guest);
+    }
+    /// The vehicles the other players in level `dim` ride, all but the
+    /// guest `but` (`Entity.hasExactlyOnePlayerPassenger`); `host` adds the
+    /// host's own player, in the level in place.
+    pub(super) fn ridden_by_others(
+        &self,
+        guests: &[horizon_client::lan::guest::Guest],
+        dim: &str,
+        but: Option<u128>,
+        host: bool,
+    ) -> Vec<u32> {
+        let mut others: Vec<u32> = guests
+            .iter()
+            .filter(|g| g.placed && g.dimension == dim && Some(g.uuid) != but)
+            .filter_map(|g| g.vehicle)
+            .collect();
+        if host && super::Dim::from_id(dim) == self.dim {
+            others.extend(self.riding);
+        }
+        others
+    }
+    /// `ServerPlayer.saveParentVehicle` of a player riding `vehicle` in level
+    /// `dim`, put in place for it if need be; with `remove`, the vehicle tree
+    /// leaves the world with the player (`PlayerList.remove`).
+    fn parent_vehicle_in(
+        &mut self,
+        mut host: Option<&mut LanHost>,
+        dim: &str,
+        vehicle: Option<u32>,
+        others: &[u32],
+        remove: bool,
+    ) -> Option<(horizon_world::nbt::Tag, [i32; 4])> {
+        vehicle?;
+        let back = self.dim;
+        let theirs = super::Dim::from_id(dim);
+        if theirs != back
+            && let Err(e) = self.enter_level(host.as_deref_mut(), theirs)
+        {
+            log::error!("could not open {}: {e}", theirs.id());
+            return None;
+        }
+        let found = if self.dim == theirs {
+            self.parent_vehicle_tag(vehicle, others)
+        } else {
+            None
+        };
+        if remove && let Some((_, root, _)) = &found {
+            self.remove_vehicle_tree(*root);
+        }
+        if self.dim != back
+            && let Err(e) = self.enter_level(host, back)
+        {
+            log::error!("could not reopen {}: {e}", back.id());
+        }
+        found.map(|(tag, _, attach)| (tag, attach))
+    }
+    /// `PlayerList.remove` of a guest out of the hub: its file takes the
+    /// vehicle it alone rides (`saveParentVehicle`'s RootVehicle, kept in
+    /// `saved` as a file not yet ridden again), the vehicle tree leaves the
+    /// world, and the guest stops riding (`unRide`).
+    pub(super) fn take_parent_vehicle(
+        &mut self,
+        host: &mut LanHost,
+        guest: &mut horizon_client::lan::guest::Guest,
+    ) {
+        let Some(vehicle) = guest.vehicle.take() else {
+            return;
+        };
+        if !guest.placed {
+            return;
+        }
+        let others = self.ridden_by_others(&host.hub.guests, &guest.dimension, None, true);
+        let Some((tag, attach)) =
+            self.parent_vehicle_in(Some(host), &guest.dimension, Some(vehicle), &others, true)
+        else {
+            return;
+        };
+        let saved = guest
+            .saved
+            .get_or_insert_with(|| horizon_world::nbt::Tag::Compound(Default::default()));
+        if let horizon_world::nbt::Tag::Compound(p) = saved {
+            p.insert("RootVehicle".into(), tag);
+        }
+        guest.saved_vehicle = Some(attach);
     }
     /// `ServerPlayer.loadAndSpawnParentVehicle`: a guest whose file names the
     /// vehicle it rode rides it again, once the vehicle is in the world.
@@ -1560,15 +1701,17 @@ impl Game<'_> {
         else {
             return;
         };
-        let riding = self.lan.as_ref().and_then(|h| {
-            h.hub
-                .guests
-                .iter()
-                .find(|g| g.uuid == uuid && g.placed)
-                .and_then(|g| g.vehicle)
-        });
-        // The vehicle the owner rides, by the UUID it is saved with.
-        let vehicle = self.root_vehicle_uuid(riding);
+        let Some((riding, dim, others)) = self.lan.as_ref().and_then(|h| {
+            let g = h.hub.guests.iter().find(|g| g.uuid == uuid && g.placed)?;
+            let others = self.ridden_by_others(&h.hub.guests, &g.dimension, Some(uuid), true);
+            Some((g.vehicle, g.dimension.clone(), others))
+        }) else {
+            return;
+        };
+        // The vehicle the owner rides (`ServerPlayer.saveParentVehicle`).
+        let vehicle = self
+            .parent_vehicle_in(None, &dim, riding, &others, false)
+            .map(|(tag, _)| tag);
         let Some(host) = &self.lan else {
             return;
         };
@@ -1718,6 +1861,8 @@ impl Game<'_> {
             e.position = [d.position.x, d.position.y, d.position.z];
             e.on_ground = d.on_ground;
             e.velocity = [d.velocity.x, d.velocity.y, d.velocity.z];
+            e.precise = d.needs_sync;
+            e.needs_sync = d.needs_sync;
             // Entity.DATA_SHARED_FLAGS_ID: glowing 0x40 (the Glowing tag).
             if self.entity_glowing(d.id) {
                 e.meta.push((0, serializer::BYTE, Value::Byte(0x40)));
@@ -1736,12 +1881,261 @@ impl Game<'_> {
         self.lan_object_states(host_entity, hub, out);
     }
 
+    /// Apply gameplay events produced while the hub handles guest packets.
+    ///
+    /// Both the pre-block packet phase and the normal LAN tick receive the
+    /// same event stream. Keep their side effects in one place so joins,
+    /// departures, chat, and queued guest commands cannot drift apart. None when a native hook's
+    /// command closed the hub.
+    fn lan_process_events(
+        &mut self,
+        mut host: LanHost,
+        events: impl IntoIterator<Item = HostEvent>,
+        state: Option<&HostState>,
+        entities: &[EntityState],
+        spawn: [f64; 3],
+    ) -> Option<LanHost> {
+        for event in events {
+            match event {
+                event @ (HostEvent::Chat { .. } | HostEvent::Warn(_) | HostEvent::Error(_)) => {
+                    self.lan_log_event(event);
+                }
+                HostEvent::Ban { uuid, name, reason } => {
+                    self.anticheat_ban(&mut host.hub, uuid, &name, &reason);
+                }
+                HostEvent::ChatFiltered {
+                    sender,
+                    name,
+                    place,
+                    text,
+                    count,
+                    action,
+                } => self.chat_filtered(&mut host, sender, &name, place, &text, count, action),
+                HostEvent::PlayerChat { sender, text } => {
+                    if let Some(g) = host.hub.guests.iter().find(|g| g.uuid == sender) {
+                        if self.options.dedicated.is_some() {
+                            super::dedicated::events::record(
+                                "chat",
+                                &g.name,
+                                sender,
+                                serde_json::json!({ "message": text }),
+                            );
+                        }
+                        let conn = g.conn;
+                        self.detect_rate_spam(&mut host, conn, false);
+                    }
+                }
+                HostEvent::Joined(conn) => {
+                    self.lan_guest_joined(&mut host, conn, state, entities, spawn);
+                    if self.options.dedicated.is_some()
+                        && let Some(g) = host.hub.guest(conn)
+                    {
+                        // PlayerList.placeNewPlayer, then the broadcast join message.
+                        super::dedicated::player_joined(g.uuid, &g.name);
+                        super::dedicated::events::record(
+                            "join",
+                            &g.name,
+                            g.uuid,
+                            serde_json::json!({ "address": g.address.ip().to_string() }),
+                        );
+                        let [x, y, z] = g.position;
+                        super::dedicated::log(
+                            "INFO",
+                            &format!(
+                                "{}[/{}] logged in with entity id {} at ({}, {}, {})",
+                                g.name,
+                                g.address,
+                                g.entity_id,
+                                super::dedicated::java_double(x),
+                                super::dedicated::java_double(y),
+                                super::dedicated::java_double(z)
+                            ),
+                        );
+                        super::dedicated::log(
+                            "INFO",
+                            &format!("System chat: {} joined the game", g.name),
+                        );
+                    } else if self.player.is_some()
+                        && let Some(g) = host.hub.guest(conn)
+                        && g.placed
+                    {
+                        // The host's chat hears of the newcomer as the guests do.
+                        let who = self.player_text(&g.name, g.uuid);
+                        self.system_message(
+                            Text::translate("multiplayer.player.joined", &[who])
+                                .with_color(horizon_client::text::YELLOW),
+                        );
+                    }
+                    if let Some((uuid, name)) = host
+                        .hub
+                        .guest(conn)
+                        .filter(|g| g.placed)
+                        .map(|g| (g.uuid, g.name.clone()))
+                    {
+                        self.lan = Some(host);
+                        self.native_player_logged_in(uuid, &name);
+                        // A hook's command can close the hub.
+                        host = self.lan.take()?;
+                    }
+                }
+                HostEvent::Left(mut guest) => {
+                    // The container they had open loses an opener.
+                    if let Some(pos) = guest.menu.as_ref().and_then(|m| m.pos)
+                        && !guest.spectator()
+                    {
+                        // In the level they were in.
+                        let back = self.dim;
+                        let theirs = super::Dim::from_id(&guest.dimension);
+                        if self.enter_level(Some(&mut host), theirs).is_ok() {
+                            self.container_openers_changed(pos, false);
+                        }
+                        if let Err(e) = self.enter_level(Some(&mut host), back) {
+                            log::error!("could not reopen {}: {e}", back.id());
+                        }
+                    }
+                    self.lan_crafting_left(&mut host, &mut guest);
+                    if guest.placed {
+                        host.award_leave_game(guest.conn);
+                    }
+                    // PlayerList.remove: the vehicle it alone rides goes too.
+                    self.take_parent_vehicle(&mut host, &mut guest);
+                    self.save_guest(&host, &guest);
+                    host.models.remove(&guest.conn);
+                    host.play.remove(&guest.conn);
+                    self.guest_combat.remove(&guest.conn);
+                    if self.options.dedicated.is_some() && guest.placed {
+                        super::dedicated::events::record(
+                            "leave",
+                            &guest.name,
+                            guest.uuid,
+                            serde_json::json!({ "reason": guest.left_reason }),
+                        );
+                        super::dedicated::log(
+                            "INFO",
+                            &format!("{} lost connection: {}", guest.name, guest.left_reason),
+                        );
+                        super::dedicated::log(
+                            "INFO",
+                            &format!("System chat: {} left the game", guest.name),
+                        );
+                    } else if self.player.is_some() && guest.placed {
+                        // ServerGamePacketListenerImpl.removePlayerFromWorld.
+                        let who = self.player_text(&guest.name, guest.uuid);
+                        self.system_message(
+                            Text::translate("multiplayer.player.left", &[who])
+                                .with_color(horizon_client::text::YELLOW),
+                        );
+                    }
+                    if guest.placed && !host.players_told_left {
+                        self.lan = Some(host);
+                        self.native_player_logged_out(guest.uuid, &guest.name);
+                        host = self.lan.take()?;
+                    }
+                }
+                HostEvent::Packet(conn, packet) => {
+                    self.lan_guest_packet(&mut host, conn, *packet);
+                    if !host.commands.is_empty() {
+                        self.lan = Some(host);
+                        self.run_guest_commands();
+                        host = self.lan.take().expect("the hub is back after the commands");
+                    }
+                }
+            }
+        }
+        Some(host)
+    }
+
+    /// Handle this level's player packets before scheduled block ticks
+    /// (`ServerGamePacketListenerImpl` ahead of `ServerLevel`'s block phase).
+    /// A sand place in the same tick as another sand's fall schedule still
+    /// sees the support (#4510). `tick_lan` then syncs the level; a paused
+    /// tick that never calls this still drains inside `tick_lan`.
+    pub(super) fn tick_lan_packets(&mut self) {
+        if self.level_pass.packets_drained {
+            return;
+        }
+        let Some(mut host) = self.lan.take() else {
+            return;
+        };
+        let holding = lan::Holding::start();
+        let state = self.lan_host_state(&host);
+        if state.is_none() && !host.hub.config.dedicated {
+            self.lan = Some(host);
+            self.level_pass.packets_drained = true;
+            return;
+        }
+        // Last tick's tracked entities: enough for place collision and joins
+        // before this tick moves anyone.
+        let entities = std::mem::take(&mut host.states);
+        let spawn = self.spawn.map_or([0.5, 80.0, 0.5], |s| [s.x, s.y, s.z]);
+        let events = {
+            let clock_rate = self.network_clock_rate();
+            let mut ctx = TickCtx {
+                world: &mut self.world,
+                host: state.as_ref(),
+                entities: entities.as_slice(),
+                next_entity: &mut self.next_entity,
+                spawn,
+                difficulty: i32::from(self.ui.difficulty),
+                difficulty_locked: self.level.difficulty_locked,
+                clock_rate,
+                tick_rate: self.clock.rate(),
+                tick_frozen: self.clock.frozen(),
+                tick_steps: self.clock.step_state(),
+                collision: Some(self.collision),
+                border: &self.border,
+                streaming: Some(&self.streaming),
+            };
+            host.hub.movement_checks = (
+                self.ui.rules.bool("player_movement_check"),
+                self.ui.rules.bool("elytra_movement_check"),
+            );
+            let pass = self.level_pass;
+            let mut events = if pass.first {
+                host.hub.poll(&mut ctx)
+            } else {
+                Vec::new()
+            };
+            events.extend(host.hub.drain_packets(&mut ctx));
+            events
+        };
+        let Some(back) =
+            self.lan_process_events(host, events, state.as_ref(), entities.as_slice(), spawn)
+        else {
+            return;
+        };
+        host = back;
+        if !host.quiet.is_empty() {
+            self.lan = Some(host);
+            self.run_quiet_commands();
+            host = self
+                .lan
+                .take()
+                .expect("the hub is back after the quiet commands");
+        }
+        if !host.hub.native_menu_events.is_empty() {
+            self.lan = Some(host);
+            self.run_native_menu_events();
+            host = self
+                .lan
+                .take()
+                .expect("the hub is back after the menu events");
+        }
+        host.states = entities;
+        self.level_pass.packets_drained = true;
+        drop(holding);
+        self.lan = Some(host);
+    }
+
     /// Run the hub for this tick and apply what the guests did. While the
     /// single player game is `paused` only the connections run
     /// (`IntegratedServer.tickPaused`): `ServerGamePacketListenerImpl.tick`
     /// skips `tickPlayer`, so no player's air, hunger or damage moves on.
     pub(super) fn tick_lan(&mut self, paused: bool) {
         let Some(mut host) = self.lan.take() else {
+            if self.level_pass.running.is_none() {
+                self.level_pass.packets_drained = false;
+            }
             return;
         };
         // What the tick sends a guest goes to its connection at the end.
@@ -1794,6 +2188,9 @@ impl Game<'_> {
             }
             for p in &mut self.creatures.projectiles {
                 p.needs_sync = false;
+            }
+            for d in &mut self.dropped {
+                d.needs_sync = false;
             }
             // `runBlockEvents`' broadcast precedes the tick's block changes
             // (`ChunkHolder.broadcastChanges` in `tick_level` below): the
@@ -1848,12 +2245,17 @@ impl Game<'_> {
                     .set_immediate_respawn(self.ui.rules.bool("immediate_respawn"));
                 // A server with several levels runs a pass for each
                 // (`tick_server`): the network is read once, before the first.
+                // Player packets may already have been drained before
+                // scheduled block ticks (`tick_lan_packets`).
                 let pass = self.level_pass;
-                let mut events = if pass.first {
+                let mut events = if pass.first && !pass.packets_drained {
                     host.hub.poll(&mut ctx)
                 } else {
                     Vec::new()
                 };
+                if !pass.packets_drained {
+                    events.extend(host.hub.drain_packets(&mut ctx));
+                }
                 events.extend(host.hub.tick_level(&mut ctx));
                 if pass.last {
                     host.hub.end_tick();
@@ -1866,124 +2268,12 @@ impl Game<'_> {
                 host.host_mode = state.game_mode;
                 host.hub.set_host_game_mode(state.uuid, state.game_mode);
             }
-            for event in events {
-                match event {
-                    event @ (HostEvent::Chat { .. } | HostEvent::Warn(_) | HostEvent::Error(_)) => {
-                        self.lan_log_event(event);
-                    }
-                    HostEvent::PlayerChat { sender, text } => {
-                        if let Some(g) = host.hub.guests.iter().find(|g| g.uuid == sender) {
-                            if self.options.dedicated.is_some() {
-                                super::dedicated::events::record(
-                                    "chat",
-                                    &g.name,
-                                    sender,
-                                    serde_json::json!({ "message": text }),
-                                );
-                            }
-                            let conn = g.conn;
-                            self.detect_rate_spam(&mut host, conn, false);
-                        }
-                    }
-                    HostEvent::Joined(conn) => {
-                        self.lan_guest_joined(&mut host, conn, state.as_ref(), entities, spawn);
-                        if self.options.dedicated.is_some()
-                            && let Some(g) = host.hub.guest(conn)
-                        {
-                            // PlayerList.placeNewPlayer, then the broadcast join message.
-                            super::dedicated::player_joined(g.uuid, &g.name);
-                            super::dedicated::events::record(
-                                "join",
-                                &g.name,
-                                g.uuid,
-                                serde_json::json!({ "address": g.address.ip().to_string() }),
-                            );
-                            let [x, y, z] = g.position;
-                            super::dedicated::log(
-                                "INFO",
-                                &format!(
-                                    "{}[/{}] logged in with entity id {} at ({}, {}, {})",
-                                    g.name,
-                                    g.address,
-                                    g.entity_id,
-                                    super::dedicated::java_double(x),
-                                    super::dedicated::java_double(y),
-                                    super::dedicated::java_double(z)
-                                ),
-                            );
-                            super::dedicated::log(
-                                "INFO",
-                                &format!("System chat: {} joined the game", g.name),
-                            );
-                        } else if self.player.is_some()
-                            && let Some(g) = host.hub.guest(conn)
-                            && g.placed
-                        {
-                            // The host's chat hears of the newcomer as the guests do.
-                            let who = self.player_text(&g.name, g.uuid);
-                            self.system_message(
-                                Text::translate("multiplayer.player.joined", &[who])
-                                    .with_color(horizon_client::text::YELLOW),
-                            );
-                        }
-                    }
-                    HostEvent::Left(mut guest) => {
-                        // The container they had open loses an opener.
-                        if let Some(pos) = guest.menu.as_ref().and_then(|m| m.pos)
-                            && !guest.spectator()
-                        {
-                            // In the level they were in.
-                            let back = self.dim;
-                            let theirs = super::Dim::from_id(&guest.dimension);
-                            if self.enter_level(Some(&mut host), theirs).is_ok() {
-                                self.container_openers_changed(pos, false);
-                            }
-                            if let Err(e) = self.enter_level(Some(&mut host), back) {
-                                log::error!("could not reopen {}: {e}", back.id());
-                            }
-                        }
-                        self.lan_crafting_left(&mut host, &mut guest);
-                        if guest.placed {
-                            host.award_leave_game(guest.conn);
-                        }
-                        self.save_guest(&host, &guest);
-                        host.models.remove(&guest.conn);
-                        host.play.remove(&guest.conn);
-                        self.guest_combat.remove(&guest.conn);
-                        if self.options.dedicated.is_some() && guest.placed {
-                            super::dedicated::events::record(
-                                "leave",
-                                &guest.name,
-                                guest.uuid,
-                                serde_json::json!({ "reason": guest.left_reason }),
-                            );
-                            super::dedicated::log(
-                                "INFO",
-                                &format!("{} lost connection: {}", guest.name, guest.left_reason),
-                            );
-                            super::dedicated::log(
-                                "INFO",
-                                &format!("System chat: {} left the game", guest.name),
-                            );
-                        } else if self.player.is_some() && guest.placed {
-                            // ServerGamePacketListenerImpl.removePlayerFromWorld.
-                            let who = self.player_text(&guest.name, guest.uuid);
-                            self.system_message(
-                                Text::translate("multiplayer.player.left", &[who])
-                                    .with_color(horizon_client::text::YELLOW),
-                            );
-                        }
-                    }
-                    HostEvent::Packet(conn, packet) => {
-                        self.lan_guest_packet(&mut host, conn, *packet);
-                        if !host.commands.is_empty() {
-                            self.lan = Some(host);
-                            self.run_guest_commands();
-                            host = self.lan.take().expect("the hub is back after the commands");
-                        }
-                    }
-                }
-            }
+            self.wake_woken_guests(&mut host);
+            let Some(back) = self.lan_process_events(host, events, state.as_ref(), entities, spawn)
+            else {
+                return;
+            };
+            host = back;
             host.states = states;
         }
         if !host.quiet.is_empty() {
@@ -2043,6 +2333,11 @@ impl Game<'_> {
         lan::flush_all(host.hub.guests.iter().map(|g| &g.sender));
         self.lan = Some(host);
         self.flush_native_sounds();
+        // `tick_server` resets the pass after all dimensions. The deprecated
+        // in-frame path has no outer pass, so make its packet gate per-tick.
+        if self.level_pass.running.is_none() {
+            self.level_pass.packets_drained = false;
+        }
     }
 
     fn lan_guest_joined(
@@ -2057,19 +2352,28 @@ impl Game<'_> {
         let force = host.hub.config.force_game_mode;
         let root = self.world_root.clone();
         let in_place = host.hub.config.dimension.clone();
-        let owner = host.owner.as_mut();
+        let mut owner = host.owner.as_mut();
         let Some(g) = host.hub.guest_mut(conn) else {
             return;
         };
-        let saved = owner
-            .filter(|o| o.uuid == g.uuid)
-            .and_then(|o| o.saved.take());
-        let known = match saved {
-            Some(level) => {
-                playerdata::apply(g, &level);
-                level.position.is_some()
+        let is_owner = owner.as_ref().is_some_and(|o| o.uuid == g.uuid);
+        // PlayerDataStorage.load: the player's own file first; the world's
+        // own player state is the fallback for a first join.
+        let known = if is_owner && playerdata::load(g, &root) {
+            true
+        } else {
+            let saved = if is_owner {
+                owner.as_mut().and_then(|o| o.saved.take())
+            } else {
+                None
+            };
+            match saved {
+                Some(level) => {
+                    playerdata::apply(g, &level);
+                    level.position.is_some()
+                }
+                None => playerdata::load(g, &root),
             }
-            None => playerdata::load(g, &root),
         };
         if !known || force {
             g.game_mode = default_mode;
@@ -2214,6 +2518,50 @@ impl Game<'_> {
         if event == 45 && self.options.execution_role.is_client() {
             self.fox_eat_particles(id as u32);
         }
+    }
+    /// `LivingEntity.onEquippedItemBroken` for the acting player (the guest whose turn it
+    /// is, else the host): `level.broadcastEntityEvent` with `entityEventForEquipmentBreak`
+    /// of the slot, which each client answers with `breakItem` (the sound and the crumbs,
+    /// `remote_equipment_break`). Without a hub to tell, or in a window that runs the world
+    /// itself, the sound and the crumbs are played here.
+    pub(super) fn player_equipment_broke(
+        &mut self,
+        slot: horizon_world::player_inventory::EquipmentSlot,
+        stack: &horizon_client::items::ItemStack,
+    ) {
+        use horizon_world::player_inventory::EquipmentSlot;
+        let event = match slot {
+            EquipmentSlot::MainHand => 47,
+            EquipmentSlot::OffHand => 48,
+            EquipmentSlot::Head => 49,
+            EquipmentSlot::Chest => 50,
+            EquipmentSlot::Legs => 51,
+            EquipmentSlot::Feet => 52,
+            EquipmentSlot::Body => 65,
+            EquipmentSlot::Saddle => 68,
+        };
+        let Some(at) = self
+            .player
+            .as_ref()
+            .map(|p| [p.position.x, p.position.y, p.position.z])
+        else {
+            return;
+        };
+        let told = if self.lan_acting.is_some() {
+            self.guest_equipment_breaks.push((event, at));
+            true
+        } else if let Some(host) = &self.lan {
+            host.hub.entity_event(host.host_entity, event, at);
+            true
+        } else {
+            false
+        };
+        if told && !self.options.execution_role.is_client() {
+            return;
+        }
+        // LivingEntity.breakItem: the stack's break sound where it stands, then the crumbs.
+        self.break_sound_at(stack, at);
+        self.eat_particles(stack, 5);
     }
     /// `ServerPlayer.crit` (or `magicCrit` when `magic`): this window's
     /// emitter, and an animation for the attacker's client and observers once
@@ -2606,11 +2954,12 @@ impl Game<'_> {
         let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
         for (conn, m) in &host.models {
             let entity_start = out.len();
-            let light = self.world.light(
-                m.position.x.floor() as i32,
-                (m.position.y + 1.62).floor() as i32,
-                m.position.z.floor() as i32,
+            let probe = super::perspective::entity_light_block(
+                m.position,
+                m.extra.crouching,
+                m.eye_height(),
             );
+            let light = self.world.light(probe[0], probe[1], probe[2]);
             let packed = (u32::from(light >> 4) * 16) | ((u32::from(light & 15) * 16) << 8);
             horizon_client::mobs::render::render_with(
                 m,

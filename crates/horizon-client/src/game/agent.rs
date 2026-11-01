@@ -3,6 +3,7 @@
 //! like a player (walk, look, break, place, use, click buttons). Actions that
 //! take time run as a task advanced every frame and reply when they finish or
 //! time out, so `horizon-ctl break 10 64 3` returns what the block dropped.
+use super::event_loop::EventLoopCtl;
 use super::{Game, Screen};
 use horizon_client::{
     Result,
@@ -23,10 +24,8 @@ use std::{
     time::{Duration, Instant},
 };
 use winit::{
-    application::ApplicationHandler,
     dpi::PhysicalPosition,
     event::{DeviceId, ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent},
-    event_loop::ActiveEventLoop,
     keyboard::KeyCode,
 };
 
@@ -660,7 +659,9 @@ impl Game<'_> {
                 list.push((d, v));
             }
         };
-        for m in self.mobs.iter().filter(|m| m.alive()) {
+        // CAN_BE_PICKED's isPickable (`!isRemoved`): a dead-but-tracked mob
+        // — a fake player the server keeps at health 0 — is still here.
+        for m in self.mobs.iter().filter(|m| !m.removed) {
             let mut v = json!({ "id": m.id, "kind": "mob", "health": m.health, "baby": m.is_baby(), "hurt_time": m.hurt_time });
             // VillagerData as this game knows it: on a client, what the
             // server's synched data says.
@@ -955,7 +956,7 @@ impl Game<'_> {
     /// Synthesize the pointer moving to GUI pixel (x, y) and a click there.
     pub(super) fn synth_click(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn EventLoopCtl,
         x: f32,
         y: f32,
         button: MouseButton,
@@ -966,7 +967,7 @@ impl Game<'_> {
     /// the others and a release at the last (one point is a click).
     fn synth_drag(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn EventLoopCtl,
         points: &[(f32, f32)],
         button: MouseButton,
     ) -> Result<()> {
@@ -979,7 +980,7 @@ impl Game<'_> {
         let device_id = DeviceId::dummy();
         for (i, &(x, y)) in points.iter().enumerate() {
             let position = PhysicalPosition::new(f64::from(x * scale), f64::from(y * scale));
-            self.window_event(
+            self.handle_window_event(
                 event_loop,
                 id,
                 WindowEvent::CursorMoved {
@@ -988,7 +989,7 @@ impl Game<'_> {
                 },
             );
             if i == 0 {
-                self.window_event(
+                self.handle_window_event(
                     event_loop,
                     id,
                     WindowEvent::MouseInput {
@@ -999,7 +1000,7 @@ impl Game<'_> {
                 );
             }
         }
-        self.window_event(
+        self.handle_window_event(
             event_loop,
             id,
             WindowEvent::MouseInput {
@@ -1033,7 +1034,7 @@ impl Game<'_> {
         words: &[&str],
         line: &str,
         reply: &Sender<String>,
-        event_loop: &ActiveEventLoop,
+        event_loop: &dyn EventLoopCtl,
     ) -> Result<Handled> {
         let name = words[0];
         let a = parse_args(&words[1..]);
@@ -1559,7 +1560,7 @@ impl Game<'_> {
                     .ok_or("no renderer yet")?;
                 let device_id = DeviceId::dummy();
                 let position = PhysicalPosition::new(f64::from(x * scale), f64::from(y * scale));
-                self.window_event(
+                self.handle_window_event(
                     event_loop,
                     id,
                     WindowEvent::CursorMoved {
@@ -1568,7 +1569,7 @@ impl Game<'_> {
                     },
                 );
                 for _ in 0..steps.abs() as u32 {
-                    self.window_event(
+                    self.handle_window_event(
                         event_loop,
                         id,
                         WindowEvent::MouseWheel {

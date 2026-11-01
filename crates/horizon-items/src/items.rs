@@ -139,6 +139,8 @@ pub struct ItemInfo {
     pub bundle: bool,
     /// The ids of the item's default components (its prototype's keys).
     pub components: Vec<String>,
+    /// Opaque native component defaults, keyed by their registered name.
+    pub custom_components: std::collections::BTreeMap<String, horizon_world::nbt::Tag>,
 }
 /// `Item.Properties.craftRemainder` (not a data component, so not in the
 /// default-component report): what an item leaves in the grid when crafted with.
@@ -448,8 +450,10 @@ pub(crate) fn load_tag_lists(
     }
     // The packs' entries join the game's own, in pack order; a `replace`
     // file drops what the lower sources put in (`TagLoader.load` walks the
-    // resource stack the same way).
-    for (id, files) in overlay.kind(&format!("tags/{kind}")) {
+    // resource stack the same way). `tag_kind` reads the packs' keys
+    // (`tags/<ns>:<registry>/<path>`) and yields the `ns:path` ids the raw
+    // map is keyed by.
+    for (id, files) in overlay.tag_kind(kind) {
         let slot = raw.entry(id.to_owned()).or_default();
         for bytes in files {
             let Ok(v) = serde_json::from_slice::<Value>(bytes) else {
@@ -784,6 +788,18 @@ impl Items {
                         .as_object()
                         .map(|c| c.keys().cloned().collect())
                         .unwrap_or_default(),
+                    custom_components: c
+                        .as_object()
+                        .into_iter()
+                        .flatten()
+                        .filter(|(name, _)| !name.starts_with("minecraft:"))
+                        .map(|(name, value)| {
+                            (
+                                name.clone(),
+                                horizon_client_core::scoreboard::json_to_tag(value),
+                            )
+                        })
+                        .collect(),
                     crafting_remainder: CRAFT_REMAINDERS
                         .iter()
                         .find(|(item, _)| *item == name)
@@ -861,7 +877,7 @@ impl Items {
             loot,
             songs: load_songs(root),
             instruments: load_instruments(root),
-            enchantments: Arc::new(crate::enchant::Enchantments::load(root)),
+            enchantments: Arc::new(crate::enchant::Enchantments::load_with(root, overlay)),
         })
     }
     pub fn get(&self, id: &str) -> Option<&ItemInfo> {
@@ -891,7 +907,7 @@ impl Items {
             loot: Default::default(),
             songs: HashMap::new(),
             instruments: HashMap::new(),
-            enchantments: Arc::new(crate::enchant::Enchantments::load(root)),
+            enchantments: Arc::new(crate::enchant::Enchantments::load_with(root, overlay)),
         })
     }
     /// An item table with only tags, for unit tests of item rules.

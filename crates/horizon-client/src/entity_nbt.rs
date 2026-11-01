@@ -276,6 +276,16 @@ fn profile_from_nbt(tag: &Tag) -> Option<horizon_protocol::entity_data::Profile>
         slim: text("model").map(|model| model == "slim"),
     })
 }
+/// `ConversionTracker.addAdditionalSaveData`: vanilla's conversion time, -1
+/// while the mob is not converting. `counter2` is that time plus one while it
+/// converts and 0 when it does not (see `mobs/undead.rs`).
+fn conversion_time(m: &Mob) -> i32 {
+    if m.extra.counter2 > 0 {
+        m.extra.counter2 - 1
+    } else {
+        -1
+    }
+}
 /// `BlockState.CODEC`: the block's name when the state is that block's
 /// default, `{id, properties}` for any other state.
 pub fn state_to_nbt(registry: &BlockRegistry, state: BlockStateId) -> Tag {
@@ -373,11 +383,26 @@ pub fn mob_to_nbt(
             put(&mut tag, "angry_at", Tag::IntArray(player_uuid().to_vec()));
         }
     }
-    // `Mannequin.addAdditionalSaveData`: the profile whose skin it wears.
-    if m.species() == crate::mobs::Species::Mannequin
-        && let Some(profile) = &m.profile
-    {
-        put(&mut tag, "profile", profile_nbt(profile));
+    // `Mannequin.addAdditionalSaveData`: the profile whose skin it wears, whether it
+    // is `immovable`, and its description (the default is not written; none is `hide_description`).
+    if m.species() == crate::mobs::Species::Mannequin {
+        if let Some(profile) = &m.profile {
+            put(&mut tag, "profile", profile_nbt(profile));
+        }
+        put(
+            &mut tag,
+            "immovable",
+            Tag::Byte(i8::from(m.extra.immovable)),
+        );
+        match &m.extra.description {
+            crate::mobs::MannequinDescription::Default => {}
+            crate::mobs::MannequinDescription::Hidden => {
+                put(&mut tag, "hide_description", Tag::Byte(1));
+            }
+            crate::mobs::MannequinDescription::Custom(component) => {
+                put(&mut tag, "description", component.clone());
+            }
+        }
     }
     // `Entity.saveWithoutId` writes the flag only when set.
     if m.name_visible {
@@ -418,11 +443,15 @@ pub fn mob_to_nbt(
             .iter()
             .map(|&(effect, duration, amplifier)| {
                 let shown = !m.extra.hidden_effects.contains(&effect);
+                let ambient = m.extra.ambient_effects.contains(&effect);
                 let mut e = vec![
                     ("id", string(crate::brewing::namespaced(effect))),
                     ("amplifier", Tag::Byte(amplifier.clamp(0, 255) as u8 as i8)),
                     ("duration", Tag::Int(duration)),
                 ];
+                if ambient {
+                    e.push(("ambient", Tag::Byte(1)));
+                }
                 if !shown {
                     e.push(("show_particles", Tag::Byte(0)));
                 }
@@ -484,8 +513,10 @@ pub fn mob_to_nbt(
         map.insert("InLove".into(), Tag::Int(m.extra.in_love.max(0)));
     }
     let species = m.species();
-    if let Some((_, variant)) =
-        crate::mobs::finalize::species_variant_component(species, m.extra.variant)
+    // MushroomCow saves its variant under `Type` (below), not `variant`.
+    if species != crate::mobs::Species::Mooshroom
+        && let Some((_, variant)) =
+            crate::mobs::finalize::species_variant_component(species, m.extra.variant)
     {
         map.insert("variant".into(), string(&variant));
     }
@@ -561,6 +592,10 @@ pub fn mob_to_nbt(
             }
             map.insert("powered".into(), Tag::Byte(i8::from(m.extra.charged)));
             map.insert("ignited".into(), Tag::Byte(i8::from(m.extra.flag)));
+        }
+        // `Ocelot.addAdditionalSaveData`.
+        "minecraft:ocelot" => {
+            map.insert("Trusting".into(), Tag::Byte(i8::from(m.extra.trusting)));
         }
         "minecraft:cat" => {
             if let Some(owner) = m.extra.owner {
@@ -923,6 +958,10 @@ pub fn mob_to_nbt(
                 Tag::Int(crate::mobs::aquatic::dark_ticks(m)),
             );
         }
+        // Phantom.addAdditionalSaveData.
+        "minecraft:phantom" => {
+            map.insert("size".into(), Tag::Int(m.extra.size));
+        }
         "minecraft:slime" | "minecraft:magma_cube" => {
             map.insert("Size".into(), Tag::Int(m.extra.size.max(1) - 1));
             map.insert("wasOnGround".into(), Tag::Byte(i8::from(m.extra.flag2)));
@@ -939,7 +978,28 @@ pub fn mob_to_nbt(
                 )])
             });
         }
-        "minecraft:zombie" | "minecraft:husk" | "minecraft:drowned" => {
+        // Zombie and Skeleton.addAdditionalSaveData (a husk keeps Zombie's):
+        // `ConversionTracker`'s conversion and affliction times, -1 when it is
+        // not converting or not afflicted.
+        "minecraft:zombie" | "minecraft:husk" => {
+            for (key, value) in [
+                ("DrownedConversionTime", conversion_time(m)),
+                ("InWaterTime", m.extra.counter),
+            ] {
+                map.entry(key.into()).or_insert(Tag::Int(value));
+            }
+        }
+        "minecraft:skeleton" => {
+            for (key, value) in [
+                ("StrayConversionTime", conversion_time(m)),
+                ("FreezingTime", m.extra.counter),
+            ] {
+                map.entry(key.into()).or_insert(Tag::Int(value));
+            }
+        }
+        // Drowned.convertsInWater is false, so its tracker never ticks: vanilla
+        // saves -1 for both.
+        "minecraft:drowned" => {
             for (key, value) in [
                 ("DrownedConversionTime", Tag::Int(-1)),
                 ("InWaterTime", Tag::Int(-1)),
@@ -1367,9 +1427,21 @@ pub fn mob_from_nbt(
             m.extra.angry_at = Some(crate::mobs::Who::Player);
         }
     }
-    // `Mannequin.readAdditionalSaveData`: the profile comes back with the skin.
+    // `Mannequin.readAdditionalSaveData`: the profile comes back with the skin, then
+    // `immovable`, `hide_description` and `description` (`updateDescription`).
     if m.species() == crate::mobs::Species::Mannequin {
         m.profile = tag.get("profile").and_then(profile_from_nbt);
+        m.extra.immovable = flag(tag, "immovable");
+        m.extra.description = if flag(tag, "hide_description") {
+            crate::mobs::MannequinDescription::Hidden
+        } else {
+            crate::mobs::MannequinDescription::from_component(Some(
+                &tag.get("description")
+                    .cloned()
+                    .or_else(|| crate::mobs::MannequinDescription::Default.component())
+                    .unwrap_or(Tag::End),
+            ))
+        };
     }
     m.extra.pick_up_loot = flag(tag, "CanPickUpLoot");
     m.custom_name = custom_name(tag);
@@ -1413,6 +1485,11 @@ pub fn mob_from_nbt(
             m.extra.hidden_effects.retain(|h| *h != effect);
             if number(e.get("show_particles")) == Some(0) {
                 m.extra.hidden_effects.push(effect);
+            }
+            // Details.CODEC: `ambient` defaults to false.
+            m.extra.ambient_effects.retain(|h| *h != effect);
+            if number(e.get("ambient")).is_some_and(|a| a != 0) {
+                m.extra.ambient_effects.push(effect);
             }
         }
     }
@@ -1555,6 +1632,10 @@ pub fn mob_from_nbt(
             m.extra.lost_horns = [horn("HasLeftHorn"), horn("HasRightHorn")];
         }
         _ => {}
+    }
+    // `Ocelot.readAdditionalSaveData`.
+    if m.species() == crate::mobs::Species::Ocelot {
+        m.extra.trusting = flag(tag, "Trusting");
     }
     if m.species() == crate::mobs::Species::Cat {
         m.extra.owner = crate::save::uuid_from_tag(tag.get("Owner"));
@@ -1804,6 +1885,10 @@ pub fn mob_from_nbt(
         }
         m.extra.flag2 = flag(tag, "wasOnGround");
     }
+    if m.species() == crate::mobs::Species::Phantom {
+        // Phantom.readAdditionalSaveData: setPhantomSize(size).
+        crate::mobs::phantom::set_size(&mut m, number(tag.get("size")).unwrap_or(0) as i32);
+    }
     // Zombie, Piglin and Zoglin.readAdditionalSaveData: IsBaby (the baby
     // zombies of trial spawners).
     if !crate::mobs::finalize::ageable(m.species()) && flag(tag, "IsBaby") {
@@ -1812,6 +1897,23 @@ pub fn mob_from_nbt(
     // Zombie.readAdditionalSaveData: setCanBreakDoors.
     if crate::mobs::doors::is_zombie(m.species()) {
         crate::mobs::doors::set_can_break_doors(&mut m, flag(tag, "CanBreakDoors"));
+    }
+    // Zombie and Skeleton.readAdditionalSaveData: `ConversionTracker` reads its
+    // affliction time (0 when absent) and starts a conversion from a saved time
+    // other than -1, -1 stopping one (`setConverting(false)`).
+    let tracker = match m.species() {
+        crate::mobs::Species::Zombie | crate::mobs::Species::Husk => {
+            Some(("InWaterTime", "DrownedConversionTime"))
+        }
+        crate::mobs::Species::Skeleton => Some(("FreezingTime", "StrayConversionTime")),
+        _ => None,
+    };
+    if let Some((affliction, conversion)) = tracker {
+        m.extra.counter = number(tag.get(affliction)).unwrap_or(0) as i32;
+        let time = number(tag.get(conversion)).unwrap_or(-1) as i32;
+        // Any other time starts a conversion (`startConversion`), a negative
+        // one spent on the next tick.
+        m.extra.counter2 = if time == -1 { 0 } else { time.max(0) + 1 };
     }
     crate::mobs::raider::read_nbt(&mut m, tag);
     crate::mobs::riders::read_nbt(&mut m, tag);
@@ -1881,6 +1983,7 @@ pub fn item_entity_from_nbt(tag: &Tag, id: u32, bob_offset: f32) -> Option<ItemE
         pickup_delay: number(tag.get("PickupDelay")).unwrap_or(0).clamp(0, 32767) as u32,
         bob_offset,
         ticks: 0,
+        needs_sync: false,
     })
 }
 
@@ -1934,7 +2037,7 @@ pub fn orb_to_nbt(o: &ExperienceOrb, uuid: [i32; 4]) -> Tag {
     };
     let mut tag = base.tag(None);
     for (key, value) in [
-        ("Health", Tag::Short(5)),
+        ("Health", Tag::Short(o.health as i16)),
         ("Age", Tag::Short(o.age.min(i16::MAX as u32) as i16)),
         ("Value", Tag::Short(o.value.min(i16::MAX as u32) as i16)),
         ("Count", Tag::Int(o.count.min(i32::MAX as u32) as i32)),
@@ -1959,6 +2062,7 @@ pub fn orbs_from_nbt(tag: &Tag) -> Vec<ExperienceOrb> {
         on_ground: flag(tag, "OnGround"),
         count,
         ticks: 0,
+        health: number(tag.get("Health")).unwrap_or(5) as i32,
     };
     vec![orb]
 }
@@ -2831,6 +2935,7 @@ mod tests {
             pickup_delay: 10,
             ticks: 0,
             bob_offset: 0.0,
+            needs_sync: false,
         };
         let tag = item_entity_to_nbt(&e, [1, 2, 3, 4], None);
         assert_eq!(kind(&tag).as_deref(), Some("minecraft:item"));
@@ -2877,6 +2982,7 @@ mod tests {
             on_ground: false,
             count: 3,
             ticks: 0,
+            health: 5,
         };
         let tag = orb_to_nbt(&o, [0; 4]);
         let back = orbs_from_nbt(&tag);
@@ -3413,6 +3519,88 @@ mod sheep_nbt_tests {
         assert_eq!((back.extra.color, back.extra.sheared), (14, true));
     }
 
+    /// `Ocelot.addAdditionalSaveData` and `readAdditionalSaveData`: `Trusting`.
+    #[test]
+    fn an_ocelot_keeps_its_trust() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let data = crate::mobs::MobTypes::load(&root).unwrap();
+        let types: HashMap<String, Arc<MobType>> = data
+            .types
+            .iter()
+            .map(|(k, v)| (k.clone(), Arc::new(v.clone())))
+            .collect();
+        let mut m = Mob::new(
+            1,
+            Arc::new(data.types["minecraft:ocelot"].clone()),
+            Vec3::new(0.0, 4.0, 0.0),
+            0.0,
+        );
+        let tag = mob_to_nbt(&m, [1, 2, 3, 4], None, None);
+        assert_eq!(number(tag.get("Trusting")), Some(0));
+        m.extra.trusting = true;
+        let tag = mob_to_nbt(&m, [1, 2, 3, 4], None, None);
+        assert_eq!(number(tag.get("Trusting")), Some(1));
+        let back = mob_from_nbt(&tag, &types, 2, None).unwrap();
+        assert!(back.extra.trusting);
+    }
+
+    /// `Mannequin.addAdditionalSaveData` and `readAdditionalSaveData`: `immovable`, and the
+    /// description (the default is not written, `hide_description` hides it, a component stays).
+    #[test]
+    fn a_mannequin_keeps_its_immovable_flag_and_description() {
+        use crate::mobs::MannequinDescription as D;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let data = crate::mobs::MobTypes::load(&root).unwrap();
+        let types: HashMap<String, Arc<MobType>> = data
+            .types
+            .iter()
+            .map(|(k, v)| (k.clone(), Arc::new(v.clone())))
+            .collect();
+        let mut m = Mob::new(
+            1,
+            Arc::new(data.types["minecraft:mannequin"].clone()),
+            Vec3::new(0.0, 4.0, 0.0),
+            0.0,
+        );
+        let save = |m: &Mob| mob_to_nbt(m, [1, 2, 3, 4], None, None);
+        // The default description is not written; it comes back.
+        let tag = save(&m);
+        assert!(tag.get("description").is_none() && tag.get("hide_description").is_none());
+        assert_eq!(number(tag.get("immovable")), Some(0));
+        let back = mob_from_nbt(&tag, &types, 2, None).unwrap();
+        assert_eq!(
+            (back.extra.immovable, back.extra.description),
+            (false, D::Default)
+        );
+        // Hidden, and immovable.
+        m.extra.immovable = true;
+        m.extra.description = D::Hidden;
+        let tag = save(&m);
+        assert_eq!(number(tag.get("hide_description")), Some(1));
+        let back = mob_from_nbt(&tag, &types, 2, None).unwrap();
+        assert_eq!(
+            (back.extra.immovable, back.extra.description),
+            (true, D::Hidden)
+        );
+        // A component of the world's own.
+        let own = Tag::compound([("text", string("Guard")), ("color", string("red"))]);
+        m.extra.description = D::Custom(own.clone());
+        let tag = save(&m);
+        assert_eq!(tag.get("description"), Some(&own));
+        let back = mob_from_nbt(&tag, &types, 2, None).unwrap();
+        assert_eq!(back.extra.description, D::Custom(own));
+    }
+
     /// The only lib test that registers mod effects (once per process).
     #[test]
     fn a_mob_keeps_a_mod_effect() {
@@ -3540,7 +3728,7 @@ mod sheep_nbt_tests {
     }
 
     #[test]
-    fn mobs_keep_their_variant_puff_state_and_carried_block() {
+    fn mobs_keep_their_variant_puff_state_carried_block_and_conversion_times() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../.local/horizon-client")
             .join(horizon_core::VANILLA_VERSION);
@@ -3689,6 +3877,52 @@ mod sheep_nbt_tests {
                 .lost_horns,
             [false; 2]
         );
+        // Zombie and Skeleton.addAdditionalSaveData: the `ConversionTracker`
+        // tags, -1 for a counter that is not running, and both come back into
+        // the counters the tick uses.
+        let mut zombie = new("minecraft:zombie");
+        zombie.extra.counter = 300;
+        let (back, tag) = round_trip(&zombie);
+        assert_eq!(number(tag.get("InWaterTime")), Some(300));
+        assert_eq!(number(tag.get("DrownedConversionTime")), Some(-1));
+        assert_eq!((back.extra.counter, back.extra.counter2), (300, 0));
+        (zombie.extra.counter, zombie.extra.counter2) = (600, 300);
+        let (back, tag) = round_trip(&zombie);
+        assert_eq!(number(tag.get("InWaterTime")), Some(600));
+        assert_eq!(number(tag.get("DrownedConversionTime")), Some(299));
+        assert_eq!((back.extra.counter, back.extra.counter2), (600, 300));
+        let mut skeleton = new("minecraft:skeleton");
+        skeleton.extra.counter = 70;
+        let (back, tag) = round_trip(&skeleton);
+        assert_eq!(number(tag.get("FreezingTime")), Some(70));
+        assert_eq!(number(tag.get("StrayConversionTime")), Some(-1));
+        assert_eq!((back.extra.counter, back.extra.counter2), (70, 0));
+        (skeleton.extra.counter, skeleton.extra.counter2) = (140, 301);
+        let (back, tag) = round_trip(&skeleton);
+        assert_eq!(number(tag.get("FreezingTime")), Some(140));
+        assert_eq!(number(tag.get("StrayConversionTime")), Some(300));
+        assert_eq!((back.extra.counter, back.extra.counter2), (140, 301));
+        // Not converting: -1 in both tags, and nothing starts on load.
+        for (kind, affliction, conversion) in [
+            ("minecraft:zombie", "InWaterTime", "DrownedConversionTime"),
+            ("minecraft:skeleton", "FreezingTime", "StrayConversionTime"),
+        ] {
+            let mut m = new(kind);
+            (m.extra.counter, m.extra.counter2) = (-1, 0);
+            let (back, tag) = round_trip(&m);
+            assert_eq!(number(tag.get(affliction)), Some(-1));
+            assert_eq!(number(tag.get(conversion)), Some(-1));
+            assert_eq!((back.extra.counter, back.extra.counter2), (-1, 0));
+        }
+        // A saved conversion time starts one: `startConversion`.
+        let saved = Tag::compound([
+            ("id", string("minecraft:zombie")),
+            ("Pos", doubles(&[0.5, 64.0, 0.5])),
+            ("InWaterTime", Tag::Int(600)),
+            ("DrownedConversionTime", Tag::Int(300)),
+        ]);
+        let back = mob_from_nbt(&saved, &types, 4, None).unwrap();
+        assert_eq!((back.extra.counter, back.extra.counter2), (600, 301));
     }
 }
 
@@ -3722,6 +3956,20 @@ mod item_component_tests {
         assert_eq!(hen.extra.variant, 0);
         apply_item_components(&mut hen, &egg);
         assert_eq!(hen.extra.variant, 1, "minecraft:warm, not the biome's");
+        // MushroomCow.applyImplicitComponents: the egg's variant, and the
+        // component the mob reports back.
+        let mut egg = crate::items::ItemStack::new("minecraft:mooshroom_spawn_egg", 1);
+        egg.data_mut().set_other(
+            "minecraft:mooshroom/variant",
+            Some(string("minecraft:brown")),
+        );
+        let mut mooshroom = spawn("minecraft:mooshroom", 3);
+        apply_item_components(&mut mooshroom, &egg);
+        let (id, variant) = crate::mobs::finalize::variant_component(&mooshroom).unwrap();
+        assert_eq!(
+            (id, variant.as_str()),
+            ("minecraft:mooshroom/variant", "minecraft:brown")
+        );
         // Sheep.applyImplicitComponents: the egg's colour over the mob's.
         let mut egg = crate::items::ItemStack::new("minecraft:sheep_spawn_egg", 1);
         egg.data_mut()
@@ -3769,8 +4017,8 @@ mod item_component_tests {
             else {
                 return m;
             };
-            let tag = crate::data_cmd::merged(&mob_to_nbt(&m, [1, 2, 3, 4], None), data);
-            mob_from_nbt(&tag, &types, 2).unwrap()
+            let tag = crate::data_cmd::merged(&mob_to_nbt(&m, [1, 2, 3, 4], None, None), data);
+            mob_from_nbt(&tag, &types, 2, None).unwrap()
         };
         // `entity_data={NoAI:1b}`: no id, so the egg's own type holds the data.
         assert!(spawn(&egg(Some(Tag::compound([("NoAI", Tag::Byte(1))])))).no_ai);

@@ -499,7 +499,7 @@ impl Game<'_> {
                     eye[1] - eye[1].clamp(lo.y, hi.y),
                     eye[2] - eye[2].clamp(lo.z, hi.z),
                 ];
-                let range = if self.creative { 5.0 } else { 3.0 } + 4.0;
+                let range = self.entity_reach + 4.0;
                 m.alive() && d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < range * range
             });
             if !valid {
@@ -683,6 +683,8 @@ impl Game<'_> {
                 tr("entity.minecraft.wandering_trader", "Wandering Trader")
             }
         });
+        // The screen's title is the merchant's name; its label adds the level.
+        super::screen_info::name_container(|| name.clone());
         let title = if progress {
             tr("merchant.title", "%s - %s")
                 .replacen("%s", &name, 1)

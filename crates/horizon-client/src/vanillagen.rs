@@ -286,23 +286,21 @@ impl VanillaTerrain {
         self.structure_mobs
             .spawn_generated(kind, position, yaw, biome, random, group)
     }
-    /// A proto chunk's blocks, biomes, scheduled ticks and post-processing
-    /// marks as a column.
-    fn column(&self, chunk: &ProtoChunk) -> Chunk {
+    /// Only the generated range of a proto chunk (the Nether is 0..256)
+    /// is copied into a column.
+    fn generated_range(chunk: &ProtoChunk, out: &Chunk) -> (i32, i32) {
+        (
+            chunk.terrain.min_y().max(out.min_y()),
+            (chunk.terrain.min_y() + chunk.terrain.height()).min(out.max_y()),
+        )
+    }
+    /// A proto chunk's blocks alone as a column: what a light job reads of
+    /// its neighbours.
+    fn block_column(&self, chunk: &ProtoChunk) -> Chunk {
         let pos = chunk.position();
         let mut out = Chunk::with_layout(pos.x, pos.z, self.layout());
         let (bx, bz) = (pos.x * 16, pos.z * 16);
-        // Only the generated range (the Nether is 0..256) is copied.
-        let (lo, hi) = (
-            chunk.terrain.min_y().max(out.min_y()),
-            (chunk.terrain.min_y() + chunk.terrain.height()).min(out.max_y()),
-        );
-        out.structure_refs = chunk
-            .structures()
-            .into_iter()
-            .map(|(id, start, _, _)| (Arc::from(id), (start.x, start.z)))
-            .collect();
-        out.structure_starts = chunk.own_starts();
+        let (lo, hi) = Self::generated_range(chunk, &out);
         let mut values = Box::new([0u32; 4096]);
         for si in 0..out.sections.len() as i32 {
             let base = out.min_y() + si * 16;
@@ -332,6 +330,21 @@ impl VanillaTerrain {
                     Section::from_blocks(&values);
             }
         }
+        out
+    }
+    /// A proto chunk's blocks, biomes, scheduled ticks and post-processing
+    /// marks as a column.
+    fn column(&self, chunk: &ProtoChunk) -> Chunk {
+        let mut out = self.block_column(chunk);
+        let pos = chunk.position();
+        let (bx, bz) = (pos.x * 16, pos.z * 16);
+        let (lo, hi) = Self::generated_range(chunk, &out);
+        out.structure_refs = chunk
+            .structures()
+            .into_iter()
+            .map(|(id, start, _, _)| (Arc::from(id), (start.x, start.z)))
+            .collect();
+        out.structure_starts = chunk.own_starts();
         // Ticks the features scheduled (leaves reshaped at a tree's edge,
         // fluids of lakes and springs) run once the chunk is live, as
         // LevelChunk takes over ProtoChunk's ticks.
@@ -412,6 +425,21 @@ impl VanillaTerrain {
         radius: i32,
     ) -> Option<(String, [i32; 3])> {
         self.generator.worker().locate(names, from, radius)
+    }
+    /// The chunks an older version saved, which new chunks blend with
+    /// (`Blender.of`).
+    pub fn set_old_world(&self, world: Arc<dyn horizon_world::worldgen::blending::OldWorld>) {
+        self.generator.set_old_world(world);
+    }
+    /// The generator's resources, for what reads saved chunks the way it does.
+    pub fn generator_data(&self) -> &Arc<GeneratorData> {
+        self.generator.data()
+    }
+    /// `NoiseBasedChunkGenerator.addDebugScreenInfo`: F3's `Density` line at
+    /// the feet. It reads the samplers only, not the shared query worker, so
+    /// a long `/locate biome` or `/place jigsaw` never holds it up.
+    pub fn density_debug_line(&self, feet: [i32; 3]) -> Option<String> {
+        self.generator.debug_density_line(feet)
     }
     /// `ChunkGenerator.findNearestMapStructure` for an exploration map: with
     /// `skip_known` (`skip_existing_chunks`) the nearest start no map pointed
@@ -672,6 +700,63 @@ impl ChunkGenerator for VanillaTerrain {
     fn decorates(&self) -> bool {
         true
     }
+    fn decorates_beside_final(&self) -> bool {
+        true
+    }
+    /// A final chunk's proto chunk: terrain generated again with the final
+    /// chunk's blocks over it, so that features read and write it as they do
+    /// the chunks around it (`ChunkAccess` of a full chunk in the region).
+    fn proto_beside_final(&self, worker: &mut GeneratorWorker, snapshot: &Chunk) -> Option<Proto> {
+        let mut proto = self.proto(worker, snapshot.x, snapshot.z);
+        self.restore_proto(
+            &mut proto,
+            SavedProto {
+                column: snapshot.clone(),
+                decorated: true,
+                block_entities: Vec::new(),
+                entities: Vec::new(),
+            },
+        );
+        Some(proto)
+    }
+    fn final_writes(&self, snapshot: &Chunk, proto: &Proto) -> Vec<([i32; 3], u32)> {
+        let Some(VanillaProto::Ready(chunk)) = proto.downcast_ref::<VanillaProto>() else {
+            return Vec::new();
+        };
+        let (bx, bz) = (snapshot.x * 16, snapshot.z * 16);
+        let (lo, hi) = (
+            chunk.terrain.min_y().max(snapshot.min_y()),
+            (chunk.terrain.min_y() + chunk.terrain.height()).min(snapshot.max_y()),
+        );
+        let mut writes = Vec::new();
+        for y in lo..hi {
+            for z in 0..16 {
+                for x in 0..16 {
+                    let state = chunk.block(bx + x, y, bz + z).0;
+                    if state != snapshot.get(x, y, z) {
+                        writes.push(([bx + x, y, bz + z], state));
+                    }
+                }
+            }
+        }
+        writes
+    }
+    fn final_block_entities(
+        &self,
+        proto: &Proto,
+        writes: &[([i32; 3], u32)],
+    ) -> Vec<((i32, i32, i32), crate::chunk::block_entity::BlockEntity)> {
+        let Some(VanillaProto::Ready(chunk)) = proto.downcast_ref::<VanillaProto>() else {
+            return Vec::new();
+        };
+        if chunk.block_entities.is_empty() {
+            return Vec::new();
+        }
+        let (made, _rolled) = crate::structure_blocks::block_entities(chunk, self.loot.as_deref());
+        made.into_iter()
+            .filter(|((x, y, z), _)| writes.iter().any(|(p, _)| *p == [*x, *y, *z]))
+            .collect()
+    }
     fn decorate(&self, worker: &mut GeneratorWorker, region: &mut [Proto; 9]) {
         let taken: Vec<Box<VanillaProto>> = region
             .iter_mut()
@@ -711,7 +796,7 @@ impl ChunkGenerator for VanillaTerrain {
     }
     fn light_view(&self, proto: &Proto) -> Option<Chunk> {
         match proto.downcast_ref::<VanillaProto>() {
-            Some(VanillaProto::Ready(chunk)) => Some(self.column(chunk)),
+            Some(VanillaProto::Ready(chunk)) => Some(self.block_column(chunk)),
             _ => None,
         }
     }
