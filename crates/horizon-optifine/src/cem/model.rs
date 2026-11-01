@@ -61,11 +61,14 @@ pub struct EntityModel {
 
 /// OptiFine's texture size when a model gives none.
 const DEFAULT_TEXTURE_SIZE: [f32; 2] = [64.0, 32.0];
-/// What one `.jem` may make the game build, so a pack can't make loading run out of memory: its
-/// entries, its bones, faces and animations, and the bytes of each file.
+/// What one `.jem` may make the game build, so a pack can't make loading run out of memory or
+/// time: its entries, the bones, boxes, faces and animations it bakes (see [`Bake`]), and the
+/// bytes of the `.jem` and every `.jpm` it loads, together.
 const MAX_ENTRIES: usize = 1024;
 const MAX_NODES: usize = 1 << 16;
-const MAX_BYTES: usize = 8 << 20;
+/// The bytes a `.jem` and its `.jpm` files may hold together: [`parse_jem`]'s `read` should
+/// refuse a larger file without reading it.
+pub const MAX_BYTES: usize = 4 << 20;
 
 /// Keys looked up in a part definition.
 trait Def {
@@ -102,8 +105,10 @@ impl Def for Layers {
     }
 }
 
-/// What a file may still build: `left` bones, faces and animations; `cut`: something was left
-/// out for want of them; `unread`: a part or submodel has a texture or sprites of its own.
+/// What a file may still build: `left` units, where a bone costs one, a box its faces or its
+/// keys, whichever is more (at least one), any other item of `boxes` or `submodels` one, and an
+/// item of `animations` its pairs (at least one). `cut`: something was left out for want of
+/// them; `unread`: a part or submodel has a texture or sprites of its own.
 struct Bake {
     left: usize,
     cut: bool,
@@ -111,8 +116,10 @@ struct Bake {
 }
 
 /// Parses the `.jem` at resource path `path` (`assets/minecraft/optifine/cem/zombie.jem`).
-/// `read` returns the text of a resource path (the `.jpm` files `model` names), None when missing.
-/// An error means the file as a whole can't be read; a broken entry only adds a warning.
+/// `read` returns the text of a resource path (the `.jpm` files `model` names), None when missing;
+/// it should return None for a file larger than [`MAX_BYTES`] rather than read it, as the `.jem`
+/// and the `.jpm` files it loads may not pass that together. An error means the file as a whole
+/// can't be read; a broken entry only adds a warning.
 pub fn parse_jem(
     path: &str,
     text: &str,
@@ -132,6 +139,7 @@ pub fn parse_jem(
         ..EntityModel::default()
     };
     let mut jpms: HashMap<String, Result<Rc<Layer>, String>> = HashMap::new();
+    let mut bytes = text.len();
     // The first entry with an id is the one `baseId` finds.
     let mut by_id: HashMap<String, Layers> = HashMap::new();
     let mut bake = Bake {
@@ -151,7 +159,7 @@ pub fn parse_jem(
             let jpm = model
                 .as_str()
                 .ok_or_else(|| format!("{path}: a model that isn't a file name"))
-                .and_then(|m| jpm(path, m, read, &mut jpms));
+                .and_then(|m| jpm(path, m, read, &mut jpms, &mut bytes));
             match jpm {
                 Ok(jpm) => layers.0.push(jpm),
                 Err(e) => {
@@ -163,13 +171,14 @@ pub fn parse_jem(
         // `baseId`: the named entry's properties, under this one's and its `.jpm`'s.
         if let Some(base) = get(entry, "baseId").and_then(Json::as_str) {
             match by_id.get(base) {
-                // A base sharing this entry's `.jpm` adds it once.
+                // A base sharing this entry's `.jpm` adds it once: of this entry's layers only
+                // that one can be among the base's.
                 Some(parent) => {
-                    for layer in &parent.0 {
-                        if !layers.0.iter().any(|l| Rc::ptr_eq(l, layer)) {
-                            layers.0.push(layer.clone());
-                        }
-                    }
+                    let own = layers.0.get(1).cloned();
+                    let shared = |l: &&Rc<Layer>| own.as_ref().is_some_and(|o| Rc::ptr_eq(o, l));
+                    layers
+                        .0
+                        .extend(parent.0.iter().filter(|l| !shared(l)).cloned());
                 }
                 None => out
                     .warnings
@@ -182,29 +191,20 @@ pub fn parse_jem(
         let Some(part) = layers.key("part").and_then(Json::as_str) else {
             continue;
         };
-        // Past the limits a part is left out, not emptied: the vanilla part stays.
-        if bake.left == 0 {
+        // Past the limits a part is left out, not emptied or frozen: the vanilla part stays. Its
+        // animations, all of them, and its bone must fit before it is baked.
+        let earlier = std::mem::replace(&mut bake.cut, false);
+        let Some((animations, cost)) = animations(layers.key("animations"), bake.left) else {
             bake.cut = true;
             continue;
-        }
+        };
+        bake.left -= cost;
         let bone = bone(&layers, size, true, &mut bake);
-        let mut animations = Vec::new();
-        for (k, v) in objects(layers.key("animations")).flatten() {
-            let expr = match v {
-                Json::Str(s) => s.clone(),
-                Json::Num(n) => n.to_string(),
-                Json::Bool(b) => b.to_string(),
-                _ => continue,
-            };
-            // An entry whose animations don't all fit gets none.
-            if animations.len() == bake.left {
-                bake.cut = true;
-                animations.clear();
-                break;
-            }
-            animations.push((k.clone(), expr));
+        let emptied = bake.cut && !has_quads(&bone);
+        bake.cut |= earlier;
+        if emptied {
+            continue;
         }
-        bake.left -= animations.len();
         out.parts.push(PartModel {
             part: part.to_owned(),
             attach: boolean(layers.key("attach")).unwrap_or(false),
@@ -215,7 +215,7 @@ pub fn parse_jem(
     }
     if bake.cut {
         out.warnings.push(format!(
-            "{path}: more than {MAX_NODES} bones, faces and animations, the rest left out"
+            "{path}: more than {MAX_NODES} bones, boxes, faces and animations, the rest left out"
         ));
     }
     if bake.unread {
@@ -227,11 +227,13 @@ pub fn parse_jem(
 }
 
 /// The `.jpm` that `model` (in the `.jem` at `path`) names, read and parsed once per file.
+/// `bytes`: what the model's files read so far hold, refused ones included.
 fn jpm(
     path: &str,
     model: &str,
     read: &mut dyn FnMut(&str) -> Option<String>,
     cache: &mut HashMap<String, Result<Rc<Layer>, String>>,
+    bytes: &mut usize,
 ) -> Result<Rc<Layer>, String> {
     let Some(file) = paths::resolve(path, model) else {
         return Err(format!("{path}: {model} is outside the pack"));
@@ -240,8 +242,11 @@ fn jpm(
         .entry(file.clone())
         .or_insert_with(|| {
             let text = read(&file).ok_or_else(|| format!("{path}: missing {file}"))?;
-            if text.len() > MAX_BYTES {
-                return Err(format!("{file}: larger than {MAX_BYTES} bytes"));
+            *bytes = bytes.saturating_add(text.len());
+            if *bytes > MAX_BYTES {
+                return Err(format!(
+                    "{file}: the model's files are larger than {MAX_BYTES} bytes together"
+                ));
             }
             match Json::parse(&text).map_err(|e| format!("{file}: {e}"))? {
                 Json::Obj(pairs) => Ok(Layer::new(pairs)),
@@ -251,12 +256,42 @@ fn jpm(
         .clone()
 }
 
+/// An entry's animations and what they cost, None when they don't fit in `left` with one to
+/// spare for the bone. Every pair costs one, skipped or not, and every other item one.
+fn animations(v: Option<&Json>, left: usize) -> Option<(Vec<(String, String)>, usize)> {
+    let mut out = Vec::new();
+    let mut cost = 0;
+    for item in items(v) {
+        let pairs = item.as_object().unwrap_or_default();
+        cost += pairs.len().max(1);
+        if cost >= left {
+            return None;
+        }
+        for (k, v) in pairs {
+            let expr = match v {
+                Json::Str(s) => s.clone(),
+                Json::Num(n) => n.to_string(),
+                Json::Bool(b) => b.to_string(),
+                _ => continue,
+            };
+            out.push((k.clone(), expr));
+        }
+    }
+    (cost < left).then_some((out, cost))
+}
+
+fn has_quads(bone: &Bone) -> bool {
+    !bone.quads.is_empty() || bone.children.iter().any(has_quads)
+}
+
+/// The items of an array value.
+fn items(v: Option<&Json>) -> impl Iterator<Item = &Json> {
+    v.and_then(Json::as_array).into_iter().flatten()
+}
+
 /// The objects of an array value.
 fn objects(v: Option<&Json>) -> impl Iterator<Item = &[(String, Json)]> {
-    v.and_then(Json::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Json::as_object)
+    items(v).filter_map(Json::as_object)
 }
 
 /// A texture value as a resource path with its `.png`; None for one outside the pack.
@@ -298,7 +333,7 @@ fn size2(v: Option<&Json>) -> Option<[f32; 2]> {
 
 /// Bakes a part model definition. `top`: a part (its `translate` shifts its content) rather
 /// than a submodel (its `translate` is its pivot). The bone costs one of `bake.left`, which
-/// the caller makes sure is left; each box costs its faces, at least one.
+/// the caller makes sure is left; its boxes and submodels what [`Bake`] says.
 fn bone(def: &(impl Def + ?Sized), size: [f32; 2], top: bool, bake: &mut Bake) -> Bone {
     bake.left -= 1;
     bake.unread |= def.key("texture").is_some() || def.key("sprites").is_some();
@@ -334,8 +369,19 @@ fn bone(def: &(impl Def + ?Sized), size: [f32; 2], top: bool, bake: &mut Bake) -
         size,
         offset,
     };
-    for b in objects(def.key("boxes")) {
+    for b in items(def.key("boxes")) {
         if bake.left == 0 {
+            bake.cut = true;
+            break;
+        }
+        let Some(b) = b.as_object() else {
+            bake.left -= 1;
+            continue;
+        };
+        // Baking a box reads through its keys: it costs them, so junk keys can't be read again
+        // by every entry that inherits the box.
+        if b.len() > bake.left {
+            bake.left = 0;
             bake.cut = true;
             break;
         }
@@ -346,14 +392,18 @@ fn bone(def: &(impl Def + ?Sized), size: [f32; 2], top: bool, bake: &mut Bake) -
             out.quads.truncate(before + bake.left);
             bake.cut = true;
         }
-        bake.left = bake.left.saturating_sub(made.max(1));
+        bake.left = bake.left.saturating_sub(made.max(b.len()).max(1));
     }
-    let one = def.key("submodel").and_then(Json::as_object).into_iter();
-    for sub in one.chain(objects(def.key("submodels"))) {
+    let one = def.key("submodel").filter(|s| s.as_object().is_some());
+    for sub in one.into_iter().chain(items(def.key("submodels"))) {
         if bake.left == 0 {
             bake.cut = true;
             break;
         }
+        let Some(sub) = sub.as_object() else {
+            bake.left -= 1;
+            continue;
+        };
         let mut child = bone(sub, size, false, bake);
         child.pivot = std::array::from_fn(|i| child.pivot[i] + offset[i]);
         out.children.push(child);
@@ -392,7 +442,9 @@ const CORNER: [[bool; 3]; 8] = [
 ];
 
 impl Shape {
+    /// Adds the box's faces to `out`; none when its corners or UVs aren't finite.
     fn bake(&self, b: &[(String, Json)], out: &mut Vec<Quad>) {
+        let start = out.len();
         let Some(c) = nums::<6>(get(b, "coordinates")) else {
             return;
         };
@@ -451,6 +503,10 @@ impl Shape {
                 let [x, y, z] = corner(corners[k]);
                 [x, y, z, uv[k].0 / self.size[0], uv[k].1 / self.size[1]]
             });
+            if vertices.iter().flatten().any(|x| !x.is_finite()) {
+                out.truncate(start);
+                return;
+            }
             let mut normal = *normal;
             if box_mirror {
                 vertices.reverse();
@@ -847,25 +903,52 @@ mod tests {
         // out rather than replacing its vanilla part with nothing.
         let empty = vec!["{}"; MAX_NODES].join(",");
         let model = parse(&format!(
-            r#"{{"models": [{{"part": "body", "submodels": [{empty}]}}, {{"part": "head"}}]}}"#
+            r#"{{"models": [{{"part": "body", "boxes": [{one}], "submodels": [{empty}]}},
+                {{"part": "head"}}]}}"#
         ));
         assert_eq!(model.parts.len(), 1);
-        assert_eq!(model.parts[0].bone.children.len(), MAX_NODES - 1);
+        let children = model.parts[0].bone.children.len();
+        assert!(children > 0 && children < MAX_NODES, "{children}");
         assert_eq!(model.warnings.len(), 1);
-        // Boxes without faces count, so they can't multiply for free either.
+        // Boxes without faces count, and so do items that aren't boxes; a part they cut down to
+        // nothing is left out too.
+        for junk in ["{}", "0", r#"{"a": 1, "b": 2}"#] {
+            let model = parse(&format!(
+                r#"{{"models": [{{"part": "body", "boxes": [{}, {one}]}}, {{"part": "head"}}]}}"#,
+                vec![junk; MAX_NODES].join(",")
+            ));
+            assert!(model.parts.is_empty(), "{junk}: {:?}", model.parts);
+            assert_eq!(model.warnings.len(), 1, "{junk}");
+        }
+        // So do submodels that aren't objects.
         let model = parse(&format!(
-            r#"{{"models": [{{"part": "body", "boxes": [{}]}}, {{"part": "head"}}]}}"#,
-            vec!["{}"; MAX_NODES].join(",")
+            r#"{{"models": [{{"part": "body", "submodels": [{}, {{"boxes": [{one}]}}]}}]}}"#,
+            vec!["[]"; MAX_NODES].join(",")
         ));
-        assert_eq!(model.parts.len(), 1);
-        assert_eq!(model.warnings.len(), 1);
-        // Animations: a part whose list doesn't fit what is left gets none.
-        let pairs = vec![r#""var.a": "1""#; MAX_NODES].join(",");
+        assert!(model.parts.is_empty(), "{:?}", model.parts);
+        // A box's keys cost even when it has no faces, so one of junk keys spends what is left
+        // and isn't read again by the entries that inherit it.
+        let keys: Vec<String> = (0..MAX_NODES).map(|i| format!(r#""k{i}": 0"#)).collect();
         let model = parse(&format!(
-            r#"{{"models": [{{"part": "body", "animations": [{{{pairs}}}]}}]}}"#
+            r#"{{"models": [{{"id": "a", "boxes": [{{{}}}]}}, {{"part": "head", "baseId": "a"}},
+                {{"part": "body", "boxes": [{one}]}}]}}"#,
+            keys.join(",")
         ));
-        assert!(model.parts[0].animations.is_empty());
+        assert!(model.parts.is_empty(), "{:?}", model.parts);
         assert_eq!(model.warnings.len(), 1);
+        // Animations: an entry whose list doesn't fit what is left is left out whole, before it
+        // spends anything, rather than drawn frozen. Pairs skipped as not scalar count too.
+        for pair in [r#""var.a": "1""#, r#""var.a": [1]"#] {
+            let pairs = vec![pair; MAX_NODES].join(",");
+            let model = parse(&format!(
+                r#"{{"models": [{{"part": "body", "boxes": [{one}], "animations": [{{{pairs}}}]}},
+                    {{"part": "head", "boxes": [{one}]}}]}}"#
+            ));
+            let names: Vec<&str> = model.parts.iter().map(|p| p.part.as_str()).collect();
+            assert_eq!(names, ["head"], "{pair}");
+            assert_eq!(model.parts[0].bone.quads.len(), 6);
+            assert_eq!(model.warnings.len(), 1);
+        }
         // Entries count whether or not they name a part.
         let ids = vec![r#"{"id": "x"}"#; MAX_ENTRIES].join(",");
         let model = parse(&format!(r#"{{"models": [{ids}, {{"part": "late"}}]}}"#));
@@ -876,7 +959,7 @@ mod tests {
     #[test]
     fn the_last_nodes_still_take_a_box_and_using_them_all_is_no_cut() {
         // The first part spends all but `left`: itself and its empty submodels. The second
-        // costs one, then its box.
+        // costs one, then its box: one face and two keys cost two.
         let after = |left: usize, faces: &str| {
             let empty = vec!["{}"; MAX_NODES - left - 1].join(",");
             parse(&format!(
@@ -884,20 +967,63 @@ mod tests {
                     {{"part": "head", "boxes": [{{"coordinates": [0, 0, 0, 1, 1, 1], {faces}}}]}}]}}"#
             ))
         };
-        // One face, with 2 left: it fits exactly.
-        let model = after(2, r#""uvUp": [0, 0, 1, 1]"#);
+        // One face, with 3 left: it fits exactly.
+        let model = after(3, r#""uvUp": [0, 0, 1, 1]"#);
         assert_eq!(model.parts[1].bone.quads.len(), 1);
         assert!(model.warnings.is_empty(), "{:?}", model.warnings);
         // Six faces with 4 left: the part keeps three of them.
         let model = after(4, r#""textureOffset": [0, 0]"#);
         assert_eq!(model.parts[1].bone.quads.len(), 3);
         assert_eq!(model.warnings.len(), 1);
+        // With 1 left the bone takes it and its box is cut: the part is left out, not emptied.
+        let model = after(1, r#""textureOffset": [0, 0]"#);
+        let names: Vec<&str> = model.parts.iter().map(|p| p.part.as_str()).collect();
+        assert_eq!(names, ["body"]);
+        assert_eq!(model.warnings.len(), 1);
+    }
+
+    #[test]
+    fn a_key_repeated_in_an_entry_takes_its_last_value() {
+        let model = parse(
+            r#"{"models": [{"part": "head", "textureSize": [16, 16], "textureSize": [32, 32],
+                "boxes": [{"coordinates": [0, 0, 0, 1, 1, 1], "uvUp": [0, 0, 1, 1]}]}]}"#,
+        );
+        let max_u = model.parts[0].bone.quads[0]
+            .vertices
+            .iter()
+            .map(|v| v[3])
+            .fold(0.0, f32::max);
+        assert_eq!(max_u, 1.0 / 32.0);
+    }
+
+    #[test]
+    fn boxes_off_the_numbers_are_skipped() {
+        // The first box's corners overflow, the second's UVs (u runs to twice its depth).
+        let model = parse(
+            r#"{"models": [{"part": "head", "boxes": [
+                {"coordinates": [3e38, 0, 0, 3e38, 1, 1], "textureOffset": [0, 0]},
+                {"coordinates": [0, 0, 0, 1, 1, 3e38], "textureOffset": [0, 0]},
+                {"coordinates": [0, 0, 0, 1, 1, 1], "textureOffset": [0, 0]}]}]}"#,
+        );
+        let quads = &model.parts[0].bone.quads;
+        assert_eq!(quads.len(), 6);
+        assert!(
+            quads
+                .iter()
+                .flat_map(|q| q.vertices)
+                .flatten()
+                .all(f32::is_finite)
+        );
     }
 
     #[test]
     fn files_over_the_byte_limit() {
-        let big = " ".repeat(MAX_BYTES + 1);
-        assert!(parse_jem(JEM, &big, &mut |_| None).is_err());
+        // Valid JSON, so only its size can refuse it.
+        let padded = |json: &str, len: usize| format!("{json}{}", " ".repeat(len - json.len()));
+        let big = padded(r#"{"models": []}"#, MAX_BYTES + 1);
+        let err = parse_jem(JEM, &big, &mut |_| None).unwrap_err();
+        assert!(err.contains("larger"), "{err}");
+        let big = padded("{}", MAX_BYTES + 1);
         let model = parse_jem(
             JEM,
             r#"{"models": [{"part": "head", "model": "big.jpm"}, {"part": "body"}]}"#,
@@ -906,6 +1032,23 @@ mod tests {
         .unwrap();
         assert_eq!(model.parts.len(), 1);
         assert_eq!(model.parts[0].part, "body");
+        assert_eq!(model.warnings.len(), 1);
+        assert!(model.warnings[0].contains("larger"), "{:?}", model.warnings);
+        // The files count together: two that fit alone don't fit both, and one read again from
+        // the cache counts once.
+        let half = padded(
+            r#"{"boxes": [{"coordinates": [0, 0, 0, 1, 1, 1], "textureOffset": [0, 0]}]}"#,
+            MAX_BYTES / 2 + 1,
+        );
+        let model = parse_jem(
+            JEM,
+            r#"{"models": [{"part": "head", "model": "a.jpm"}, {"part": "body", "model": "b.jpm"},
+                {"part": "tail", "model": "a.jpm"}]}"#,
+            &mut |_| Some(half.clone()),
+        )
+        .unwrap();
+        let names: Vec<&str> = model.parts.iter().map(|p| p.part.as_str()).collect();
+        assert_eq!(names, ["head", "tail"]);
         assert_eq!(model.warnings.len(), 1);
         assert!(model.warnings[0].contains("larger"), "{:?}", model.warnings);
     }
