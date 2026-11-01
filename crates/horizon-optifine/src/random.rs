@@ -28,7 +28,8 @@ pub struct Facts<'a> {
     /// Where the entity was first seen: its biome (`minecraft:plains`) and block height.
     pub biome: Option<&'a str>,
     pub y: Option<i32>,
-    /// The block it stood on and the block it stood in when first seen (ETF checks both).
+    /// The block it stood on and the block it stood in when first seen (ETF checks both); empty
+    /// when unknown, which fails a `blocks` rule.
     pub blocks: &'a [Block<'a>],
     /// Its custom name, with `§` formatting codes where the name has them (rules may ask for
     /// `\u00a74Pinky`).
