@@ -1041,6 +1041,9 @@ pub struct ArmorStand {
     /// rides, which seats it every tick (`positionRider`), as NPC plugins hang
     /// a second name over a player's head.
     pub vehicle: Option<u32>,
+    /// `ArmorStand.disabledSlots`: bit `filterFlag` locks a slot, bit
+    /// `filterFlag + 8` takes from it and bit `filterFlag + 16` puts into it.
+    pub disabled_slots: i32,
 }
 impl ArmorStand {
     pub const SLOTS: [&'static str; 6] = ["mainhand", "offhand", "feet", "legs", "chest", "head"];
@@ -1076,7 +1079,28 @@ impl ArmorStand {
             last_hit: i64::MIN / 2,
             pose: Self::DEFAULT_POSE,
             vehicle: None,
+            disabled_slots: 0,
         }
+    }
+    /// `EquipmentSlot.getFilterFlag` of an `equipment` index (main hand, off
+    /// hand, feet, legs, chest, head).
+    fn filter_flag(slot: usize) -> u32 {
+        [0, 5, 1, 2, 3, 4][slot]
+    }
+    /// `ArmorStand.isDisabled`: the slot is locked, or it is a hand and the
+    /// stand has no arms.
+    pub fn is_disabled(&self, slot: usize) -> bool {
+        self.disabled_slots & (1 << Self::filter_flag(slot)) != 0 || (slot < 2 && !self.show_arms)
+    }
+    /// The `swapItem` locks: taking from a filled slot or putting into an
+    /// empty one can each be disabled.
+    pub fn swap_locked(&self, slot: usize) -> bool {
+        let offset = if self.equipment[slot].is_some() {
+            8
+        } else {
+            16
+        };
+        self.disabled_slots & (1 << (Self::filter_flag(slot) + offset)) != 0
     }
     pub fn environment_tick(
         &mut self,
