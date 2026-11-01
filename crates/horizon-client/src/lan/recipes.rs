@@ -8,6 +8,7 @@ use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
+    sync::{Arc, Mutex},
 };
 
 /// RecipeManager.RECIPE_PROPERTY_SETS: each set and the ingredients it takes
@@ -166,4 +167,133 @@ pub fn update_recipes(
         w.varint(0); // nor removed
     }
     w.data
+}
+
+/// The Horizon channel a server sends its clients the recipes its native mods
+/// asked for (`native_datapack_sync`), NeoForge's
+/// `OnDatapackSyncEvent.sendRecipes`. Horizon clients only.
+pub const CONTENT_CHANNEL: &str = "horizon:recipe_content";
+/// `ClientboundCustomPayloadPacket`'s cap on a payload, less room for the
+/// envelope.
+const CONTENT_MAX: usize = 1_048_576 - 1024;
+
+/// One payload of the recipe content: some recipes as `(id, json)`, and on the
+/// last one the recipe types they replace on the client (a type the server has
+/// no recipe of still empties the client's).
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ContentPart {
+    pub recipes: Vec<(String, Value)>,
+    pub last: Option<Vec<String>>,
+}
+
+/// The payloads for `types`' recipes among `sources` (`Recipes::sources`,
+/// vanilla's ids bare), ids made whole (`minecraft:<name>`); empty when no
+/// type is asked for. A recipe too big for a payload of its own is left out.
+pub fn encode_content(types: &[String], sources: &[(String, Value)]) -> Vec<Vec<u8>> {
+    if types.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut part: Vec<(String, Value)> = Vec::new();
+    let mut size = 0;
+    for (name, v) in sources {
+        if !types.iter().any(|t| v["type"].as_str() == Some(t)) {
+            continue;
+        }
+        let id = if name.contains(':') {
+            name.clone()
+        } else {
+            format!("minecraft:{name}")
+        };
+        let len = id.len() + v.to_string().len() + 8;
+        if len > CONTENT_MAX {
+            log::warn!("Horizon: recipe {id} is too big to send to clients");
+            continue;
+        }
+        if size + len > CONTENT_MAX {
+            let recipes = std::mem::take(&mut part);
+            out.push(
+                serde_json::to_vec(&ContentPart {
+                    recipes,
+                    last: None,
+                })
+                .unwrap_or_default(),
+            );
+            size = 0;
+        }
+        size += len;
+        part.push((id, v.clone()));
+    }
+    let last = ContentPart {
+        recipes: part,
+        last: Some(types.to_vec()),
+    };
+    out.push(serde_json::to_vec(&last).unwrap_or_default());
+    out
+}
+
+/// What the server sends its Horizon clients now (`set_content`).
+static CONTENT: Mutex<Option<Arc<Vec<Vec<u8>>>>> = Mutex::new(None);
+
+/// The recipe content the server sends from now on, at a join and after a
+/// `/reload` (one server per process, as `lan::sync_data`).
+pub fn set_content(payloads: Vec<Vec<u8>>) {
+    *CONTENT.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(payloads));
+}
+
+/// The payloads to send a Horizon client; none when no mod asked.
+pub fn content() -> Arc<Vec<Vec<u8>>> {
+    CONTENT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod content_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn content_keeps_the_asked_types_and_ends_with_them() {
+        let sources = vec![
+            ("furnace".to_owned(), json!({"type": "minecraft:smelting"})),
+            (
+                "stick".to_owned(),
+                json!({"type": "minecraft:crafting_shaped"}),
+            ),
+            ("mymod:crush".to_owned(), json!({"type": "mymod:crusher"})),
+        ];
+        assert!(encode_content(&[], &sources).is_empty());
+        let types = vec![
+            "minecraft:smelting".to_owned(),
+            "mymod:crusher".to_owned(),
+            "x:none".to_owned(),
+        ];
+        let parts = encode_content(&types, &sources);
+        assert_eq!(parts.len(), 1);
+        let part: ContentPart = serde_json::from_slice(&parts[0]).unwrap();
+        let ids: Vec<&str> = part.recipes.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, ["minecraft:furnace", "mymod:crush"]);
+        assert_eq!(part.last.as_deref(), Some(types.as_slice()));
+    }
+
+    #[test]
+    fn content_splits_under_the_payload_cap() {
+        let big = "x".repeat(300_000);
+        let sources: Vec<_> = (0..10)
+            .map(|i| (format!("m:r{i}"), json!({"type": "m:t", "pad": big})))
+            .collect();
+        let parts = encode_content(&["m:t".to_owned()], &sources);
+        assert!(parts.len() >= 3);
+        let mut n = 0;
+        for (i, p) in parts.iter().enumerate() {
+            assert!(p.len() <= 1_048_576);
+            let part: ContentPart = serde_json::from_slice(p).unwrap();
+            assert_eq!(part.last.is_some(), i + 1 == parts.len());
+            n += part.recipes.len();
+        }
+        assert_eq!(n, 10);
+    }
 }

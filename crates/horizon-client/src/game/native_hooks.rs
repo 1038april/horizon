@@ -1183,6 +1183,28 @@ impl Game<'_> {
     ) {
         let _ = (context, phase, error_text);
     }
+    /// The server is about to send its data to the players (NeoForge's
+    /// `OnDatapackSyncEvent`, its `sendRecipes`): push the recipe types
+    /// (`minecraft:smelting`, `mymod:crusher`) whose recipes your client half
+    /// needs. Horizon sends their final recipes — the world's data packs
+    /// merged, load conditions held — to every Horizon client when it joins
+    /// and again after each `/reload`; a vanilla client is sent nothing new.
+    /// Asked once per load, when the server's data tables are built; push
+    /// nothing and nothing is sent. Server-side (the single player's
+    /// integrated server included). API @API:recipe_sync@.
+    pub(super) fn native_datapack_sync(&mut self, recipe_types: &mut Vec<String>) {
+        let _ = recipe_types;
+    }
+    /// The server's recipes of `recipe_types` arrived (NeoForge's
+    /// `RecipesReceivedEvent`): from now on the recipe helpers
+    /// (`native_recipes`, `native_recipes_of_type`) give the server's recipes
+    /// of those types in place of the window's own, so rebuild what you made
+    /// of them. It comes after a join and after every `/reload` on a server
+    /// whose mods asked for them (`native_datapack_sync`), single player
+    /// included. Client-side. API @API:recipe_sync@.
+    pub(super) fn native_recipes_received(&mut self, recipe_types: &[String]) {
+        let _ = recipe_types;
+    }
     /// The server is about to open its worlds: nothing of the world is
     /// loaded yet (NeoForge's `ServerAboutToStartEvent`, "called before the
     /// server begins loading anything"). Vanilla's `MinecraftServer.loadLevel`
@@ -3477,7 +3499,8 @@ impl Game<'_> {
     /// nobody uses and outside a world. These are the server's table on the
     /// server thread, a dedicated server or a LAN host; a client, the
     /// single-player window included, sees only the content mods' recipes, not
-    /// the world's data packs'. API 36.
+    /// the world's data packs', unless a mod had the server send it the type
+    /// (`native_datapack_sync`). API 36.
     pub(super) fn native_recipes_of_type(&self, kind: &str) -> &[CustomRecipe] {
         if self.outside_world() {
             return &[];

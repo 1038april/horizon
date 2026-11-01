@@ -1309,10 +1309,14 @@ fn matches_all(ingredients: &[Ingredient], stacks: &[&ItemStack]) -> bool {
 }
 impl Recipes {
     pub fn load(root: &Path, items: &Items, overlay: &PackOverlay) -> Result<Self> {
-        let mut crafting = Vec::new();
-        let mut cooking = Vec::new();
-        let mut custom: HashMap<String, Vec<CustomRecipe>> = HashMap::new();
-        let mut meta = HashMap::new();
+        let sources = Self::sources(root, overlay)?;
+        Self::from_sources(root, items, overlay, sources)
+    }
+    /// The recipe files the tables are built from, each id once: vanilla's by
+    /// bare name, then the content mods' as `<ns>:<name>`, the world's packs'
+    /// over them (`overlay`), parsed, and only those whose load conditions
+    /// hold. A server sends some of them to its clients (`recipe_content`).
+    pub fn sources(root: &Path, overlay: &PackOverlay) -> Result<Vec<(String, Value)>> {
         // Vanilla's recipes by bare name, then content mods' as `<ns>:<name>`.
         let mut sources: Vec<(String, Vec<u8>)> = Vec::new();
         // NeoForge's load conditions: `mod_loaded` asks which mods' data is
@@ -1356,6 +1360,7 @@ impl Recipes {
                 None => sources.push((name, bytes)),
             }
         }
+        let mut parsed = Vec::with_capacity(sources.len());
         for (name, bytes) in sources {
             // Vanilla's RecipeManager logs a file that does not parse and
             // goes on ("Couldn't parse data file").
@@ -1373,6 +1378,23 @@ impl Recipes {
             }) {
                 continue;
             }
+            parsed.push((name, v));
+        }
+        Ok(parsed)
+    }
+    /// The tables from `sources` (`Recipes::sources`' shape); `root` and
+    /// `overlay` give the enchantment tags the tables keep.
+    pub fn from_sources(
+        root: &Path,
+        items: &Items,
+        overlay: &PackOverlay,
+        sources: Vec<(String, Value)>,
+    ) -> Result<Self> {
+        let mut crafting = Vec::new();
+        let mut cooking = Vec::new();
+        let mut custom: HashMap<String, Vec<CustomRecipe>> = HashMap::new();
+        let mut meta = HashMap::new();
+        for (name, v) in sources {
             if let Some(kind) = custom_type(&v) {
                 let id = if name.contains(':') {
                     name
