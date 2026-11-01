@@ -7051,7 +7051,6 @@ impl Game<'_> {
         if !shift {
             for key in [KeyCode::ShiftLeft, KeyCode::ShiftRight] {
                 self.physical_keys.remove(&key);
-                self.keys.remove(&key);
             }
         }
         if !control {
