@@ -66,14 +66,33 @@ impl Name {
     }
 }
 
+/// `*` any run, `?` one character, the whole name. Star backtracking: on a mismatch only the
+/// last `*` takes one more character, so it runs in O(pattern × name), whatever the stars (a
+/// name comes from whoever named the item, and this runs per item per frame).
 fn glob(p: &[char], s: &[char]) -> bool {
-    match p.split_first() {
-        None => s.is_empty(),
-        Some(('*', rest)) => (0..=s.len()).any(|i| glob(rest, &s[i..])),
-        Some((&c, rest)) => {
-            s.first().is_some_and(|&first| c == '?' || c == first) && glob(rest, &s[1..])
+    let (mut pi, mut si) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while si < s.len() {
+        match p.get(pi) {
+            Some('*') => {
+                star = Some((pi, si));
+                pi += 1;
+            }
+            Some(&c) if c == '?' || c == s[si] => {
+                pi += 1;
+                si += 1;
+            }
+            _ => match star {
+                Some((sp, ss)) => {
+                    pi = sp + 1;
+                    si = ss + 1;
+                    star = Some((sp, ss + 1));
+                }
+                None => return false,
+            },
         }
     }
+    p[pi..].iter().all(|&c| c == '*')
 }
 
 /// `1 3-5 8-`, separated by spaces or commas; a negative bound is written in parentheses:
@@ -223,6 +242,13 @@ mod tests {
         assert!(!m("regex:Bob|Alice", "Alice2"));
         assert!(m("iregex:j(eb)_", "JEB_"));
         assert!(Name::parse("regex:(").is_none());
+        assert!(m("pattern:a*b*c", "aXbYc"));
+        assert!(!m("pattern:a*b*c", "aXbY"));
+        assert!(m("pattern:**", ""));
+        assert!(!m("pattern:?", ""));
+        // Many stars against a long name that never matches: linear, not exponential.
+        let long = "a".repeat(5000);
+        assert!(!m(&format!("pattern:{}b", "*a".repeat(20)), &long));
     }
 
     #[test]
