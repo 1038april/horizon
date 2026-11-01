@@ -4503,7 +4503,7 @@ mod mod_thrown_nbt_tests {
         let item = tag.get("Item").and_then(item_from_nbt).unwrap();
         assert_eq!(&*item.item, "ruby:gem");
         let back = throwable_from_nbt(&tag, None).unwrap();
-        assert_eq!((back.kind, back.velocity), (p.kind, p.velocity));
+        assert_eq!((&back.kind, back.velocity), (&p.kind, p.velocity));
         // NoGravity comes back too, as for vanilla's (a summoned bolt that floats).
         p.no_gravity = true;
         let tag = throwable_to_nbt(&p, [1; 4], None, None).unwrap();
