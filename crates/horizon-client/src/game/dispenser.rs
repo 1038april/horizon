@@ -90,9 +90,13 @@ fn shrink(mut stack: ItemStack) -> Option<ItemStack> {
 /// A dispenser's answer: the slot's new content and the level event played.
 type Dispensed = (Option<ItemStack>, i32);
 
+/// A dispenser hook's answer: the slot's remainder (None empties it) and the
+/// level event to play, `CLICK` (1000), `FAIL` (1001) or 0 for none.
+pub(super) type NativeDispensed = (Option<ItemStack>, i32);
+
 /// None keeps vanilla's behaviour; an explicit empty remainder consumes the stack.
-fn mod_dispensed(answer: Option<Option<ItemStack>>) -> Option<Dispensed> {
-    answer.map(|left| (left.filter(|stack| stack.count > 0), CLICK))
+fn mod_dispensed(answer: Option<NativeDispensed>) -> Option<Dispensed> {
+    answer.map(|(left, event)| (left.filter(|stack| stack.count > 0), event))
 }
 
 thread_local! {
@@ -501,8 +505,9 @@ impl Game<'_> {
         (stack.count > 0).then_some(stack)
     }
     /// Drop one item as DefaultDispenseItemBehavior does. For a dispenser hook:
-    /// return this remainder in its answer; the caller emits the click and smoke once.
-    /// A client, another dimension or an unloaded chunk keeps the input stack unchanged.
+    /// return this remainder in its answer with `CLICK`; the caller plays the
+    /// answer's event and smoke once. A client, another dimension or an unloaded
+    /// chunk keeps the input stack unchanged. API @API:dispenser_behaviour@.
     #[allow(dead_code)]
     pub(super) fn native_dispense_default(
         &mut self,
@@ -622,8 +627,12 @@ impl Game<'_> {
             );
         }
         if let Some((left, event)) = mod_dispensed(answer) {
-            self.dispenser_event(event, pos, 0);
-            self.dispenser_event(2000, pos, data_value(facing));
+            // DefaultDispenseItemBehavior.dispense: playSound, then playAnimation;
+            // a NOOP behaviour (event 0) plays neither.
+            if event != 0 {
+                self.dispenser_event(event, pos, 0);
+                self.dispenser_event(2000, pos, data_value(facing));
+            }
             return Ok(left);
         }
         let item = stack.item.to_string();
@@ -2201,16 +2210,16 @@ mod tests {
             mod_dispensed(None).is_none(),
             "no registered behaviour keeps vanilla"
         );
-        assert_eq!(mod_dispensed(Some(None)), Some((None, CLICK)));
+        assert_eq!(mod_dispensed(Some((None, CLICK))), Some((None, CLICK)));
         let stack = ItemStack::new("minecraft:stone", 7);
-        let Some((Some(left), event)) = mod_dispensed(Some(Some(stack.clone()))) else {
+        let Some((Some(left), event)) = mod_dispensed(Some((Some(stack.clone()), FAIL))) else {
             panic!("handled stack")
         };
         assert_eq!(left, stack, "the returned remainder is not consumed again");
-        assert_eq!(event, CLICK);
+        assert_eq!(event, FAIL, "the answer chooses its sound");
         assert_eq!(
-            mod_dispensed(Some(Some(ItemStack { count: 0, ..stack }))),
-            Some((None, CLICK))
+            mod_dispensed(Some((Some(ItemStack { count: 0, ..stack }), 0))),
+            Some((None, 0))
         );
     }
 }
