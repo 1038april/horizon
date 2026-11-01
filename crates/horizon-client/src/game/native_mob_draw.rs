@@ -10,7 +10,7 @@ use glam::{DVec3, Mat4};
 use horizon_client::{
     block_entity_render::diffuse_lights,
     mesher::Vertex,
-    mobs::{Mob, living::wrap},
+    mobs::{Mob, anim, living::wrap},
 };
 
 /// One mob's frame, as `EntityRenderer.extractRenderState` fills a
@@ -54,21 +54,22 @@ impl<'a> NativeMobRender<'a> {
     /// The render state of `m` at `partial` (`LivingEntityRenderer.extractRenderState`).
     pub(super) fn of(m: &'a Mob, partial: f32) -> Self {
         let body = m.previous_body_yaw + wrap(m.body_yaw - m.previous_body_yaw) * partial;
-        let head = m.previous_head_yaw + wrap(m.head_yaw - m.previous_head_yaw) * partial;
-        // WalkAnimationState.speed(partial) and position(partial).
-        let walk_speed = m.previous_limb_speed + (m.limb_speed - m.previous_limb_speed) * partial;
+        // The walk cycle, head turn and age as the vanilla models read them:
+        // no walking while riding or dead, a baby's legs three times as far
+        // (`WalkAnimationState.position(partial)`, `positionScale`).
+        let pose = anim::state(m, partial);
         Self {
             id: m.id,
             kind: &m.kind.id,
             custom_name: m.custom_name.as_deref(),
             baby: m.is_baby(),
             partial,
-            age: m.age as f32 + partial,
+            age: pose.age,
             body_yaw: body,
-            head_yaw: wrap(head - body),
-            pitch: m.previous_head_pitch + (m.head_pitch - m.previous_head_pitch) * partial,
-            walk_position: m.limb_position - m.limb_speed * (1.0 - partial),
-            walk_speed: walk_speed.min(1.0),
+            head_yaw: pose.y_rot,
+            pitch: pose.x_rot,
+            walk_position: pose.pos,
+            walk_speed: pose.speed,
             hurt_time: m.hurt_time,
             death_time: m.death_time,
             on_ground: m.on_ground,
