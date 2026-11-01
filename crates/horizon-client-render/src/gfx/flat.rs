@@ -62,6 +62,9 @@ pub struct Call {
 }
 
 pub struct Flat {
+    /// The solid draws in one pass (`fs_solid`), where the GPU doesn't hide pixels
+    /// by tiles (`split_solid` in `Renderer::draw_frame`: elsewhere than Metal).
+    pub solid: wgpu::RenderPipeline,
     /// The solid draws in two passes over the same draws (terrain.wgsl's `opaque_quad`):
     /// the quads with no cutout first, through a shader that never discards, then the rest.
     pub solid_opaque: wgpu::RenderPipeline,
@@ -358,6 +361,14 @@ impl Flat {
         let storage_usage = wgpu::BufferUsages::STORAGE;
         let back = Some(wgpu::Face::Back);
         Self {
+            solid: pipeline(
+                &layout,
+                "Terrain solid (flat)",
+                "vs_terrain_flat",
+                "fs_solid",
+                None,
+                back,
+            ),
             solid_opaque: pipeline(
                 &layout,
                 "Terrain solid opaque (flat)",

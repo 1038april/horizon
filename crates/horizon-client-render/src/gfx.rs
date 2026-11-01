@@ -6319,6 +6319,10 @@ impl Renderer {
             .filter(|_| !frame.title)
             .and_then(|n| Some((n.material.as_ref()?, &n.frame.group)));
         let solid_pipeline = material.map_or(&self.solid, |(m, _)| &m.solid);
+        // Two solid passes only where a discard costs the GPU its hidden surface
+        // removal: Apple's tiled GPUs, behind Metal. Elsewhere the second pass
+        // would double the solid draw calls and vertex work for nothing.
+        let split_solid = self.info.backend == wgpu::Backend::Metal;
         let translucent_pipeline = material.map_or(&self.translucent, |(m, _)| &m.translucent);
         let pack_flat = material.and_then(|(m, _)| m.flat.as_ref());
         // A material stage's translucent pass reads a copy of the depth the solid terrain
@@ -6424,11 +6428,12 @@ impl Renderer {
                 }
                 Some(flat) => {
                     let vertices = |p| self.arena.buffer(p);
-                    // Without a pack, each list draws twice: the opaque pass,
-                    // then the cutout one (terrain.wgsl's `opaque_quad`).
+                    // Without a pack, on Metal, each list draws twice: the opaque
+                    // pass, then the cutout one (terrain.wgsl's `opaque_quad`).
                     let passes: &[&wgpu::RenderPipeline] = match pack_flat {
                         Some(p) => &[&p.0],
-                        None => &[&flat.solid_opaque, &flat.solid_cutout],
+                        None if split_solid => &[&flat.solid_opaque, &flat.solid_cutout],
+                        None => &[&flat.solid],
                     };
                     let draw = |pass: &mut wgpu::RenderPass<'_>, calls: &[flat::Call]| {
                         for &pipeline in passes {
@@ -6466,11 +6471,11 @@ impl Renderer {
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                 }
                 None => {
-                    // Without a native material, each list draws twice: the
-                    // opaque pass, then the cutout one (terrain.wgsl's `opaque_quad`).
+                    // Without a native material, on Metal, each list draws twice:
+                    // the opaque pass, then the cutout one (terrain.wgsl's `opaque_quad`).
                     let passes: &[&wgpu::RenderPipeline] = match material {
-                        Some(_) => &[solid_pipeline],
-                        None => &[&self.solid_opaque, &self.solid_cutout],
+                        None if split_solid => &[&self.solid_opaque, &self.solid_cutout],
+                        _ => &[solid_pipeline],
                     };
                     pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
                     pass.set_vertex_buffer(1, self.instances.slice(..));
