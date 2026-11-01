@@ -1139,41 +1139,76 @@ impl SecretStore for Layered {
     }
 }
 
-/// Linux and FreeBSD: the Secret Service with the secrets file beside it ([`Layered`], #5095).
-/// macOS and Windows: the keychain if it answers. Memory with `HORIZON_NO_KEYCHAIN` (the launcher's
-/// own tests) or no keychain on macOS and Windows (said in the UI with [`no_keychain`]).
+/// The OS keychain if it answers, else why not.
+fn keychain_or_why() -> Result<Box<dyn SecretStore>, String> {
+    // Unit tests never reach the player's keychain.
+    #[cfg(all(
+        not(test),
+        any(
+            target_os = "linux",
+            target_os = "freebsd",
+            target_os = "macos",
+            target_os = "windows"
+        )
+    ))]
+    {
+        if std::env::var_os("HORIZON_NO_KEYCHAIN").is_some() {
+            return Err("HORIZON_NO_KEYCHAIN is set.".into());
+        }
+        SystemStore.get("probe").map(|_| Box::new(SystemStore) as _)
+    }
+    #[cfg(not(all(
+        not(test),
+        any(
+            target_os = "linux",
+            target_os = "freebsd",
+            target_os = "macos",
+            target_os = "windows"
+        )
+    )))]
+    Err("This system has no keychain.".into())
+}
+
+/// Microsoft sign-ins. Linux and FreeBSD: the Secret Service with the secrets file beside it
+/// ([`Layered`], #5095). macOS and Windows: the keychain if it answers. Memory with
+/// `HORIZON_NO_KEYCHAIN` (the launcher's own tests) or no keychain on macOS and Windows (said in the
+/// UI with [`no_keychain`]).
 pub fn store() -> &'static dyn SecretStore {
     static STORE: OnceLock<Box<dyn SecretStore>> = OnceLock::new();
     STORE
         .get_or_init(|| {
-            // Unit tests never reach the player's keychain or data folder.
-            #[cfg(all(
-                not(test),
-                any(
-                    target_os = "linux",
-                    target_os = "freebsd",
-                    target_os = "macos",
-                    target_os = "windows"
-                )
-            ))]
-            {
-                let why = match std::env::var_os("HORIZON_NO_KEYCHAIN") {
-                    Some(_) => "HORIZON_NO_KEYCHAIN is set.".to_string(),
-                    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-                    None => {
-                        return Box::new(Layered::new(Box::new(SystemStore), FileStore::launcher()))
-                    }
-                    #[cfg(any(target_os = "macos", target_os = "windows"))]
-                    None => match SystemStore.get("probe") {
-                        Ok(_) => return Box::new(SystemStore),
-                        Err(e) => e,
-                    },
-                };
-                let _ = NO_KEYCHAIN_WHY.set(why);
+            #[cfg(all(not(test), any(target_os = "linux", target_os = "freebsd")))]
+            if std::env::var_os("HORIZON_NO_KEYCHAIN").is_none() {
+                return Box::new(Layered::new(Box::new(SystemStore), FileStore::launcher()));
             }
-            Box::<MemoryStore>::default()
+            keychain_or_why().unwrap_or_else(|why| {
+                let _ = NO_KEYCHAIN_WHY.set(why);
+                Box::<MemoryStore>::default()
+            })
         })
         .as_ref()
+}
+
+/// Secrets never written to a file of the launcher's own, the Tailscale access token (it
+/// administers the player's whole tailnet): the keychain if it answers, else memory for this run.
+/// [`store`] itself on macOS and Windows, where that is what it is.
+pub fn keychain() -> &'static dyn SecretStore {
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    {
+        static KEYCHAIN: OnceLock<Box<dyn SecretStore>> = OnceLock::new();
+        KEYCHAIN
+            .get_or_init(|| keychain_or_why().unwrap_or_else(|_| Box::<MemoryStore>::default()))
+            .as_ref()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+    store()
+}
+
+/// Whether sign-ins sit in the secrets file now, the keychain having refused them (#5095).
+pub fn in_secrets_file() -> bool {
+    cfg!(any(target_os = "linux", target_os = "freebsd"))
+        && store().persistent()
+        && FileStore::launcher().path.exists()
 }
 
 // ----- Accounts ------------------------------------------------------------------------------------

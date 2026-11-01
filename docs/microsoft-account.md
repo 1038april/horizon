@@ -147,7 +147,10 @@ one is selected. "Sign out" deletes the account's secrets from the keychain.
   hands the keychain what the file kept, one secret at a time; what it refuses stays in the file,
   which goes once it is empty. Signing out while the keychain is away leaves an empty entry for the
   account, which hides the keychain's copy until it can be deleted. A broken file is an error naming
-  only its line and column, never what it holds.
+  only its line and column, never what it holds. Only sign-ins go there: the Tailscale access token
+  (Internet servers) administers the player's whole tailnet, so without a keychain it stays in
+  memory for the run (`account::keychain`). MCP's `account_list` says `secrets_file: true` while
+  sign-ins sit in the file.
 - No keychain on macOS or Windows, or `HORIZON_NO_KEYCHAIN` (the launcher's own tests): secrets
   stay in memory for the run, and the launcher says "No keychain available: you are signed in until
   the launcher closes".

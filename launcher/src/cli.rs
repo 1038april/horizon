@@ -109,7 +109,7 @@ enum AccountCmd {
     /// Sign in with a Microsoft account in your browser (device code). Play needs one that owns
     /// Minecraft: Java Edition
     SignIn,
-    /// Sign out: the account's tokens leave the keychain
+    /// Sign out: the account's tokens leave the keychain (and the secrets file, where it kept them)
     SignOut {
         /// Its name or UUID
         who: String,
