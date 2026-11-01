@@ -15,7 +15,7 @@
 //! Written from OptiFine's `random_entities.properties` and ETF's `RANDOM_GUIDE.md` and
 //! `random_entities.properties` docs; no mod's source was read.
 
-use crate::matchers::{BlockMatch, IdList, Name, RangeList, namespaced};
+use crate::matchers::{BlockMatch, Name, RangeList, namespaced};
 use crate::properties::Properties;
 
 /// The most variants one rule lists (`textures.1=1-100000` stays small).
@@ -76,7 +76,8 @@ struct Rule {
     weights: Vec<u32>,
     /// ETF's `seedOffset`: added to the entity's seed.
     seed_offset: i32,
-    biomes: Option<IdList>,
+    /// Ids (`plains`, `mymod:bog`), or ETF's `pattern:`/`regex:` forms; each with `!`.
+    biomes: Vec<(Name, bool)>,
     heights: Option<RangeList>,
     /// Each with whether it is negated (`!`).
     names: Vec<(Name, bool)>,
@@ -173,11 +174,18 @@ impl Rule {
             let mut parts = key.splitn(3, '.');
             let (head, index) = (parts.next(), parts.next());
             index.is_some_and(|i| i.parse::<u32>() == Ok(n))
-                && head.is_some_and(|k| k == "nbt" || !KEYS.contains(&k))
+                && head.is_some_and(|k| !KEYS.contains(&k))
+        });
+        // An empty condition (`biomes.1=`) is as broken as a bad one.
+        let empty = props.entries.iter().any(|(key, value)| {
+            value.is_empty()
+                && key
+                    .split_once('.')
+                    .is_some_and(|(_, i)| i.parse::<u32>() == Ok(n))
         });
         let get = |key: &str| props.get(&format!("{key}.{n}"));
         // ETF's `seedSource`: only the entity's own seed is read.
-        if unsupported || get("seedSource").is_some_and(|v| v != "entity") {
+        if unsupported || empty || get("seedSource").is_some_and(|v| v != "entity") {
             return None;
         }
         // `Some(None)` for a missing key, `None` for one that doesn't parse.
@@ -221,7 +229,23 @@ impl Rule {
             textures,
             weights,
             seed_offset: read(get("seedOffset"), |v| v.parse().ok())?.unwrap_or(0),
-            biomes: get("biomes").map(IdList::parse),
+            biomes: read(get("biomes"), |v| {
+                v.split_whitespace()
+                    .map(|b| {
+                        let (b, negated) = negation(b);
+                        let pattern = ["pattern:", "ipattern:", "regex:", "iregex:"]
+                            .iter()
+                            .any(|p| b.starts_with(p));
+                        let name = if pattern {
+                            Name::parse(b)?
+                        } else {
+                            Name::Exact(namespaced(b))
+                        };
+                        Some((name, negated))
+                    })
+                    .collect()
+            })?
+            .unwrap_or_default(),
             heights,
             names,
             professions: read(get("professions"), parse_professions)?.unwrap_or_default(),
@@ -262,9 +286,12 @@ impl Rule {
             list.as_ref()
                 .is_none_or(|l| fact.is_some_and(|v| l.contains(v)))
         };
-        self.biomes
-            .as_ref()
-            .is_none_or(|l| f.biome.is_some_and(|b| l.matches(b)))
+        (self.biomes.is_empty()
+            || f.biome.is_some_and(|b| {
+                let b = namespaced(b);
+                let path = b.split_once(':').map_or(b.as_str(), |(_, p)| p);
+                included(&self.biomes, |n| n.matches(&b) || n.matches(path))
+            }))
             && ranged(&self.heights, f.y)
             && (self.names.is_empty()
                 || match f.name {
@@ -585,6 +612,29 @@ mod tests {
     }
 
     #[test]
+    fn biome_lists() {
+        let pick = |text: &str, biome| {
+            rules(text).select(
+                &Facts {
+                    biome: Some(biome),
+                    ..Default::default()
+                },
+                0,
+            )
+        };
+        let not_wet = "textures.1=2\nbiomes.1=!ipattern:*OCEAN* !mymod:bog";
+        assert_eq!(pick(not_wet, "minecraft:deep_ocean"), 1);
+        assert_eq!(pick(not_wet, "mymod:bog"), 1);
+        assert_eq!(pick(not_wet, "minecraft:bog"), 2);
+        assert_eq!(pick(not_wet, "plains"), 2);
+        // A pattern matches the id with or without its namespace.
+        let some = "textures.1=2\nbiomes.1=pattern:deep_* Desert";
+        assert_eq!(pick(some, "minecraft:deep_dark"), 2);
+        assert_eq!(pick(some, "desert"), 2);
+        assert_eq!(pick(some, "minecraft:dark_forest"), 1);
+    }
+
+    #[test]
     fn rules_run_in_number_order_with_their_seed_offset() {
         // Written 10 before 9: rule 9 is tried first.
         let r = rules("textures.10=5\ntextures.9=2 3 4\nseedOffset.9=1\n");
@@ -643,13 +693,11 @@ mod tests {
     fn broken_rules_are_skipped() {
         let r = rules(
             "textures.1=abc\nbiomes.1=desert\n\
-             textures.2=2 3\nweights.2=5\n\
              skins.7=1-100000\n\
-             textures.8=2\nweights.8=0\n\
              textures.9=2000000000\n",
         );
-        assert_eq!(r.rules.len(), 3, "rules 1 and 9 list no usable textures");
-        assert_eq!(r.rules[1].textures.len(), MAX_TEXTURES);
+        assert_eq!(r.rules.len(), 1, "rules 1 and 9 list no usable textures");
+        assert_eq!(r.rules[0].textures.len(), MAX_TEXTURES);
         assert!(r.max_texture() <= MAX_INDEX);
         // One weight for two textures, or only zeros: an even choice.
         for weights in ["5", "0 0"] {
@@ -674,6 +722,9 @@ mod tests {
             "nbt.1.CustomName=Bob",
             "teams.1=red",
             "seedSource.1=vehicle",
+            "biomes.1=",
+            "names.1=",
+            "biomes.1=regex:(",
         ] {
             let r = rules(&format!("textures.1=2\n{rule}\ntextures.2=3"));
             assert_eq!(r.select(&Facts::default(), 0), 3, "{rule}");
