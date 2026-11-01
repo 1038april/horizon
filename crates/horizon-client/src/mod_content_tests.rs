@@ -87,6 +87,7 @@ fn creative_tabs_keep_vanilla_items_missing_from_search() {
         items: Vec::new(),
         vanilla_items: tab.items.iter().cloned().collect(),
         effects: Vec::new(),
+        entity_types: Vec::new(),
         states: 0,
         defaults: BTreeMap::new(),
         sounds: BTreeMap::new(),
@@ -1367,6 +1368,57 @@ fn content_root_with_only_an_item_checks_its_identity() {
         crate::content_identity::identity(&root).unwrap(),
         crate::content_identity::identity(&base).unwrap()
     );
+    fs::remove_dir_all(&scratch).unwrap();
+}
+
+/// a mod's thrown entity type gets the network id after vanilla's last, the
+/// commands accept it, and it changes the content identity.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn content_root_registers_a_mod_entity_type() {
+    let Some(base) = prepared() else {
+        return;
+    };
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-entity-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let m = folder_mod(
+        &scratch.join("example"),
+        &[
+            ("horizon-mod.toml", &manifest("example", "")),
+            (
+                "data/example/horizon/item/gem.json",
+                r#"{"template": "minecraft:snowball"}"#,
+            ),
+            (
+                "data/example/horizon/entity_type/bolt.json",
+                r#"{"template": "minecraft:snowball", "item": "example:gem", "damage": 2}"#,
+            ),
+        ],
+    );
+    let root = resource_root(&base, std::slice::from_ref(&m), &scratch.join("cache")).unwrap();
+    let report = |root: &Path| {
+        horizon_protocol::registry::Builtin::load(&root.join("registries.json")).unwrap()
+    };
+    let (vanilla, ids) = (report(&base), report(&root));
+    let vanilla = vanilla.get("minecraft:entity_type").unwrap();
+    let ids = ids.get("minecraft:entity_type").unwrap();
+    let count = (0..).take_while(|&i| vanilla.name(i).is_some()).count() as i32;
+    assert_eq!(ids.id("example:bolt"), Some(count));
+    assert_eq!(
+        ids.id("minecraft:snowball"),
+        vanilla.id("minecraft:snowball")
+    );
+    let commands: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("command-registries.json")).unwrap()).unwrap();
+    for ids in [
+        &commands["entity_types"],
+        &commands["by_registry"]["minecraft:entity_type"]["ids"],
+    ] {
+        assert!(ids.as_array().unwrap().contains(&"example:bolt".into()));
+    }
+    assert!(root.join(crate::content_identity::MARKER).exists());
+    let identity = crate::content_identity::identity;
+    assert_ne!(identity(&root).unwrap(), identity(&base).unwrap());
     fs::remove_dir_all(&scratch).unwrap();
 }
 
