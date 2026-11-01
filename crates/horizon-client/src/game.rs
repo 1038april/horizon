@@ -15903,6 +15903,7 @@ impl Game<'_> {
                     return Ok(());
                 }
             }
+            self.key_focus_mouse_press(&event);
             match event {
                 WindowEvent::CloseRequested => {
                     if !self.settings.quit_shortcuts
