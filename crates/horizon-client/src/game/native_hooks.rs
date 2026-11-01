@@ -1710,7 +1710,7 @@ impl Game<'_> {
         let _ = (screen, key, repeat, modifiers, canceled);
     }
     /// Before an open screen handles a named key's release (same screen gate as key presses).
-    /// Cancel bypasses screen handling; physical keys and mapped hold/toggle state still release.
+    /// Cancel bypasses screen handling; physical keys and mapped keyboard hold/toggle state release.
     pub(super) fn native_screen_key_released_pre(
         &self,
         screen: &NativeScreenView<'_>,
