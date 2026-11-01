@@ -142,7 +142,7 @@ pub use interact::{InteractionResult, PlayerContext, PlayerEffect, UseBranch, hi
 pub use pistons::{BlockEventData, MovingPiston};
 pub use place::{PlaceContext, PlaceOutcome};
 pub use states::{BlockId, PropKey, StateTable};
-pub use tick::{Precipitation, PrecipitationKind};
+pub use tick::{Precipitation, PrecipitationKind, RandomTickMask};
 pub use ticks::Ticks;
 
 /// `Block.UPDATE_*` flags accepted by [`Behaviours::set_block`].
@@ -508,6 +508,23 @@ pub trait LevelAccess {
     /// `BlockState.isSignalSource` once the library answered `vanilla`: the
     /// answer to use. The default keeps it.
     fn adjust_signal_source(&self, _state: BlockStateId, vanilla: bool) -> bool {
+        vanilla
+    }
+    /// `BlockState.hasAnalogOutputSignal` once the library answered `vanilla`:
+    /// whether comparators read the block. The default keeps it.
+    fn adjust_has_analog_output(&self, _state: BlockStateId, vanilla: bool) -> bool {
+        vanilla
+    }
+    /// `BlockState.getAnalogOutputSignal(level, pos, direction)` once the
+    /// library answered `vanilla`, `direction` pointing from the block to the
+    /// comparator reading it: the output to use. The default keeps it.
+    fn adjust_analog_output(
+        &self,
+        _pos: BlockPos,
+        _state: BlockStateId,
+        _direction: Direction,
+        vanilla: i32,
+    ) -> i32 {
         vanilla
     }
     /// `BlockState.getSignal` (or `getDirectSignal` when `direct`) once the
