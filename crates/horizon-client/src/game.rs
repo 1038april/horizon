@@ -14292,6 +14292,8 @@ impl Game<'_> {
         });
     }
     fn render(&mut self) -> Result<bool> {
+        // Before any text of this frame: a full glyph region starts over.
+        self.gui.atlas.font.begin_frame();
         self.glint_frame = self.capture_glint_frame();
         if self.renderer.as_mut().is_some_and(|r| r.display_changed()) {
             self.apply_ui_settings();
