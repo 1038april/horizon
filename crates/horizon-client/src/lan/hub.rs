@@ -3289,6 +3289,10 @@ impl Hub {
             return;
         };
         g.flying_speed = speed;
+        // The server's copy of the body, which the movement replay reads.
+        if let Some(motion) = g.motion.as_mut() {
+            motion.flying_speed = speed;
+        }
         g.send(&g.abilities());
     }
 

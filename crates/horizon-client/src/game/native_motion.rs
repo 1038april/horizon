@@ -42,7 +42,8 @@ impl Game<'_> {
     /// For a server mod: `player`'s creative flying speed (vanilla's 0.05 when none, at most `FLYING_MAX`), kept on
     /// the server's player and sent to their client. A respawn or a game mode change keeps it, and it is saved
     /// with the player (`abilities.flySpeed`, as vanilla saves it). False for a player not here or a client of a
-    /// server. API @API:native_motion@.
+    /// server, and inside a player's hook, where the server's player list is busy: call it from a tick hook.
+    /// API @API:native_motion@.
     pub(super) fn native_set_flying_speed(&mut self, player: u128, speed: Option<f32>) -> bool {
         let speed = speed
             .filter(|s| s.is_finite())
