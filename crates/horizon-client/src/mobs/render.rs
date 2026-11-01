@@ -512,7 +512,13 @@ pub fn body_color(m: &Mob, alpha: f32) -> u32 {
     match m.species() {
         Species::Wolf => super::tame::tint(m, alpha),
         Species::TropicalFish => abgr(DYE[m.extra.variant2 as usize & 15]),
-        _ => 0xFFFF_FFFF,
+        _ => {
+            if avatar(m) && m.extra.spectator {
+                0x20FF_FFFF
+            } else {
+                0xFFFF_FFFF
+            }
+        }
     }
 }
 /// Extra render layers drawn over the body with the same pose. `age` is the
