@@ -1182,6 +1182,8 @@ struct Keychain {
     prompt: Mutex<()>,
     /// Calls that reached it: each one could have been a prompt.
     asked: std::sync::atomic::AtomicUsize,
+    /// Run once, right after the next call it didn't answer.
+    after_away: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl Keychain {
@@ -1189,6 +1191,9 @@ impl Keychain {
         self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         drop(self.prompt.lock().unwrap());
         if self.away.load(std::sync::atomic::Ordering::Relaxed) {
+            if let Some(then) = self.after_away.lock().unwrap().take() {
+                then();
+            }
             return Err("The name org.freedesktop.secrets was not provided".into());
         }
         Ok(())
@@ -1305,6 +1310,28 @@ fn launchers_started_on_an_old_file_find_it_after_another_hands_it_over() {
     // Both running launchers still read A.
     assert_eq!(read_before.get("A").unwrap(), Some("secret-a".into()));
     assert_eq!(never_read.get("A").unwrap(), Some("secret-a".into()));
+    remove_secrets_dir(&path);
+}
+
+#[test]
+fn a_hand_over_by_another_process_right_after_a_start_missed_the_keychain() {
+    let path = secrets_file("inherited-race");
+    FileStore::new(path.clone()).set("A", "secret-a").unwrap();
+    let keychain = Arc::new(Keychain::default());
+    keychain.set_away(true);
+    // The moment this start's hand-over fails, the keychain is back and another process hands A
+    // over (the keychain takes it, the file lets it go), before this start has done anything else.
+    *keychain.after_away.lock().unwrap() = Some(Box::new({
+        let (keychain, path) = (keychain.clone(), path.clone());
+        move || {
+            keychain.set_away(false);
+            keychain.kept.set("A", "secret-a").unwrap();
+            FileStore::new(path).delete("A").unwrap();
+        }
+    }));
+    let started = launcher_with(&keychain, &path);
+    assert!(!path.exists());
+    assert_eq!(started.get("A").unwrap(), Some("secret-a".into()));
     remove_secrets_dir(&path);
 }
 

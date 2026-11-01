@@ -1132,8 +1132,9 @@ pub struct Layered {
     keychain: Box<dyn SecretStore>,
     file: FileStore,
     away: std::sync::atomic::AtomicBool,
-    /// What this run saw in the file: put there, read there, or left there by its start's
-    /// hand-over. Gone from the file later, the keychain answers again (another process handed it).
+    /// What this run saw in the file and didn't hand over itself: put there, read there, or there
+    /// when it started. Gone from the file later, the keychain answers again (another process
+    /// handed it).
     parked: Mutex<std::collections::HashSet<String>>,
 }
 
@@ -1148,7 +1149,16 @@ impl Layered {
             away: Default::default(),
             parked: Default::default(),
         };
-        for key in layered.file.entries().unwrap_or_default().into_keys() {
+        let keys: Vec<String> = layered
+            .file
+            .entries()
+            .unwrap_or_default()
+            .into_keys()
+            .collect();
+        // Seen before the hand-over starts: whatever another process hands over meanwhile, this
+        // run asks the keychain for it again.
+        layered.parked.lock().unwrap().extend(keys.iter().cloned());
+        for key in keys {
             let handed = layered.keychain_writes(|| {
                 let Some(secret) = layered.file.entry(&key)? else {
                     return Ok(());
@@ -1157,15 +1167,12 @@ impl Layered {
                     SIGNED_OUT => keychain.delete(&key),
                     _ => keychain.set(&key, &secret),
                 })?;
-                layered.file.take_unchanged(&[(key.clone(), secret)])
+                layered.unpark(&key, Some(secret))
             });
             if handed.is_err() {
                 break;
             }
         }
-        // What the keychain didn't take: once another process hands it over, this run asks again.
-        let left = layered.file.entries().unwrap_or_default();
-        layered.parked.lock().unwrap().extend(left.into_keys());
         layered
     }
 
