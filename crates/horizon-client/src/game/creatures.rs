@@ -3096,7 +3096,7 @@ impl Game<'_> {
             });
         }
         if raised {
-            self.after_block(outcome, amount, attacker, projectile);
+            self.after_block(outcome, attacker, projectile);
         }
         outcome.hurt
     }
