@@ -808,7 +808,7 @@ impl Shared {
             .iter()
             .map(|(&ip, &n)| (ip, n))
             .collect();
-        held.sort_by(|a, b| b.1.cmp(&a.1));
+        held.sort_by_key(|a| std::cmp::Reverse(a.1));
         let addresses = held.len();
         let top = held
             .iter()
