@@ -1339,6 +1339,12 @@ impl Game<'_> {
     pub(super) fn native_commands(&mut self, commands: &mut Vec<&'static str>) {
         let _ = commands;
     }
+    /// World field of view, after normal calculation and zoom and before projection/Nausea.
+    /// Called for world rendering and near-plane overlays; hand/HUD FOV uses its own path.
+    /// Only finite values in 1..=179 degrees replace the computed FOV.
+    pub(super) fn native_compute_fov(&self, partial: f32, camera: [f64; 3], degrees: &mut f32) {
+        let _ = (partial, camera, degrees);
+    }
     /// The zoom a native mod asks for, applied while playing (the spyglass's
     /// own view wins): set `zoom` when it is none yet.
     pub(super) fn native_zoom(&self, zoom: &mut Option<NativeZoom>) {
