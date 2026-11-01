@@ -2058,6 +2058,8 @@ struct Game<'a> {
     keyboard_mouse: bool,
     /// This view's corner in its shared window; cursor warps include the offset.
     view_at: [u32; 2],
+    /// Splitscreen: what it draws over this player's view (its badge, questions, notices).
+    split_hud: split::Hud,
     focused: bool,
     /// Whether the window currently accepts input method events.
     ime_allowed: bool,
@@ -7591,6 +7593,7 @@ impl Game<'_> {
                 self.update_remote_skins();
             }
             self.draw_options(&mut batch);
+            self.draw_split_hud(&mut batch, true);
             return batch;
         }
         if let Some(title) = &mut self.title {
@@ -16811,6 +16814,7 @@ impl<'a> Game<'a> {
             captured: false,
             keyboard_mouse: true,
             view_at: [0, 0],
+            split_hud: Default::default(),
             focused: true,
             ime_allowed: false,
             ime_area: None,
