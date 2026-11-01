@@ -2540,6 +2540,37 @@ impl Game<'_> {
         let at = BlockPos::new(pos[0], pos[1], pos[2]);
         self.with_level(|b, level, ticks| b.best_neighbor_signal(level, ticks, at))
     }
+    /// The light at `pos` in the world in place, as `(block, sky)`, each 0 to
+    /// 15 (`Level.getBrightness` for `LightLayer.BLOCK` and `LightLayer.SKY`).
+    /// A solar panel checks for full sky light above it, a lamp or a mob farm
+    /// for darkness. 0 for unloaded chunks. API @API:native_world_state@.
+    pub(super) fn native_light(&self, pos: [i32; 3]) -> (u8, u8) {
+        let light = self.world.light(pos[0], pos[1], pos[2]);
+        (light & 15, light >> 4)
+    }
+    /// The rain and thunder levels of the world in place, each 0.0 to 1.0
+    /// (`Level.getRainLevel` and `Level.getThunderLevel`): what a solar panel
+    /// or a wind turbine reads. API @API:native_world_state@.
+    pub(super) fn native_weather(&self) -> (f32, f32) {
+        self.world.weather.levels(1.0)
+    }
+    /// The world's time of day in ticks (`Level.getDayTime`); it keeps counting
+    /// past 24000, so take it modulo 24000 for the hour. API @API:native_world_state@.
+    pub(super) fn native_day_time(&self) -> i64 {
+        self.world.day_time
+    }
+    /// The lowest block y and the height of the world in place
+    /// (`LevelHeightAccessor.getMinY` and `getHeight`): how deep a quarry or a
+    /// miner may dig. API @API:native_world_state@.
+    pub(super) fn native_world_height(&self) -> (i32, i32) {
+        (self.world.shape.min_y, self.world.shape.height)
+    }
+    /// The most of the item `item` one slot holds (`Item.getDefaultMaxStackSize`),
+    /// or `None` for an unknown item: for a mod's container that fills or
+    /// merges stacks itself. API @API:native_world_state@.
+    pub(super) fn native_max_stack_size(&self, item: &str) -> Option<u32> {
+        self.res.items().get(item).map(|i| i.max_stack)
+    }
     /// The random of the server level `dimension`: vanilla's `Level.random`
     /// (`level.getRandom()`), the one its explosions, block drops and other
     /// level draws use, so a mod's draws move vanilla's later ones as a Java
