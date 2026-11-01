@@ -55,6 +55,7 @@ impl NativePack {
                     .find(|(k, _)| k == id)
                     .is_none_or(|(_, v)| *v != 0.0)
             });
+        let fog = report.material_fog;
         let (post, others): (Vec<_>, Vec<_>) = report
             .stages
             .into_iter()
@@ -67,7 +68,7 @@ impl NativePack {
         let material = others
             .iter()
             .find(|s| s.kind == StageKind::Material)
-            .map(|stage| NativeMaterial::new(device, terrain, &frame, stage, constants))
+            .map(|stage| NativeMaterial::new(device, terrain, &frame, stage, constants, fog))
             .transpose()?;
         let post = (!post.is_empty())
             .then(|| NativePost::new(device, post, constants, format, &frame))
