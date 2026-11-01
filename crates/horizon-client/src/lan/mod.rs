@@ -37,16 +37,16 @@ use horizon_protocol::{
     text::translatable,
 };
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     io,
-    net::{SocketAddr, TcpListener, TcpStream},
+    net::{IpAddr, SocketAddr, TcpListener, TcpStream},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering},
         mpsc::{Receiver, Sender, channel},
     },
     thread::JoinHandle,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// IntegratedServer.MAX_PLAYERS.
@@ -339,6 +339,10 @@ pub struct Shared {
     random: Mutex<u64>,
     /// Connections accepted from the network whose thread still runs.
     connections: AtomicUsize,
+    /// Those connections by address.
+    by_address: Mutex<HashMap<IpAddr, usize>>,
+    /// Connections turned away since the last report of them, and when that was.
+    turned_away: Mutex<(usize, Option<Instant>)>,
 }
 impl Shared {
     /// The registries and tags a new connection is sent.
@@ -539,6 +543,8 @@ impl Lan {
             next: AtomicU32::new(1),
             stop: AtomicBool::new(false),
             connections: AtomicUsize::new(0),
+            by_address: Mutex::new(HashMap::new()),
+            turned_away: Mutex::new((0, None)),
             random: Mutex::new(crate::server::java_properties::now_millis() as u64 | 1),
             config,
         });
@@ -652,11 +658,108 @@ impl Drop for Lan {
 /// Connections from the network accepted beyond the server's player limit.
 const SPARE_CONNECTIONS: usize = 64;
 
+/// Connections from one address at once (a household or a school behind one address plays well
+/// under it): past it a new one is closed, so that one machine can't take the places
+/// [`SPARE_CONNECTIONS`] leaves for everyone's logins and server-list pings. Not for a local or
+/// private address: a proxy, a tunnel or a container's port forward hands every player over from
+/// one of those.
+const PER_ADDRESS: usize = 10;
+
+/// Whether connections from `ip` may be many: it is this machine or the local network's.
+fn shared_address(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
+        IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_unique_local()
+                || v6.is_unicast_link_local()
+                || v6
+                    .to_ipv4_mapped()
+                    .is_some_and(|v4| shared_address(IpAddr::V4(v4)))
+        }
+    }
+}
+
+/// How often the log says how many connections were turned away, and who held the places.
+const TURNED_AWAY_EVERY: Duration = Duration::from_secs(60);
+
 /// An accepted connection, uncounted once its thread ends (or couldn't start).
-struct Counted(Arc<Shared>);
+struct Counted(Arc<Shared>, IpAddr);
 impl Drop for Counted {
     fn drop(&mut self) {
+        let mut by = self.0.by_address.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(n) = by.get_mut(&self.1) {
+            *n -= 1;
+            if *n == 0 {
+                by.remove(&self.1);
+            }
+        }
         self.0.connections.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+impl Shared {
+    /// Counts a connection from `ip`, or None when the server holds its most, or `ip` its own.
+    fn count(self: &Arc<Self>, ip: IpAddr) -> Option<Counted> {
+        let most = self.max_players().saturating_add(SPARE_CONNECTIONS);
+        let mut by = self.by_address.lock().unwrap_or_else(|e| e.into_inner());
+        let here = by.get(&ip).copied().unwrap_or(0);
+        if here >= PER_ADDRESS && !shared_address(ip)
+            || self.connections.load(Ordering::Acquire) >= most
+        {
+            return None;
+        }
+        by.insert(ip, here + 1);
+        self.connections.fetch_add(1, Ordering::AcqRel);
+        Some(Counted(self.clone(), ip))
+    }
+
+    /// A connection was turned away: once a minute the log says how many, how many places were
+    /// taken and by which addresses most.
+    fn turned_away(&self) {
+        let mut away = self.turned_away.lock().unwrap_or_else(|e| e.into_inner());
+        away.0 += 1;
+        let now = Instant::now();
+        if away.1.is_some_and(|last| now < last + TURNED_AWAY_EVERY) {
+            return;
+        }
+        let count = std::mem::take(&mut away.0);
+        away.1 = Some(now);
+        drop(away);
+        let Some(log) = &self.config.log else {
+            return;
+        };
+        let most = self.max_players().saturating_add(SPARE_CONNECTIONS);
+        let mut held: Vec<(IpAddr, usize)> = self
+            .by_address
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|(&ip, &n)| (ip, n))
+            .collect();
+        held.sort_by(|a, b| b.1.cmp(&a.1));
+        let addresses = held.len();
+        let top = held
+            .iter()
+            .take(5)
+            .map(|(ip, n)| {
+                if log.log_ips {
+                    format!("{ip} ({n})")
+                } else {
+                    format!("<ip address withheld> ({n})")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        (log.write)(
+            "Server Connection Thread",
+            "WARN",
+            &format!(
+                "Turned away {count} connection(s): {} of {most} places taken, by {addresses} \
+                 address(es), most by {top} (at most {PER_ADDRESS} an address)",
+                self.connections.load(Ordering::Acquire)
+            ),
+        );
     }
 }
 
@@ -668,13 +771,11 @@ fn accept_loop(listener: TcpListener, shared: Arc<Shared>, stop: &AtomicBool) {
                 // the server takes and [`SPARE_CONNECTIONS`] more (logins, server-list pings), a
                 // new one is closed at once, so that a flood of sockets can't use up the threads a
                 // container allows and crash the server.
-                let most = shared.max_players().saturating_add(SPARE_CONNECTIONS);
-                if shared.connections.fetch_add(1, Ordering::AcqRel) >= most {
-                    shared.connections.fetch_sub(1, Ordering::AcqRel);
+                let Some(counted) = shared.count(addr.ip()) else {
                     drop(stream);
+                    shared.turned_away();
                     continue;
-                }
-                let counted = Counted(shared.clone());
+                };
                 let _ = std::thread::Builder::new()
                     .name("horizon-lan-conn".into())
                     .spawn(move || handle(stream, addr, counted.0.clone()));
@@ -752,5 +853,32 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    /// One public address takes at most [`PER_ADDRESS`] places, its own coming back as they end;
+    /// another address, or a local one (a proxy hands everyone over from it), still gets one.
+    #[test]
+    fn one_address_takes_at_most_its_share() {
+        let config = NetConfig {
+            announce: false,
+            listen: false,
+            ..NetConfig::lan(0, "Share".into(), 20)
+        };
+        let lan = Lan::start_with(Arc::new(data::SyncData::empty()), config).unwrap();
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        let mut one: Vec<Counted> = (0..PER_ADDRESS)
+            .map(|_| lan.shared.count(ip("203.0.113.7")).unwrap())
+            .collect();
+        assert!(lan.shared.count(ip("203.0.113.7")).is_none());
+        assert!(lan.shared.count(ip("198.51.100.2")).is_some());
+        let local: Vec<Counted> = (0..PER_ADDRESS + 5)
+            .map(|_| lan.shared.count(ip("127.0.0.1")).unwrap())
+            .collect();
+        assert!(lan.shared.count(ip("172.17.0.1")).is_some());
+        one.pop();
+        assert!(lan.shared.count(ip("203.0.113.7")).is_some());
+        drop((one, local));
+        assert!(lan.shared.by_address.lock().unwrap().is_empty());
+        assert_eq!(lan.shared.connections.load(Ordering::Acquire), 0);
     }
 }
