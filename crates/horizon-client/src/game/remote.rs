@@ -792,7 +792,7 @@ impl Game<'_> {
         // sent again when one of those options changes.
         let info = self
             .settings
-            .client_information(client_view_distance(self.settings.render_distance));
+            .client_information(client_view_distance(self.render_distance_in_use()));
         if local.is_none() && !self.options.split_guest {
             horizon_client::crash::set_detail(
                 "Server",
@@ -853,7 +853,7 @@ impl Game<'_> {
             self.res.threads(),
         );
         streaming.remote = true;
-        streaming.radius = self.settings.render_distance;
+        streaming.radius = self.render_distance_in_use();
         self.streaming = streaming;
         self.world = World::new(self.res.facts().air, 0);
         self.save = Arc::new(SaveDir::new(
@@ -2883,7 +2883,7 @@ impl Game<'_> {
                     r.show_death_screen = p.show_death_screen;
                 }
                 self.streaming.radius =
-                    self.settings.render_distance.min(p.chunk_radius + 1).max(2);
+                    self.render_distance_in_use().min(p.chunk_radius + 1).max(2);
                 // handleLogin: startWaitingForNewLevel(.., Reason.OTHER).
                 self.enter_remote_dimension(
                     &p.spawn,
@@ -2892,7 +2892,7 @@ impl Game<'_> {
                 );
                 let info = self
                     .settings
-                    .client_information(client_view_distance(self.settings.render_distance));
+                    .client_information(client_view_distance(self.render_distance_in_use()));
                 if let Some(r) = self.remote.as_mut() {
                     r.sent_info = info.clone();
                 }
@@ -4487,7 +4487,7 @@ impl Game<'_> {
                 }
             }
             C::SetChunkCacheRadius(p) => {
-                self.streaming.radius = self.settings.render_distance.min(p.distance + 1).max(2);
+                self.streaming.radius = self.render_distance_in_use().min(p.distance + 1).max(2);
                 if let Some(r) = self.remote.as_mut() {
                     r.view_distance = p.distance;
                 }
@@ -5370,9 +5370,10 @@ impl Game<'_> {
         self.tick_bundle_hover();
         // Options.broadcastOptions: a changed render distance or Chat option
         // is sent again.
+        self.tick_ram_limit();
         let info = self
             .settings
-            .client_information(client_view_distance(self.settings.render_distance));
+            .client_information(client_view_distance(self.render_distance_in_use()));
         if let Some(r) = self.remote.as_mut()
             && r.joined
             && r.sent_info != info
@@ -8199,7 +8200,10 @@ impl Game<'_> {
             return;
         }
         if let Some(command) = message.strip_prefix('/') {
-            self.send_command(command);
+            // The player's own RAM limit, which no server has a say in.
+            if !self.ram_limit_command(command) {
+                self.send_command(command);
+            }
         } else {
             self.send_signed_chat(message);
         }

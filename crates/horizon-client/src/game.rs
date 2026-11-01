@@ -232,6 +232,7 @@ mod prediction;
 mod pumpkin;
 mod quick_actions;
 mod raids;
+mod ram_limit;
 mod recipe_book;
 mod remote;
 mod remote_camera;
@@ -2670,6 +2671,8 @@ struct Game<'a> {
     debug_options: Option<debug_options::DebugOptionsUi>,
     /// `DebugEntryMemory`'s readings (game/debug_lines.rs).
     memory_meter: std::cell::RefCell<horizon_client::debug_overlay::MemoryMeter>,
+    /// How far memory holds the game below the player's settings (`game/ram_limit.rs`).
+    ram_limit: horizon_client::ram_limit::Governor,
     /// `Minecraft.gpuUtilization`: the last timed frame's GPU time over its
     /// CPU time, in percent.
     gpu_utilization: f64,
@@ -13168,7 +13171,7 @@ impl Game<'_> {
         // LocalPlayer.refreshChatAbilities: the chat shows what the Chat option allows.
         let abilities = self.chat_abilities();
         self.ui.chat.set_abilities(&self.gui.atlas.font, abilities);
-        self.streaming.radius = self.settings.render_distance;
+        self.streaming.radius = self.render_distance_in_use();
         // Options.biomeBlendRadius, ambientOcclusion and cutoutLeaves:
         // LevelExtractor.allChanged when they change.
         let (s, st) = (&self.settings, &self.streaming);
@@ -15281,7 +15284,12 @@ impl Game<'_> {
     fn far_terrain_choice(&self) -> (u32, bool) {
         let g = &self.settings.horizon;
         let reduced = g.far_detail == horizon_client::graphics::FarDetail::Reduced;
-        (g.lod_distance, reduced)
+        let distance = if self.ram_limit.far_off() {
+            0
+        } else {
+            g.lod_distance
+        };
+        (distance, reduced)
     }
     /// LOD Distance as far terrain uses it (`graphics::lod_distance_capped`).
     fn lod_distance(&self) -> u32 {
@@ -16772,12 +16780,13 @@ impl Game<'_> {
                         self.frame_stats.record_gpu(&r.gpu_times);
                         r.gpu_times.clear();
                     }
+                    horizon_client::ram_limit::frame();
                     self.limit_frame();
                     self.pause = self.pauses_game();
                     if let Some(server) = &self.integrated {
                         server.set_paused(self.pause);
                         server.set_distances(
-                            self.settings.render_distance,
+                            self.render_distance_in_use(),
                             self.settings.simulation_distance,
                             self.settings.entity_distance,
                         );
@@ -17374,6 +17383,7 @@ impl<'a> Game<'a> {
             ),
             debug_options: None,
             memory_meter: Default::default(),
+            ram_limit: Default::default(),
             gpu_utilization: 0.0,
             rendered_mobs: Default::default(),
             spawn_counts: HashMap::new(),
