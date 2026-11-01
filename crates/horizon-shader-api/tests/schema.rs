@@ -116,6 +116,66 @@ fn a_shadow_map_stays_in_range_and_needs_a_stage_to_read_it() {
 }
 
 #[test]
+fn material_ids_go_by_the_first_entry_and_may_cut_shadows_whole() {
+    let manifest = |rest: &str| {
+        Manifest::parse(&format!(
+            "schema = 1\nid = \"a\"\nname = \"A\"\nversion = \"1\"\napi = \"0.1\"\n\
+             [material]\nfile = \"m.wgsl\"\n{rest}"
+        ))
+    };
+    let m = manifest(
+        "[shadow]\nsolid_materials = [7]\n\
+         [[materials]]\nid = 7\nsprites = [\"block/oak_leaves\", \"block/*_*_leaves\"]\n\
+         [[materials]]\nid = 8\nsprites = [\"block/*_leaves\", \"mod:*\"]\n",
+    )
+    .unwrap();
+    assert_eq!(m.shadow.as_ref().unwrap().solid_materials, [7]);
+    let sprites = [
+        ("minecraft:block/dark_oak_leaves", 1),
+        ("minecraft:block/birch_leaves", 2),
+        // One layer under two names, in either order: the earlier entry decides.
+        ("minecraft:block/birch_leaves", 3),
+        ("minecraft:block/oak_leaves", 3),
+        ("mod:anything", 4),
+        ("minecraft:block/stone", 5),
+    ];
+    assert_eq!(
+        m.sprite_materials(sprites),
+        [(1, 7), (2, 8), (3, 7), (4, 8)]
+    );
+
+    let refused = |rest: &str, needle: &str| {
+        let e = manifest(rest).unwrap_err().to_string();
+        assert!(e.contains(needle), "{e}");
+    };
+    refused("[[materials]]\nid = 0\nsprites = [\"a\"]\n", "1..=65535");
+    refused(
+        "[[materials]]\nid = 65536\nsprites = [\"a\"]\n",
+        "1..=65535",
+    );
+    refused("[[materials]]\nid = 1\nsprites = []\n", "needs sprites");
+    refused(
+        "[shadow]\nsolid_materials = [3]\n",
+        "no [[materials]] entry",
+    );
+
+    // Without a material stage, only the shadow pass can read the ids.
+    let post_only = |rest: &str| {
+        Manifest::parse(&format!(
+            "schema = 1\nid = \"a\"\nname = \"A\"\nversion = \"1\"\napi = \"0.1\"\n\
+             [[post]]\nfile = \"p.wgsl\"\n[[materials]]\nid = 7\nsprites = [\"a\"]\n{rest}"
+        ))
+    };
+    assert!(post_only("[shadow]\nsolid_materials = [7]\n").is_ok());
+    assert!(
+        post_only("")
+            .unwrap_err()
+            .to_string()
+            .contains("materials are read")
+    );
+}
+
+#[test]
 fn sprite_tags_name_sprites_with_one_wildcard() {
     let mut m = Manifest::parse(&sample_text()).unwrap();
     m.tags.push(horizon_shader_api::SpriteTag {

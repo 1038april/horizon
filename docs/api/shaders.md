@@ -58,6 +58,7 @@ file = "material.wgsl"
 [shadow]                   # optional, needs [material] or [[post]]: a shadow map from the sun (the moon by night)
 resolution = 2048          # its side in texels, 256 to 8192
 distance = 128.0           # half the side of the square it covers, in blocks, 32 to 512
+solid_materials = [10]     # optional: [[materials]] ids drawn into the map whole, cutouts ignored
 
 [[post]]                   # full-screen passes, in the order they run (8 at most)
 file = "post/grade.wgsl"
@@ -71,6 +72,10 @@ default = 1.1
 min = 0.0
 max = 2.0
 step = 0.05
+
+[[materials]]              # 1024 at most: MaterialInput.material, the first entry that matches
+id = 10                    # 1 to 65535; 0 is a sprite no entry names
+sprites = ["block/*_leaves"]   # sprite names, any number of * each
 
 [[tags]]                   # 32 at most: bit i of MaterialInput.tags is the i-th tag
 id = "glass"
@@ -107,6 +112,8 @@ stages.
 
 ## Changelog
 
+- 2026-11-01: API 0.1 (additions): `[[materials]]` and `MaterialInput.material`, an id by sprite,
+  and `[shadow] solid_materials`.
 - 2026-11-01: API 0.1 (additions): entities cast into `shadow_map`, the player's own model in first person too, and the round
   blob under entities is left out in the Overworld while a pack draws a shadow map, so under a
   roof they have no shadow but what the pack gives them. Only entities the camera's culling keeps

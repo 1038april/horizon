@@ -124,6 +124,21 @@ sprites = ["block/glass", "block/*_stained_glass"]
 
 Terrain carries its sprite, not its block, so a sprite drawn by several blocks gets the tag for all of them.
 
+## Material ids
+
+Tags answer "is it one of these"; a pack that treats hundreds of kinds of surface differently numbers them
+instead. Each sprite takes the `id` of the first `[[materials]]` entry that names it, 0 without one, as
+`input.material`. Patterns may hold any number of `*`:
+
+```toml
+[[materials]]
+id = 10
+sprites = ["block/*_leaves"]
+
+[shadow]
+solid_materials = [10]   # these cast whole shadows: their cutouts are ignored in the shadow map
+```
+
 ## Options
 
 A picked pack with options gets a Shader Options... button at the top of the Shader Packs page. A click picks an
