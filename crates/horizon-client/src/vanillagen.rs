@@ -286,23 +286,21 @@ impl VanillaTerrain {
         self.structure_mobs
             .spawn_generated(kind, position, yaw, biome, random, group)
     }
-    /// A proto chunk's blocks, biomes, scheduled ticks and post-processing
-    /// marks as a column.
-    fn column(&self, chunk: &ProtoChunk) -> Chunk {
+    /// Only the generated range of a proto chunk (the Nether is 0..256)
+    /// is copied into a column.
+    fn generated_range(chunk: &ProtoChunk, out: &Chunk) -> (i32, i32) {
+        (
+            chunk.terrain.min_y().max(out.min_y()),
+            (chunk.terrain.min_y() + chunk.terrain.height()).min(out.max_y()),
+        )
+    }
+    /// A proto chunk's blocks alone as a column: what a light job reads of
+    /// its neighbours.
+    fn block_column(&self, chunk: &ProtoChunk) -> Chunk {
         let pos = chunk.position();
         let mut out = Chunk::with_layout(pos.x, pos.z, self.layout());
         let (bx, bz) = (pos.x * 16, pos.z * 16);
-        // Only the generated range (the Nether is 0..256) is copied.
-        let (lo, hi) = (
-            chunk.terrain.min_y().max(out.min_y()),
-            (chunk.terrain.min_y() + chunk.terrain.height()).min(out.max_y()),
-        );
-        out.structure_refs = chunk
-            .structures()
-            .into_iter()
-            .map(|(id, start, _, _)| (Arc::from(id), (start.x, start.z)))
-            .collect();
-        out.structure_starts = chunk.own_starts();
+        let (lo, hi) = Self::generated_range(chunk, &out);
         let mut values = Box::new([0u32; 4096]);
         for si in 0..out.sections.len() as i32 {
             let base = out.min_y() + si * 16;
@@ -332,6 +330,21 @@ impl VanillaTerrain {
                     Section::from_blocks(&values);
             }
         }
+        out
+    }
+    /// A proto chunk's blocks, biomes, scheduled ticks and post-processing
+    /// marks as a column.
+    fn column(&self, chunk: &ProtoChunk) -> Chunk {
+        let mut out = self.block_column(chunk);
+        let pos = chunk.position();
+        let (bx, bz) = (pos.x * 16, pos.z * 16);
+        let (lo, hi) = Self::generated_range(chunk, &out);
+        out.structure_refs = chunk
+            .structures()
+            .into_iter()
+            .map(|(id, start, _, _)| (Arc::from(id), (start.x, start.z)))
+            .collect();
+        out.structure_starts = chunk.own_starts();
         // Ticks the features scheduled (leaves reshaped at a tree's edge,
         // fluids of lakes and springs) run once the chunk is live, as
         // LevelChunk takes over ProtoChunk's ticks.
@@ -783,7 +796,7 @@ impl ChunkGenerator for VanillaTerrain {
     }
     fn light_view(&self, proto: &Proto) -> Option<Chunk> {
         match proto.downcast_ref::<VanillaProto>() {
-            Some(VanillaProto::Ready(chunk)) => Some(self.column(chunk)),
+            Some(VanillaProto::Ready(chunk)) => Some(self.block_column(chunk)),
             _ => None,
         }
     }
