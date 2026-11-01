@@ -992,8 +992,7 @@ mod tests {
     /// counts.
     #[test]
     fn contributed_files_join_the_load_below_the_worlds_packs() {
-        let dir =
-            std::env::temp_dir().join(format!("horizon-contributed-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("horizon-contributed-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let pack = dir.join("datapacks").join("pack");
         std::fs::create_dir_all(pack.join("data/pkg/tags/item")).unwrap();
@@ -1028,21 +1027,24 @@ mod tests {
         assert!(tags["pkg:both"].contains("pkg:from_pack"));
         assert!(!tags["pkg:both"].contains("pkg:from_mod"));
         // A path only the mod has reaches the tables too.
-        assert_eq!(tags["pkg:mod_only"].iter().collect::<Vec<_>>(), ["pkg:only_mod"]);
+        assert_eq!(
+            tags["pkg:mod_only"].iter().collect::<Vec<_>>(),
+            ["pkg:only_mod"]
+        );
         // The next load asks again: the new contribution, not the first's.
         let files = overlay_files(
             &dir,
             std::path::Path::new(""),
             true,
             &[],
-            vec![(
-                "tags/pkg:item/mod_only".to_owned(),
-                tag("pkg:second_load"),
-            )],
+            vec![("tags/pkg:item/mod_only".to_owned(), tag("pkg:second_load"))],
         );
         let overlay = horizon_world::loot::PackOverlay { files: &files };
         let tags = horizon_items::items::load_tags(&dir, "item", &overlay).unwrap();
-        assert_eq!(tags["pkg:mod_only"].iter().collect::<Vec<_>>(), ["pkg:second_load"]);
+        assert_eq!(
+            tags["pkg:mod_only"].iter().collect::<Vec<_>>(),
+            ["pkg:second_load"]
+        );
         // With nothing contributed the overlay is the packs' own.
         assert_eq!(
             overlay_files(&dir, std::path::Path::new(""), true, &[], Vec::new()),
