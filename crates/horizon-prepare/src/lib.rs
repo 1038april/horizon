@@ -757,7 +757,8 @@ type Entries = Vec<(&'static str, Value)>;
 /// exporter JVM's then the command registries' JVM, the data generator's then the creative
 /// inventory's, and the copying, which needs no Java. At most three JVMs run at a time, four
 /// with the split below.
-/// From this many processors (`pool::jobs`) the generator's block behaviour gets its own server JVM.
+/// From this many processors (`pool::jobs`) the generator's block behaviour gets its own
+/// server JVM.
 /// It pays a second Bootstrap and ~400 MB, which only pays off when the other lanes leave cores
 /// idle: a 6-core laptop finished its other JVMs 20 s before the server lane.
 const SPLIT_BLOCKS_JOBS: usize = 6;

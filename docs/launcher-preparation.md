@@ -50,14 +50,14 @@ come after every lane. A worker stops when its lane is done. The two sides compi
 too. Imports and checks hash the pinned files on several threads; every file is still checked
 in full.
 
-`HORIZON_PREPARE_JOBS` is how many threads copy and hash at once: the logical processors by
-default, at most 8. `1` also runs the lanes one after another (for a machine short on memory);
-any other number runs them all at once. From 6, the world generator's block behaviour and
-structure blocks, a quarter of the server lane, run on a fifth lane in a second server JVM: it
-costs a second Bootstrap and ~400 MB, and only pays off when the other lanes would leave
-processors idle. On a 6-core laptop they finished ~20 s before the server lane; the split
-itself is not yet timed on such a machine (on 3 cores it is slower, 44.9 s against 40.5 s, so
-it stays off there). The release check prepares both ways.
+`HORIZON_PREPARE_JOBS` is how many threads each copying, hashing or compiling step spreads
+over: the logical processors by default, at most 8. `1` also runs the lanes one after another
+(for a machine short on memory); any other number runs them all at once. From 6, the world
+generator's block behaviour and structure blocks, a quarter of the server lane, run on a fifth
+lane in a second server JVM: it costs a second Bootstrap and ~400 MB, and only pays off when
+the other lanes would leave processors idle. On a 6-core laptop they finished ~20 s before the
+server lane; the split itself is not yet timed on such a machine (on 3 cores it is slower,
+44.9 s against 40.5 s, so it stays off there). The release check prepares both ways.
 
 Every JVM preparing starts (javac too, through `-J`) runs with `-XX:TieredStopAtLevel=1
 -XX:+UseSerialGC`: short batch jobs side by side lose more CPU to the C2 compiler than it wins
