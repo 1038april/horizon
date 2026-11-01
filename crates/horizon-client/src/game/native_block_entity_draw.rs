@@ -298,7 +298,7 @@ impl Game<'_> {
     }
 
     /// Draws `stack` under `draw`'s pose as an item is drawn in the world
-    /// (`ItemModelResolver.updateForTopItem` and `submitItem`), centred on the
+    /// (`ItemModelResolver.updateForTopItem` and `ItemStackRenderState.submit`), centred on the
     /// pose's origin, in its model's `display` transform: `Fixed` as a
     /// campfire's or an item frame's, `Ground` as a dropped item's. `seed`
     /// picks among random models (a campfire passes its slot plus its
