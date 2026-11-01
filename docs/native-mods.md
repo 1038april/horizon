@@ -871,11 +871,13 @@ Changing loot a mod didn't make, as NeoForge's `LootTableLoadEvent` and global l
   a client too, so make the same change each time; a `/reload` may keep the tables already loaded. It is a free function in
   `crates/horizon-world/src/loot.rs`, so a helper injected there compiles inside `horizon-world`, without `crate::game`.
 - **`native_loot_drops(context, drops)`**: the items a broken block or a dead mob is about to drop, after its table rolled (a
-  mob's worn and held items too, not an enderman's carried block). Add, change or take out stacks; empty ones don't drop.
-  `NativeLootDrops` says what dropped them: the table rolled (empty when none did), the dimension, the origin, the block's position
-  and state or the mob's id and type, the player who broke or killed it, the tool and an explosion's radius. It hears blocks that
-  a player, an explosion or a mob breaks, not other breaks (leaves decaying, a torch losing its wall, a piston,
-  `/setblock ... destroy`).
+  mob's worn and held items too, not an enderman's carried block or a copper golem's preserved equipment). Add, change or take out
+  stacks; empty ones don't drop. `NativeLootDrops` says what dropped them: the table rolled (empty when none did), the dimension,
+  the origin, the block's position and state or the mob's id and type, the player who broke or killed it, the tool and an
+  explosion's radius. It hears blocks that a player, an explosion or a mob breaks, not other breaks (leaves decaying, a torch
+  losing its wall, a piston, `/setblock ... destroy`), nor a creative break or a tool that can't harvest the block. A block's
+  stacks get its block entity's data (a shulker box's items) after the hook, and a container's contents spill on their own, not
+  through it.
 
 ### A block's items
 

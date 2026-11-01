@@ -1410,8 +1410,9 @@ impl Game<'_> {
     /// A block broke or a mob died, and `drops` are the items about to drop,
     /// in order: what its loot table rolled (after `native_loot_table_load`'s
     /// changes), and for a mob what it wore and held (not an enderman's
-    /// carried block, which drops after). A block's stacks get its block
-    /// entity's data (a shulker box's items) after this. Add, change or take
+    /// carried block or a copper golem's preserved equipment, which drop
+    /// after). A block's stacks get its block entity's data (a shulker box's
+    /// items) after this. Add, change or take
     /// out stacks; empty ones don't drop (NeoForge's global loot modifiers, Fabric's
     /// `LootTableEvents.MODIFY_DROPS`); `context` says what dropped them and
     /// how, and it is called even when `drops` is empty. It hears blocks
@@ -3400,7 +3401,9 @@ mod tests {
     #[test]
     fn loot_table_load_stays_hookable() {
         let source = include_str!("../../../horizon-world/src/loot.rs");
-        let start = source.find("pub fn native_loot_table_load(").unwrap();
+        let start = source
+            .find("#[inline(never)]\npub fn native_loot_table_load(")
+            .unwrap();
         let body = &source[start..start + source[start..].find("\n}\n").unwrap()];
         for line in body.lines() {
             assert!(!line.contains("cfg"), "a cfg in the loot hook point: {line}");
