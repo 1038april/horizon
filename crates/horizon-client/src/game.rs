@@ -872,6 +872,13 @@ struct GameLevel<'w> {
     dropped: &'w [ItemEntity],
     orbs: &'w [ExperienceOrb],
     projectiles: &'w [horizon_client::projectiles::Projectile],
+    /// The tridents, firework rockets and fishing hooks here. None ignores
+    /// block triggers (`Entity.isIgnoringBlockTriggers`), so each counts on a
+    /// plate or tripwire (`getEntitiesOfClass`). The flag says whether it also
+    /// reaches `entityInside` through this list (`applyEffectsFromBlocks`):
+    /// not a rocket boosting a player or a hook on an entity, whose ticks
+    /// skip that step, nor a trident, which `tick_blocks` sweeps itself.
+    trigger_projectiles: Vec<(Aabb, bool)>,
     biomes: &'w Biomes,
     seed: i64,
     behaviours: &'w Behaviours,
@@ -1549,6 +1556,7 @@ impl LevelAccess for GameLevel<'_> {
         };
         let others = || {
             self.other_trigger_boxes()
+                .chain(self.trigger_projectiles.iter().map(|&(bounds, _)| bounds))
                 .filter(|b| area.intersects(*b))
                 .count()
         };
@@ -3896,6 +3904,18 @@ impl Game<'_> {
                     .map(|g| g.position)
             }))
             .collect();
+        let mut trigger_projectiles: Vec<(Aabb, bool)> = self
+            .tridents
+            .iter()
+            .map(|t| (horizon_client::arrows::arrow_bounds(t.position), false))
+            .chain(self.rockets.iter().map(|r| (r.bounds(), !r.attached)))
+            .chain(
+                self.hook
+                    .iter()
+                    .map(|h| (h.bounds(), h.applies_block_effects())),
+            )
+            .collect();
+        self.lan_hook_triggers(&mut trigger_projectiles);
         let blockers = Blockers {
             mobs: &self.mobs,
             armor_stands: &self.armor_stands,
@@ -3913,6 +3933,7 @@ impl Game<'_> {
             dropped: &self.dropped,
             orbs: &self.orbs,
             projectiles: &self.creatures.projectiles,
+            trigger_projectiles,
             world: &mut self.world,
             facts: self.res.facts(),
             collision: self.collision,
@@ -4284,7 +4305,16 @@ impl Game<'_> {
             }
             // The mobs and the other entities (items, orbs, projectiles...) too.
             let mut touched: Vec<BlockPos> = Vec::new();
-            for bounds in level.mob_trigger_boxes().chain(level.other_trigger_boxes()) {
+            let projectiles = level
+                .trigger_projectiles
+                .iter()
+                .filter(|(_, applies)| *applies)
+                .map(|&(bounds, _)| bounds);
+            for bounds in level
+                .mob_trigger_boxes()
+                .chain(level.other_trigger_boxes())
+                .chain(projectiles)
+            {
                 let (lo, hi) = (bounds.min_position(), bounds.max_position());
                 for x in (lo.x + 1e-7).floor() as i32..=(hi.x - 1e-7).floor() as i32 {
                     for y in (lo.y + 1e-7).floor() as i32..=(hi.y - 1e-7).floor() as i32 {
