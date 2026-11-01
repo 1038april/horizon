@@ -933,11 +933,7 @@ impl Hub {
             difficulty: ctx.difficulty,
             locked: ctx.difficulty_locked,
         }));
-        g.send(&C::PlayerAbilities(play::PlayerAbilities {
-            flags: g.ability_flags(),
-            flying_speed: g.flying_speed,
-            walking_speed: 0.1,
-        }));
+        g.send(&g.abilities());
         g.send(&C::SetHeldSlot(play::SetHeldSlot {
             slot: g.selected as i32,
         }));
@@ -3256,11 +3252,7 @@ impl Hub {
             event: game_event::CHANGE_GAME_MODE,
             param: mode as f32,
         }));
-        g.send(&C::PlayerAbilities(play::PlayerAbilities {
-            flags: g.ability_flags(),
-            flying_speed: g.flying_speed,
-            walking_speed: 0.1,
-        }));
+        g.send(&g.abilities());
         self.broadcast(&C::PlayerInfoUpdate(play::PlayerInfoUpdate {
             actions: 4,
             entries: vec![play::PlayerInfo {
@@ -3297,11 +3289,7 @@ impl Hub {
             return;
         };
         g.flying_speed = speed;
-        g.send(&C::PlayerAbilities(play::PlayerAbilities {
-            flags: g.ability_flags(),
-            flying_speed: g.flying_speed,
-            walking_speed: 0.1,
-        }));
+        g.send(&g.abilities());
     }
 
     /// The host's game mode changed (PlayerInfo UPDATE_GAME_MODE for everyone).
@@ -3400,11 +3388,7 @@ impl Hub {
         self.respawned(id);
         let g = &mut self.guests[i];
         // ServerPlayer.restoreFrom: the game mode again (onUpdateAbilities).
-        g.send(&C::PlayerAbilities(play::PlayerAbilities {
-            flags: g.ability_flags(),
-            flying_speed: g.flying_speed,
-            walking_speed: 0.1,
-        }));
+        g.send(&g.abilities());
         // The new player faces the level's respawn direction (snapTo).
         g.yaw = 0.0;
         g.pitch = 0.0;
@@ -3540,11 +3524,7 @@ impl Hub {
             self.resend_teleport(i, None);
         }
         let g = &mut self.guests[i];
-        g.send(&C::PlayerAbilities(play::PlayerAbilities {
-            flags: g.ability_flags(),
-            flying_speed: g.flying_speed,
-            walking_speed: 0.1,
-        }));
+        g.send(&g.abilities());
         self.send_level_info(i, ctx, !portal);
         // PlayerList.sendAllPlayerInfo: the inventory and the held slot.
         self.send_inventory(i);

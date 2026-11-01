@@ -274,8 +274,8 @@ pub struct Guest {
     pub death_time: u32,
     /// The join packets were sent (PlayerList.placeNewPlayer ran).
     pub placed: bool,
-    /// `Abilities.flyingSpeed`: vanilla's 0.05, unless a client mod of the
-    /// single-player owner set another.
+    /// `Abilities.flyingSpeed`: vanilla's 0.05, unless a server mod set
+    /// another (`native_set_flying_speed`). Saved with the player.
     pub flying_speed: f32,
     /// The level the player is in (`ServerPlayer.level().dimension()`): the
     /// hub's level passes only reach the players in theirs.
@@ -442,6 +442,14 @@ impl Guest {
             scoreboard: Default::default(),
             recipes_unlocked: Vec::new(),
         }
+    }
+    /// `ServerPlayer.onUpdateAbilities`: the guest's abilities, flying speed included.
+    pub fn abilities(&self) -> play::Clientbound {
+        play::Clientbound::PlayerAbilities(play::PlayerAbilities {
+            flags: self.ability_flags(),
+            flying_speed: self.flying_speed,
+            walking_speed: 0.1,
+        })
     }
     pub fn send(&self, packet: &play::Clientbound) {
         if self.anticheat.record.is_some() {

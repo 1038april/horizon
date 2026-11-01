@@ -1,10 +1,14 @@
-//! The player's motion for mods: a push for the local player (`world.push-player`) and a player's flying speed
-//! (`world.set-flying-speed`), from the Stink-O/horizon fork.
+//! The player's motion for mods (docs/native-mods.md, "A player's motion"): a push for the local player, on a
+//! client, and a player's creative flying speed, on a server.
 use super::Game;
 
-/// `world.push-player`: each component of a push is clamped to this, blocks a tick.
+/// Each component of a push is clamped to this, in blocks a tick.
 const PUSH_MAX: f32 = 4.0;
-/// `world.set-flying-speed`: the fastest a mod may set (vanilla's is 0.05).
+/// The fastest flying speed a mod may set: 1000 times vanilla's 0.05, for crossing a world's distances in seconds.
+/// It only stops a stray value from throwing the player millions of blocks in a tick; past about 2 the player
+/// outruns the chunks loading. Past about 0.45 (sprinting; 0.9 without) a player flies more than 10 blocks a
+/// tick: the single-player owner is never checked, as in vanilla, but anyone else meets the server's moved-too-quickly
+/// check, which can send them back (`Hub::position_change`, `ServerGamePacketListenerImpl.handleMovePlayer`).
 const FLYING_MAX: f32 = 50.0;
 /// Vanilla's creative flying speed (`Abilities.flyingSpeed`).
 const FLYING_VANILLA: f32 = 0.05;
@@ -21,9 +25,9 @@ fn pushed(velocity: [f64; 3], kick: [f32; 3]) -> Option<[f64; 3]> {
 
 #[allow(dead_code)]
 impl Game<'_> {
-    /// `world.push-player`, for a client mod: added to the local player's velocity, in blocks a tick, as an
+    /// For a client mod: a push added to the local player's velocity, in blocks a tick, as an
     /// explosion's knockback is (the window's player moves itself, as vanilla's client does). Each component is
-    /// clamped to -4..4; a spectator, or a value that is not a number, is left alone. API @API:native_push_player@.
+    /// clamped to -4..4; a spectator, or a value that is not a number, is left alone. API @API:native_motion@.
     pub(super) fn native_push_player(&mut self, kick: [f32; 3]) {
         if let Some(p) = self.player.as_mut()
             && !p.spectator
@@ -35,9 +39,10 @@ impl Game<'_> {
             }
         }
     }
-    /// `world.set-flying-speed`, for a server mod: `player`'s creative flying speed (vanilla's 0.05 when none, at
-    /// most 50), kept on the server's player as vanilla keeps its abilities and sent to their client, so a respawn
-    /// or a game mode change keeps it. False for a player not here or a client of a server. API @API:native_push_player@.
+    /// For a server mod: `player`'s creative flying speed (vanilla's 0.05 when none, at most `FLYING_MAX`), kept on
+    /// the server's player and sent to their client. A respawn or a game mode change keeps it, and it is saved
+    /// with the player (`abilities.flySpeed`, as vanilla saves it). False for a player not here or a client of a
+    /// server. API @API:native_motion@.
     pub(super) fn native_set_flying_speed(&mut self, player: u128, speed: Option<f32>) -> bool {
         let speed = speed
             .filter(|s| s.is_finite())
