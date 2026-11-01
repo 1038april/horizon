@@ -6,7 +6,7 @@ use horizon_client::lan::hub::Hub;
 use horizon_client::particles::{ParticleOptions, ParticleType};
 use horizon_core::{geometry::Vec3, random::RandomSource};
 use horizon_protocol::{
-    entity_data::{Particle, ParticleData},
+    entity_data::{MOD_PARTICLE_ID, Particle, ParticleData},
     packets::play::{self, Clientbound as C},
 };
 use horizon_world::registry::BlockStateId;
@@ -252,6 +252,13 @@ impl Game<'_> {
         options: &ParticleOptions,
         state: Option<BlockStateId>,
     ) -> Option<Particle> {
+        // A native mod's own type: no registry id, so the sentinel and the name.
+        if let Some(name) = &options.mod_particle {
+            return Some(Particle {
+                id: MOD_PARTICLE_ID,
+                data: Some(ParticleData::Mod(name.clone())),
+            });
+        }
         let name = format!("minecraft:{}", options.ty.name());
         let id = hub.registry_id("minecraft:particle_type", &name)?;
         use ParticleType as T;
@@ -292,6 +299,11 @@ impl Game<'_> {
         p: &Particle,
         at: [f64; 3],
     ) -> Option<ParticleOptions> {
+        if p.id == MOD_PARTICLE_ID
+            && let Some(ParticleData::Mod(name)) = &p.data
+        {
+            return Some(ParticleOptions::named(name.clone()));
+        }
         let name = self
             .remote
             .as_ref()?
