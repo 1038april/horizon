@@ -1127,12 +1127,13 @@ const KEYCHAIN_AWAY: &str =
 /// on a prompt, as they would on the keychain itself. A file entry is only removed if it still holds
 /// what was read before the keychain call, so another process's newer write stays. And once the
 /// keychain refuses or doesn't answer, this run stops asking it (no prompt after a dismissed
-/// prompt), until another process hands it a secret this run parked in the file.
+/// prompt), until another process hands it a secret this run saw in the file.
 pub struct Layered {
     keychain: Box<dyn SecretStore>,
     file: FileStore,
     away: std::sync::atomic::AtomicBool,
-    /// What this run put in the file while the keychain was away.
+    /// What this run saw in the file: put there, read there, or left there by its start's
+    /// hand-over. Gone from the file later, the keychain answers again (another process handed it).
     parked: Mutex<std::collections::HashSet<String>>,
 }
 
@@ -1162,6 +1163,9 @@ impl Layered {
                 break;
             }
         }
+        // What the keychain didn't take: once another process hands it over, this run asks again.
+        let left = layered.file.entries().unwrap_or_default();
+        layered.parked.lock().unwrap().extend(left.into_keys());
         layered
     }
 
@@ -1210,10 +1214,13 @@ impl SecretStore for Layered {
     fn get(&self, key: &str) -> Result<Option<String>, String> {
         match self.file.entry(key)? {
             Some(secret) if secret == SIGNED_OUT => return Ok(None),
-            Some(secret) => return Ok(Some(secret)),
+            Some(secret) => {
+                self.parked.lock().unwrap().insert(key.into());
+                return Ok(Some(secret));
+            }
             None => {}
         }
-        // Parked here and gone from the file: another process handed it to the keychain, which
+        // Seen in the file and gone from it: another process handed it to the keychain, which
         // answers again.
         if self.is_away() && self.parked.lock().unwrap().remove(key) {
             self.away.store(false, std::sync::atomic::Ordering::Relaxed);

@@ -1288,6 +1288,27 @@ fn a_launcher_on_the_file_keeps_working_after_another_hands_it_to_the_keychain()
 }
 
 #[test]
+fn launchers_started_on_an_old_file_find_it_after_another_hands_it_over() {
+    let path = secrets_file("inherited");
+    // A previous run kept A in the file.
+    FileStore::new(path.clone()).set("A", "secret-a").unwrap();
+    // Two launchers start while the keychain is away: their hand-overs fail. One reads A then.
+    let keychain = Arc::new(Keychain::default());
+    keychain.set_away(true);
+    let read_before = launcher_with(&keychain, &path);
+    let never_read = launcher_with(&keychain, &path);
+    assert_eq!(read_before.get("A").unwrap(), Some("secret-a".into()));
+    // The keychain is back and a third launcher hands A over.
+    keychain.set_away(false);
+    launcher_with(&keychain, &path);
+    assert!(!path.exists());
+    // Both running launchers still read A.
+    assert_eq!(read_before.get("A").unwrap(), Some("secret-a".into()));
+    assert_eq!(never_read.get("A").unwrap(), Some("secret-a".into()));
+    remove_secrets_dir(&path);
+}
+
+#[test]
 fn a_move_the_keychain_half_refuses_then_a_sign_out_leaves_no_copy() {
     let path = secrets_file("half");
     let keychain = Arc::new(Keychain::default());

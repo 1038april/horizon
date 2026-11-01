@@ -150,7 +150,7 @@ one is selected. "Sign out" deletes the account's secrets from the keychain.
   write read under it, so a hand-over never puts back a token another process renewed or signed out
   meanwhile; only keychain writes wait on a prompt, as they would on the keychain itself. Once the keychain refuses or doesn't answer (a dismissed prompt), the run stops
   asking it and keeps new sign-ins in the file, until it finds that another process handed the
-  keychain a secret it put there. Every start
+  keychain a secret it saw in the file (one it put there, read there, or found there at its start). Every start
   hands the keychain what the file kept, one secret at a time up to the first it refuses; the rest
   stays in the file, which goes once it is empty. Signing out while the keychain is away leaves an empty entry for the
   account, which hides the keychain's copy until it can be deleted. A broken file is an error naming
