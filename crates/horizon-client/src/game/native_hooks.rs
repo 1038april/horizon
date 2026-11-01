@@ -1355,6 +1355,18 @@ impl Game<'_> {
         let _ = (hand, stack, partial, swing, equip, canceled);
     }
 
+    /// Final scaled third-person camera distance, before visual-shape collision clipping.
+    /// `entity` includes its living scale/distance and optional mount scale/distance.
+    /// Only finite requests in 0..=1024 blocks replace the vanilla distance.
+    pub(super) fn native_camera_distance(
+        &self,
+        partial: f32,
+        mirrored: bool,
+        entity: &horizon_client::camera::CameraEntity,
+        distance: &mut f32,
+    ) {
+        let _ = (partial, mirrored, entity, distance);
+    }
     /// The values native mods hand their shader packs in this frame,
     /// `partial` ticks past the last tick (0 to 1): a pack's WGSL reads
     /// them as `frame.mods` (eight `vec4<f32>`). Write the slots your own
