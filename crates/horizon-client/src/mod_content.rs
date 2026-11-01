@@ -1208,6 +1208,16 @@ impl<'a> Plan<'a> {
                     }
                 }
             }
+            // a mod type's size, eyes and category are its template's, for
+            // `execute anchored eyes`, spawner checks and the commands' entity
+            // type list (`reg.entity_types`).
+            "entity-types.json" => {
+                for t in &self.entity_types {
+                    if let Some(row) = doc.get(&t.template).cloned() {
+                        doc.set(&t.id, row);
+                    }
+                }
+            }
             "command-registries.json" => {
                 self.names(doc.at("blocks").ok_or("no blocks")?, false);
                 let new_items = || self.items.iter().map(|i| J::Str(i.rename.to.clone()));
@@ -1417,8 +1427,9 @@ impl<'a> Plan<'a> {
 }
 
 /// The JSON and NBT tables rewritten for new blocks and items.
-const JSON_TABLES: [&str; 15] = [
+const JSON_TABLES: [&str; 16] = [
     "facts.json",
+    "entity-types.json",
     "creative-inventory.json",
     "registries.json",
     "gameplay-facts.json",
