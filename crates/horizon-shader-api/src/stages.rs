@@ -214,6 +214,40 @@ fn block_light_color(position: vec3<f32>) -> vec4<f32> {
     let c = textureSampleLevel(block_light_colors, reflection_sampler, uvw, 0.0);
     return vec4<f32>(c.rgb * 4.0, c.a);
 }
+// The point being shaded: its layer and mip level in the LabPBR maps (the entries set them).
+var<private> horizon_block_layer: u32;
+var<private> horizon_block_lod: f32;
+// LabPBR: whether the resource packs ship normal (`_n`) or specular (`_s`) maps beside their
+// block textures. Without them `block_normal_map` and `block_specular_map` give the defaults
+// below.
+fn block_pbr_maps() -> bool {
+    return horizon_block_pbr_present();
+}
+// The surface's LabPBR normal map at `uv` (the sprite's space, as `input.uv`): rg the normal's
+// x and y in the texture's space (x along `input.tangent`, y down the texture; 0..1 for
+// -1..1), b ambient occlusion (1 none), a height (1 the top). (0.5, 0.5, 1, 1) where a texture
+// has none.
+fn block_normal_map(uv: vec2<f32>) -> vec4<f32> {
+    return horizon_block_pbr(uv, horizon_block_layer, horizon_block_lod, 0u);
+}
+// `block_normal_map` at mip level `lod` (0 the full-size map).
+fn block_normal_map_level(uv: vec2<f32>, lod: f32) -> vec4<f32> {
+    return horizon_block_pbr(uv, horizon_block_layer, lod, 0u);
+}
+// The surface's LabPBR specular map at `uv`: r perceptual smoothness, g F0 up to 229/255 and
+// a metal's id above, b porosity or subsurface scattering, a emission (up to 254/255; 1
+// none). (0, 0, 0, 0) where a texture has none.
+fn block_specular_map(uv: vec2<f32>) -> vec4<f32> {
+    return horizon_block_pbr(uv, horizon_block_layer, horizon_block_lod, 1u);
+}
+// `block_specular_map` at mip level `lod`.
+fn block_specular_map_level(uv: vec2<f32>, lod: f32) -> vec4<f32> {
+    return horizon_block_pbr(uv, horizon_block_layer, lod, 1u);
+}
+// The LabPBR maps' size, in texels (they may be smaller than the block's texture).
+fn block_pbr_size() -> vec2<f32> {
+    return horizon_block_pbr_size();
+}
 // Block faces are flat: the derivatives of the position give the face's normal, turned
 // toward the camera. Far away they lose precision, so a normal within about 3.6 degrees of
 // an axis (every full block face) is that axis exactly: no shimmer on distant faces. The
@@ -266,9 +300,29 @@ struct HorizonPostOut {
 }
 ";
 
+/// What the renderer gives the material prelude's LabPBR functions (`native_material.rs`); the
+/// check and the entries below put a stand-in in its place.
+macro_rules! pbr_stub {
+    () => {
+        "fn horizon_block_pbr(uv: vec2<f32>, layer: u32, lod: f32, map: u32) -> vec4<f32> {
+    return select(vec4<f32>(0.5, 0.5, 1.0, 1.0), vec4<f32>(0.0), map == 1u);
+}
+fn horizon_block_pbr_present() -> bool {
+    return false;
+}
+fn horizon_block_pbr_size() -> vec2<f32> {
+    return vec2<f32>(16.0);
+}
+"
+    };
+}
+pub const PBR_STUB: &str = pbr_stub!();
+
 /// Entry points with the material stage's inputs: the renderer calls
 /// `material` from its own terrain shader in the same way.
-const MATERIAL_ENTRIES: &str = "\
+const MATERIAL_ENTRIES: &str = concat!(
+    pbr_stub!(),
+    "\
 struct HorizonMaterialIn {
     @builtin(position) position: vec4<f32>,
     @location(0) albedo: vec4<f32>,
@@ -292,7 +346,8 @@ struct HorizonMaterialIn {
         in.position.xy / frame.resolution, in.face, fluid, in.emission, normal, tangent);
     return material(input).color;
 }
-";
+",
+);
 
 /// Entry points with the sky stage's inputs: the renderer calls `sky` from
 /// its own sky shader in the same way.

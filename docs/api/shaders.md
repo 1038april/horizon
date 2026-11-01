@@ -191,3 +191,4 @@ stages.
 - 2026-10-24: the earlier shader pack code was removed; this API is designed from scratch.
 - 2026-11-01: API 0.1 (additions): a stage's `files`.
 - 2026-11-01: API 0.1 (additions): `[material] fog`.
+- 2026-11-01: API 0.1 (additions): the material stage reads the resource packs' LabPBR maps (`_n`, `_s`): `block_pbr_maps`, `block_normal_map`, `block_specular_map`, their `_level` forms and `block_pbr_size`. The maps load only while a native pack is picked: without one they cost nothing, and the first pick reloads the resources once.
