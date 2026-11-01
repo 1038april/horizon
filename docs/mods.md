@@ -238,10 +238,13 @@ feature already in the step is not added twice.
 
 The modifiers rewrite the biomes when the content root builds, and the generator orders every biome's features as
 vanilla's `FeatureSorter` does, so an added feature takes its place in that order (its random seed follows from it). A
-biome no modifier names keeps its text, and a world without mods keeps vanilla's biomes byte for byte. An unknown
-biome, biome tag, feature, feature tag, step or modifier type stops the build with the mod and file named, and the game
-starts without content mods ("content mods not loaded: ..." in the log). Feature tags are vanilla's; a world's data
-pack that replaces a biome replaces the mods' changes to it too. Spawns and climate (`add_spawns`, ...) are not read.
+biome no modifier names keeps its text, and a world without mods keeps vanilla's biomes byte for byte. A modifier
+naming a biome, biome tag, feature or feature tag the game doesn't have (another mod's, a `#c:` convention tag), or of a
+type not read yet (spawns and climate: `add_spawns`, `add_carvers`, a mod's own serializer), is skipped with a warning
+naming the mod and file, as NeoForge skips what it can't resolve; the mods still load. A malformed modifier of a type
+that is read (an unknown step, a missing field) stops the build, and the game starts without content mods ("content
+mods not loaded: ..." in the log). Feature tags are vanilla's for now (`#tag` in `features` doesn't read a mod's
+`placed_feature` tags yet); a world's data pack that replaces a biome replaces the mods' changes to it too.
 
 A pool element may be one of Lithostitched's: `lithostitched:limited` (`delegate`, `limit`, `min_depth`) places its
 `delegate` at most `limit` times in one structure start, and `lithostitched:guaranteed` (`delegate`, `count`,

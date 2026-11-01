@@ -52,8 +52,17 @@ fn step(v: &Value) -> std::result::Result<usize, String> {
 }
 
 impl Modifier {
-    /// The modifier in `text`; `None` for `neoforge:none`, which does nothing.
-    pub(super) fn read(mod_id: &str, file: &str, text: &str) -> Result<Option<Self>> {
+    /// The modifier in `text`; `None` for `neoforge:none`, which does nothing,
+    /// and for a type Horizon doesn't read yet (`add_spawns`, `add_carvers`, a
+    /// mod's own serializer), which is skipped with a line in `warnings`: real
+    /// mods ship those beside their feature modifiers, and one must not drop
+    /// every content mod.
+    pub(super) fn read(
+        mod_id: &str,
+        file: &str,
+        text: &str,
+        warnings: &mut Vec<String>,
+    ) -> Result<Option<Self>> {
         let name = format!("mod {mod_id}: {file}");
         let at = |e: String| format!("{name}: {e}");
         let doc: Value = serde_json::from_str(text).map_err(|e| at(e.to_string()))?;
@@ -78,11 +87,11 @@ impl Modifier {
                 Some(one) => vec![step(one).map_err(at)?],
             }),
             other => {
-                return Err(at(format!(
-                    "biome modifier type {other:?}: only add_features, remove_features and none \
-                     are read"
-                ))
-                .into());
+                warnings.push(at(format!(
+                    "biome modifier type {other:?} skipped: only add_features, remove_features \
+                     and none are read"
+                )));
+                return Ok(None);
             }
         };
         Ok(Some(Self {
@@ -218,12 +227,16 @@ fn extend(out: &mut Vec<String>, ids: impl IntoIterator<Item = String>) {
 
 /// Applies `modifiers` to the biome bundle `biomes` (id → the biome's text):
 /// every addition first, then every removal, each in mod and file order (as
-/// NeoForge's add phase runs before its remove phase).
+/// NeoForge's add phase runs before its remove phase). A modifier naming a
+/// biome, feature or tag the root doesn't have (another mod's, a `#c:`
+/// convention tag) is skipped with a line in `warnings`, as NeoForge skips a
+/// holder set it can't resolve, instead of dropping every content mod.
 pub(super) fn apply(
     biomes: &mut J,
     modifiers: &[Modifier],
     biome_reg: &Registry<'_>,
     feature_reg: &Registry<'_>,
+    warnings: &mut Vec<String>,
 ) -> Result<()> {
     let adds = modifiers
         .iter()
@@ -235,8 +248,16 @@ pub(super) fn apply(
     let mut changed: BTreeMap<String, J> = BTreeMap::new();
     for m in adds.chain(removes) {
         let at = |e: String| format!("{}: {e}", m.name);
-        let targets = biome_reg.resolve(&m.biomes).map_err(at)?;
-        let features = feature_reg.resolve(&m.features).map_err(at)?;
+        let resolved = biome_reg
+            .resolve(&m.biomes)
+            .and_then(|targets| Ok((targets, feature_reg.resolve(&m.features)?)));
+        let (targets, features) = match resolved {
+            Ok(both) => both,
+            Err(e) => {
+                warnings.push(at(format!("{e}: skipped")));
+                continue;
+            }
+        };
         for biome in targets {
             let doc = match changed.entry(biome.clone()) {
                 std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),

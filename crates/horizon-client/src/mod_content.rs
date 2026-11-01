@@ -1437,6 +1437,7 @@ fn place_in_biomes(
     modifiers: &[biomes::Modifier],
     biome_tags: Option<J>,
     placed: Option<J>,
+    warnings: &mut Vec<String>,
 ) -> Result<()> {
     let bundle = |doc: Option<J>, name: &str| -> Result<BTreeMap<String, String>> {
         let doc = match doc {
@@ -1479,6 +1480,7 @@ fn place_in_biomes(
             ids: &placed,
             tags: &feature_tags,
         },
+        warnings,
     )?;
     overlay.write(BIOMES, &serde_json::to_vec(&doc)?)
 }
@@ -1825,7 +1827,7 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
                 overlay.write(file, &bytes)?;
                 if biomes::is_modifier(file) {
                     let text = String::from_utf8(bytes).map_err(|e| format!("{file}: {e}"))?;
-                    modifiers.extend(biomes::Modifier::read(&m.id, file, &text)?);
+                    modifiers.extend(biomes::Modifier::read(&m.id, file, &text, &mut warnings)?);
                 } else if let Some((bundle, id)) = worldgen_entry(file) {
                     let text = String::from_utf8(bytes).map_err(|e| format!("{file}: {e}"))?;
                     let entries = worldgen.entry(bundle).or_default();
@@ -1937,7 +1939,14 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
         }
     }
     if !modifiers.is_empty() {
-        place_in_biomes(base, &overlay, &modifiers, biome_tag_doc, placed_doc)?;
+        place_in_biomes(
+            base,
+            &overlay,
+            &modifiers,
+            biome_tag_doc,
+            placed_doc,
+            &mut warnings,
+        )?;
     }
     // The commands suggest ids from `command-registries.json`: add the
     // structures, pools, sets and features the mods bring.

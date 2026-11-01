@@ -2683,7 +2683,10 @@ fn biome_modifiers_none_keep_the_vanilla_biomes() {
 fn biome_modifiers_refuse_unknown_names() {
     let base = biome_base("biome-modifiers-errors");
     let scratch = base.parent().unwrap().to_owned();
-    for (i, (modifier, error)) in [
+    // A name the root doesn't have, or a type not read yet: that modifier is
+    // skipped with a warning (another mod's ids, `#c:` tags and `add_spawns`
+    // are common in real mods), and the mods still load.
+    for (i, (modifier, warning)) in [
         (
             r##"{"type":"neoforge:add_features","biomes":"#minecraft:is_moon",
                 "features":"zinc:ore_zinc","step":"underground_ores"}"##,
@@ -2700,28 +2703,38 @@ fn biome_modifiers_refuse_unknown_names() {
             "unknown placed feature zinc:ore_tin",
         ),
         (
-            r#"{"type":"neoforge:add_features","biomes":"minecraft:plains",
-                "features":"zinc:ore_zinc","step":"ores"}"#,
-            "unknown generation step \"ores\"",
-        ),
-        (
             r#"{"type":"neoforge:add_spawns","biomes":"minecraft:plains","spawners":[]}"#,
-            "biome modifier type \"add_spawns\"",
+            "biome modifier type \"add_spawns\" skipped",
         ),
     ]
     .into_iter()
     .enumerate()
     {
         let m = zinc_mod(&scratch.join(format!("zinc{i}")), &[("bad", modifier)]);
-        let e = build(&base, &[m], &scratch.join("out"))
-            .unwrap_err()
-            .to_string();
-        assert!(e.contains(error), "{e}");
+        let warnings = build(&base, &[m], &scratch.join(format!("out{i}"))).unwrap();
         assert!(
-            e.contains("mod zinc: data/zinc/neoforge/biome_modifier/bad.json"),
-            "{e}"
+            warnings.iter().any(|w| w.contains(warning)
+                && w.contains("mod zinc: data/zinc/neoforge/biome_modifier/bad.json")),
+            "{warnings:?}"
         );
     }
+    // A malformed modifier of a type Horizon reads is the mod's error.
+    let m = zinc_mod(
+        &scratch.join("zinc-step"),
+        &[(
+            "bad",
+            r#"{"type":"neoforge:add_features","biomes":"minecraft:plains",
+                "features":"zinc:ore_zinc","step":"ores"}"#,
+        )],
+    );
+    let e = build(&base, &[m], &scratch.join("out-step"))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("unknown generation step \"ores\""), "{e}");
+    assert!(
+        e.contains("mod zinc: data/zinc/neoforge/biome_modifier/bad.json"),
+        "{e}"
+    );
     let _ = fs::remove_dir_all(&scratch);
 }
 
