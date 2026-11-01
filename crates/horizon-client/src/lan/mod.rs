@@ -966,9 +966,17 @@ mod tests {
     #[test]
     fn a_full_server_closes_the_connection_that_waited_longest() {
         use std::io::Read;
+        // With a log writer, as on a dedicated server: making room logs, and must not deadlock.
+        let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+        let into = lines.clone();
         let config = NetConfig {
             announce: false,
             listen: false,
+            log: Some(NetLog {
+                write: Arc::new(move |_, _, line| into.lock().unwrap().push(line.to_owned())),
+                lang: Arc::new(Default::default()),
+                log_ips: true,
+            }),
             ..NetConfig::lan(0, "Room".into(), 1)
         };
         let lan = Lan::start_with(Arc::new(data::SyncData::empty()), config).unwrap();
@@ -997,6 +1005,9 @@ mod tests {
         );
         assert!(shared.waiting.lock().unwrap().is_empty());
         assert!(shared.count(ip).is_none(), "nothing else to close");
+        let logged = lines.lock().unwrap().clone();
+        assert_eq!(logged.len(), 1, "one report a minute: {logged:?}");
+        assert!(logged[0].contains("127.0.0.1"), "{logged:?}");
         // Its thread ends and uncounts it; a connection that plays is never closed.
         held.remove(1);
         shared.wait(&newcomer, &server_side);
