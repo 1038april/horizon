@@ -169,23 +169,21 @@ impl Rule {
     /// `None` when the rule lists no textures, or holds a condition that doesn't parse or isn't
     /// supported: such a rule never matches, instead of matching every entity.
     fn parse(props: &Properties, n: u32) -> Option<Self> {
-        // `nbt.<n>.<path>` (a path may end in a list index: `nbt.2.Tags.1`), or `<key>.<n>`.
-        let unsupported = props.entries.iter().any(|(key, _)| {
+        // This rule's keys, `<key>.<n>` or `nbt.<n>.<path>` (a path may end in a list index:
+        // `nbt.2.Tags.1`): one unknown, or an empty condition (`biomes.1=`), skips the rule. An
+        // empty `weights` is only no weights.
+        let unusable = props.entries.iter().any(|(key, value)| {
             let mut parts = key.splitn(3, '.');
-            let (head, index) = (parts.next(), parts.next());
-            index.is_some_and(|i| i.parse::<u32>() == Ok(n))
-                && head.is_some_and(|k| !KEYS.contains(&k))
-        });
-        // An empty condition (`biomes.1=`) is as broken as a bad one.
-        let empty = props.entries.iter().any(|(key, value)| {
-            value.is_empty()
-                && key
-                    .split_once('.')
-                    .is_some_and(|(_, i)| i.parse::<u32>() == Ok(n))
+            let (Some(head), Some(index)) = (parts.next(), parts.next()) else {
+                return false;
+            };
+            index.parse::<u32>() == Ok(n)
+                && (!KEYS.contains(&head)
+                    || (value.is_empty() && !matches!(head, "textures" | "skins" | "weights")))
         });
         let get = |key: &str| props.get(&format!("{key}.{n}"));
         // ETF's `seedSource`: only the entity's own seed is read.
-        if unsupported || empty || get("seedSource").is_some_and(|v| v != "entity") {
+        if unusable || get("seedSource").is_some_and(|v| v != "entity") {
             return None;
         }
         // `Some(None)` for a missing key, `None` for one that doesn't parse.
@@ -219,10 +217,13 @@ impl Rule {
         };
         let mut names = Vec::new();
         if let Some(v) = get("name") {
-            let (v, negated) = negation(v);
+            let (v, negated) = negation(v)?;
             names.push((Name::parse(v)?, negated));
         }
         for (word, negated) in quoted_words(get("names").unwrap_or("")) {
+            if word.is_empty() {
+                return None;
+            }
             names.push((Name::parse(word)?, negated));
         }
         Some(Self {
@@ -232,14 +233,10 @@ impl Rule {
             biomes: read(get("biomes"), |v| {
                 v.split_whitespace()
                     .map(|b| {
-                        let (b, negated) = negation(b);
-                        let pattern = ["pattern:", "ipattern:", "regex:", "iregex:"]
-                            .iter()
-                            .any(|p| b.starts_with(p));
-                        let name = if pattern {
-                            Name::parse(b)?
-                        } else {
-                            Name::Exact(namespaced(b))
+                        let (b, negated) = negation(b)?;
+                        let name = match Name::parse(b)? {
+                            Name::Exact(id) => Name::Exact(namespaced(&id)),
+                            pattern => pattern,
                         };
                         Some((name, negated))
                     })
@@ -272,7 +269,7 @@ impl Rule {
             blocks: read(get("blocks"), |v| {
                 v.split_whitespace()
                     .map(|b| {
-                        let (b, negated) = negation(b);
+                        let (b, negated) = negation(b)?;
                         Some((BlockMatch::parse(b)?, negated))
                     })
                     .collect()
@@ -380,10 +377,13 @@ fn expand(list: &RangeList) -> Vec<u32> {
     out
 }
 
-fn negation(value: &str) -> (&str, bool) {
-    value
-        .strip_prefix('!')
-        .map_or((value, false), |v| (v, true))
+/// A value and whether it starts with `!`; `None` for a `!` with nothing after it.
+fn negation(value: &str) -> Option<(&str, bool)> {
+    match value.strip_prefix('!') {
+        Some("") => None,
+        Some(v) => Some((v, true)),
+        None => Some((value, false)),
+    }
 }
 
 fn parse_bool(value: &str) -> Option<bool> {
@@ -402,7 +402,7 @@ fn quoted_words(value: &str) -> impl Iterator<Item = (&str, bool)> {
         if rest.is_empty() {
             return None;
         }
-        let (r, negated) = negation(rest);
+        let (r, negated) = rest.strip_prefix('!').map_or((rest, false), |r| (r, true));
         let (word, after) = match r.strip_prefix('"') {
             Some(q) => q.split_once('"').unwrap_or((q, "")),
             None => r.split_once(' ').unwrap_or((r, "")),
@@ -696,11 +696,11 @@ mod tests {
              skins.7=1-100000\n\
              textures.9=2000000000\n",
         );
-        assert_eq!(r.rules.len(), 1, "rules 1 and 9 list no usable textures");
-        assert_eq!(r.rules[0].textures.len(), MAX_TEXTURES);
-        assert!(r.max_texture() <= MAX_INDEX);
-        // One weight for two textures, or only zeros: an even choice.
-        for weights in ["5", "0 0"] {
+        // Rule 7 stops at 256 textures, and rule 9's index is past MAX_INDEX.
+        assert_eq!(r.max_texture(), 256);
+        assert_eq!(r.select(&Facts::default(), 300), 300 % 256 + 1);
+        // One weight for two textures, only zeros, or none: an even choice.
+        for weights in ["5", "0 0", ""] {
             let r = rules(&format!("textures.1=2 3\nweights.1={weights}"));
             assert_eq!(r.select(&Facts::default(), 1), 3, "{weights}");
         }
@@ -725,6 +725,10 @@ mod tests {
             "biomes.1=",
             "names.1=",
             "biomes.1=regex:(",
+            "biomes.1=!",
+            "blocks.1=!",
+            "name.1=!",
+            "names.1=Bob !",
         ] {
             let r = rules(&format!("textures.1=2\n{rule}\ntextures.2=3"));
             assert_eq!(r.select(&Facts::default(), 0), 3, "{rule}");

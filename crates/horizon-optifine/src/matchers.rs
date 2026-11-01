@@ -1,6 +1,6 @@
 //! The values OptiFine's `.properties` match against: names (`pattern:`, `ipattern:`, `regex:`,
 //! `iregex:` or exact), integer range lists (`heights`, `damage`, `stackSize`), id lists
-//! (`biomes`, `items`) and block lists with block states (`matchBlocks`, `blocks`).
+//! (`items`, OptiFine's plain `biomes`) and block lists with block states (`matchBlocks`, `blocks`).
 
 use regex::{Regex, RegexBuilder};
 
