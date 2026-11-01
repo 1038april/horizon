@@ -238,7 +238,10 @@ pub(super) struct UsedDrops {
 
 impl Spill {
     pub(super) fn is_empty(&self) -> bool {
-        self.spawns.is_empty() && self.orbs.is_empty() && self.removed.is_empty()
+        self.spawns.is_empty()
+            && self.orbs.is_empty()
+            && self.removed.is_empty()
+            && self.used.is_empty()
     }
 }
 
