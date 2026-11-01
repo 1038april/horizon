@@ -25,8 +25,9 @@ pub const UI: usize = 10;
 /// sources: `clamp((int) sqrt(255), 2, 8)` streaming, the rest static.
 pub const STATIC_CHANNELS: usize = 247;
 pub const STREAMING_CHANNELS: usize = 8;
-/// Static channels only sounds played to the listener (no position) may take.
-const HEARD_RESERVE: usize = 16;
+/// Static channels only sounds played to the listener (no position) may take
+/// while the `uiSoundReserve` extra is on.
+pub const HEARD_RESERVE: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlayResult {
@@ -794,6 +795,9 @@ pub struct SoundEngine {
     pub source_volumes: [f32; 11],
     /// A `SoundEventListener` is registered.
     pub listening: bool,
+    /// Static channels positional sounds leave free for the ones played to the
+    /// listener: 0 as vanilla, `HEARD_RESERVE` with the `uiSoundReserve` extra.
+    pub listener_reserve: usize,
     pub notifications: Vec<Notification>,
 }
 fn handle_channel(h: &Handle) -> Option<ChannelId> {
@@ -821,6 +825,7 @@ impl SoundEngine {
             limits: [STATIC_CHANNELS, STREAMING_CHANNELS],
             source_volumes: [1.0; 11],
             listening: false,
+            listener_reserve: 0,
             notifications: Vec::new(),
         }
     }
@@ -1102,11 +1107,11 @@ impl SoundEngine {
         let looping = instance.looping && instance.delay <= 0;
         let streaming = sound.stream;
         let pool = usize::from(streaming);
-        // Sounds out in the world leave a few static channels free, so a flood of them (a crater's worth of blocks
-        // breaking) can't stop the ones played to the listener.
+        // With the `uiSoundReserve` extra, sounds out in the world leave a few static channels free, so a flood of
+        // them (a crater's worth of blocks breaking) can't stop the ones played to the listener.
         let positional = !instance.relative && instance.attenuation != Attenuation::None;
         let reserved = if positional && !streaming {
-            HEARD_RESERVE
+            self.listener_reserve
         } else {
             0
         };
@@ -1559,10 +1564,9 @@ mod tests {
         assert_eq!(s.volume, 0.0);
         assert!(!s.stopped);
     }
-    use test_backend::Null;
-
     #[test]
-    fn world_sounds_leave_channels_for_the_listener() {
+    fn world_sounds_leave_channels_for_the_listener_only_with_the_extra() {
+        use test_backend::Null;
         let mut registry = SoundRegistry::default();
         registry.add_file(
             "minecraft",
@@ -1570,7 +1574,6 @@ mod tests {
                  "ui.button.click": {"sounds": ["random/click"]}}"#,
             &|_, _| true,
         );
-        let (mut engine, mut backend) = (SoundEngine::new(registry), Null::default());
         let random = || LegacyRandom::new(0);
         let block = |i: usize| {
             let at = [i as f64, 64.0, 0.0];
@@ -1584,14 +1587,24 @@ mod tests {
                 at,
             )
         };
-        let started = (0..STATIC_CHANNELS)
-            .filter(|&i| engine.play_new(block(i), false, &mut backend).1 == PlayResult::Started)
-            .count();
-        assert_eq!(started, STATIC_CHANNELS - HEARD_RESERVE);
-        let click = SoundInstance::for_ui("minecraft:ui.button.click", 1.0, 0.25, random());
-        assert_eq!(
-            engine.play_new(click, false, &mut backend).1,
-            PlayResult::Started
-        );
+        let click = || SoundInstance::for_ui("minecraft:ui.button.click", 1.0, 0.25, random());
+        for reserve in [0, HEARD_RESERVE] {
+            let mut engine = SoundEngine::new(registry.clone());
+            engine.listener_reserve = reserve;
+            let mut backend = Null::default();
+            // Positional sounds take the static channels the reserve leaves; then their plays fail.
+            let started = (0..STATIC_CHANNELS)
+                .filter(|&i| {
+                    engine.play_new(block(i), false, &mut backend).1 == PlayResult::Started
+                })
+                .count();
+            assert_eq!(started, STATIC_CHANNELS - reserve);
+            let heard = engine.play_new(click(), false, &mut backend).1;
+            assert_eq!(
+                heard == PlayResult::Started,
+                reserve > 0,
+                "reserve {reserve}"
+            );
+        }
     }
 }
