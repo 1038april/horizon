@@ -326,13 +326,14 @@ impl Rule {
                 .is_none_or(|w| f.weather.is_some_and(|f| w.contains(&f)))
             && ranged(&self.sizes, f.size)
             && (self.blocks.is_empty()
-                || included(&self.blocks, |m| {
-                    f.blocks.iter().any(|b| {
-                        m.matches(b.id, |key| {
-                            b.states.iter().find(|(k, _)| *k == key).map(|(_, v)| *v)
+                || (!f.blocks.is_empty()
+                    && included(&self.blocks, |m| {
+                        f.blocks.iter().any(|b| {
+                            m.matches(b.id, |key| {
+                                b.states.iter().find(|(k, _)| *k == key).map(|(_, v)| *v)
+                            })
                         })
-                    })
-                }))
+                    })))
     }
 
     /// One of the rule's textures, by weight, from the entity's seed. OptiFine's docs don't say
@@ -687,6 +688,7 @@ mod tests {
         }];
         assert_eq!(pick(&sideways), 3, "rule 2: anything but stone");
         assert_eq!(pick(&[block("minecraft:stone")]), 1);
+        assert_eq!(pick(&[]), 1, "no blocks known: not even `!stone` holds");
     }
 
     #[test]
