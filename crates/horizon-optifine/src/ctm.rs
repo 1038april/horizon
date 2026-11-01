@@ -258,7 +258,7 @@ impl Rule {
         let height = int("height", 0).max(0) as u32;
 
         let tiles = match get("tiles") {
-            Some(v) => tile_list(path, v).ok_or(format!("more than {MAX_TILES} tiles"))?,
+            Some(v) => tile_list(path, v)?,
             None => Vec::new(),
         };
         let (min, max) = method.tiles_needed(width, height);
@@ -271,9 +271,9 @@ impl Rule {
 
         let mut weights: Vec<u32> = get("weights")
             .map(|v| {
-                // By position: a weight that is not a number counts 1.
+                // By position: a weight that is not a number (`Integer.parseInt`) counts 1.
                 v.split_whitespace()
-                    .map(|w| w.parse().unwrap_or(1))
+                    .map(|w| w.parse::<i32>().map_or(1, |w| w.max(0) as u32))
                     .collect()
             })
             .unwrap_or_default();
@@ -400,16 +400,21 @@ fn sprite_list(value: &str) -> Vec<String> {
     value.split_whitespace().filter_map(sprite_path).collect()
 }
 
-/// A tile name as the texture's resource path: `dirt` is `textures/block/dirt.png`, a name with a
-/// `/` is a path in the namespace (`optifine/ctm/grass/1.png`, `textures/...` either way), and
-/// `ns:` picks the namespace.
+/// A tile name as the texture's resource path: `dirt` is `textures/block/dirt.png`, and a path
+/// under `textures/` or `optifine/` is that file. Any other path is in `minecraft` (OptiFine; its
+/// `block/` and `item/` sprites in `textures/`) or, after `ns:`, in `ns:textures/` (Continuity).
 pub fn sprite_path(name: &str) -> Option<String> {
-    let (ns, path) = name.split_once(':').unwrap_or(("minecraft", name));
+    let (ns, path, namespaced) = match name.split_once(':') {
+        Some((ns, path)) => (ns, path, true),
+        None => ("minecraft", name, false),
+    };
     let path = path.strip_suffix(".png").unwrap_or(path);
     let path = match path {
         p if !p.contains('/') => format!("textures/block/{p}"),
         p if p.starts_with("textures/") || p.starts_with("optifine/") => p.to_owned(),
-        p if p.starts_with("block/") || p.starts_with("item/") => format!("textures/{p}"),
+        p if namespaced || p.starts_with("block/") || p.starts_with("item/") => {
+            format!("textures/{p}")
+        }
         p => p.to_owned(),
     };
     crate::paths::in_root(format!("assets/{}/{path}.png", ns.to_ascii_lowercase()))
@@ -420,8 +425,9 @@ pub fn sprite_path(name: &str) -> Option<String> {
 const MAX_TILES: usize = 4096;
 
 /// `tiles`: `0-3 5 name name.png <skip> <default> path/x.png ~/x ns:path`. Numbers and bare
-/// names are beside the properties file; ranges count up (or down). `None` past [`MAX_TILES`].
-fn tile_list(props: &str, value: &str) -> Option<Vec<Tile>> {
+/// names are beside the properties file; ranges count up (or down). A tile outside the resource
+/// root fails the list (weights pair with tiles by position), as does a list past [`MAX_TILES`].
+fn tile_list(props: &str, value: &str) -> Result<Vec<Tile>, String> {
     let png = |p: &str| {
         if p.ends_with(".png") {
             p.to_owned()
@@ -429,32 +435,21 @@ fn tile_list(props: &str, value: &str) -> Option<Vec<Tile>> {
             format!("{p}.png")
         }
     };
+    let bad = |t: &str| format!("tile {t} is outside the resource root");
+    let too_many = format!("more than {MAX_TILES} tiles");
     let mut out = Vec::new();
     for token in value.split_whitespace() {
         match token {
             "<skip>" => out.push(Tile::Skip),
             "<default>" => out.push(Tile::Default),
             // Continuity: a namespaced tile is a sprite location, never a range.
-            t if t.contains(':') => {
-                let (ns, path) = t.split_once(':').unwrap_or_default();
-                // As `sprite_path`, but a path outside `textures/` and `optifine/` is in `textures/`.
-                let path = match path {
-                    p if p.contains('/')
-                        && !p.starts_with("textures/")
-                        && !p.starts_with("optifine/") =>
-                    {
-                        format!("textures/{p}")
-                    }
-                    p => p.to_owned(),
-                };
-                out.extend(sprite_path(&format!("{ns}:{path}")).map(Tile::Texture));
-            }
+            t if t.contains(':') => out.push(Tile::Texture(sprite_path(t).ok_or(bad(t))?)),
             t => {
                 if let Some((a, b)) = t.split_once('-')
                     && let (Ok(a), Ok(b)) = (a.parse::<u32>(), b.parse::<u32>())
                 {
                     if out.len() + a.abs_diff(b) as usize >= MAX_TILES {
-                        return None;
+                        return Err(too_many);
                     }
                     let dir = props.rsplit_once('/').map_or("", |(d, _)| d);
                     let tile = |n| Tile::Texture(format!("{dir}/{n}.png"));
@@ -467,10 +462,8 @@ fn tile_list(props: &str, value: &str) -> Option<Vec<Tile>> {
                 }
                 if let Some(rest) = t.strip_prefix("assets/minecraft/") {
                     // A full path: `minecraft` whatever the file's namespace.
-                    out.extend(
-                        crate::paths::in_root(format!("assets/minecraft/{}", png(rest)))
-                            .map(Tile::Texture),
-                    );
+                    let path = crate::paths::in_root(format!("assets/minecraft/{}", png(rest)));
+                    out.push(Tile::Texture(path.ok_or(bad(t))?));
                     continue;
                 }
                 // A leading `/` is OptiFine's folder, as `~/` is.
@@ -478,11 +471,16 @@ fn tile_list(props: &str, value: &str) -> Option<Vec<Tile>> {
                     Some(rest) => format!("~/{rest}"),
                     None => t.to_owned(),
                 };
-                out.extend(crate::resolve(props, &png(&t)).map(Tile::Texture));
+                out.push(Tile::Texture(
+                    crate::resolve(props, &png(&t)).ok_or(bad(&t))?,
+                ));
             }
         }
     }
-    (out.len() <= MAX_TILES).then_some(out)
+    if out.len() > MAX_TILES {
+        return Err(too_many);
+    }
+    Ok(out)
 }
 
 fn face_bits(value: &str) -> u8 {
@@ -635,6 +633,20 @@ mod tests {
     }
 
     #[test]
+    fn namespaced_sprites() {
+        let r = rule(
+            "a.properties",
+            "matchTiles=mymod:blocks/marble mymod:optifine/ctm/x blocks/marble\nmethod=fixed\ntiles=0",
+        )
+        .unwrap()
+        .unwrap();
+        assert!(r.matches_tile("assets/mymod/textures/blocks/marble.png"));
+        assert!(r.matches_tile("assets/mymod/optifine/ctm/x.png"));
+        // Without a namespace, a path is in minecraft as written.
+        assert!(r.matches_tile("assets/minecraft/blocks/marble.png"));
+    }
+
+    #[test]
     fn method_options() {
         let r = rule(
             "a.properties",
@@ -757,8 +769,9 @@ mod tests {
         // A name test that can't be read matches no block, so the rule is dropped.
         assert!(r("tiles=0\nname=regex:[").is_err());
         // Weights pair with tiles by position.
-        let w = r("tiles=0-2\nweights=10 x 5").unwrap().unwrap();
-        assert_eq!(w.weights, [10, 1, 5]);
+        let w = r("tiles=0-2\nweights=10 x 4294967295").unwrap().unwrap();
+        assert_eq!(w.weights, [10, 1, 1]);
+        assert!(r("tiles=a ../b c\nweights=1 2 3").is_err());
         assert!(
             r("tiles=0-2\nweights=0 0 0")
                 .unwrap()
