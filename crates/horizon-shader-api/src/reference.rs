@@ -69,7 +69,16 @@ pub fn markdown() -> String {
                     the point at `uv` and `depth`.\n";
         }
         if kind == StageKind::Material {
-            out += "Helpers:\n\n";
+            out += "Helpers:\n\n\
+                    - `fn block_pbr_maps() -> bool`: whether the resource packs ship LabPBR maps (`_n`, `_s`).\n\
+                    - `fn block_normal_map(uv: vec2<f32>) -> vec4<f32>`: the surface's LabPBR normal map at `uv` (rg the \
+                    normal along `input.tangent` and down the texture, b ambient occlusion, a height); (0.5, 0.5, 1, 1) \
+                    without one.\n\
+                    - `fn block_specular_map(uv: vec2<f32>) -> vec4<f32>`: its LabPBR specular map (r smoothness, g F0 or a \
+                    metal, b porosity or subsurface, a emission, 1 none); (0, 0, 0, 0) without one.\n\
+                    - `fn block_normal_map_level(uv: vec2<f32>, lod: f32) -> vec4<f32>`, \
+                    `fn block_specular_map_level(uv: vec2<f32>, lod: f32) -> vec4<f32>`: the same at mip level `lod`.\n\
+                    - `fn block_pbr_size() -> vec2<f32>`: the LabPBR maps' size in texels.\n";
         }
         if kind != StageKind::Sky {
             out += "- `fn shadow_position(position: vec3<f32>) -> vec3<f32>`: where the camera-relative point `position` is\n  \

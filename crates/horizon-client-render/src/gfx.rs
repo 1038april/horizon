@@ -607,6 +607,8 @@ pub struct Renderer {
     entity_batch: EntityBatch,
     group: wgpu::BindGroup,
     globals: wgpu::Buffer,
+    /// The resource packs' LabPBR maps (normals, specular), for native shader packs.
+    pbr_maps: Option<[wgpu::Texture; 2]>,
     lightmap: wgpu::Texture,
     /// The block sprites, `sprite_split` layers per array (the first is
     /// `sprites` in terrain.wgsl, the others `sprites_1`...).
@@ -924,6 +926,37 @@ pub struct PreparedTextures {
     /// The sprite layers per array `sprites` is cut by.
     split: u32,
     forcefield: (Vec<u8>, u32),
+    /// The LabPBR maps' mip chains (normals, specular), their levels, layers and size.
+    pbr: Option<(Vec<u8>, Vec<u8>, u32, u32, u32)>,
+}
+/// Every level of `layers` square RGBA layers of `size`, each the mean of four texels of the
+/// one above, layer major: the LabPBR maps' mips (their channels are data, not colour).
+fn box_mip_chain(pixels: &[u8], size: u32, layers: u32) -> Vec<u8> {
+    let layer_bytes = (size * size * 4) as usize;
+    let mut out = Vec::new();
+    for layer in pixels.chunks_exact(layer_bytes).take(layers as usize) {
+        let mut level = layer.to_vec();
+        let mut side = size as usize;
+        out.extend_from_slice(&level);
+        while side > 1 {
+            let half = side / 2;
+            let mut next = Vec::with_capacity(half * half * 4);
+            for y in 0..half {
+                for x in 0..half {
+                    for c in 0..4 {
+                        let at = |dx: usize, dy: usize| {
+                            u32::from(level[((2 * y + dy) * side + 2 * x + dx) * 4 + c])
+                        };
+                        next.push(((at(0, 0) + at(1, 0) + at(0, 1) + at(1, 1) + 2) / 4) as u8);
+                    }
+                }
+            }
+            out.extend_from_slice(&next);
+            level = next;
+            side = half;
+        }
+    }
+    out
 }
 impl PreparedTextures {
     pub fn new(
@@ -956,7 +989,23 @@ impl PreparedTextures {
                 .collect(),
             split,
             forcefield: mip_chain(forcefield.0, forcefield.1, &[], 0, 1),
+            pbr: None,
         }
+    }
+
+    /// With the resource packs' LabPBR `normals` and `specular` maps (`layers` layers of
+    /// `size`, as `RenderAssets` holds them; nothing when empty).
+    pub fn with_pbr(mut self, normals: &[u8], specular: &[u8], size: u32, layers: u32) -> Self {
+        if !normals.is_empty() {
+            self.pbr = Some((
+                box_mip_chain(normals, size, layers),
+                box_mip_chain(specular, size, layers),
+                size.trailing_zeros() + 1,
+                layers,
+                size,
+            ));
+        }
+        self
     }
 
     /// The same mip chains cut by `split` layers per array: chains made before
@@ -1923,6 +1972,40 @@ impl Renderer {
         };
         let mut mip_levels = 1;
         let gl = adapter.get_info().backend == wgpu::Backend::Gl;
+        // The resource packs' LabPBR maps, for native shader packs: one array each, cut to
+        // the layers the GPU has (`block_normal_map` gives the default past them).
+        let pbr_maps = prepared
+            .pbr
+            .map(|(normals, specular, levels, layers, size)| {
+                let kept = layers.min(device.limits().max_texture_array_layers);
+                let count = array_layers(kept, gl);
+                [("LabPBR normals", normals), ("LabPBR specular", specular)].map(
+                    |(label, mut data)| {
+                        // The extra layers are empty.
+                        let layer_bytes = data.len() / layers as usize;
+                        data.resize(layer_bytes * count as usize, 0);
+                        device.create_texture_with_data(
+                            &queue,
+                            &wgpu::TextureDescriptor {
+                                label: Some(label),
+                                size: wgpu::Extent3d {
+                                    width: size,
+                                    height: size,
+                                    depth_or_array_layers: count,
+                                },
+                                mip_level_count: levels,
+                                sample_count: 1,
+                                dimension: wgpu::TextureDimension::D2,
+                                format: wgpu::TextureFormat::Rgba8Unorm,
+                                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                                view_formats: &[],
+                            },
+                            wgpu::util::TextureDataOrder::LayerMajor,
+                            &data,
+                        )
+                    },
+                )
+            });
         let sprite_textures: Vec<wgpu::Texture> = prepared
             .sprites
             .into_iter()
@@ -3167,6 +3250,7 @@ impl Renderer {
             entity_batch: EntityBatch::default(),
             group,
             globals,
+            pbr_maps,
             lightmap,
             sprite_textures,
             sprite_unused,
@@ -4194,6 +4278,7 @@ impl Renderer {
             sprites: self.terrain_sprites,
             format: self.config.format.remove_srgb_suffix(),
             sprite_tags: &sprite_tags,
+            pbr: self.pbr_maps.as_ref(),
         };
         let (pack, labels) =
             native_pack::NativePack::new(&self.device, &terrain, report, &constants)?;
