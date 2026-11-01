@@ -1184,6 +1184,25 @@ impl Game<'_> {
     ) {
         let _ = (stack, pos, face, claimed);
     }
+    /// `DispenserBlock.getDispenseMethod`: choose a behaviour for any item,
+    /// including vanilla items, on the authoritative server (not droppers).
+    /// Leave answer None for vanilla. Otherwise answer `(remainder, event)`:
+    /// a remainder of None empties the slot, `Some(stack)` replaces it (the hook
+    /// owns consumption: no extra item is removed afterwards). `event` is the
+    /// level event the dispenser plays with its smoke: 1000 the click, 1001 the
+    /// fail sound (`OptionalDispenseItemBehavior` without success), or 0 for
+    /// nothing at all (`DispenseItemBehavior.NOOP`). To drop one normally,
+    /// answer `(native_dispense_default(..), 1000)`. API @API:dispenser_behaviour@.
+    pub(super) fn native_dispense_item(
+        &mut self,
+        dimension: &str,
+        pos: [i32; 3],
+        facing: horizon_core::geometry::Direction,
+        stack: &ItemStack,
+        answer: &mut Option<super::dispenser::NativeDispensed>,
+    ) {
+        let _ = (dimension, pos, facing, stack, answer);
+    }
     /// A player uses `stack` (right click) with `self.hand`: in the air, or
     /// on a block once `native_use_item_on` let it through, where `Item.use`
     /// starts. Each click reaches it once. Set `claimed` to take the use: the
