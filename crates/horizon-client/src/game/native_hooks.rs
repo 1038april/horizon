@@ -3947,17 +3947,21 @@ mod tests {
                     .next()
             })
             .collect();
-        // The renderer's hook points (`horizon_client_render::gfx::native_render`).
-        let render_hooks: BTreeSet<_> =
-            include_str!("../../../horizon-client-render/src/gfx/native_render.rs")
+        // Hook points that are free functions in other crates.
+        let free_hooks = |source: &'static str| -> BTreeSet<&'static str> {
+            source
                 .lines()
                 .filter_map(|line| line.strip_prefix("pub fn native_")?.split('(').next())
-                .collect();
+                .collect()
+        };
+        // The renderer's (`horizon_client_render::gfx::native_render`).
+        let render_hooks = free_hooks(include_str!(
+            "../../../horizon-client-render/src/gfx/native_render.rs"
+        ));
+        // Items' default components (`horizon_world::item_defaults`).
+        let item_hooks = free_hooks(include_str!("../../../horizon-world/src/item_defaults.rs"));
         // The loot tables' hook point (`horizon_world::loot`).
-        let loot_hooks: BTreeSet<_> = include_str!("../../../horizon-world/src/loot.rs")
-            .lines()
-            .filter_map(|line| line.strip_prefix("pub fn native_")?.split('(').next())
-            .collect();
+        let loot_hooks = free_hooks(include_str!("../../../horizon-world/src/loot.rs"));
         let declared: BTreeSet<_> = section
             .lines()
             .chain(level_section.lines())
@@ -3968,6 +3972,7 @@ mod tests {
                     .next()
             })
             .chain(render_hooks.iter().copied())
+            .chain(item_hooks.iter().copied())
             .chain(loot_hooks.iter().copied())
             .collect();
         let mut names = BTreeSet::new();
@@ -3982,6 +3987,8 @@ mod tests {
             names.insert(name);
             let target = if render_hooks.contains(name) {
                 format!("horizon_client_render::gfx::native_render::native_{name}")
+            } else if item_hooks.contains(name) {
+                format!("horizon_world::item_defaults::native_{name}")
             } else if loot_hooks.contains(name) {
                 format!("horizon_world::loot::native_{name}")
             } else if level_hooks.contains(name) {

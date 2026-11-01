@@ -548,8 +548,10 @@ impl ItemRenderer {
         root: &Path,
         library: std::result::Result<Arc<ModelLibrary>, String>,
     ) -> crate::Result<Self> {
-        let prototypes: BTreeMap<String, Components> =
-            serde_json::from_slice(&fs::read(root.join("items.json"))?)?;
+        let prototypes: BTreeMap<String, Components> = horizon_world::item_defaults::read(root)?
+            .into_iter()
+            .map(|(item, components)| Ok((item, serde_json::from_value(components)?)))
+            .collect::<serde_json::Result<_>>()?;
         let models = ItemModels {
             definitions: load_definitions(root),
             prototypes,
