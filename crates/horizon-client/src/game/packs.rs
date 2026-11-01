@@ -346,6 +346,12 @@ impl Game<'_> {
         self.refresh_remote_language();
         self.audio.reload(&root);
         self.clear_lod();
+        // A pack that may replace leaf models falls back to `Off` before the
+        // reload marks every section dirty.
+        self.streaming.leaf_culling = self
+            .settings
+            .horizon
+            .leaf_culling_effective(&self.settings.resource_packs);
         self.streaming.reload_resources(&mut self.world, context);
         self.pending_uploads.clear();
         // New GPU textures: a renderer built from the reloaded resources; the

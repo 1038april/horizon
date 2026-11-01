@@ -246,6 +246,61 @@ impl FarDetail {
     }
 }
 
+/// What the section mesher does with leaf faces inside a canopy. Terrain
+/// geometry only: entities, particles and block entities are untouched.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LeafCullingMode {
+    /// Every leaf face, as vanilla's fancy leaves draw them.
+    #[default]
+    Off,
+    /// Leaves surrounded on all six sides by leaves or full opaque cubes draw
+    /// in the opaque layer, so their cutouts no longer show the layers behind.
+    Solid,
+    /// Like `Solid`, but a leaf with one open side draws opaque too: the
+    /// exposed shell thins by a layer and the canopy looks chunkier.
+    SolidAggressive,
+    /// Drops the faces two leaves share. Faces toward air, cavities, partial
+    /// models, unknown neighbours and section boundaries stay.
+    Hollow,
+}
+impl LeafCullingMode {
+    pub const ALL: [LeafCullingMode; 4] = [
+        LeafCullingMode::Off,
+        LeafCullingMode::Solid,
+        LeafCullingMode::SolidAggressive,
+        LeafCullingMode::Hollow,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            LeafCullingMode::Off => "off",
+            LeafCullingMode::Solid => "solid",
+            LeafCullingMode::SolidAggressive => "solid_aggressive",
+            LeafCullingMode::Hollow => "hollow",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            LeafCullingMode::Off => "Off",
+            LeafCullingMode::Solid => "Solid",
+            LeafCullingMode::SolidAggressive => "Solid Aggressive",
+            LeafCullingMode::Hollow => "Hollow",
+        }
+    }
+    /// Whether this mode draws interior leaf faces in the solid layer.
+    pub fn is_interior(self) -> bool {
+        matches!(
+            self,
+            LeafCullingMode::Solid | LeafCullingMode::SolidAggressive
+        )
+    }
+    fn parse(s: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|mode| mode.name() == s)
+            .unwrap_or_default()
+    }
+}
+
 /// TAA upscaling: the world renders this much smaller than the resolution scale's size,
 /// and TAA builds the full-size picture from the jittered frames (FSR's and DLSS's ratios).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -346,6 +401,21 @@ impl Graphics {
     pub fn lod_distance_on(&self, info: &wgpu::AdapterInfo) -> u32 {
         lod_distance_capped(self.lod_distance, info)
     }
+    /// Whether the selected packs leave vanilla's block models in place.
+    /// Horizon's occlusion assumptions (entity and leaf culling) hold only
+    /// for those: a pack can replace an opaque cube's model or a leaf's.
+    pub fn vanilla_models(&self, resource_packs: &[String]) -> bool {
+        resource_packs.iter().all(|id| id == "vanilla")
+    }
+    /// The leaf culling the mesher may apply. A pack that can replace leaf
+    /// models falls back to `Off`, which draws exactly vanilla's leaves.
+    pub fn leaf_culling_effective(&self, resource_packs: &[String]) -> LeafCullingMode {
+        if self.vanilla_models(resource_packs) {
+            self.leaf_culling
+        } else {
+            LeafCullingMode::Off
+        }
+    }
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Graphics {
@@ -358,6 +428,10 @@ pub struct Graphics {
     pub cave_culling: bool,
     /// Skip drawing entities hidden behind opaque terrain.
     pub entity_culling: bool,
+    /// Terrain leaf faces inside a canopy (see [`LeafCullingMode`]); `Off` draws
+    /// vanilla's fancy leaves. Ignored with a resource pack that may replace
+    /// the vanilla leaf models ([`Graphics::leaf_culling_effective`]).
+    pub leaf_culling: LeafCullingMode,
     /// Meshed sections uploaded per frame; 0 uploads all that are ready.
     pub chunk_updates: u32,
     /// Section mesh bytes uploaded per frame, in KiB; 0 is unlimited.
@@ -414,6 +488,7 @@ impl Default for Graphics {
             far_detail: FarDetail::Full,
             cave_culling: true,
             entity_culling: false,
+            leaf_culling: LeafCullingMode::Off,
             chunk_updates: 0,
             upload_budget_kib: 0,
             sky: true,
@@ -478,6 +553,7 @@ impl Graphics {
                 "farDetail" => g.far_detail = FarDetail::parse(value),
                 "caveCulling" => g.cave_culling = flag(g.cave_culling),
                 "entityCulling" => g.entity_culling = flag(g.entity_culling),
+                "leafCulling" => g.leaf_culling = LeafCullingMode::parse(value),
                 "chunkUpdates" => g.chunk_updates = number(g.chunk_updates).min(512),
                 "uploadBudgetKiB" => g.upload_budget_kib = number(g.upload_budget_kib).min(65536),
                 "sky" => g.sky = flag(g.sky),
@@ -532,12 +608,13 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrKey:{}\nbatteryMode:{}\ngraphicsApi:{}\npickedShaderPack:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nleafCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrKey:{}\nbatteryMode:{}\ngraphicsApi:{}\npickedShaderPack:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
             bool_text(self.cave_culling),
             bool_text(self.entity_culling),
+            self.leaf_culling.name(),
             self.chunk_updates,
             self.upload_budget_kib,
             bool_text(self.sky),
@@ -689,6 +766,7 @@ mod tests {
             far_detail: FarDetail::Reduced,
             cave_culling: false,
             entity_culling: true,
+            leaf_culling: LeafCullingMode::SolidAggressive,
             chunk_updates: 12,
             upload_budget_kib: 4096,
             sky: false,
@@ -728,9 +806,70 @@ mod tests {
             Graphics::default()
         );
         assert_eq!(
-            Graphics::parse("workers:abc\nsky:maybe\ncullLeaves:true\nentityCulling:maybe\n"),
+            Graphics::parse(
+                "workers:abc\nsky:maybe\ncullLeaves:true\nentityCulling:maybe\nleafCulling:maybe\n"
+            ),
             Graphics::default()
         );
+    }
+
+    #[test]
+    fn leaf_culling_round_trips_its_stable_names() {
+        assert_eq!(Graphics::default().leaf_culling, LeafCullingMode::Off);
+        for mode in LeafCullingMode::ALL {
+            let g = Graphics {
+                leaf_culling: mode,
+                ..Graphics::default()
+            };
+            assert_eq!(Graphics::parse(&g.serialize()), g, "{mode:?}");
+            assert_eq!(
+                Graphics::parse(&format!("leafCulling:{}\n", mode.name())).leaf_culling,
+                mode
+            );
+        }
+        for text in [
+            "leafCulling:other\n",
+            "leafCulling:\n",
+            "leafCulling:SOLID\n",
+        ] {
+            assert_eq!(
+                Graphics::parse(text).leaf_culling,
+                LeafCullingMode::Off,
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn presets_keep_the_leaf_culling_choice() {
+        for mode in LeafCullingMode::ALL {
+            for preset in Preset::ALL {
+                let mut s = crate::settings::Settings::default();
+                s.horizon.leaf_culling = mode;
+                apply_preset(preset, &mut s);
+                assert_eq!(s.horizon.leaf_culling, mode, "{preset:?}");
+                assert_eq!(Graphics::parse(&s.horizon.serialize()), s.horizon);
+            }
+        }
+    }
+
+    #[test]
+    fn custom_packs_turn_leaf_culling_off() {
+        let g = Graphics {
+            leaf_culling: LeafCullingMode::Hollow,
+            ..Graphics::default()
+        };
+        assert!(g.vanilla_models(&["vanilla".into()]));
+        assert_eq!(
+            g.leaf_culling_effective(&["vanilla".into()]),
+            LeafCullingMode::Hollow
+        );
+        assert!(!g.vanilla_models(&["vanilla".into(), "My Pack".into()]));
+        assert_eq!(
+            g.leaf_culling_effective(&["vanilla".into(), "My Pack".into()]),
+            LeafCullingMode::Off
+        );
+        assert_eq!(g.leaf_culling_effective(&[]), LeafCullingMode::Hollow);
     }
 
     #[test]
