@@ -41,8 +41,10 @@ fn add(chat: &mut Chat, font: &Font, content: Text) {
 
 #[test]
 fn smooth_chat_slides_a_line_in_and_can_hide_the_indicator() {
-    let mut chat = Chat::default();
-    chat.smooth = true;
+    let mut chat = Chat {
+        smooth: true,
+        ..Chat::default()
+    };
     chat.lines.push(Line {
         added: 0,
         content: Text::literal("hi"),
