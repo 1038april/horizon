@@ -2695,6 +2695,7 @@ dependencies = [
  "proc-macro2",
  "pulldown-cmark",
  "raw-window-handle",
+ "security-framework 3.7.0",
  "serde",
  "serde_json",
  "sha1",
