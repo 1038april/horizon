@@ -10612,6 +10612,44 @@ CHECKS += ['arrow_pickup']
 CHECK_FNS['arrow_pickup'] = check_arrow_pickup
 
 
+def check_trident_pickup(host, guest, out):
+    """#5577: a thrown trident a player picks up (AbstractArrow.playerTouch, then Player.take) flies
+    into them on every client as an ItemPickupParticle, like an arrow, instead of vanishing. A
+    server's client keeps tridents apart from the other projectiles."""
+    face_each_other(host, guest)
+    seen = {}
+    try:
+        for game in (host, guest):
+            game('command', command='gamemode survival')
+            game('command', command='clear @s')
+            game('command', command='item replace entity @s weapon.mainhand with minecraft:trident')
+            # Straight down: it sticks at the player's feet, inside their pickup box.
+            game('command', command='tp @s ~ ~ ~ ~ 90')
+            game.wait(5)
+            before = {g.name: g('status')['pickups'].get('trident', 0) for g in (host, guest)}
+            game.raw('use-item', '--hold', 1.2)
+            game.wait(40)
+            game.shot(out, 'trident-pickup')
+            seen[game.name] = {'flown': {g.name: g('status')['pickups'].get('trident', 0) - before[g.name]
+                                         for g in (host, guest)},
+                               'tridents': game('inventory')['counts'].get('minecraft:trident', 0)}
+    finally:
+        for game in (host, guest):
+            game.raw('mouse', 'right', 'up')
+            game('command', command='clear @s')
+        host('command', command='kill @e[type=minecraft:trident]')
+        face_each_other(host, guest)
+    for name, case in seen.items():
+        assert case['tridents'] == 1, f'{name} did not pick the trident up: {seen}'
+        if SERVER_THREAD:
+            assert all(n == 1 for n in case['flown'].values()), f"{name}'s trident did not fly to them: {seen}"
+    return seen
+
+
+CHECKS += ['trident_pickup']
+CHECK_FNS['trident_pickup'] = check_trident_pickup
+
+
 # Mounts for mount_other_level: (kind, summon NBT, blocks in front of the player). A camel is
 # always tame (Camel.isTamed); the equines need Tame:1b, and a nautilus an Owner, the player's
 # offline UUID (TamableAnimal.readAdditionalSaveData tames it). A donkey, mule and llama get a
