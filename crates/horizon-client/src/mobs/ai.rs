@@ -990,6 +990,9 @@ fn base_tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if m.species() == Species::Illusioner {
         super::illusioner::tick(m, events);
     }
+    if matches!(m.species(), Species::Evoker | Species::Illusioner) {
+        super::illager::cast_particles(m, events);
+    }
     if m.hurt_time > 0 {
         m.hurt_time -= 1;
     }
