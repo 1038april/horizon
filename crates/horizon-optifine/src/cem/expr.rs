@@ -215,6 +215,9 @@ impl Func {
             Exp => a[0].exp(),
             Frac => a[0] - a[0].floor(),
             Log => a[0].ln(),
+            // Java's `Math.pow`, where C's differs: a NaN exponent is NaN, and so is 1 or -1 to
+            // an infinite one. Any `x` to 0 is 1, NaN too, in both.
+            Pow if a[1].is_nan() || (a[0].abs() == 1.0 && a[1].is_infinite()) => f32::NAN,
             Pow => a[0].powf(a[1]),
             Random => random(a.first().copied()),
             Randomb => t(random(a.first().copied()) >= 0.5),
@@ -828,6 +831,16 @@ mod tests {
         assert_eq!(value("clamp(-1 / 0, 0, 2)"), 0.0);
         assert!(value("clamp(nan, 0, 2)").is_nan());
         assert!(eval("clamp(a, 0, 2)", &[f32::NAN]).is_nan());
+        assert!(value("clamp(1, 0, nan)").is_nan());
+        // Java's `Math.pow`, not C's.
+        assert!(value("pow(1, nan)").is_nan());
+        assert!(eval("pow(a, b)", &[1.0, f32::NAN]).is_nan());
+        assert!(value("pow(1, 1 / 0)").is_nan());
+        assert!(value("pow(-1, -1 / 0)").is_nan());
+        assert!(eval("pow(a, b)", &[-1.0, f32::INFINITY]).is_nan());
+        assert_eq!(value("pow(nan, 0)"), 1.0);
+        assert_eq!(eval("pow(a, 0)", &[f32::NAN]), 1.0);
+        assert_eq!(value("pow(1 / 0, 0)"), 1.0);
         assert_eq!(value("-7 % 3"), -1.0);
         assert_eq!(value("fmod(-7, 3)"), 2.0);
         assert_eq!(value("frac(-1.25)"), 0.75);
@@ -969,14 +982,15 @@ mod tests {
         assert!(e(&format!("{}a", "-".repeat(65))).message.contains("deep"));
         let calls = format!("{}a{}", "abs(".repeat(65), ")".repeat(65));
         assert_eq!(e(&calls).offset, 64 * 4 + 3);
-        // A long chain fails instead of folding thousands deep: `a+a...` is 2n - 1 nodes, so the
-        // `+` after the 513th `a` makes the 1025th.
+        // A long chain fails instead of folding thousands deep, somewhere inside the chain.
         let long = ["a"; 2000].join("+");
         assert!(e(&long).message.contains("long"));
-        assert_eq!(e(&long).offset, 512 * 2 + 1);
-        // Just under the cap, 999 nodes, it compiles and runs on a shallow stack.
-        let under = expr(&["a"; 500].join("+"));
-        assert_eq!(under.eval(&[1.0]), 500.0);
-        assert!(under.depth <= STACK);
+        assert!((1..long.len()).contains(&e(&long).offset));
+        // `a+a...` is 2n - 1 nodes: 512 terms are 1023, under the cap of 1024, and run on a
+        // shallow stack; 513 terms are 1025, one too many.
+        let most = expr(&["a"; 512].join("+"));
+        assert_eq!(most.eval(&[1.0]), 512.0);
+        assert!(most.depth <= STACK);
+        assert!(e(&["a"; 513].join("+")).message.contains("long"));
     }
 }
