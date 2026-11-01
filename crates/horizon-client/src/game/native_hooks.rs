@@ -1890,6 +1890,14 @@ impl Game<'_> {
     pub(super) fn native_player_logged_out(&mut self, player: u128, name: &str) {
         let _ = (player, name);
     }
+    /// `player` (`name`) respawned (NeoForge's `PlayerRespawnEvent`): after
+    /// `PlayerList.respawn` put them back at their spawn point and reset
+    /// their health, food and experience, with no player's state swapped
+    /// in. Once for each death that ends in a respawn, on a server.
+    /// @API:native_player_respawned@.
+    pub(super) fn native_player_respawned(&mut self, player: u128, name: &str) {
+        let _ = (player, name);
+    }
     /// `player` died: where `ServerPlayer.die` starts, with the death
     /// message's key when the game knows it (`death.attack.lava`; none for a
     /// message it builds from the combat). It only hears. Server-side, for

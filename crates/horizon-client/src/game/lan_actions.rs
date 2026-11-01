@@ -3120,6 +3120,8 @@ impl Game<'_> {
             streaming: Some(&self.streaming),
         };
         host.hub.respawn(i, spawn, &ctx);
+        let (respawned, name) = (host.hub.guests[i].uuid, host.hub.guests[i].name.clone());
+        self.native_player_respawned(respawned, &name);
         // ServerGamePacketListenerImpl.handleClientCommand: a hardcore world's
         // respawned player only watches.
         if self.level.hardcore {
