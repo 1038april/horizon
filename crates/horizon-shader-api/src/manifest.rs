@@ -45,8 +45,8 @@ pub struct Manifest {
     pub shadow: Option<Shadow>,
 }
 
-/// `[shadow]`: the renderer draws the solid terrain as the sun (the moon by night) sees it into
-/// a square depth map each frame, which the material and post stages read.
+/// `[shadow]`: the renderer draws the solid terrain and entities as the sun (the moon by night)
+/// sees them into a square depth map each frame, which the material and post stages read.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Shadow {

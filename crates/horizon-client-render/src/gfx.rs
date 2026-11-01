@@ -412,6 +412,9 @@ pub struct Frame<'a> {
     pub additive: &'a [Vertex],
     /// Name tags over everything, without depth (`TEXT_SEE_THROUGH`).
     pub see_through: &'a [Vertex],
+    /// Opaque entity quads only a native pack's shadow pass draws (the local player in first
+    /// person).
+    pub shadow_only: &'a [Vertex],
     /// Camera-relative sun and moon, or the animated End flash (additive,
     /// behind everything and after the resident End sky box).
     pub celestial: &'a [Vertex],
@@ -599,6 +602,8 @@ pub struct Renderer {
     screen_buffer: wgpu::Buffer,
     screen_capacity: u64,
     entity_group: wgpu::BindGroup,
+    /// The layout of `entity_group`, for the native shadow pass.
+    entity_bindings: wgpu::BindGroupLayout,
     /// The entity resources with the hand's projection (`hand_globals`).
     hand_group: wgpu::BindGroup,
     hand_globals: wgpu::Buffer,
@@ -3160,6 +3165,7 @@ impl Renderer {
             screen_buffer,
             screen_capacity,
             entity_group,
+            entity_bindings,
             hand_group,
             hand_globals,
             entity_buffer,
@@ -3471,6 +3477,11 @@ impl Renderer {
     }
     pub fn section_count(&self) -> usize {
         self.sections.len()
+    }
+    /// Whether one of Horizon's own packs with `[shadow]` draws, whose shadow pass takes the
+    /// frame's `shadow_only` quads.
+    pub fn native_shadow(&self) -> bool {
+        self.native.as_ref().is_some_and(|n| n.shadow.is_some())
     }
     /// What a shader pack's shadow pass draws of the entities this frame: (entities or block
     /// entities other than the player, so those Horizon's culling hides from the camera are
@@ -4194,6 +4205,7 @@ impl Renderer {
             sprites: self.terrain_sprites,
             format: self.config.format.remove_srgb_suffix(),
             sprite_tags: &sprite_tags,
+            entities: &self.entity_bindings,
         };
         let (pack, labels) =
             native_pack::NativePack::new(&self.device, &terrain, report, &constants)?;
@@ -5465,6 +5477,7 @@ impl Renderer {
             frame.see_through,
             oit_on,
         );
+        self.entity_batch.append_shadow_only(frame.shadow_only);
         let weather_quads = frame.weather.len() as u32 / 4;
         let world_quads = entity_quads
             + text_quads
@@ -5521,6 +5534,7 @@ impl Renderer {
         let hand_quads = (frame.hand.len() / 4) as u32;
         let additive_quads = (frame.additive.len() / 4) as u32 - self.entity_batch.moved_additive;
         let see_through_quads = (frame.see_through.len() / 4) as u32;
+        let shadow_only_quads = (frame.shadow_only.len() / 4) as u32;
         let entity_vertices = all_entities.len() as u64;
         if entity_vertices > self.entity_capacity {
             self.entity_capacity = entity_vertices.next_power_of_two();
@@ -5566,15 +5580,16 @@ impl Renderer {
                 bytemuck::cast_slice(&frame.celestial[..celestial_vertices]),
             );
         }
-        let max_quads = (world_quads + additive_quads + hand_quads + see_through_quads)
-            .max(cloud_quads)
-            .max(if frame.lightning.bolts.is_empty() {
-                0
-            } else {
-                lightning::QUADS
-            })
-            .max(weather_quads)
-            .max(frame.glowing.len() as u32 / 4);
+        let max_quads =
+            (world_quads + additive_quads + hand_quads + see_through_quads + shadow_only_quads)
+                .max(cloud_quads)
+                .max(if frame.lightning.bolts.is_empty() {
+                    0
+                } else {
+                    lightning::QUADS
+                })
+                .max(weather_quads)
+                .max(frame.glowing.len() as u32 / 4);
         if max_quads > self.index_quads {
             self.index_quads = max_quads.next_power_of_two();
             self.indices = Self::quad_indices(&self.device, self.index_quads);
@@ -5926,6 +5941,22 @@ impl Renderer {
                     shadow_first + shadow_solid,
                     shadow_translucent,
                 );
+            }
+            drop(pass);
+            if entity_quads > 0 || shadow_only_quads > 0 {
+                let mut pass = native
+                    .frame
+                    .shadow_map
+                    .begin_entities(&mut encoder, "Native shader pack entity shadow");
+                pass.set_pipeline(&shadow.entity);
+                pass.set_bind_group(0, &self.entity_group, &[]);
+                pass.set_bind_group(horizon_shader_api::stages::GROUP, &shadow.group, &[]);
+                pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
+                pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..entity_quads * 6, 0, 0..1);
+                // At the end of the buffer (`EntityBatch::append_shadow_only`).
+                let first = entity_vertices as u32 - shadow_only_quads * 4;
+                pass.draw_indexed(0..shadow_only_quads * 6, first as i32, 0..1);
             }
         }
         if native_sky_pass
