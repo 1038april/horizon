@@ -5378,6 +5378,7 @@ impl Game<'_> {
                 spread,
                 speed: 0.2,
                 count: count as i32,
+                randomization: 0,
             });
         }
         // PlayerInteractTrigger: the item used on the mob, once the interaction took.
