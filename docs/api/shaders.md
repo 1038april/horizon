@@ -51,6 +51,9 @@ shared = ["common.wgsl"]   # optional: WGSL put before every stage's file, in or
 
 [sky]                      # each stage is optional, but a pack has at least one
 file = "sky.wgsl"
+clouds = true              # optional: false when the pack draws its own clouds
+sun = true                 # optional: false when the pack draws its own sun (the moon stays)
+stars = true               # optional: false when the pack draws its own stars
 
 [material]
 file = "material.wgsl"
@@ -103,6 +106,7 @@ stages.
 
 ## Changelog
 
+- 2026-11-01: API 0.1 (additions): `[sky] clouds`, `sun` and `stars`: a sky can replace Minecraft's.
 - 2026-10-30: API 0.1 (additions): the manifest's `[reflection] option`, which draws the water
   mirror only while that option is on, and the mirror's own eye in facing culling.
 - 2026-10-30: API 0.1 (additions): the material stage's `reflection` and

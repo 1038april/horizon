@@ -285,3 +285,25 @@ fn refuses_files_a_pack_does_not_use() {
             .contains("missing at the pack's root")
     );
 }
+
+#[test]
+fn a_sky_can_keep_or_replace_minecrafts_clouds_sun_and_stars() {
+    let manifest = |stages: &str| {
+        Manifest::parse(&format!(
+            "schema = 1\nid = \"a\"\nname = \"A\"\nversion = \"1\"\napi = \"0.1\"\n{stages}"
+        ))
+    };
+    let m =
+        manifest("[sky]\nfile = \"s.wgsl\"\nclouds = false\nsun = false\nstars = true\n").unwrap();
+    let sky = m.sky.unwrap();
+    assert_eq!(
+        (sky.clouds, sky.sun, sky.stars),
+        (Some(false), Some(false), Some(true))
+    );
+    let m = manifest("[sky]\nfile = \"s.wgsl\"\n").unwrap();
+    assert_eq!(m.sky.unwrap().sun, None);
+    for key in ["clouds", "sun", "stars"] {
+        let e = manifest(&format!("[material]\nfile = \"m.wgsl\"\n{key} = false\n"));
+        assert!(e.unwrap_err().to_string().contains("keys of [sky] only"));
+    }
+}

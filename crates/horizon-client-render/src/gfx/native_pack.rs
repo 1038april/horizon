@@ -13,6 +13,10 @@ pub struct NativePack {
     pub sky: Option<NativeSky>,
     pub material: Option<NativeMaterial>,
     pub post: Option<NativePost>,
+    /// With a sky stage, what of Minecraft's sky still draws over it (`[sky]`).
+    pub vanilla_clouds: bool,
+    pub vanilla_sun: bool,
+    pub vanilla_stars: bool,
     /// GPU time of each pass, while the renderer asks for it (`pack_timing.rs`).
     pub timing: Option<PassTiming>,
 }
@@ -43,6 +47,12 @@ impl NativePack {
                     .find(|(k, _)| k == id)
                     .is_none_or(|(_, v)| *v != 0.0)
             });
+        let keeps = |key: fn(&horizon_shader_api::Stage) -> Option<bool>| {
+            report.sky.as_ref().and_then(key).unwrap_or(true)
+        };
+        let vanilla_clouds = keeps(|s| s.clouds);
+        let vanilla_sun = keeps(|s| s.sun);
+        let vanilla_stars = keeps(|s| s.stars);
         let (post, others): (Vec<_>, Vec<_>) = report
             .stages
             .into_iter()
@@ -75,6 +85,9 @@ impl NativePack {
             sky,
             material,
             post,
+            vanilla_clouds,
+            vanilla_sun,
+            vanilla_stars,
             timing: None,
         };
         Ok((pack, labels))

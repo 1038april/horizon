@@ -94,6 +94,18 @@ pub struct Stage {
     /// Shown in the GPU time overlay; the file name when absent.
     #[serde(default)]
     pub name: Option<String>,
+    /// The sky stage only: whether Minecraft's clouds still draw (true when absent); false for
+    /// a pack whose sky draws its own.
+    #[serde(default)]
+    pub clouds: Option<bool>,
+    /// The sky stage only: whether Minecraft's sun still draws over the sky (true when absent);
+    /// false for a pack whose sky draws its own. The moon stays.
+    #[serde(default)]
+    pub sun: Option<bool>,
+    /// The sky stage only: whether Minecraft's stars still draw over the sky (true when absent);
+    /// false for a pack whose sky draws its own.
+    #[serde(default)]
+    pub stars: Option<bool>,
 }
 
 /// An option the player can change: a WGSL `override` constant of the
@@ -224,6 +236,12 @@ impl Manifest {
             if !crate::package::plain_path(file) || !file.ends_with(".wgsl") {
                 return Err(err(format!("{file:?} is not a plain path to a .wgsl file")));
             }
+        }
+        let sky_only = |s: &Stage| s.clouds.is_some() || s.sun.is_some() || s.stars.is_some();
+        if raw.material.iter().chain(&raw.post).any(sky_only) {
+            return Err(err(
+                "`clouds`, `sun` and `stars` are keys of [sky] only".into()
+            ));
         }
         if raw.options.len() > MAX_OPTIONS {
             return Err(err(format!(
