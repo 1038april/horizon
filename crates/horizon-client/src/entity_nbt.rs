@@ -1141,6 +1141,25 @@ pub fn mob_to_nbt(
                 equipment.insert(slot.into(), crate::save::item_to_nbt(&stack));
                 continue;
             }
+            // A worn piece or held item that kept its damage, name or
+            // components is saved with them.
+            if slot != "mainhand"
+                && item.is_some()
+                && let Some(stack) = crate::mobs::finalize::stored_stack(
+                    m,
+                    [
+                        crate::mobs::finalize::MAINHAND,
+                        crate::mobs::finalize::OFFHAND,
+                        crate::mobs::finalize::HEAD,
+                        crate::mobs::finalize::CHEST,
+                        crate::mobs::finalize::LEGS,
+                        crate::mobs::finalize::FEET,
+                    ][index],
+                )
+            {
+                equipment.insert(slot.into(), crate::save::item_to_nbt(&stack));
+                continue;
+            }
             // Enchanted or trimmed gear is saved with its components.
             if let (Some(id), Some(g)) = (item, crate::mobs::gear::gear(m))
                 && (!g.slots[index].is_empty() || g.trims[index].is_some())
@@ -1405,6 +1424,10 @@ pub fn mob_from_nbt(
                 crate::mobs::gear::set(&mut m, index, stack.enchantments().to_vec());
                 let trim = stack.data().and_then(|d| d.trim.clone());
                 crate::mobs::gear::set_trim(&mut m, index, trim);
+                // The damage, name and components stay with the slot.
+                if index != crate::mobs::gear::MAIN {
+                    crate::mobs::gear::set_stack(&mut m, index, stack);
+                }
             }
         }
     } else {
@@ -2498,6 +2521,7 @@ pub fn armor_stand_to_nbt(a: &ArmorStand, uuid: [i32; 4], raw: Option<&Tag>) -> 
     } else {
         put(&mut tag, "equipment", Tag::compound(equipment));
     }
+    put(&mut tag, "DisabledSlots", Tag::Int(a.disabled_slots));
     for (key, value) in [
         ("Small", a.small),
         ("ShowArms", a.show_arms),
@@ -2572,6 +2596,7 @@ pub fn armor_stand_from_nbt(tag: &Tag, id: u32) -> Option<ArmorStand> {
     }
     a.small = flag(tag, "Small");
     a.show_arms = flag(tag, "ShowArms");
+    a.disabled_slots = number(tag.get("DisabledSlots")).unwrap_or(0) as i32;
     a.no_base_plate = flag(tag, "NoBasePlate");
     a.invisible = flag(tag, "Invisible");
     a.marker = flag(tag, "Marker");
@@ -4135,6 +4160,43 @@ mod neutral_anger_tests {
 #[cfg(test)]
 mod held_item_name_tests {
     use super::*;
+
+    #[test]
+    fn a_worn_piece_keeps_its_damage_and_name_through_the_save() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("items.json").exists() {
+            return;
+        }
+        let data = crate::mobs::MobTypes::load(&root).unwrap();
+        let types: HashMap<_, _> = data
+            .types
+            .into_iter()
+            .map(|(id, kind)| (id, Arc::new(kind)))
+            .collect();
+        let mut mob = Mob::new(1, Arc::clone(&types["minecraft:zombie"]), Vec3::ZERO, 0.0);
+        let mut helmet = crate::items::ItemStack::new("minecraft:iron_helmet", 1);
+        helmet.damage = 40;
+        helmet.data_mut().custom_name = Some(horizon_world::nbt::Tag::String("Hat".into()));
+        crate::mobs::finalize::set_item_stack(&mut mob, crate::mobs::finalize::HEAD, helmet);
+        let raw = mob_to_nbt(&mob, [1, 2, 3, 4], None, None);
+        let loaded = mob_from_nbt(&raw, &types, 2, None).unwrap();
+        let worn = crate::mobs::finalize::item_stack(&loaded, crate::mobs::finalize::HEAD).unwrap();
+        assert_eq!(worn.damage, 40);
+        assert_eq!(worn.custom_name().as_deref(), Some("Hat"));
+        // Replacing the item forgets the old stack.
+        let mut loaded = loaded;
+        crate::mobs::finalize::set_item(
+            &mut loaded,
+            crate::mobs::finalize::HEAD,
+            "minecraft:iron_helmet",
+        );
+        let fresh =
+            crate::mobs::finalize::item_stack(&loaded, crate::mobs::finalize::HEAD).unwrap();
+        assert_eq!(fresh.damage, 0);
+        assert!(fresh.custom_name().is_none());
+    }
 
     #[test]
     fn replacing_a_named_item_does_not_restore_its_old_name_on_save() {

@@ -123,7 +123,7 @@
 //! API 29 adds right-clicking an entity (`native_interact_entity`).
 //!
 //! API 28 adds block and item tag reads for server tick hooks (`native_block_in_tag`,
-//! `native_item_in_tag`). API @API:server_tag_reads@ adds context-free tag reads for any server hook.
+//! `native_item_in_tag`).
 //!
 //! API 27 adds the player-health HUD rows (`native_health_hud`).
 //!
@@ -961,6 +961,10 @@ impl Game<'_> {
     pub(super) fn native_minimap(&self, minimap: &mut Option<NativeMinimap>) {
         let _ = minimap;
     }
+    /// Register namespaced NBT component types before content loads.
+    pub(super) fn native_component_types(types: &mut Vec<String>) {
+        let _ = types;
+    }
     /// Options > Mods lists the native mods: push yours.
     pub(super) fn native_mods(&mut self, mods: &mut Vec<NativeMod>) {
         let _ = mods;
@@ -1182,6 +1186,25 @@ impl Game<'_> {
     pub(super) fn native_tooltip(&self, stack: &ItemStack, lines: &mut Vec<(Text, u32)>) {
         let _ = (stack, lines);
     }
+    /// Client-side image component for this stack's tooltip. Answer its width/height
+    /// in GUI pixels; finite positive dimensions reserve space after text and any
+    /// vanilla bundle component. None keeps the vanilla tooltip unchanged.
+    pub(super) fn native_tooltip_component(&self, stack: &ItemStack, size: &mut Option<[f32; 2]>) {
+        let _ = (stack, size);
+    }
+    /// Render the measured component at origin, inside the tooltip background.
+    /// Stack is the component's data. Use native_sprite/native_fill/native_text;
+    /// size is the measurement returned by native_tooltip_component this frame.
+    pub(super) fn native_tooltip_component_draw(
+        &self,
+        stack: &ItemStack,
+        batch: &mut HudBatch,
+        origin: [f32; 2],
+        size: [f32; 2],
+    ) {
+        let _ = (stack, batch, origin, size);
+    }
+
     /// The small bar `GuiGraphicsExtractor.itemDecorations` draws under an
     /// item, wherever the game shows one: `bar` arrives holding vanilla's value
     /// (the damage bar, or a bundle's fullness already applied) and may be
@@ -1205,6 +1228,25 @@ impl Game<'_> {
         claimed: &mut bool,
     ) {
         let _ = (stack, pos, face, claimed);
+    }
+    /// `DispenserBlock.getDispenseMethod`: choose a behaviour for any item,
+    /// including vanilla items, on the authoritative server (not droppers).
+    /// Leave answer None for vanilla. Otherwise answer `(remainder, event)`:
+    /// a remainder of None empties the slot, `Some(stack)` replaces it (the hook
+    /// owns consumption: no extra item is removed afterwards). `event` is the
+    /// level event the dispenser plays with its smoke: 1000 the click, 1001 the
+    /// fail sound (`OptionalDispenseItemBehavior` without success), or 0 for
+    /// nothing at all (`DispenseItemBehavior.NOOP`). To drop one normally,
+    /// answer `(native_dispense_default(..), 1000)`. API @API:dispenser_behaviour@.
+    pub(super) fn native_dispense_item(
+        &mut self,
+        dimension: &str,
+        pos: [i32; 3],
+        facing: horizon_core::geometry::Direction,
+        stack: &ItemStack,
+        answer: &mut Option<super::dispenser::NativeDispensed>,
+    ) {
+        let _ = (dimension, pos, facing, stack, answer);
     }
     /// A player uses `stack` (right click) with `self.hand`: in the air, or
     /// on a block once `native_use_item_on` let it through, where `Item.use`
