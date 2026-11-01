@@ -344,6 +344,8 @@ pub struct Shared {
     /// Those not playing yet (handshake, status, login, configuration), oldest first.
     waiting: Mutex<Vec<Waiting>>,
     next_connection: AtomicU64,
+    /// Those whose play ended, waiting for their writer to finish.
+    closing: AtomicUsize,
     /// Connections turned away since the last report of them, and when that was.
     turned_away: Mutex<(usize, Option<Instant>)>,
 }
@@ -549,6 +551,7 @@ impl Lan {
             by_address: Mutex::new(HashMap::new()),
             waiting: Mutex::new(Vec::new()),
             next_connection: AtomicU64::new(0),
+            closing: AtomicUsize::new(0),
             turned_away: Mutex::new((0, None)),
             random: Mutex::new(crate::server::java_properties::now_millis() as u64 | 1),
             config,
@@ -806,6 +809,8 @@ impl Shared {
             return;
         };
         let most = self.max_players().saturating_add(SPARE_CONNECTIONS);
+        let before_play = self.waiting.lock().unwrap_or_else(|e| e.into_inner()).len();
+        let closing = self.closing.load(Ordering::Acquire);
         let mut held: Vec<(IpAddr, usize)> = self
             .by_address
             .lock()
@@ -832,8 +837,8 @@ impl Shared {
             "WARN",
             &format!(
                 "Turned away {count} connection(s), or closed one that waited to make room: {} of \
-                 {most} places taken, by {addresses} address(es), most by {top} (at most \
-                 {PER_ADDRESS} an address)",
+                 {most} places taken ({before_play} before play, {closing} closing), by \
+                 {addresses} address(es), most by {top} (at most {PER_ADDRESS} an address)",
                 self.connections.load(Ordering::Acquire)
             ),
         );
