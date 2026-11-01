@@ -312,7 +312,7 @@ mod tests {
         assert_eq!(s.as_str(), Some("\u{1f600}A"));
         for (text, want) in [
             (r#""\ud83dA""#, "\u{fffd}A"),
-            (r#""\ud83dA""#, "\u{fffd}A"),
+            (r#""\ud83d\u0041""#, "\u{fffd}A"),
             (r#""\ud83d😀""#, "\u{fffd}\u{1f600}"),
             (r#""\ude00\ud83d""#, "\u{fffd}\u{fffd}"),
         ] {
