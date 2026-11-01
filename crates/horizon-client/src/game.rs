@@ -187,6 +187,7 @@ mod music;
 mod names;
 mod narrator;
 mod native_components;
+mod native_criteria;
 mod native_entities;
 mod native_explosions;
 mod native_hooks;
