@@ -126,9 +126,9 @@ impl RandomTextures {
             if source == BESIDE && rules_file.is_none() {
                 continue;
             }
-            let rules = rules_file.and_then(|file| {
+            let rules = rules_file.map(|file| {
                 if let Some(&id) = rules_by_file.get(&file) {
-                    return Some(id);
+                    return id;
                 }
                 // A real rules file is a few KB, and parsing grows with the square of its size:
                 // a bigger or unreadable one holds no rules, so the texture keeps its default.
@@ -141,7 +141,7 @@ impl RandomTextures {
                     .unwrap_or_default();
                 out.rules.push(Rules::parse(&Properties::parse(&text)));
                 rules_by_file.insert(file, out.rules.len() - 1);
-                Some(out.rules.len() - 1)
+                out.rules.len() - 1
             });
             out.entries.insert(
                 texture.clone(),
