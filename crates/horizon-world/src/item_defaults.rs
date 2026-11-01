@@ -31,7 +31,46 @@ pub fn read(root: &Path) -> io::Result<BTreeMap<String, Value>> {
     for (item, components) in &mut items {
         if let Value::Object(components) = components {
             native_modify_default_components(item, components);
+            // ExtraCodecs.intRange(1, 99): nothing decodes a mod's change, and a
+            // size of 0 would break stack arithmetic.
+            if let Some(size) = components
+                .get_mut("minecraft:max_stack_size")
+                .filter(|size| size.is_number())
+            {
+                *size = size.as_f64().map_or(64, |n| (n as i64).clamp(1, 99)).into();
+            }
         }
     }
     Ok(items)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    /// A stack size outside vanilla's codec range is kept to 1..=99 for every
+    /// reader, so stack arithmetic never sees a 0.
+    #[test]
+    fn stack_sizes_stay_in_vanilla_range() {
+        let root = std::env::temp_dir().join(format!("horizon-stack-sizes-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let items = r#"{"a:none": {"minecraft:max_stack_size": 0},
+            "a:less": {"minecraft:max_stack_size": -5},
+            "a:many": {"minecraft:max_stack_size": 500},
+            "a:some": {"minecraft:max_stack_size": 16}, "a:unset": {}}"#;
+        fs::write(root.join("items.json"), items).unwrap();
+        let items = super::read(&root).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        let size = |id: &str| items[id].get("minecraft:max_stack_size").cloned();
+        assert_eq!(
+            ["a:none", "a:less", "a:many", "a:some", "a:unset"].map(size),
+            [
+                Some(1.into()),
+                Some(1.into()),
+                Some(99.into()),
+                Some(16.into()),
+                None
+            ]
+        );
+    }
 }
