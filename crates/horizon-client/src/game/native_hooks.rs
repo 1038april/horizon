@@ -329,7 +329,7 @@ pub(super) use horizon_world::level::flags;
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 81;
+pub(crate) const NATIVE_HOOKS_API: u32 = 80;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -2454,6 +2454,10 @@ impl GameLevel<'_> {
     /// directional particle. The return value means accepted, not delivered.
     /// Block particle types require their block state; item, trail and
     /// vibration particles are not supported by the current network dispatch.
+    /// `ParticleOptions::named("mymod:spark")` sends a mod's own type
+    /// (API @API:mod_particle_types@): Horizon clients draw it from the sprite
+    /// set in the mod's `assets/<namespace>/particles/<path>.json`, a client
+    /// without that file draws nothing, and vanilla clients aren't sent it.
     pub(super) fn native_send_particles(
         &mut self,
         options: &ParticleOptions,

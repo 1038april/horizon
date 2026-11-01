@@ -46,13 +46,6 @@ API 2 adds the item panel beside container screens and its recipe pages (`native
 the game's items and recipes (`native_recipes`, `native_known_recipes`, `native_place_recipe`, `native_give`): what a
 recipe viewer needs.
 
-API 81 adds native mod particle types to `native_send_particles`: `ParticleOptions::named("mymod:spark")`
-sends a particle of the mod's own type, drawn by every client from the sprite set in the mod's
-`assets/<namespace>/particles/<path>.json` (`"textures": ["mymod:spark/1", ...]`, resolved as
-`particle/<texture>` in the atlas). The name must be namespaced; a client without that file draws
-nothing for it, and the call still returns true. The type behaves as vanilla's `SimpleParticleType`
-with a sprite set: a plain billboard, no tint, 20 to 40 ticks. Bundles that use it need `"hooks": 81`.
-
 API 11 adds `GameLevel::native_send_particles` on authoritative servers. It sends supported
 vanilla particles to nearby players. Block particles require a valid block state. Item, trail and
 vibration particles are not supported by the current dispatch. Count zero sends one directional
@@ -123,7 +116,7 @@ API 22 adds what a server mod needs to keep the world itself out of guarded land
 fluid flow or fire spread into a block, `native_piston_move` a piston's push or pull, `native_explosion_detonate` the
 blocks an explosion is about to break (a mod takes out those it spares), `native_fill_bucket` a bucket filled or
 emptied, and `native_attack_entity` a player's blow on an entity (an item frame, an armor stand, an animal, a
-player). Each may cancel, and nothing happens. Bundles that use them need `"hooks": 81`.
+player). Each may cancel, and nothing happens. Bundles that use them need `"hooks": 22`.
 
 API 23 adds `native_level_tick_pre` and `native_level_tick_post`, server-side observations around each
 level tick pass. Each receives the dimension ID; neither can cancel the tick. Paused and held passes fire
