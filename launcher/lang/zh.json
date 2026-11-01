@@ -540,7 +540,7 @@
   "The source of {source}. Its release ships {file}, a content mod: installing those from GitHub is not supported yet.": "{source} 的源代码。其发布版包含内容模组 {file}：暂不支持从 GitHub 安装此类模组。",
   "Build anyway": "仍然构建",
   "A name, 3 to 16 letters": "名称，3 到 16 个字母",
-  "Installed {mods} from GitHub ({source}). Build it from Settings > Native mods.": "已从 GitHub（{source}）安装 {mods}。请在“设置 > 原生模组”中构建。",
+  "Installed {mods} from GitHub ({source}). Build it on the Mods page.": "已从 GitHub（{source}）安装 {mods}。请在“模组”页面中构建。",
   "Settings, Keys, Generate access token. It's kept in this computer's keychain and only sent to Tailscale.": "前往 Settings > Keys > Generate access token。令牌保存在此计算机的系统密钥链中，仅发送给 Tailscale。",
   "{id} is up to date.": "{id} 已是最新。",
   "Done": "Done",
@@ -651,5 +651,7 @@
   "Could not read the saved sign-in.": "无法读取已保存的登录信息。",
   "Could not save the renewed sign-in.": "无法保存续期后的登录信息。",
   "The renewed sign-in could not be saved in the keychain. Unlock it and retry.": "无法将续期后的登录信息保存到钥匙串。请解锁后重试。",
-  "Another account operation is running. Try again in a moment.": "另一个账户操作正在进行。请稍后重试。"
+  "Another account operation is running. Try again in a moment.": "另一个账户操作正在进行。请稍后重试。",
+  "Built on {base}": "基于 {base} 构建",
+  "Native mod builds": "原生模组构建"
 }

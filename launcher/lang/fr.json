@@ -540,7 +540,7 @@
   "The source of {source}. Its release ships {file}, a content mod: installing those from GitHub is not supported yet.": "Le code source de {source}. Sa version contient {file}, un mod de contenu : leur installation depuis GitHub n'est pas encore prise en charge.",
   "Build anyway": "Compiler quand même",
   "A name, 3 to 16 letters": "Un nom, de 3 à 16 lettres",
-  "Installed {mods} from GitHub ({source}). Build it from Settings > Native mods.": "{mods} installé depuis GitHub ({source}). Compilez-le dans Paramètres > Mods natifs.",
+  "Installed {mods} from GitHub ({source}). Build it on the Mods page.": "{mods} installé depuis GitHub ({source}). Compilez-le sur la page Mods.",
   "Settings, Keys, Generate access token. It's kept in this computer's keychain and only sent to Tailscale.": "Settings, Keys, Generate access token. Il est conservé dans le trousseau de cet ordinateur et envoyé uniquement à Tailscale.",
   "{id} is up to date.": "{id} est à jour.",
   "Done": "Done",
@@ -651,5 +651,7 @@
   "Could not read the saved sign-in.": "Impossible de lire la connexion enregistrée.",
   "Could not save the renewed sign-in.": "Impossible d'enregistrer la connexion renouvelée.",
   "The renewed sign-in could not be saved in the keychain. Unlock it and retry.": "Impossible d'enregistrer la connexion renouvelée dans le trousseau. Déverrouillez-le et réessayez.",
-  "Another account operation is running. Try again in a moment.": "Une autre opération de compte est en cours. Réessayez dans un instant."
+  "Another account operation is running. Try again in a moment.": "Une autre opération de compte est en cours. Réessayez dans un instant.",
+  "Built on {base}": "Compilé sur {base}",
+  "Native mod builds": "Builds avec mods natifs"
 }
