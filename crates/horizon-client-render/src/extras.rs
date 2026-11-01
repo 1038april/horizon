@@ -443,8 +443,8 @@ impl Item {
         Some(match self {
             MouseTweaksWheel => MouseTweaks,
             SortKey => Sort,
-            Fullbright | DynamicLights | OwnNameTag | HideBlockParticles | MouseTweaks | Sort | AutoReconnect | NoAi
-            | AgentControl | DiscordPresence => {
+            Fullbright | DynamicLights | OwnNameTag | HideBlockParticles | MouseTweaks | Sort
+            | AutoReconnect | NoAi | AgentControl | DiscordPresence => {
                 return None;
             }
         })
@@ -498,9 +498,7 @@ impl Item {
             | Item::HideBlockParticles
             | Item::AutoReconnect
             | Item::MouseTweaks
-            | Item::Sort => {
-                Some(Cost::None)
-            }
+            | Item::Sort => Some(Cost::None),
             _ => None,
         }
     }
