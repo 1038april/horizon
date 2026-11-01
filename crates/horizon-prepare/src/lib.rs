@@ -1848,11 +1848,13 @@ mod tests {
         assert_eq!(version.get("world_version"), Some(&Value::Int("1".into())));
         assert_eq!(count, 403);
         let resources = &members[1..members.len() - 1];
+        // On a case-insensitive file system (macOS, Windows) the two names are one file, and
+        // the later member of the pair wins. (`Path`s compare case-sensitively, so ask the disk.)
+        let folded = root.join("DATA/minecraft/tag.json").exists();
         let check = || {
             for (name, data) in resources {
                 let file = root.join(name);
-                // On a case-insensitive file system the later member of the pair wins.
-                if !name.ends_with("Tag.json") || root.join("data/minecraft/tag.json") != file {
+                if !(folded && name.ends_with("Tag.json")) {
                     assert_eq!(&read(&file).unwrap(), data, "{name}");
                 }
             }
