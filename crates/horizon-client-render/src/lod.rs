@@ -401,7 +401,20 @@ struct Plan {
     nodes: FxHashSet<TileKey>,
     split: FxHashSet<TileKey>,
     elevation: i32,
+    camera: [i32; 2],
+    /// The squared distance within which no coarser tile stands in for
+    /// missing detail (`stands_in`): the seam with the near chunks waits
+    /// for its own tiles instead of showing broad boxes beside them.
+    near: i64,
+    /// The squared distance within which planned tiles load before the
+    /// coarse backdrop (`sample_order`).
+    first: i64,
 }
+/// Chunks past the render distance where only planned tiles are drawn (two
+/// past the last near chunk, `streaming::in_view_distance`), and where they
+/// load first.
+const SEAM_CHUNKS: i32 = 3;
+const FIRST_CHUNKS: i32 = 4;
 impl Plan {
     #[cfg(test)]
     fn new(camera: [i32; 2], detail: i32, distance: u32) -> Self {
@@ -425,6 +438,9 @@ impl Plan {
         let size = 16 << level;
         let mut result = Self {
             elevation,
+            camera,
+            near: i64::from((detail + SEAM_CHUNKS) * 16).pow(2),
+            first: i64::from((detail + FIRST_CHUNKS) * 16).pow(2),
             ..Self::default()
         };
         for z in (camera[1] - range).div_euclid(size)..=(camera[1] + range).div_euclid(size) {
@@ -484,7 +500,7 @@ impl Plan {
             if complete {
                 return true;
             }
-            if ready.contains_key(&key) {
+            if ready.contains_key(&key) && self.stands_in(key) {
                 // Its mesh is clipped around every selected finer tile.
                 out.push(key);
                 return true;
@@ -496,6 +512,26 @@ impl Plan {
         } else {
             false
         }
+    }
+    /// Whether a split tile may draw for its missing children: only away
+    /// from the near chunks, where its cells are small on screen.
+    fn stands_in(&self, key: TileKey) -> bool {
+        key.reach(self.camera) >= self.near
+    }
+    /// The coarse tile sampled to cover `leaf` while it loads: two levels
+    /// up (16 times fewer tiles, each as cheap as a leaf to sample), one
+    /// where that would reach the seam, none beside it.
+    fn backdrop(&self, leaf: TileKey) -> Option<TileKey> {
+        let mut backdrop = None;
+        let mut key = leaf;
+        for _ in 0..2 {
+            key = key.parent();
+            if !self.nodes.contains(&key) || !self.stands_in(key) {
+                break;
+            }
+            backdrop = Some(key);
+        }
+        backdrop
     }
     /// Whether chunk column (x, z) is drawn by the tile planned there (ready;
     /// at level 0, also `filled`) rather than by a coarser ancestor standing
@@ -520,11 +556,13 @@ impl Plan {
         self.split.contains(&key) || (ready.contains_key(&key) && (key.level > 0 || filled(key)))
     }
 }
-/// The tiles to sample next, best first, none of them `pending`: only the
-/// tiles the plan keeps, each at the level its distance calls for, nearest
-/// first, whichever way the player looks: far terrain grows outward from
-/// them in rings. Coarse tiles first under fine ones near the player cost a
-/// far tile's work for terrain that fine tiles replace moments later.
+/// The tiles to sample next, best first, none of them `pending`. First the
+/// planned tiles at the seam with the near chunks, nearest first: coarse
+/// tiles there cost a far tile's work for broad boxes that fine tiles
+/// replace moments later. Then a coarse backdrop (`Plan::backdrop`) out to
+/// the horizon, then every other planned tile nearest first, each replacing
+/// its part of the backdrop: the horizon fills in early and sharpens from
+/// the player outward, whichever way they look.
 /// `best`: the list's useful length (`sample_jobs + pending`).
 fn sample_order(
     plan: &Plan,
@@ -533,12 +571,26 @@ fn sample_order(
     camera: [i32; 2],
     best: usize,
 ) -> Vec<TileKey> {
+    let mut backdrop = FxHashSet::default();
     let mut wanted: Vec<_> = plan
         .nodes
         .iter()
         .filter(|key| !plan.split.contains(key) && !ready.contains_key(key))
-        .map(|&key| (i64::from(key.distance(camera)), key))
+        .map(|&key| {
+            if let Some(coarse) = plan.backdrop(key)
+                && !ready.contains_key(&coarse)
+            {
+                backdrop.insert(coarse);
+            }
+            let first = key.reach(camera) < plan.first;
+            ((u8::from(!first) * 2, i64::from(key.distance(camera))), key)
+        })
         .collect();
+    wanted.extend(
+        backdrop
+            .into_iter()
+            .map(|key| ((1, i64::from(key.distance(camera))), key)),
+    );
     // Only the first `free` keys not already pending are taken: the best
     // `best` entries hold them, in order.
     if wanted.len() > best {
@@ -1828,14 +1880,14 @@ mod tests {
             (ox..ox + key.size()).contains(&(x * 16)) && (oz..oz + key.size()).contains(&(z * 16))
         };
         // 24 chunks out, now past the render distance: its planned tile was
-        // split before, so never sampled, and a root stands in for it.
+        // split before, so never sampled. The ready root reaches the seam, so
+        // it stands in for nothing: the column stays until its tile is in.
         let column = (24, 0);
         let mut selected = Vec::new();
         for &root in &after.roots {
             after.select(root, &ready, &mut selected);
         }
-        let drawn = selected.iter().filter(|key| contains(key, column));
-        assert_eq!(drawn.map(|key| key.level).min(), Some(6));
+        assert!(!selected.iter().any(|key| contains(key, column)));
         assert!(!after.replaces(column, &ready, |_| true));
         let planned = TileKey {
             x: 12,
@@ -2495,13 +2547,14 @@ mod tests {
         }
     }
     /// Loads a render distance 12 view one sample job at a time, in
-    /// `sample_order`'s order, and counts the jobs before every far column
-    /// within two chunks of the near terrain is drawn as finely as the plan
-    /// wants it (one block wide in Full): until then a coarse ancestor stands
-    /// in, or nothing, at the edge of the render distance. Returns the jobs,
-    /// their density lattice points (each job's cost) and the leaves to
-    /// sample in all.
-    fn jobs_until_fine_seam(camera: [i32; 2], reduced: bool) -> (usize, i32, usize) {
+    /// `sample_order`'s order. Counts the jobs, and their density lattice
+    /// points (each job's cost), before every far column within two chunks
+    /// of the near terrain is drawn as finely as the plan wants it (one
+    /// block wide in Full): until then nothing is drawn there. And before
+    /// every far column is drawn, by its tile or a coarse stand-in: until
+    /// then the far terrain ends short of the horizon. Checks that no coarse
+    /// tile is ever drawn at the seam.
+    fn jobs_until_fine_seam(camera: [i32; 2], reduced: bool) -> ([(usize, i32); 2], usize) {
         let (detail, distance) = (12, 128);
         let center = (camera[0].div_euclid(16), camera[1].div_euclid(16));
         let mut covered = FxHashSet::default();
@@ -2533,6 +2586,15 @@ mod tests {
                 }
             }
         }
+        let mut horizon = Vec::new();
+        for z in (camera[1] - 2048..camera[1] + 2048).step_by(64) {
+            for x in (camera[0] - 2048..camera[0] + 2048).step_by(64) {
+                if !covered.contains(&(x.div_euclid(16), z.div_euclid(16))) && leaf(x, z).is_some()
+                {
+                    horizon.push((x, z));
+                }
+            }
+        }
         let mut ready: FxHashMap<TileKey, ()> = FxHashMap::default();
         for key in &plan.nodes {
             if key.level == 0 && covered.contains(&(key.x, key.z)) {
@@ -2544,24 +2606,33 @@ mod tests {
             .iter()
             .filter(|k| !plan.split.contains(k))
             .count();
-        let mut cost = 0;
+        let (mut cost, mut fine, mut reached) = (0, None, None);
         for jobs in 0.. {
             let mut selected = Vec::new();
             for &root in &plan.roots {
                 plan.select(root, &ready, &mut selected);
             }
             let active: FxHashSet<_> = selected.into_iter().collect();
-            let fine = seam.iter().all(|&(x, z, leaf)| {
-                (0..=leaf.level).any(|level| {
+            let drawn = |x: i32, z: i32, levels: u8| {
+                (0..=levels).any(|level| {
                     active.contains(&TileKey {
                         x: x.div_euclid(16 << level),
                         z: z.div_euclid(16 << level),
                         level,
                     })
                 })
-            });
-            if fine {
-                return (jobs, cost, leaves);
+            };
+            for &(x, z, leaf) in &seam {
+                assert!(drawn(x, z, leaf.level) || !drawn(x, z, MAX_LEVEL));
+            }
+            if fine.is_none() && seam.iter().all(|&(x, z, leaf)| drawn(x, z, leaf.level)) {
+                fine = Some((jobs, cost));
+            }
+            if reached.is_none() && horizon.iter().all(|&(x, z)| drawn(x, z, MAX_LEVEL)) {
+                reached = Some((jobs, cost));
+            }
+            if let (Some(fine), Some(reached)) = (fine, reached) {
+                return ([fine, reached], leaves);
             }
             let next = sample_order(&plan, &ready, &FxHashSet::default(), camera, SAMPLE_JOBS)[0];
             // `lod_grid`'s density lattice: one point per max(stride, 4) blocks.
@@ -2580,9 +2651,24 @@ mod tests {
         // other job took 54000 to 119000 for the seam in view alone.
         for camera in [[8, 8], [40, -9], [-300, 517]] {
             for reduced in [false, true] {
-                let (jobs, cost, _) = jobs_until_fine_seam(camera, reduced);
+                let ([(jobs, cost), _], _) = jobs_until_fine_seam(camera, reduced);
                 assert!(jobs < 320, "{jobs} jobs");
                 assert!(cost < 9000, "{cost} lattice points");
+            }
+        }
+    }
+    #[test]
+    fn a_coarse_backdrop_reaches_the_horizon_early() {
+        // Sampling only planned tiles, nearest first, reached the horizon
+        // with the last of ~3000 jobs in Full (500000 lattice points), ~1050
+        // in Reduced (200000): for minutes on a slow machine the far terrain
+        // ended in a hard edge. The backdrop adds ~230 coarse tiles (~80 in
+        // Reduced), about a tenth more work in all.
+        for camera in [[8, 8], [40, -9], [-300, 517]] {
+            for reduced in [false, true] {
+                let ([_, (jobs, cost)], leaves) = jobs_until_fine_seam(camera, reduced);
+                assert!(jobs < 1000 && jobs < leaves, "{jobs} jobs of {leaves}");
+                assert!(cost < 100_000, "{cost} lattice points");
             }
         }
     }
