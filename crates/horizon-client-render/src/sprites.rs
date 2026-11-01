@@ -94,9 +94,30 @@ pub struct Sprites {
 }
 /// Edge length of vanilla's block textures: the smallest array layer.
 pub const SPRITE_SIZE: u32 = 16;
-/// Largest sprite array (all layers of the top mip level): resource packs
-/// with bigger textures are sampled down to fit.
-const MAX_ARRAY_BYTES: u64 = 256 << 20;
+/// The largest sprite array (all layers of the top mip level) when the settings leave it to
+/// Horizon: resource packs with bigger textures are sampled down to fit.
+pub const DEFAULT_TEXTURE_BUDGET: u64 = 256 << 20;
+/// The budget in bytes the next resource load keeps to (`set_texture_budget`).
+static TEXTURE_BUDGET: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(DEFAULT_TEXTURE_BUDGET);
+/// The block textures' budget from the `textureBudgetMiB` setting (0 for the default), for
+/// resources loaded from now on.
+pub fn set_texture_budget(mib: u32) {
+    let bytes = match mib {
+        0 => DEFAULT_TEXTURE_BUDGET,
+        mib => u64::from(mib) << 20,
+    };
+    TEXTURE_BUDGET.store(bytes, std::sync::atomic::Ordering::Relaxed);
+}
+/// The largest power-of-two side from `start` down (at least `SPRITE_SIZE`) at which `layers`
+/// square RGBA layers take at most `bytes`.
+fn side_within(start: u32, layers: u64, bytes: u64) -> u32 {
+    let mut size = start.max(SPRITE_SIZE).next_power_of_two();
+    while size > SPRITE_SIZE && layers * u64::from(size) * u64::from(size) * 4 > bytes {
+        size /= 2;
+    }
+    size
+}
 /// Nearest-resample a square RGBA frame to another square size.
 pub(crate) fn resample(frame: &[u8], from: u32, to: u32) -> Vec<u8> {
     if from == to {
@@ -156,7 +177,7 @@ impl Sprites {
     }
     /// Lay every layer out at one size: the largest texture's (resource packs
     /// may ship 32x, 64x... textures, like vanilla's stitched atlas), rounded
-    /// up to a power of two and limited to [`MAX_ARRAY_BYTES`]. Smaller
+    /// up to a power of two and limited to the texture budget (`set_texture_budget`). Smaller
     /// textures are scaled up by whole pixels, so UVs stay per layer.
     pub fn finish(&mut self) {
         self.lay_out(true);
@@ -170,9 +191,13 @@ impl Sprites {
         let layers = self.native.len().max(1) as u64;
         let largest = self.native.iter().map(|n| n.0).max().unwrap_or(SPRITE_SIZE);
         self.minimum_size = self.native.iter().map(|n| n.0).min().unwrap_or(SPRITE_SIZE);
-        let mut size = largest.max(SPRITE_SIZE).next_power_of_two();
-        while size > SPRITE_SIZE && layers * u64::from(size * size) * 4 > MAX_ARRAY_BYTES {
-            size /= 2;
+        let budget = TEXTURE_BUDGET.load(std::sync::atomic::Ordering::Relaxed);
+        let size = side_within(largest, layers, budget);
+        if pixels {
+            log::info!(
+                "Horizon: block sprites: {layers} layers at {size} px (largest {largest} px, budget {} MiB)",
+                budget >> 20
+            );
         }
         if !pixels {
             self.pixels = Vec::new();
@@ -451,6 +476,15 @@ pub(crate) fn sprite_mipmap_limit(requested: u32, size: u32, minimum: u32, avail
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_texture_budget_picks_the_largest_side_that_fits() {
+        // 1300 layers: vanilla's count, about.
+        assert_eq!(side_within(512, 1300, DEFAULT_TEXTURE_BUDGET), 128);
+        assert_eq!(side_within(512, 1300, 1536 << 20), 512);
+        assert_eq!(side_within(64, 1300, 1536 << 20), 64);
+        // Never under vanilla's size, whatever the budget.
+        assert_eq!(side_within(512, 1300, 1), SPRITE_SIZE);
+    }
     #[test]
     fn mipmap_option_keeps_real_16px_reductions() {
         for levels in 0..=4 {
