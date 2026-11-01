@@ -16101,7 +16101,7 @@ impl Game<'_> {
                 && let PhysicalKey::Code(key) = event.physical_key
                 && self.screen_key_released(key)
             {
-                // Screen cancellation must not leave a held mapping or mouse binding down.
+                // Screen cancellation must not leave a held keyboard mapping down.
                 self.keys.remove(&key);
                 self.mapped_key_event(key, false, false)?;
                 return Ok(());

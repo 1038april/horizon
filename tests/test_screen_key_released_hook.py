@@ -19,7 +19,12 @@ class ScreenKeyReleasedHookTests(unittest.TestCase):
         mapping = method(source, "mapped_key_event")
         button = method(source.replace("fn keyboard_button(", "    fn keyboard_button("), "keyboard_button")
         start = source.index("            if let WindowEvent::KeyboardInput", source.index("let result: Result<()> = (|| {"))
-        dispatch = source[start:source.index("            // ScreenEvent.MouseButtonPressed", start)]
+        opening = source.index("{", source.index("&& self.screen_key_released(key)", start))
+        end, depth = opening + 1, 1
+        while depth:
+            depth += (source[end] == "{") - (source[end] == "}")
+            end += 1
+        dispatch = source[start:end]
         fixture = r"""
 use std::{cell::Cell, collections::HashSet};
 type KeyCode = i32;
