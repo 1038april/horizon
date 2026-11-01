@@ -97,8 +97,8 @@ fn translucent_batchable(
 /// Whether translucent quads have an arena of their own: with Translucent Batching
 /// (`batching`), unless a shader pack's frames can draw terrain flat (as for `flat_frame`),
 /// which reads them in the section arena through its tables: where flat draws exist and
-/// are on (`flat_draws`), for the pack's terrain programs (`terrain`) or shadow pass
-/// (`shadow`).
+/// are on (`flat_draws`), for a `shaders/` pack's terrain programs (`terrain`) or a shadow
+/// pass (`shadow`: a `shaders/` pack's, or the `[shadow]` of one of Horizon's own).
 fn translucent_split(batching: bool, flat_draws: bool, terrain: bool, shadow: bool) -> bool {
     batching && !(flat_draws && (terrain || shadow))
 }
@@ -3224,11 +3224,12 @@ impl Renderer {
         crate::graphics::offer_translucent_batching(batchable);
         let translucent_batching = batchable && translucent_batching;
         // A new renderer runs no shader pack: the game loads the picked one on its
-        // first world frame (`shader_pack`: a `shaders/` pack is picked), and the
-        // frames before it, the level loading screen's among them, keep the layout
-        // the sections upload in (`draw_frame`). It starts as that pack's, taken to
-        // draw terrain: the pack loading keeps it, and only one whose terrain and
-        // shadow pass draw none meshes the sections again.
+        // first world frame (`shader_pack`: the picked pack draws flat, a `shaders/`
+        // pack or one of Horizon's own with `[shadow]`), and the frames before it, the
+        // level loading screen's among them, keep the layout the sections upload in
+        // (`draw_frame`). It starts as that pack's, a `shaders/` pack taken to draw
+        // terrain: the pack loading keeps it, and only one whose terrain and shadow
+        // pass draw none meshes the sections again.
         let (sorted_indices, translucent_arena) = arena::Arena::translucent_arenas(
             &device,
             std::mem::size_of::<TerrainVertex>() as u64,
@@ -4078,7 +4079,8 @@ impl Renderer {
             self.translucent_batching,
             self.flat.is_some() && self.flat_on,
             pack.is_some_and(pack_post::PackPost::has_terrain),
-            pack.is_some_and(pack_post::PackPost::has_shadow),
+            // One of Horizon's own packs with `[shadow]` draws from the same lists (`shadow_view`).
+            pack.is_some_and(pack_post::PackPost::has_shadow) || self.native_shadow(),
         );
         if split == self.translucent_arena.is_some() {
             return;

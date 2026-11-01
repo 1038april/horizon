@@ -79,13 +79,20 @@ fn picked_pack(settings: &horizon_client::settings::Settings) -> &str {
     )
 }
 
-/// Whether the pack picked (`picked_pack`) is a `shaders/` pack rather than one of Horizon's
-/// own: a renderer made now lays the sections out for its terrain before the first world
-/// frame loads it (`Renderer::new`).
-pub(super) fn shaders_pack_picked(settings: &horizon_client::settings::Settings) -> bool {
+/// Whether the pack picked (`picked_pack`) draws flat where the device can (`pack_draws_flat`):
+/// a renderer made now lays the sections out for it before the first world frame loads it
+/// (`Renderer::new`).
+pub(super) fn picked_pack_draws_flat(settings: &horizon_client::settings::Settings) -> bool {
     let picked = picked_pack(settings);
-    !picked.is_empty()
-        && !horizon_shader_api::package::is_pack(&Game::shader_packs_dir().join(picked))
+    !picked.is_empty() && pack_draws_flat(&Game::shader_packs_dir().join(picked))
+}
+
+/// Whether the pack at `path` has passes that draw the terrain flat where the device can,
+/// reading translucent quads beside their section's solid ones: a `shaders/` pack, taken to
+/// draw terrain, or one of Horizon's own with a `[shadow]` pass.
+fn pack_draws_flat(path: &std::path::Path) -> bool {
+    !horizon_shader_api::package::is_pack(path)
+        || horizon_shader_api::Pack::read(path).is_ok_and(|p| p.manifest.shadow.is_some())
 }
 
 // A native mod can bundle a pack as `native-<mod-id>`; its Mods toggle controls it too.
@@ -577,8 +584,32 @@ fn block_id_table(pack: &super::PackResources, ids: &BlockIds) -> Vec<i32> {
 
 #[cfg(test)]
 mod native_pack_tests {
-    use super::active_pack;
+    use super::{active_pack, pack_draws_flat};
     use horizon_client::mod_list::{Installed, ModList, NativePage};
+
+    #[test]
+    fn shaders_packs_and_packs_with_a_shadow_pass_draw_flat() {
+        let root = std::env::temp_dir().join(format!("horizon-flat-packs-{}", std::process::id()));
+        // A folder without a manifest is a `shaders/` pack; with one, a pack of Horizon's own.
+        let pack = |name: &str, manifest: Option<&str>| {
+            let dir = root.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            if let Some(extra) = manifest {
+                std::fs::write(dir.join("material.wgsl"), "").unwrap();
+                let text = format!(
+                    "schema = 1\nid = \"{name}\"\nname = \"{name}\"\nversion = \"1\"\napi = \"{}\"\n\
+                     [material]\nfile = \"material.wgsl\"\n{extra}",
+                    horizon_shader_api::API
+                );
+                std::fs::write(dir.join(horizon_shader_api::MANIFEST), text).unwrap();
+            }
+            dir
+        };
+        assert!(pack_draws_flat(&pack("shaders_pack", None)));
+        assert!(!pack_draws_flat(&pack("unshadowed", Some(""))));
+        assert!(pack_draws_flat(&pack("shadowed", Some("[shadow]\n"))));
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     #[test]
     fn native_shader_follows_its_mod_without_affecting_other_packs() {

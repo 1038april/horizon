@@ -13261,7 +13261,7 @@ impl Game<'_> {
             None,
             self.settings.horizon.api,
             self.settings.horizon.translucent_batching,
-            shader_packs::shaders_pack_picked(&self.settings),
+            shader_packs::picked_pack_draws_flat(&self.settings),
         )
     }
     fn apply_settings(&mut self) {
@@ -19345,7 +19345,7 @@ impl Loading {
             loaded.renderer_cpu,
             self.settings.horizon.api,
             self.settings.horizon.translucent_batching,
-            shader_packs::shaders_pack_picked(&self.settings),
+            shader_packs::picked_pack_draws_flat(&self.settings),
         )?;
         log::info!(
             "Horizon: world renderer ready after {} ms",
