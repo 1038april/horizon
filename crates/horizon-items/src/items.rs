@@ -714,7 +714,11 @@ impl Items {
                     fire_resistant: c["minecraft:damage_resistant"]["types"].as_str()
                         == Some("#minecraft:is_fire"),
                     id: id.clone(),
-                    max_stack: c["minecraft:max_stack_size"].as_u64().unwrap_or(64) as u32,
+                    // ExtraCodecs.intRange(1, 99): a native mod's change is not
+                    // decoded, and a size of 0 would break stack arithmetic.
+                    max_stack: c["minecraft:max_stack_size"]
+                        .as_u64()
+                        .map_or(64, |n| n.clamp(1, 99)) as u32,
                     max_damage: c["minecraft:max_damage"].as_u64().unwrap_or(0) as u32,
                     block: block_for_item.get(name.as_str()).copied(),
                     tool,
@@ -2138,6 +2142,31 @@ mod tests {
             Some("minecraft:bucket")
         );
         assert_eq!(remainder(&modded, "minecraft:bowl"), None);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A stack size outside vanilla's codec range (a native mod's change is not
+    /// decoded) is kept to 1..=99, so stack arithmetic never sees a 0.
+    #[test]
+    fn stack_sizes_stay_in_vanilla_range() {
+        let root = std::env::temp_dir().join(format!("horizon-stack-sizes-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("data/minecraft/loot_table")).unwrap();
+        let items = r#"{"a:none": {"minecraft:max_stack_size": 0},
+            "a:many": {"minecraft:max_stack_size": 500},
+            "a:some": {"minecraft:max_stack_size": 16}, "a:unset": {}}"#;
+        fs::write(root.join("items.json"), items).unwrap();
+        let items = Items::catalog(&root, &PackOverlay::NONE).unwrap();
+        let size = |id: &str| items.items[id].max_stack;
+        assert_eq!(
+            [
+                size("a:none"),
+                size("a:many"),
+                size("a:some"),
+                size("a:unset")
+            ],
+            [1, 99, 16, 64]
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 }

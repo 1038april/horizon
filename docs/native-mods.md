@@ -950,8 +950,10 @@ render thread with the frame's wgpu objects; what a mod draws there shows in tha
 bundle targets as `horizon_world::item_defaults::native_modify_default_components` (NeoForge's
 `ModifyDefaultComponentsEvent`). `components` is the item's entry in `items.json`, vanilla's default-component report:
 insert or replace a key to set a component (`"minecraft:max_stack_size": 16`), remove it to take the component away.
-Any item can be changed, vanilla's included. Values are written as vanilla's codec writes them; nothing checks them, and a
-value the game can't read falls back to the component's default.
+Any item can be changed, vanilla's included. Write values as vanilla's codec writes them: nothing decodes them with it.
+Each table reads the fields it understands and takes a default for a field it can't read, but keeps the component, so a
+malformed `minecraft:food` still makes the item edible, with no nutrition. Only the stack size is kept to vanilla's
+1 to 99.
 
 - Every table that reads items' defaults reads them through it: the item table, loot, enchanting, item models,
   banners, pot sherds, item rarity in chat. Stacks are saved and sent as their difference from the changed defaults, as from vanilla's.

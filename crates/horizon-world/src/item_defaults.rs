@@ -15,8 +15,9 @@ use std::{collections::BTreeMap, fs, io, path::Path};
 /// `"minecraft:food": {"nutrition": 4, "saturation": 2.4}`); insert or replace one to
 /// set it, remove it to take it away. Asked for every item each time the game reads
 /// the defaults, from any thread, several times as resources load and again when a
-/// world's data packs load: answer the same each time. Client and server each ask their own mods, as
-/// NeoForge does, so both sides need the mod. @API:modify_default_components@.
+/// world's data packs load: answer the same each time. Client and server each ask
+/// their own mods, as NeoForge does, so both sides need the mod.
+/// @API:modify_default_components@.
 #[inline(never)]
 pub fn native_modify_default_components(item: &str, components: &mut Map<String, Value>) {
     let _ = (item, components);
