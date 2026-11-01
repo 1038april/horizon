@@ -1896,11 +1896,14 @@ mod tests {
             &items,
         )
         .unwrap();
+        // The tag's items come from a HashSet: their order is not fixed.
+        let mut all = union.1.clone();
+        all.sort();
         assert_eq!(
-            union.1,
+            all,
             [
-                "minecraft:oak_planks",
                 "minecraft:birch_planks",
+                "minecraft:oak_planks",
                 "minecraft:stone"
             ]
         );
