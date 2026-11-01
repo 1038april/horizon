@@ -218,6 +218,7 @@ use super::native_lifecycle::{NativeLifecycleContext, ServerTickPhase, WorldPhas
 use super::{
     Game, GameLevel, LevelDimension, Screen,
     execution_role::ExecutionRole,
+    native_block_entity_draw::BlockEntityDraw,
     native_panel_recipes::RecipePage,
     native_server::{NativeCommand, NativeServerPlayer},
 };
@@ -1070,6 +1071,44 @@ impl Game<'_> {
         tag: &mut Option<Compound>,
     ) {
         let _ = (pos, entity, tag);
+    }
+    /// Draw the mod block entity at `pos`, of block `block`
+    /// (`mymod:machine`), on this client: once a frame while it is in view
+    /// (vanilla's `BlockEntityRenderer.submit`: within 64 blocks, its chunk
+    /// faded in, and its bounds, `native_block_entity_render_bounding_box`,
+    /// in the frustum), when its `id` is yours. `state` is the block's state
+    /// (`blockEntity.getBlockState()`), `entity` holds what the server sent
+    /// (`native_block_entity_update_tag`). Add geometry with
+    /// `native_draw_quad`, `native_draw_cube` and `native_draw_block` under
+    /// `draw`'s pose stack, which starts at the block's lower north-west
+    /// corner, in blocks; `draw` also has the partial tick, the game time and
+    /// the block's light. API @API:block_entity_submit@.
+    pub(super) fn native_block_entity_submit(
+        &self,
+        pos: [i32; 3],
+        block: &str,
+        state: BlockStateId,
+        entity: &ModBlockEntity,
+        draw: &mut BlockEntityDraw,
+    ) {
+        let _ = (pos, block, state, entity, draw);
+    }
+    /// Where the mod block entity at `pos` draws, for culling
+    /// (NeoForge's `getRenderBoundingBox`): `bounds` is min x, y, z then max
+    /// x, y, z, in blocks from the block's lower north-west corner. It starts
+    /// as the block with a block of margin around it; widen it when your
+    /// `native_block_entity_submit` draws further (a tall shaft, a beam), or
+    /// set an infinite value for one never culled. Asked once a frame for each
+    /// within 64 blocks whose chunk is drawn. API @API:block_entity_submit@.
+    pub(super) fn native_block_entity_render_bounding_box(
+        &self,
+        pos: [i32; 3],
+        block: &str,
+        state: BlockStateId,
+        entity: &ModBlockEntity,
+        bounds: &mut [f32; 6],
+    ) {
+        let _ = (pos, block, state, entity, bounds);
     }
     /// A menu opens on this client for block `block`, a mod's: set `screen`
     /// when the block is yours, to lay its screen out (`native_screen_draw`
