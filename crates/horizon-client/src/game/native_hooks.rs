@@ -1309,6 +1309,12 @@ impl Game<'_> {
     pub(super) fn native_key(&mut self, key: &str, pressed: bool) {
         let _ = (key, pressed);
     }
+    /// A real window key event after handling, including repeats and consumed shortcuts.
+    /// Receives the original physical/logical key, text, location, state and repeat flag.
+    /// Modifier bits use the screen hooks' GLFW encoding. Not cancellable.
+    pub(super) fn native_input_key(&mut self, event: &winit::event::KeyEvent, modifiers: u32) {
+        let _ = (event, modifiers);
+    }
     /// Wheel steps while playing: set `claimed` to keep them from the hotbar.
     pub(super) fn native_wheel(&mut self, steps: f32, claimed: &mut bool) {
         let _ = (steps, claimed);
