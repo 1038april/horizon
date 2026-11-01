@@ -13,7 +13,8 @@ use std::{collections::BTreeMap, fs, io, path::Path};
 /// with those of `horizon-client/src/game/native_hooks.rs`): `components` holds
 /// `item`'s default components in `items.json`'s form (`"minecraft:max_stack_size": 16`,
 /// `"minecraft:food": {"nutrition": 4, "saturation": 2.4}`); insert or replace one to
-/// set it, remove it to take it away. Asked for every item each time the game reads
+/// set it, remove it to take it away (a stack size outside 1 to 99 is brought back
+/// into it). Asked for every item each time the game reads
 /// the defaults, from any thread, several times as resources load and again when a
 /// world's data packs load: answer the same each time. Client and server each ask
 /// their own mods, as NeoForge does, so both sides need the mod.
@@ -24,7 +25,8 @@ pub fn native_modify_default_components(item: &str, components: &mut Map<String,
 }
 
 /// Every item's default components at `root`, by item id, with the mods'
-/// changes applied.
+/// changes applied and the stack size kept to vanilla's 1 to 99
+/// (`ExtraCodecs.intRange`).
 pub fn read(root: &Path) -> io::Result<BTreeMap<String, Value>> {
     let mut items: BTreeMap<String, Value> =
         serde_json::from_slice(&fs::read(root.join("items.json"))?)?;
