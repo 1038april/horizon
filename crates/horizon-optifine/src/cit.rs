@@ -5,8 +5,8 @@
 //! Written from OptiFine's `cit.properties` and `cit_single.properties` docs, CIT Resewn's wiki
 //! (citresewn.shcm.io) and CIT Resewn Continuation's MIT-licensed source (its conditions, read
 //! for the 1.21 component rules). Where OptiFine and CIT Resewn differ, CIT Resewn is followed,
-//! but for keys neither reads: those are ignored, as OptiFine does, where CIT Resewn would never
-//! match the rule.
+//! but for keys neither reads: those are ignored, as OptiFine does, whereas CIT Resewn would
+//! never match the rule.
 
 use crate::matchers::{IdList, Name, RangeList, namespaced};
 use crate::paths::{resolve, valid};
@@ -200,7 +200,7 @@ fn legacy_source(path: Vec<String>) -> Option<(Source, Vec<String>)> {
         ["display", "Name", ..] => component("custom_name", &[], &path[2..]),
         ["display", "Lore", ..] => component("lore", &[], &path[2..]),
         ["display", "color", ..] => component("dyed_color", &[], &path[2..]),
-        // `map_color` is gone since 1.21.5; `LocName` became a translated `item_name`.
+        // `map_color` is gone in 26.x; `LocName` became a translated `item_name`.
         ["display", "MapColor" | "LocName", ..] => None,
         ["CustomModelData", ..] => component("custom_model_data", &["floats", "0"], &path[1..]),
         ["Potion", ..] => component("potion_contents", &["potion"], &path[1..]),
@@ -220,7 +220,12 @@ fn legacy_source(path: Vec<String>) -> Option<(Source, Vec<String>)> {
         ["SkullOwner", ..] => None,
         ["Fireworks", "Flight", ..] => component("fireworks", &["flight_duration"], &path[2..]),
         ["map", ..] => component("map_id", &[], &path[1..]),
+        ["EntityTag", "variant", ..] => component("painting/variant", &[], &path[2..]),
         ["EntityTag", ..] => component("entity_data", &[], &path[1..]),
+        // The 1.20.2 name of `CustomPotionEffects`, whose fields kept their names.
+        ["custom_potion_effects", ..] => {
+            component("potion_contents", &["custom_effects"], &path[1..])
+        }
         // The data fixer took these out of `BlockEntityTag` into components of their own shape.
         [
             "BlockEntityTag",
@@ -263,7 +268,17 @@ fn legacy_source(path: Vec<String>) -> Option<(Source, Vec<String>)> {
             | "Items"
             | "ChargedProjectiles"
             | "Charged"
-            | "CustomCreativeLock",
+            | "CustomCreativeLock"
+            // Bucket mobs': into `bucket_entity_data`, and `Variant` became a name.
+            | "Variant"
+            | "NoAI"
+            | "Silent"
+            | "NoGravity"
+            | "Glowing"
+            | "Invulnerable"
+            | "Health"
+            | "Age"
+            | "HuntingCooldown",
             ..,
         ] => None,
         _ => component("custom_data", &[], &path),
@@ -883,6 +898,14 @@ mod tests {
             is("block_entity_data", "CustomName")
         );
         assert_eq!(at("instrument"), is("instrument", ""));
+        assert_eq!(
+            at("DebugProperty.minecraft:stone"),
+            is("debug_stick_state", "minecraft:stone")
+        );
+        assert_eq!(at("EntityTag.variant"), is("painting/variant", ""));
+        assert_eq!(at("display.LocName"), None);
+        // Bucket mobs' tags went into `bucket_entity_data`, and `Variant` became a name.
+        assert_eq!(at("Variant"), None);
         // What the fixer left in `display` stayed in custom data.
         assert_eq!(at("display.Foo"), is("custom_data", "display.Foo"));
         let files = ["assets/minecraft/optifine/cit/swords/flame.png"];

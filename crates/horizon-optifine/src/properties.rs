@@ -23,7 +23,7 @@ impl Properties {
         Self::read(text, |line| match unescaped_equals(line) {
             Some(i) => (
                 line[..i].trim_end_matches([' ', '\t', '\x0c']),
-                line[i + 1..].trim_start_matches([' ', '\t', '\x0c']),
+                &line[i + 1..],
             ),
             None => split(line),
         })
@@ -31,6 +31,8 @@ impl Properties {
 
     fn read(text: &str, split: impl Fn(&str) -> (&str, &str)) -> Self {
         let mut out = Self::default();
+        // Each key's place in `entries`, so a file of many keys reads in linear time.
+        let mut index = std::collections::HashMap::<String, usize>::new();
         let mut lines = text.lines();
         while let Some(first) = lines.next() {
             let first = first.trim_start();
@@ -46,16 +48,16 @@ impl Properties {
                 }
             }
             let (key, value) = split(&line);
-            out.insert(unescape(key), unescape(value).trim().to_owned());
+            let (key, value) = (unescape(key), unescape(value).trim().to_owned());
+            match index.get(&key) {
+                Some(&i) => out.entries[i].1 = value,
+                None => {
+                    index.insert(key.clone(), out.entries.len());
+                    out.entries.push((key, value));
+                }
+            }
         }
         out
-    }
-
-    fn insert(&mut self, key: String, value: String) {
-        match self.entries.iter_mut().find(|(k, _)| *k == key) {
-            Some(entry) => entry.1 = value,
-            None => self.entries.push((key, value)),
-        }
     }
 
     pub fn get(&self, key: &str) -> Option<&str> {
@@ -125,8 +127,24 @@ fn unescape(s: &str) -> String {
             Some('r') => out.push('\r'),
             Some('f') => out.push('\x0c'),
             Some('u') => {
-                let hex: String = chars.by_ref().take(4).collect();
-                if let Some(c) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                let mut unit = || {
+                    let hex: String = chars.by_ref().take(4).collect();
+                    u32::from_str_radix(&hex, 16).ok()
+                };
+                let Some(mut code) = unit() else { continue };
+                // A character past U+FFFF is two escapes, as Java writes it: `\uD83D\uDE00`.
+                if (0xD800..0xDC00).contains(&code) {
+                    let rest = chars.as_str();
+                    if let Some(low) = rest
+                        .strip_prefix("\\u")
+                        .and_then(|r| u32::from_str_radix(r.get(..4)?, 16).ok())
+                        .filter(|low| (0xDC00..0xE000).contains(low))
+                    {
+                        chars.nth(5);
+                        code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+                    }
+                }
+                if let Some(c) = char::from_u32(code) {
                     out.push(c);
                 }
             }
@@ -165,6 +183,8 @@ mod tests {
         assert_eq!(p.get("key=with:colon"), Some("a\tb"));
         // An even number of backslashes is an escaped backslash, not a continuation.
         assert_eq!(p.get("last\\"), Some("x"));
+        let emoji = Properties::parse("nbt.display.Name=\\uD83D\\uDE00 Sword\n");
+        assert_eq!(emoji.get("nbt.display.Name"), Some("\u{1F600} Sword"));
     }
 
     #[test]
