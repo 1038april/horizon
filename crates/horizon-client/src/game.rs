@@ -14027,6 +14027,7 @@ impl Game<'_> {
         renderer.screenshot = Some(horizon_client::gfx::ScreenshotRequest {
             path,
             size: Some([64, 64]),
+            scaled: false,
         });
     }
     fn render(&mut self) -> Result<bool> {

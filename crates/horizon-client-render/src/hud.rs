@@ -1606,6 +1606,9 @@ pub struct HudRenderer {
     atlas_view: wgpu::TextureView,
     /// The resource pack's text shader, when it has one that works.
     pack_text: Option<pack_text::PackText>,
+    /// Target pixels per window pixel: above 1 for a screenshot drawn larger than the
+    /// window (`Renderer::screenshot_quality`).
+    pub zoom: f32,
 }
 impl HudRenderer {
     pub fn new(
@@ -1835,6 +1838,7 @@ impl HudRenderer {
             format,
             atlas_view: view.clone(),
             pack_text: None,
+            zoom: 1.0,
         })
     }
     /// Draw the GUI's text with `shader` (`HudAtlas::text_shader`), or natively.
@@ -1970,14 +1974,14 @@ impl HudRenderer {
                 [
                     size[0] as f32,
                     size[1] as f32,
-                    batch.scale,
+                    batch.scale * self.zoom,
                     batch.glint_alpha,
                 ],
                 batch.end_portal,
             )),
         );
         if let Some(pack_text) = &self.pack_text {
-            pack_text.prepare(uploads, encoder, batch, size);
+            pack_text.prepare(uploads, encoder, batch, size, batch.scale * self.zoom);
         }
     }
     /// Draw the batch `prepare` staged.
@@ -2050,7 +2054,8 @@ impl HudRenderer {
             });
             pass.set_bind_group(0, &self.group, &[]);
             pass.set_vertex_buffer(0, self.buffer.slice(..));
-            if let Some([x, y, w, h]) = clip {
+            if let Some(clip) = clip {
+                let [x, y, w, h] = clip.map(|v| (v as f32 * self.zoom) as u32);
                 let (x, y) = (x.min(size[0]), y.min(size[1]));
                 let (w, h) = (w.min(size[0] - x), h.min(size[1] - y));
                 if w == 0 || h == 0 {
