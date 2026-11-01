@@ -663,11 +663,9 @@ fn effects_from_blocks(
     // Block.stepOn for the block under a mob on the ground (`getOnPosLegacy`):
     // MagmaBlock.stepOn's hot floor, 1 damage (a mob never sneaks).
     if m.on_ground && m.alive() {
-        let (x, y, z) = (
-            m.position.x.floor() as i32,
-            (m.position.y - f64::from(0.2_f32)).floor() as i32,
-            m.position.z.floor() as i32,
-        );
+        // 0.2 below the feet, or the supporting block when the centre is over
+        // its edge.
+        let [x, y, z] = m.block_on_legacy(w);
         crate::block_contact::emit(crate::block_contact::Event::StepOn(
             crate::block_contact::Contact {
                 entity: m.id as i32,

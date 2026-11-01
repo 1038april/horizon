@@ -1,7 +1,13 @@
 //! Synchronous mod-block contacts from the server's simulation code.
 use horizon_core::position::BlockPos;
 use horizon_world::registry::BlockStateId;
-use std::{cell::Cell, sync::OnceLock};
+use std::{
+    cell::Cell,
+    sync::{
+        OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Contact<'a> {
@@ -20,6 +26,16 @@ pub enum Event<'a> {
 }
 
 pub static HOOK: OnceLock<fn(&str, Event<'_>, &mut f32)> = OnceLock::new();
+/// Whether the loaded blocks hold one outside `minecraft:` (a content mod's).
+/// Without one no contact can dispatch, so the item and projectile sweeps
+/// skip their per-tick work: every item and thrown thing on a server would
+/// otherwise sweep its blocks each tick for nothing.
+static MOD_BLOCKS: AtomicBool = AtomicBool::new(false);
+
+/// Called when the block tables load.
+pub fn set_mod_blocks(any: bool) {
+    MOD_BLOCKS.store(any, Ordering::Relaxed);
+}
 thread_local! {
     static LEVEL: Cell<Option<&'static str>> = const { Cell::new(None) };
 }
@@ -75,7 +91,7 @@ pub fn swept_inside<'a>(
     bounds: horizon_core::geometry::Aabb,
     mut block: impl FnMut(BlockPos) -> (BlockStateId, &'a str),
 ) {
-    if LEVEL.get().is_none() || HOOK.get().is_none() {
+    if !MOD_BLOCKS.load(Ordering::Relaxed) || LEVEL.get().is_none() || HOOK.get().is_none() {
         return;
     }
     let bounds = bounds.deflate(horizon_core::geometry::Vec3::new(1e-5, 1e-5, 1e-5));
@@ -170,6 +186,7 @@ mod tests {
                     },
                 )
             };
+            set_mod_blocks(true);
             swept_inside(17, c.kind, Vec3::new(0.5, 2.0, 3.5), to, bounds, block);
             assert_eq!(SEEN.get(), 7, "a block crossed mid-move is notified once");
             let at = Vec3::new(1.5, 2.0, 3.5);

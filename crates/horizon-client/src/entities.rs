@@ -340,17 +340,7 @@ impl ItemEntity {
             );
         }
         if !no_physics {
-            crate::block_contact::swept_inside(
-                self.id as i32,
-                "minecraft:item",
-                self.previous,
-                self.position,
-                self.bounds(),
-                |p| {
-                    let state = world.block(p.x, p.y, p.z);
-                    (state, &facts.get(state).name)
-                },
-            );
+            // Entity.applyEffectsFromBlocks: stepOn, then checkInsideBlocks.
             if self.on_ground {
                 let p = BlockPos::containing(self.position.add_vector(Vec3::new(
                     0.0,
@@ -368,6 +358,17 @@ impl ItemEntity {
                     },
                 ));
             }
+            crate::block_contact::swept_inside(
+                self.id as i32,
+                "minecraft:item",
+                self.previous,
+                self.position,
+                self.bounds(),
+                |p| {
+                    let state = world.block(p.x, p.y, p.z);
+                    (state, &facts.get(state).name)
+                },
+            );
         }
         if self.velocity.subtract(old_velocity).length_squared() > 0.01 {
             self.needs_sync = true;
