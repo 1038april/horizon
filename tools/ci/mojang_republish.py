@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Daily check: did Mojang republish the pinned version JSON (.github/workflows/mojang-republish.yml)?
+"""Hourly check: did Mojang republish the pinned version JSON (.github/workflows/mojang-republish.yml)?
 
     python3 tools/ci/mojang_republish.py [--dry-run]
 
@@ -7,7 +7,7 @@ Fetches Mojang's public version manifest and looks at the pinned version's entry
 `manifest_sha1` or one of `accepted_manifest_sha1` (the rule of tools/lab.py `manifest_accepted`), it prints one
 line and stops. Otherwise it downloads that version JSON and compares the client and server jar sha1s and the Java
 major version with the lock, then opens an issue "Mojang republished 26.3: <sha8>" with the sha1s, a snippet to
-paste into research-lock.json, and whether the jars are unchanged. An issue with that title, open or closed, is not opened again or commented on (no daily noise).
+paste into research-lock.json, and whether the jars are unchanged. An issue with that title, open or closed, is not opened again or commented on (no hourly noise).
 
 The lock holds no library hashes, so libraries cannot be verified from it: "jars unchanged" covers the two jars
 and the Java version only. Nothing from Mojang is stored; only hashes go in the issue. Needs the gh CLI;
