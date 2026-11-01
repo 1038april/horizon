@@ -12,8 +12,9 @@ use serde_json::Value;
 use std::{collections::HashSet, fs, path::Path};
 
 pub use horizon_client_core::potions::{
-    BASE_POTION_COLOR, Category, EFFECTS, EffectDef, POTIONS, PotionDef, effect, namespaced,
-    potion, potion_color,
+    BASE_POTION_COLOR, Category, EFFECTS, EffectDef, POTIONS, PotionDef, all_effects,
+    description_id, effect, is_mod_effect, mod_effects, namespaced, potion, potion_color,
+    register_mod_effects,
 };
 /// `MobEffectUtil.formatDuration` at 20 TPS.
 pub fn format_duration(ticks: i32) -> String {
@@ -80,8 +81,7 @@ pub fn effect_lines<'a>(
         .into_iter()
         .map(|(e, duration, amp)| {
             let e = e.trim_start_matches("minecraft:");
-            let mut line =
-                translate(&format!("effect.minecraft.{e}")).unwrap_or_else(|| e.to_owned());
+            let mut line = translate(&description_id(e)).unwrap_or_else(|| e.to_owned());
             if amp > 0 {
                 line.push(' ');
                 line.push_str(
@@ -160,6 +160,18 @@ pub struct Brewing {
 }
 impl Brewing {
     pub fn load(root: &Path, items: &Items, overlay: &PackOverlay) -> Self {
+        // NeoForge's load conditions: a file whose don't hold is silently
+        // absent. Vanilla's brewing recipes carry none; a pack's can.
+        let mods: Vec<String> = {
+            let mut mods = horizon_items::content_namespaces::mod_ids(root);
+            if !mods.iter().any(|m| m == "minecraft") {
+                mods.push("minecraft".to_owned());
+            }
+            mods
+        };
+        let conditions_hold = |v: &Value| {
+            horizon_world::conditions::conditions_hold(v, &|id: &str| mods.iter().any(|m| m == id))
+        };
         let mut sources: Vec<(String, Value)> =
             fs::read_dir(root.join("data/minecraft/recipe/brewing"))
                 .into_iter()
@@ -191,6 +203,9 @@ impl Brewing {
                 None => sources.push((id.to_owned(), v)),
             }
         }
+        // The gate answers the merged file, as the crafting loader's does:
+        // a false-conditioned pack file leaves the lower one gone too.
+        sources.retain(|(_, v)| conditions_hold(v));
         sources.sort_by(|a, b| a.0.cmp(&b.0));
         let mut recipes = Vec::new();
         for (id, v) in sources {

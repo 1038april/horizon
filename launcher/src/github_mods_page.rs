@@ -88,7 +88,7 @@ fn finish(
         .map(|o| format!("{} {}", o.id, o.version))
         .collect();
     Ok(trf(
-        "Installed {mods} from GitHub ({source}). Build it from Settings > Native mods.",
+        "Installed {mods} from GitHub ({source}). Build it on the Mods page.",
         &[("mods", &names.join(", ")), ("source", &found.label())],
     ))
 }
@@ -123,8 +123,7 @@ impl Launcher {
                     if result.is_ok() {
                         self.github.text.set(String::new());
                         self.github.newer.clear();
-                        // Installing a native mod turns Native mods on, so Settings offers Build.
-                        self.settings.native_mods = true;
+                        // The review above was the trust notice; the Mods page offers Build.
                         self.settings.native_mods_noticed = true;
                         self.settings.save();
                     }
@@ -218,13 +217,13 @@ impl Launcher {
                 "https://github.com/owner/repo",
             ))
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                window.focus(&this.github.focus);
+                window.focus(&this.github.focus, cx);
                 cx.notify();
             }))
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
                 match line_edit::handle(&mut this.github.text, ev, cx) {
                     Key::Enter => this.github_add(),
-                    Key::Escape => window.blur(),
+                    Key::Escape => window.blur(cx),
                     Key::Pass => return,
                     _ => {}
                 }
