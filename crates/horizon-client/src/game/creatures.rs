@@ -2145,6 +2145,27 @@ impl Game<'_> {
                 // `Level.setBlockAndUpdate`: neighbour and shape updates, so a crop
                 // above trampled farmland breaks and drops.
                 MobEvent::SetBlock { pos, state } => self.level_set(pos, state)?,
+                MobEvent::CropRaided {
+                    pos,
+                    state,
+                    old,
+                    mob,
+                } => {
+                    self.level_set_with_flags(
+                        pos,
+                        state,
+                        horizon_world::level::flags::UPDATE_CLIENTS,
+                    )?;
+                    if let Some(old) = old {
+                        self.post_block_game_event(
+                            "minecraft:block_change",
+                            pos,
+                            Some(Who::Mob(mob)),
+                            None,
+                        );
+                        self.level_event_at(2001, pos, old.0 as i32);
+                    }
+                }
                 MobEvent::CrackTurtleEgg { pos } => {
                     let state = self.world.block(pos[0], pos[1], pos[2]);
                     let eggs = self
@@ -2800,6 +2821,15 @@ impl Game<'_> {
             if p.species() == Species::Fox {
                 child.extra.main_hand = None;
             }
+            // Fox.FoxBreedGoal.breed: the baby trusts the players who fed its
+            // parents into love.
+            if p.species() == Species::Fox {
+                horizon_client::mobs::fox::trust_breeders(
+                    child,
+                    p.extra.love_cause,
+                    q.as_ref().and_then(|q| q.extra.love_cause),
+                );
+            }
             // Goat.getBreedOffspring: GoatAi.initMemories, then the baby
             // screams if the parent a coin toss picks does, or on a 2% roll.
             if p.species() == Species::Goat {
@@ -3031,6 +3061,7 @@ impl Game<'_> {
         let rocket = std::mem::take(&mut self.combat.rocket_hit);
         // ServerPlayer.canHarmPlayer refused another player's projectile.
         if self.creative || self.combat.refuse_player_hit {
+            self.combat.forget_noted(false);
             return false;
         }
         // A projectile entity dealt it: `#is_projectile`, or a firework
@@ -3064,7 +3095,6 @@ impl Game<'_> {
                 }),
         };
         // The causing entity for the death message.
-        let marks = self.pending_marks();
         let owner = self.combat.projectile_owner.take();
         if let Some(a) = attacker.or(owner) {
             self.note_attacker(damage_type, a);
@@ -3132,9 +3162,7 @@ impl Game<'_> {
         // LivingEntity.hurtServer: ENTITY_HURT_PLAYER, unless it returned
         // early (invulnerable, or inside the hurt cooldown).
         // A hit a native mod canceled records no damage (hurtServer never ran).
-        if outcome.canceled {
-            self.drop_pending_since(marks);
-        }
+        self.combat.forget_noted(outcome.canceled);
         if outcome.hurt || outcome.sound {
             let source = attacker
                 .or(owner)
@@ -3217,14 +3245,21 @@ impl Game<'_> {
         self.give_player_effect("minecraft:wither", 40, 0);
     }
     pub(super) fn hurt_player_by(&mut self, damage_type: &str, amount: f32) {
-        if self.creative {
-            return;
-        }
-        if let Some(player) = self.player.as_mut()
+        let mut canceled = false;
+        if !self.creative
+            && let Some(player) = self.player.as_mut()
             && let Some(id) = self.motion.health.damage.id(damage_type)
+            && let Ok(o) = player.hurt_blocking(
+                &self.motion.health,
+                self.world.health_rules,
+                id,
+                amount,
+                None,
+            )
         {
-            let _ = player.hurt(&self.motion.health, self.world.health_rules, id, amount);
+            canceled = o.canceled;
         }
+        self.combat.forget_noted(canceled);
     }
     /// `Player.aiStep` touching arrows in its box grown by (1, 0.5, 1):
     /// `AbstractArrow.playerTouch`, then `Player.take`'s pickup sound at the
@@ -5324,7 +5359,7 @@ impl Game<'_> {
             {
                 // Animal.mobInteract: breed adults, speed up babies, then
                 // playEatingSound (silent unless the species overrides it).
-                match feed_animal(m, &mut self.world.random) {
+                match feed_animal(m, &mut self.world.random, Some(acting)) {
                     Some(sound) => {
                         consume = true;
                         eat = sound;
@@ -5378,6 +5413,7 @@ impl Game<'_> {
                 spread,
                 speed: 0.2,
                 count: count as i32,
+                randomization: 0,
             });
         }
         // PlayerInteractTrigger: the item used on the mob, once the interaction took.
@@ -5642,6 +5678,15 @@ impl Game<'_> {
         };
         if let Some(child) = self.mobs.iter_mut().find(|m| m.id == id) {
             horizon_client::mobs::finalize::spawn_egg_offspring(child, species, variant, color);
+        }
+        // `Mob.checkAndHandleImportantInteractions` then calls
+        // `onOffspringSpawnedFromEgg`: `Fox`'s makes the baby trust the player
+        // who used the egg (a fox egg used on a block trusts nobody).
+        if species == Species::Fox {
+            let spawner = self.acting_player_uuid();
+            if let Some(child) = self.mobs.iter_mut().find(|m| m.id == id) {
+                horizon_client::mobs::fox::add_trusted_entity(child, spawner);
+            }
         }
         self.trigger_item_entity("minecraft:player_interacted_with_entity", &stack, &target);
         self.consume_held();
