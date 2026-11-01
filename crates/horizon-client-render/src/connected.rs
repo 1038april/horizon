@@ -685,12 +685,11 @@ mod tests {
                 "matchBlocks=stone\nmatchTiles=glass_pane_top\nmethod=fixed\ntiles=0",
             ),
         ]);
-        // A skipped quarter drops a: b draws the sides; on top c draws the glass itself, which
-        // stops d.
-        assert_eq!(pick_in(&ctm, 1, 3, Face::North, &[]), tile(2000));
+        // e names a tile, so it is tried first (tile 1000s), but needs a stone with the pane
+        // sprite. a's skipped quarter drops it; b (3000s) draws the sides; on top c draws the
+        // glass itself, which stops d.
+        assert_eq!(pick_in(&ctm, 1, 3, Face::North, &[]), tile(3000));
         assert_eq!(pick_in(&ctm, 1, 3, Face::Up, &[]), Pick::Keep);
-        // A rule naming blocks and tiles needs both (the pane sprite is not known here: e is
-        // only a block rule's list member, never a tile rule's).
         assert_eq!(pick_in(&ctm, 2, 7, Face::Up, &[]), Pick::Keep);
         let both = world(&[(
             "e.properties",
