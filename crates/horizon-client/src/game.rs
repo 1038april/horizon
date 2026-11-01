@@ -14529,6 +14529,12 @@ impl Game<'_> {
                         || !self.block_action_restricted(h.pos)
                         || self.can_place_on_in_adventure(h.pos)
                 })
+                .filter(|h| {
+                    let state = self.world.block(h.pos[0], h.pos[1], h.pos[2]);
+                    let mut canceled = false;
+                    self.native_block_highlight(h.pos, state, alpha as f32, &mut canceled);
+                    !canceled
+                })
                 .map(|h| {
                     let state = self.world.block(h.pos[0], h.pos[1], h.pos[2]);
                     let f = self.res.facts().get(state);
@@ -15903,6 +15909,7 @@ impl Game<'_> {
                     return Ok(());
                 }
             }
+            self.key_focus_mouse_press(&event);
             match event {
                 WindowEvent::CloseRequested => {
                     if !self.settings.quit_shortcuts
