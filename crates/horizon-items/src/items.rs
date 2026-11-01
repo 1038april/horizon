@@ -68,15 +68,17 @@ pub enum ConsumeEffect {
 }
 
 /// One `on_consume_effects` entry. A bare type name is minecraft's own, as
-/// a bare item id is: `apply_effects` is `minecraft:apply_effects`. A
+/// a bare item id is: `apply_effects` and `:apply_effects` are
+/// `minecraft:apply_effects`. A
 /// namespaced kind outside `minecraft:` is the mod's own, kept whole for
 /// the hook. An unknown `minecraft:` kind and a missing type are dropped.
 fn parse_consume_effect(effect: &serde_json::Value) -> Option<ConsumeEffect> {
     let kind = effect.get("type")?.as_str()?;
-    let kind = if kind.contains(':') {
-        kind.to_owned()
-    } else {
-        format!("minecraft:{kind}")
+    // `Identifier.bySeparator`: no namespace, or an empty one (`:clear_all_effects`), is minecraft's.
+    let kind = match kind.split_once(':') {
+        Some(("", path)) => format!("minecraft:{path}"),
+        Some(_) => kind.to_owned(),
+        None => format!("minecraft:{kind}"),
     };
     match kind.as_str() {
         "minecraft:apply_effects" => {
@@ -1940,6 +1942,9 @@ mod consume_effect_tests {
             &v(r#"{"type":"minecraft:apply_effects","effects":[{"id":"minecraft:speed","duration":100}]}"#),
         ).unwrap();
         assert!(matches!(named, ConsumeEffect::ApplyEffects { .. }));
+        // An empty namespace is minecraft's too (`Identifier.bySeparator`).
+        let empty = parse_consume_effect(&v(r#"{"type":":clear_all_effects"}"#)).unwrap();
+        assert!(matches!(empty, ConsumeEffect::ClearAllEffects));
         // An unknown minecraft: kind and a missing type are dropped.
         assert!(parse_consume_effect(&v(r#"{"type":"minecraft:future"}"#)).is_none());
         assert!(parse_consume_effect(&v(r#"{"amount":42}"#)).is_none());
