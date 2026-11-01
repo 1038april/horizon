@@ -691,8 +691,12 @@ pub(crate) struct NativeLootDrops<'a> {
     /// A player's use dropped them rather than a break or a death: shears on a
     /// sheep, a mooshroom, a snow golem or a bogged, a brush on an armadillo or
     /// a suspicious block, shears carving a pumpkin, picking sweet berries or
-    /// cave vines, or a hit taking an item frame or its item. `player` names
-    /// them; `block` or `entity` says what dropped them. API @API:use_drops@.
+    /// cave vines, a hit taking an item frame or its item, or untying a lead
+    /// or cutting it with shears. `player` names them; `block` or `entity` says
+    /// what dropped them. API @API:use_drops@. A mob that a player killed while
+    /// leashed drops its lead on its next tick as a call of its own (`entity`
+    /// the mob, `player` its killer, `table` empty, `used` false). API
+    /// @API:lead_drops@.
     pub(crate) used: bool,
 }
 

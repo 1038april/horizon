@@ -995,7 +995,9 @@ Changing loot a mod didn't make, as NeoForge's `LootTableLoadEvent` and global l
   through it too, with `used` set and that player named: shears on a sheep, a mooshroom, a snow golem or a bogged (its shearing
   table), a brush on an armadillo (`minecraft:brush/armadillo`) or a suspicious block (its item, no table), shears carving a
   pumpkin, picking sweet berries or cave vines (their harvest table), and a player's hit taking an item frame or its item (the
-  frame's entity, no table). A dispenser's shears and an explosion's frames aren't told.
+  frame's entity, no table). A dispenser's shears and an explosion's frames aren't told. Leads: untying one or cutting it with
+  shears is a use (the leashed mob, no table), and a mob a player killed while leashed drops its lead on its next tick as a call
+  of its own, naming the killer (`used` false, no table). A lead that snaps or loses its holder names no player and isn't told.
 
 ### A block's items
 
