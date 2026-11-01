@@ -215,6 +215,9 @@ pub struct PostProgram {
     pub mipmaps: u16,
     /// Compute programs that run before this one, in order: `<name>.csh`, then `_a` to `_z`.
     pub compute: Vec<(String, ComputeProgram)>,
+    /// A geometry stage folded into the vertex stage (`translate_geometry`): drawn non-indexed,
+    /// six vertices per quad, with this many instances. 0 without one.
+    pub geometry_triangles: u32,
 }
 
 /// `size.buffer.<buffer>`: a size of its own, relative to the render size (floats) or in
@@ -294,6 +297,8 @@ pub struct CustomImage {
     pub name: String,
     pub sampler: Option<String>,
     pub format: crate::Format,
+    /// The internal format's GLSL name (`r32i`), for declarations without a format.
+    pub qualifier: String,
     /// Relative to the render size (width and height), or in pixels.
     pub size: ImageSize,
     /// Cleared to zero before each frame.
@@ -326,6 +331,7 @@ impl CustomImage {
             name: name.to_owned(),
             sampler: (*sampler != "none").then(|| sampler.to_string()),
             format: crate::Format::parse(internal)?,
+            qualifier: internal.to_ascii_lowercase(),
             size,
             clear: *clear == "true",
         })
@@ -347,6 +353,13 @@ impl CustomImage {
     pub fn is_3d(&self) -> bool {
         matches!(self.size, ImageSize::Volume(_))
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ShadowCulling {
+    On,
+    Off,
+    Reversed,
 }
 
 pub struct Post {
@@ -409,6 +422,9 @@ pub struct Post {
     pub buffer_objects: std::collections::BTreeMap<u32, BufferObject>,
     /// `image.*`.
     pub images: Vec<CustomImage>,
+    /// `shadow.culling`: `false` draws everything within the shadow distance, every face, not
+    /// only what casts a shadow into view; `reversed` within `voxelDistance` of the player.
+    pub shadow_culling: ShadowCulling,
     pub config: Config,
     /// Programs skipped and why, as `program: message` or `file:line: message`.
     pub notes: Vec<String>,
@@ -440,6 +456,8 @@ pub struct GameInputs {
     pub weather: Option<GbuffersInputs>,
     /// The first-person hand and held items.
     pub hand: Option<GbuffersInputs>,
+    /// Terrain read vertex by vertex, for a shadow program with a geometry stage.
+    pub terrain_geometry: Option<crate::GeometryInputs>,
 }
 
 /// Loads the post-processing programs of `folder` and, for the geometry `inputs` describes, the
@@ -482,6 +500,11 @@ pub fn load_post(
         sizes: [None; crate::BUFFERS],
         buffer_objects: Default::default(),
         images: Vec::new(),
+        shadow_culling: match properties.get("shadow.culling").map(str::trim) {
+            Some("false") => ShadowCulling::Off,
+            Some("reversed") => ShadowCulling::Reversed,
+            _ => ShadowCulling::On,
+        },
         config: Config::default(),
         notes: Vec::new(),
     };
@@ -520,6 +543,7 @@ pub fn load_post(
         macros,
         switches: crate::switches_on(pack),
         options: crate::with_options(pack, macros),
+        geometry: None,
         post: &mut post,
     };
     for (group, base) in GROUPS {
@@ -673,6 +697,7 @@ pub fn load_post(
         &mut loader,
         inputs.terrain.as_ref(),
         inputs.entities.as_ref(),
+        inputs.terrain_geometry.as_ref(),
     );
     post.config = std::mem::take(&mut post.config).finish();
     post
@@ -685,6 +710,7 @@ fn load_shadow(
     loader: &mut Loader<'_>,
     terrain: Option<&GbuffersInputs>,
     entities: Option<&GbuffersInputs>,
+    geometry: Option<&crate::GeometryInputs>,
 ) {
     let post = &*loader.post;
     let gbuffers = [
@@ -723,18 +749,36 @@ fn load_shadow(
         loader.post.shadow_comp.extend(program);
     }
     let properties = loader.properties;
-    let mut load = |names: &[&str], inputs: Option<&GbuffersInputs>| {
-        let inputs = inputs?;
-        names.iter().find_map(|name| {
-            let p = loader.load(name.to_string(), Group::Shadow, |v, f| {
-                translate_shadow(v, f, inputs)
-            });
-            p.map(|mut p| {
-                p.blend = blend(properties, &p.name).flatten();
-                p
+    let mut load =
+        |names: &[&str], inputs: Option<&GbuffersInputs>, terrain: bool, cutout: bool| {
+            let inputs = inputs?;
+            names.iter().find_map(|name| {
+                // Cutout geometry (leaves) casts the shadow of its texels only: the cutout test,
+                // unless `alphaTest.<program>` says otherwise, as for the gbuffers programs.
+                // Translucent terrain keeps no test, as gbuffers_water does.
+                let test = match properties.get(&format!("alphaTest.{name}")) {
+                    Some(v) => crate::AlphaTest::parse(v.trim()).flatten(),
+                    None if !cutout => inputs.alpha_test,
+                    None => inputs.alpha_test.or(Some(crate::AlphaTest {
+                        op: ">",
+                        reference: 0.1,
+                    })),
+                };
+                let mut inputs = inputs.clone();
+                inputs.alpha_test = test;
+                loader.geometry = geometry.filter(|_| terrain).cloned().map(|mut g| {
+                    g.inputs.alpha_test = test;
+                    g
+                });
+                let p = loader.load(name.to_string(), Group::Shadow, |v, f| {
+                    translate_shadow(v, f, &inputs)
+                });
+                p.map(|mut p| {
+                    p.blend = blend(properties, &p.name).flatten();
+                    p
+                })
             })
-        })
-    };
+        };
     // `shadowTerrain`, `shadowTranslucent`, `shadowEntities` and `shadowBlockEntities` (3.2)
     // leave their part out of the shadow pass; all are on by default (OQ-19). `shadowPlayer`
     // and `shadowLightBlockEntities` (E, off by default) keep the player, and block entities
@@ -744,16 +788,16 @@ fn load_shadow(
     let only_player = !keep("shadowEntities") && set("shadowPlayer");
     let only_lit = !keep("shadowBlockEntities") && set("shadowLightBlockEntities");
     let shadow = keep("shadowTerrain")
-        .then(|| load(&["shadow"], terrain))
+        .then(|| load(&["shadow"], terrain, true, true))
         .flatten();
     let water = keep("shadowTranslucent")
-        .then(|| load(&["shadow_water", "shadow"], terrain))
+        .then(|| load(&["shadow_water", "shadow"], terrain, true, false))
         .flatten();
     let shadow_entities = (keep("shadowEntities") || only_player)
-        .then(|| load(&["shadow_entities", "shadow"], entities))
+        .then(|| load(&["shadow_entities", "shadow"], entities, false, true))
         .flatten();
     let shadow_block = (keep("shadowBlockEntities") || only_lit)
-        .then(|| load(&["shadow_block", "shadow"], entities))
+        .then(|| load(&["shadow_block", "shadow"], entities, false, true))
         .flatten();
     if shadow.is_none() && terrain.is_some() {
         loader
@@ -761,6 +805,7 @@ fn load_shadow(
             .notes
             .push("shadow: no program; the shadow map stays clear".to_owned());
     }
+    loader.geometry = None;
     loader.post.shadow = shadow;
     loader.post.shadow_water = water;
     loader.post.shadow_entities = shadow_entities;
@@ -777,6 +822,8 @@ struct Loader<'a> {
     switches: BTreeSet<String>,
     /// `macros` with the pack's options, for the program switches.
     options: Macros,
+    /// The game's terrain read vertex by vertex, while loading shadow programs of terrain.
+    geometry: Option<crate::GeometryInputs>,
     post: &'a mut Post,
 }
 
@@ -794,7 +841,6 @@ impl Loader<'_> {
             f => format!("{f}/{name}.{ext}"),
         };
         let (vsh, fsh) = (path("vsh"), path("fsh"));
-        let notes = &mut self.post.notes;
         if !self.pack.exists(&fsh) || !self.pack.exists(&vsh) {
             let on = enabled(
                 self.properties,
@@ -821,6 +867,7 @@ impl Loader<'_> {
                 blend: None,
                 mipmaps: 0,
                 compute,
+                geometry_triangles: 0,
             });
         }
         if !enabled(
@@ -833,13 +880,18 @@ impl Loader<'_> {
             return None;
         }
         if self.pack.exists(&path("gsh")) {
-            notes.push(format!(
-                "{name}: uses a geometry stage (not supported); skipped"
-            ));
-            return None;
+            let Some(inputs) = self.geometry.clone() else {
+                self.post.notes.push(format!(
+                    "{name}: uses a geometry stage (supported for terrain's shadow only); skipped"
+                ));
+                return None;
+            };
+            let (vsh, gsh) = (path("vsh"), path("gsh"));
+            return self.load_geometry(name, group, &vsh, &gsh, &fsh, &inputs);
         }
-        let vertex = preprocess(self.pack, &vsh, self.macros);
-        let fragment = preprocess(self.pack, &fsh, self.macros);
+        let vertex = self.preprocess(&vsh);
+        let fragment = self.preprocess(&fsh);
+        let notes = &mut self.post.notes;
         let problems: Vec<String> = [&vertex, &fragment]
             .iter()
             .flat_map(|pp| diagnostics(pp))
@@ -900,6 +952,105 @@ impl Loader<'_> {
             blend: None,
             mipmaps,
             compute,
+            geometry_triangles: 0,
+        })
+    }
+
+    /// Stage file `path` through the preprocessor; the pack's images declared without a format
+    /// (GLSL lets a write-only image omit it) get the one `image.*` gives them.
+    fn preprocess(&self, path: &str) -> Preprocessed {
+        let mut pp = preprocess(self.pack, path, self.macros);
+        if self.post.images.is_empty() || !pp.code.contains("image") {
+            return pp;
+        }
+        let source: Vec<&str> = pp.code.split('\n').collect();
+        let lines: Vec<String> = source
+            .iter()
+            .enumerate()
+            .map(|(n, &line)| {
+                // A qualifier on the line before (`layout(r32ui)` then `uniform uimage3D v;`).
+                let qualified = line.contains("layout")
+                    || source[..n]
+                        .iter()
+                        .rev()
+                        .find(|l| !l.trim().is_empty())
+                        .is_some_and(|l| l.trim_start().starts_with("layout") && !l.contains(';'));
+                let words: Vec<&str> = line
+                    .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .collect();
+                let image = self
+                    .post
+                    .images
+                    .iter()
+                    .find(|i| words.contains(&i.name.as_str()));
+                match image {
+                    Some(i)
+                        if words.contains(&"uniform")
+                            && !qualified
+                            && words
+                                .iter()
+                                .any(|w| w.ends_with("image2D") || w.ends_with("image3D")) =>
+                    {
+                        format!("layout({}) {line}", i.qualifier)
+                    }
+                    _ => line.to_owned(),
+                }
+            })
+            .collect();
+        pp.code = lines.join("\n");
+        pp
+    }
+
+    /// A program with a geometry stage, folded into its vertex stage.
+    fn load_geometry(
+        &mut self,
+        name: String,
+        group: Group,
+        vsh: &str,
+        gsh: &str,
+        fsh: &str,
+        inputs: &crate::GeometryInputs,
+    ) -> Option<PostProgram> {
+        let stages = [vsh, gsh, fsh].map(|p| self.preprocess(p));
+        let notes = &mut self.post.notes;
+        let problems: Vec<String> = stages.iter().flat_map(diagnostics).collect();
+        if !problems.is_empty() {
+            notes.extend(problems);
+            notes.push(format!("{name}: skipped"));
+            return None;
+        }
+        let [vertex, geometry, fragment] = &stages;
+        let (program, triangles) =
+            match crate::translate_geometry(vertex, geometry, fragment, inputs) {
+                Ok(p) => p,
+                Err(errors) => {
+                    notes.extend(
+                        errors
+                            .iter()
+                            .map(|e| format!("{}:{}: {}", e.file, e.line, e.message)),
+                    );
+                    notes.push(format!("{name}: skipped"));
+                    return None;
+                }
+            };
+        self.post.config.read(vertex);
+        self.post.config.read(fragment);
+        let mut buffers = config::draw_buffers(fragment).unwrap_or_else(|| (0..8).collect());
+        let kept = buffers
+            .iter()
+            .position(|&b| b >= 2)
+            .unwrap_or(buffers.len());
+        buffers.truncate(kept);
+        Some(PostProgram {
+            flips: flips(self.properties, &name),
+            name,
+            group,
+            program: Some(program),
+            buffers,
+            blend: None,
+            mipmaps: 0,
+            compute: Vec::new(),
+            geometry_triangles: triangles,
         })
     }
 
@@ -924,7 +1075,7 @@ impl Loader<'_> {
             {
                 continue;
             }
-            let pp = preprocess(self.pack, &path, self.macros);
+            let pp = self.preprocess(&path);
             let problems = diagnostics(&pp);
             let notes = &mut self.post.notes;
             if !problems.is_empty() {
@@ -1164,7 +1315,9 @@ mod tests {
         assert_eq!(p[3].group, Group::Final);
         let notes = post.notes.join("\n");
         assert!(
-            notes.contains("composite4: uses a geometry stage"),
+            notes.contains(
+                "composite4: uses a geometry stage (supported for terrain's shadow only)"
+            ),
             "{notes}"
         );
         assert!(notes.contains("composite5.fsh:2:"), "{notes}");
@@ -1183,6 +1336,47 @@ mod tests {
         assert_eq!(names, ["final"]);
         let post = load_post(&pack, "", &properties, &macros, &GameInputs::default());
         assert!(post.programs.iter().any(|p| p.name == "composite3"));
+    }
+
+    #[test]
+    fn image_declarations_get_their_format_once() {
+        let csh = |decl: &str| {
+            format!(
+                "#version 430\nlayout(local_size_x = 1) in;\n{decl}\nvoid main() {{ imageStore(voxels, ivec3(0), uvec4(1u)); }}\n"
+            )
+        };
+        let bare = csh("writeonly uniform uimage3D voxels;");
+        let split = csh("layout(r32ui)\nwriteonly uniform uimage3D voxels;");
+        let pack = Pack::from_zip_bytes(
+            "P.zip",
+            zip(&[
+                ("shaders/composite.vsh", VSH),
+                (
+                    "shaders/composite.fsh",
+                    "#version 120\nvoid main() { gl_FragColor = vec4(1.0); }\n",
+                ),
+                ("shaders/composite.csh", &bare),
+                ("shaders/composite_a.csh", &split),
+            ]),
+        )
+        .unwrap();
+        let properties = Properties::parse(
+            "image.voxels = none RED_INTEGER R32UI UNSIGNED_INT false false 4 4 4\n",
+            &Macros::standard(),
+        );
+        let post = load_post(
+            &pack,
+            "",
+            &properties,
+            &Macros::standard(),
+            &GameInputs::default(),
+        );
+        let compute: Vec<&str> = post.programs[0]
+            .compute
+            .iter()
+            .map(|c| c.0.as_str())
+            .collect();
+        assert_eq!(compute, ["composite", "composite_a"], "{:?}", post.notes);
     }
 
     /// The shadow pass runs when a program reads a shadow buffer or `shadow.enabled` says so;
@@ -1289,6 +1483,7 @@ mod tests {
             clouds: Some(inputs.clone()),
             weather: Some(inputs.clone()),
             hand: Some(inputs),
+            terrain_geometry: None,
         };
         let post = load_post(&pack, "", &Properties::default(), &macros, &inputs);
         let (terrain, water) = (post.terrain.unwrap(), post.water.unwrap());

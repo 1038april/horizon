@@ -869,6 +869,13 @@ fn mob_meta(
             }
             defaults.push((18, serializer::INT, Value::Int(0)));
         }
+        // Ocelot.DATA_TRUSTING (after AgeableMob's two).
+        "minecraft:ocelot" => {
+            if e.trusting {
+                meta.push((18, serializer::BOOLEAN, Value::Bool(true)));
+            }
+            defaults.push((18, serializer::BOOLEAN, Value::Bool(false)));
+        }
         // Mannequin.DATA_PROFILE, DATA_IMMOVABLE and DATA_DESCRIPTION (after Avatar's two):
         // `updateDescription` keeps the last as a component, or none when hidden.
         "minecraft:mannequin" => {
@@ -1452,9 +1459,7 @@ impl Game<'_> {
             return;
         };
         host.award_leave_game_to_all();
-        for g in &host.hub.guests {
-            self.save_guest(&host, g);
-        }
+        self.save_leaving_guests(&mut host);
         host.hub.disconnect_all();
         // Give the writer threads a moment to flush the disconnect packets.
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -1474,20 +1479,130 @@ impl Game<'_> {
         }
     }
 
-    /// Save a guest when they leave or the world closes: an integrated
-    /// server's owner with the world (`save_game`), anyone else in their file.
-    pub(super) fn save_guest(&mut self, host: &LanHost, guest: &horizon_client::lan::guest::Guest) {
-        // The vehicle the guest rides, for the file that names it.
-        let vehicle = self.root_vehicle_uuid(guest.vehicle);
-        if host.owner.as_ref().is_some_and(|o| o.uuid == guest.uuid) && guest.placed {
-            // The world's own player state rides in the level (`/data`).
-            playerdata::store(guest, &mut self.level, vehicle);
+    /// `PlayerList.removeAll`: every guest leaves in turn, the vehicle it
+    /// alone rides with it (`PlayerList.remove`), and is saved.
+    pub(super) fn save_leaving_guests(&mut self, host: &mut LanHost) {
+        // Every open menu closes first, in its guest's level
+        // (`ServerPlayer.disconnect` -> `doCloseContainer`), so the cursor,
+        // the trade and the inputs are back in the file that is saved.
+        let back = self.dim;
+        let open: Vec<(u32, super::Dim)> = host
+            .hub
+            .guests
+            .iter()
+            .filter(|g| g.placed)
+            .map(|g| (g.conn, super::Dim::from_id(&g.dimension)))
+            .collect();
+        for (conn, dim) in open {
+            if self.enter_level(Some(host), dim).is_ok() {
+                self.guest_close_all(host, conn);
+            }
         }
-        if guest.placed {
-            // PlayerList.save/remove: every player saves to their own file.
-            playerdata::save(guest, &self.world_root, vehicle);
+        if let Err(e) = self.enter_level(Some(host), back) {
+            log::error!("could not reopen {}: {e}", back.id());
+        }
+        for i in 0..host.hub.guests.len() {
+            let mut g = host.hub.guests.remove(i);
+            self.take_parent_vehicle(host, &mut g);
+            self.save_guest(host, &g);
+            host.hub.guests.insert(i, g);
+        }
+    }
+    /// Save a guest when they leave or the world closes (after
+    /// `take_parent_vehicle`, `PlayerList.save`): an integrated server's owner
+    /// into the level (`/data`) and both its files (`playerdata::save_owner`),
+    /// anyone else into their own file.
+    pub(super) fn save_guest(&mut self, host: &LanHost, guest: &horizon_client::lan::guest::Guest) {
+        if guest.placed && host.owner.as_ref().is_some_and(|o| o.uuid == guest.uuid) {
+            playerdata::save_owner(guest, &mut self.level, &self.world_root);
+        } else if guest.placed {
+            playerdata::save(guest, &self.world_root);
         }
         self.save_guest_records(host, guest);
+    }
+    /// The vehicles the other players in level `dim` ride, all but the
+    /// guest `but` (`Entity.hasExactlyOnePlayerPassenger`); `host` adds the
+    /// host's own player, in the level in place.
+    pub(super) fn ridden_by_others(
+        &self,
+        guests: &[horizon_client::lan::guest::Guest],
+        dim: &str,
+        but: Option<u128>,
+        host: bool,
+    ) -> Vec<u32> {
+        let mut others: Vec<u32> = guests
+            .iter()
+            .filter(|g| g.placed && g.dimension == dim && Some(g.uuid) != but)
+            .filter_map(|g| g.vehicle)
+            .collect();
+        if host && super::Dim::from_id(dim) == self.dim {
+            others.extend(self.riding);
+        }
+        others
+    }
+    /// `ServerPlayer.saveParentVehicle` of a player riding `vehicle` in level
+    /// `dim`, put in place for it if need be; with `remove`, the vehicle tree
+    /// leaves the world with the player (`PlayerList.remove`).
+    fn parent_vehicle_in(
+        &mut self,
+        mut host: Option<&mut LanHost>,
+        dim: &str,
+        vehicle: Option<u32>,
+        others: &[u32],
+        remove: bool,
+    ) -> Option<(horizon_world::nbt::Tag, [i32; 4])> {
+        vehicle?;
+        let back = self.dim;
+        let theirs = super::Dim::from_id(dim);
+        if theirs != back
+            && let Err(e) = self.enter_level(host.as_deref_mut(), theirs)
+        {
+            log::error!("could not open {}: {e}", theirs.id());
+            return None;
+        }
+        let found = if self.dim == theirs {
+            self.parent_vehicle_tag(vehicle, others)
+        } else {
+            None
+        };
+        if remove && let Some((_, root, _)) = &found {
+            self.remove_vehicle_tree(*root);
+        }
+        if self.dim != back
+            && let Err(e) = self.enter_level(host, back)
+        {
+            log::error!("could not reopen {}: {e}", back.id());
+        }
+        found.map(|(tag, _, attach)| (tag, attach))
+    }
+    /// `PlayerList.remove` of a guest out of the hub: its file takes the
+    /// vehicle it alone rides (`saveParentVehicle`'s RootVehicle, kept in
+    /// `saved` as a file not yet ridden again), the vehicle tree leaves the
+    /// world, and the guest stops riding (`unRide`).
+    pub(super) fn take_parent_vehicle(
+        &mut self,
+        host: &mut LanHost,
+        guest: &mut horizon_client::lan::guest::Guest,
+    ) {
+        let Some(vehicle) = guest.vehicle.take() else {
+            return;
+        };
+        if !guest.placed {
+            return;
+        }
+        let others = self.ridden_by_others(&host.hub.guests, &guest.dimension, None, true);
+        let Some((tag, attach)) =
+            self.parent_vehicle_in(Some(host), &guest.dimension, Some(vehicle), &others, true)
+        else {
+            return;
+        };
+        let saved = guest
+            .saved
+            .get_or_insert_with(|| horizon_world::nbt::Tag::Compound(Default::default()));
+        if let horizon_world::nbt::Tag::Compound(p) = saved {
+            p.insert("RootVehicle".into(), tag);
+        }
+        guest.saved_vehicle = Some(attach);
     }
     /// `ServerPlayer.loadAndSpawnParentVehicle`: a guest whose file names the
     /// vehicle it rode rides it again, once the vehicle is in the world.
@@ -1603,15 +1718,17 @@ impl Game<'_> {
         else {
             return;
         };
-        let riding = self.lan.as_ref().and_then(|h| {
-            h.hub
-                .guests
-                .iter()
-                .find(|g| g.uuid == uuid && g.placed)
-                .and_then(|g| g.vehicle)
-        });
-        // The vehicle the owner rides, by the UUID it is saved with.
-        let vehicle = self.root_vehicle_uuid(riding);
+        let Some((riding, dim, others)) = self.lan.as_ref().and_then(|h| {
+            let g = h.hub.guests.iter().find(|g| g.uuid == uuid && g.placed)?;
+            let others = self.ridden_by_others(&h.hub.guests, &g.dimension, Some(uuid), true);
+            Some((g.vehicle, g.dimension.clone(), others))
+        }) else {
+            return;
+        };
+        // The vehicle the owner rides (`ServerPlayer.saveParentVehicle`).
+        let vehicle = self
+            .parent_vehicle_in(None, &dim, riding, &others, false)
+            .map(|(tag, _)| tag);
         let Some(host) = &self.lan else {
             return;
         };
@@ -1800,6 +1917,17 @@ impl Game<'_> {
                 event @ (HostEvent::Chat { .. } | HostEvent::Warn(_) | HostEvent::Error(_)) => {
                     self.lan_log_event(event);
                 }
+                HostEvent::Ban { uuid, name, reason } => {
+                    self.anticheat_ban(&mut host.hub, uuid, &name, &reason);
+                }
+                HostEvent::ChatFiltered {
+                    sender,
+                    name,
+                    place,
+                    text,
+                    count,
+                    action,
+                } => self.chat_filtered(&mut host, sender, &name, place, &text, count, action),
                 HostEvent::PlayerChat { sender, text } => {
                     if let Some(g) = host.hub.guests.iter().find(|g| g.uuid == sender) {
                         if self.options.dedicated.is_some() {
@@ -1868,15 +1996,17 @@ impl Game<'_> {
                     }
                 }
                 HostEvent::Left(mut guest) => {
-                    // The container they had open loses an opener.
-                    if let Some(pos) = guest.menu.as_ref().and_then(|m| m.pos)
-                        && !guest.spectator()
-                    {
-                        // In the level they were in.
+                    // The menu they had open closes, in the level they were in
+                    // (`ServerPlayer.disconnect` -> `doCloseContainer`).
+                    if guest.placed {
                         let back = self.dim;
                         let theirs = super::Dim::from_id(&guest.dimension);
                         if self.enter_level(Some(&mut host), theirs).is_ok() {
-                            self.container_openers_changed(pos, false);
+                            let conn = guest.conn;
+                            let at = host.hub.guests.len();
+                            host.hub.guests.push(*guest);
+                            self.guest_close_all(&mut host, conn);
+                            *guest = host.hub.guests.remove(at);
                         }
                         if let Err(e) = self.enter_level(Some(&mut host), back) {
                             log::error!("could not reopen {}: {e}", back.id());
@@ -1886,6 +2016,8 @@ impl Game<'_> {
                     if guest.placed {
                         host.award_leave_game(guest.conn);
                     }
+                    // PlayerList.remove: the vehicle it alone rides goes too.
+                    self.take_parent_vehicle(&mut host, &mut guest);
                     self.save_guest(&host, &guest);
                     host.models.remove(&guest.conn);
                     host.play.remove(&guest.conn);
@@ -2239,28 +2371,15 @@ impl Game<'_> {
         let force = host.hub.config.force_game_mode;
         let root = self.world_root.clone();
         let in_place = host.hub.config.dimension.clone();
-        let mut owner = host.owner.as_mut();
+        let owner = host.owner.as_mut();
         let Some(g) = host.hub.guest_mut(conn) else {
             return;
         };
-        let is_owner = owner.as_ref().is_some_and(|o| o.uuid == g.uuid);
-        // PlayerDataStorage.load: the player's own file first; the world's
-        // own player state is the fallback for a first join.
-        let known = if is_owner && playerdata::load(g, &root) {
-            true
-        } else {
-            let saved = if is_owner {
-                owner.as_mut().and_then(|o| o.saved.take())
-            } else {
-                None
-            };
-            match saved {
-                Some(level) => {
-                    playerdata::apply(g, &level);
-                    level.position.is_some()
-                }
-                None => playerdata::load(g, &root),
-            }
+        // PlayerList.loadPlayerData: the owner gets the world's player file,
+        // everyone else their own.
+        let known = match owner.filter(|o| o.uuid == g.uuid) {
+            Some(o) => playerdata::load_owner(g, &root, o.saved.take().as_deref()),
+            None => playerdata::load(g, &root),
         };
         if !known || force {
             g.game_mode = default_mode;

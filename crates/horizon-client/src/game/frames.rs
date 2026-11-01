@@ -319,8 +319,6 @@ impl Game<'_> {
     /// is killed and dropped with its item (`BlockAttachedEntity.hurtServer`).
     /// A fixed frame is not hurt by an explosion, and `blast_spares_decorations`
     /// keeps every frame without `mobGriefing`.
-    /// Not ported: `ignoreExplosion` also spares frames when the exploding
-    /// entity is in water.
     pub(super) fn explosion_breaks_frames(
         &mut self,
         blast: [f64; 3],
