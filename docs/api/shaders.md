@@ -115,7 +115,9 @@ stages.
 - 2026-11-01: API 0.1 (additions): `[[materials]]` and `MaterialInput.material`, an id by sprite,
   and `[shadow] solid_materials`.
 - 2026-11-01: API 0.1 (additions): entities cast into `shadow_map`, the player's own model in first person too, and the round
-  blob under entities is left out while a pack draws a shadow map.
+  blob under entities is left out in the Overworld while a pack draws a shadow map, so under a
+  roof they have no shadow but what the pack gives them. Only entities the camera's culling keeps
+  cast: one off screen or behind a wall leaves the map, and its shadow with it.
 - 2026-10-31: API 0.1 (additions): translucent terrain in the shadow pass: `shadow_map_translucent`
   and `shadow_color`, so a pack can tint the light that passes through water and stained glass.
 - 2026-10-31: API 0.1 (additions): `[shadow]`: the engine draws the solid terrain the light sees
