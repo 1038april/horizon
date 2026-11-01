@@ -142,6 +142,7 @@ mod integrated;
 mod interactions;
 mod item_draw;
 mod item_particles;
+mod item_use;
 mod jigsaw_blocks;
 mod jigsaw_edit;
 mod jukebox;
@@ -191,6 +192,7 @@ mod native_components;
 mod native_criteria;
 mod native_entities;
 mod native_explosions;
+mod native_falling;
 mod native_hooks;
 mod native_lifecycle;
 mod native_menus;
@@ -898,6 +900,8 @@ struct GameLevel<'w> {
     client_side: bool,
     /// Only the integrated or dedicated server dispatches native observations.
     native_authoritative: bool,
+    /// `Level.isDebug`: `setBlock` changes nothing.
+    debug: bool,
     native_sounds: &'w mut Vec<creatures::NativeSound>,
     native_particles: &'w mut Vec<lan_particles::QueuedParticle>,
 }
@@ -1413,6 +1417,10 @@ impl LevelAccess for GameLevel<'_> {
         self.world.block(pos.x, pos.y, pos.z)
     }
     fn set_raw(&mut self, pos: BlockPos, state: BlockStateId) -> Option<BlockStateId> {
+        // `Level.setBlock`: a server level of the Debug preset never changes.
+        if self.debug && !self.client_side {
+            return None;
+        }
         if !self.world.loaded(pos.x, pos.z)
             || pos.y < self.world.bottom_y()
             || pos.y >= self.world.top_y()
@@ -2003,6 +2011,44 @@ fn drop_whole_stack(modifiers: winit::keyboard::ModifiersState) -> bool {
     modifiers.control_key()
 }
 
+/// The modifier `modifiers` stands for, as GLFW words it in the native mods'
+/// input hooks: `GLFW_MOD_SHIFT` 1, `GLFW_MOD_CONTROL` 2, `GLFW_MOD_ALT` 4,
+/// `GLFW_MOD_SUPER` 8 — the word a NeoForge listener reads off its event
+/// (`getModifiers`). The lock keys are not modifiers there.
+fn glfw_modifiers(modifiers: winit::keyboard::ModifiersState) -> u32 {
+    let mut bits = 0;
+    if modifiers.shift_key() {
+        bits |= 1;
+    }
+    if modifiers.control_key() {
+        bits |= 2;
+    }
+    if modifiers.alt_key() {
+        bits |= 4;
+    }
+    if modifiers.super_key() {
+        bits |= 8;
+    }
+    bits
+}
+
+/// The GLFW mouse button index `button` is, as the native mods' mouse hooks
+/// hand it over: 0 left, 1 right, 2 middle, 3 back, 4 forward. `Other(n)` is
+/// winit's n, the platform's own number (X11 or evdev on Linux), so a button
+/// past 4 is not GLFW's index everywhere. Buttons 0–4 are the numbering
+/// `keybinds::mouse_name` names (`key.mouse.<index + 1>`) and vanilla's
+/// `InputConstants` reads.
+fn glfw_button(button: MouseButton) -> i32 {
+    match button {
+        MouseButton::Left => 0,
+        MouseButton::Right => 1,
+        MouseButton::Middle => 2,
+        MouseButton::Back => 3,
+        MouseButton::Forward => 4,
+        MouseButton::Other(n) => i32::from(n),
+    }
+}
+
 fn select_creative_tab(
     creative: &mut Creative,
     clicks: &mut horizon_client::container_screen::Clicks,
@@ -2294,11 +2340,15 @@ struct Game<'a> {
     /// connection (None: the host). Breeding credits them, wherever they are.
     love_cause: HashMap<u32, Option<u32>>,
     /// Mobs whose death (`LivingEntity.die`) has been handled.
-    died: HashSet<u32>,
+    /// Looked up per mob each tick: a fast hasher (never iterated).
+    died: horizon_client::fast_hash::FxHashSet<u32>,
     /// Client-ticked block-entity animation state (`game/block_entity_anims.rs`).
     be_anims: horizon_client::block_entity_anim::BlockEntityAnims,
     /// Item being used (eaten): hotbar slot and ticks used.
     using: Option<(usize, u32)>,
+    /// `getUseDuration` when that use started, as a mod left it
+    /// (`game/item_use.rs`): consumables and mod items count to it.
+    use_duration: i32,
     /// Camera.oldFovModifier / fovModifier.
     /// `Camera` (eye height and field-of-view easing, view placement).
     view: horizon_client::camera::Camera,
@@ -2392,6 +2442,9 @@ struct Game<'a> {
     world_tables: Option<WorldTables>,
     /// The world is superflat (`ServerLevel.isFlat`, for every dimension).
     world_flat: bool,
+    /// The world is the Debug preset (`Level.isDebug`, for every dimension): its blocks
+    /// cannot be changed and nothing ticks.
+    world_debug: bool,
     /// A player carried through a portal, re-placed once the destination loads.
     travelling: Option<(PlayerMotion, Vec3)>,
     /// A server's players on their way to another level, each waiting for
@@ -3880,6 +3933,7 @@ impl Game<'_> {
             lid_openers: &self.lid_openers,
             client_side: self.remote.is_some(),
             native_authoritative: self.serving.is_some() || self.options.dedicated.is_some(),
+            debug: self.world_debug,
             native_sounds: &mut self.creatures.lan_sounds,
             native_particles: &mut self.creatures.lan_particles,
         };
@@ -4227,13 +4281,18 @@ impl Game<'_> {
             }
         });
         self.process_level_events()?;
-        self.tick_scheduled()?;
+        // ServerLevel.tick: a Debug world runs no scheduled block or fluid ticks, and
+        // ServerChunkCache.tickChunks no random ticks.
+        let debug = self.world_debug;
+        if !debug {
+            self.tick_scheduled()?;
+        }
         self.with_level(|b, level, ticks| {
             // Each chunk's ticking sections and their masks, read again only
             // after a block changed.
             let mut sections = Vec::new();
             horizon_client::spans::time("random_ticks", || {
-                for (x, z) in ticking {
+                for (x, z) in ticking.into_iter().filter(|_| !debug) {
                     let mut read = None;
                     let pos = horizon_core::position::ChunkPos::new(x, z);
                     b.tick_chunk_random_masked(level, ticks, pos, |level, from| {
@@ -5783,6 +5842,12 @@ impl Game<'_> {
         {
             return Ok(true);
         }
+        // a mod's item used over time: its Item.use, once a block item's
+        // useOn had its turn.
+        if !on_block && (info.block.is_none() || block_hit.is_none()) && self.start_mod_use(&stack)
+        {
+            return Ok(true);
+        }
         if (!on_block && self.use_potion_item(&stack)?)
             || ((block_hit.is_some() || !spawn_egg)
                 && (!on_block || spawn_egg)
@@ -5792,9 +5857,7 @@ impl Game<'_> {
         }
         // BrushItem.useOn: brushing starts on the block aimed at (CONSUME).
         if block_hit.is_some() && &*stack.item == "minecraft:brush" {
-            if self.using.is_none() {
-                self.using = Some((self.held_slot(), 0));
-            }
+            self.start_using_item();
             return Ok(true);
         }
         if !on_block
@@ -5821,9 +5884,7 @@ impl Game<'_> {
         }
         // BundleItem.use: startUsingItem, then onUseTick empties it.
         if !on_block && info.bundle {
-            if self.using.is_none() {
-                self.using = Some((self.held_slot(), 0));
-            }
+            self.start_using_item();
             self.swing_arm();
             return Ok(true);
         }
@@ -5832,10 +5893,8 @@ impl Game<'_> {
             return Ok(true);
         }
         if !on_block && &*stack.item == "minecraft:bow" {
-            if self.using.is_none()
-                && (self.creative || self.projectile_slot("minecraft:bow").is_some())
-            {
-                self.using = Some((self.held_slot(), 0));
+            if self.creative || self.projectile_slot("minecraft:bow").is_some() {
+                self.start_using_item();
             }
             return Ok(true);
         }
@@ -5991,17 +6050,28 @@ impl Game<'_> {
     /// `Player.canEat` (`Consumable.canConsume`), anything else is always
     /// consumed. The right click is held for `consume_seconds`.
     fn start_eating(&mut self, info: &horizon_client::items::ItemInfo) -> bool {
+        let Some(stack) = self.held().cloned() else {
+            return false;
+        };
         if info.consumable.is_none()
             || (info.food.is_some()
-                && !self.player.as_ref().is_some_and(|p| {
-                    info.can_always_eat || p.health.food.food < 20 || self.creative
-                }))
+                && (self.player.is_none() || !self.can_eat(&stack, info.can_always_eat)))
         {
             return false;
         }
-        if self.using.is_none() {
-            self.using = Some((self.held_slot(), 0));
+        // as Consumable.startConsuming does, no time is eaten at once, without a use
+        // (the server's eating reaches a client through the inventory).
+        if let Some(consumable) = info.consumable.as_ref()
+            && item_use::consumes_at_once(consumable.ticks())
+        {
+            if self.remote.is_none() {
+                // the cooldown of ItemStack.use's applyAfterUseComponentSideEffects.
+                self.apply_use_cooldown(&stack);
+                self.finish_consuming(info, consumable, &stack);
+            }
+            return true;
         }
+        self.start_using_item();
         true
     }
     /// `InstrumentItem.use` for a goat horn: the player holds it up for the
@@ -6013,9 +6083,7 @@ impl Game<'_> {
         let Some(instrument) = self.res.items().instrument(stack) else {
             return;
         };
-        if self.using.is_none() {
-            self.using = Some((self.held_slot(), 0));
-        }
+        self.start_using_item();
         let at = self
             .player
             .as_ref()
@@ -6136,6 +6204,9 @@ impl Game<'_> {
             return;
         }
         if self.tick_drinking(slot, ticks, &stack) {
+            if self.using.is_none() {
+                self.use_item_finished(&stack);
+            }
             return;
         }
         if &*stack.item == "minecraft:bow" {
@@ -6187,24 +6258,30 @@ impl Game<'_> {
             self.tick_bundle(slot, ticks);
             return;
         }
+        if self.mod_use(&stack) {
+            self.tick_mod_use(slot, ticks, &stack);
+            return;
+        }
         let Some(consumable) = info.consumable.as_ref() else {
             self.using = None;
             return;
         };
         // ItemStack.onUseTick: Consumable.shouldEmitParticlesAndSounds with
         // the remaining ticks before this tick counts them down.
-        let duration = consumable.ticks().max(0) as u32;
-        let remaining = duration - ticks.min(duration);
+        // the duration is getUseDuration's when the use started.
+        let remaining = self.use_duration - ticks as i32;
+        let done = item_use::count_down(ticks, self.use_duration).is_none();
         let ticks = ticks + 1;
-        if consumable.should_emit(remaining as i32) {
+        if consumable.should_emit(remaining) {
             self.emit_consume(consumable, &stack, 5);
         }
-        if ticks >= duration {
+        if done {
             self.using = None;
             self.send_use_item_complete();
             // ItemStack.finishUsingItem's applyAfterUseComponentSideEffects.
             self.apply_use_cooldown(&stack);
             self.finish_consuming(&info, consumable, &stack);
+            self.use_item_finished(&stack);
         } else {
             self.using = Some((slot, ticks));
         }
@@ -7634,6 +7711,7 @@ impl Game<'_> {
         ));
         draws.push(hud_layout::GuiDraw::Pop);
         hud_layout::paint(batch, &self.gui.atlas, &draws);
+        self.native_item_decorations(stack, x, y, batch);
     }
     fn hud(&mut self, size: [u32; 2]) -> HudBatch {
         // The pack prompt replaces the connecting screen (setScreen), but
@@ -10646,6 +10724,7 @@ impl Game<'_> {
             spread,
             speed: 0.0,
             count: 0,
+            randomization: 0,
         });
     }
     /// `Player.attack`'s sounds when a vehicle takes the hit (it always does,
@@ -10872,6 +10951,7 @@ impl Game<'_> {
                     spread: [0.1, 0.0, 0.1],
                     speed: 0.2,
                     count: (actual * 0.5) as u32 as i32,
+                    randomization: 0,
                 });
             }
             self.last_hurt_by_player
@@ -11332,6 +11412,8 @@ impl Game<'_> {
         });
         self.world_flat = horizon_client::save::WorldGen::read(&save_root)
             .is_some_and(|w| w.preset == horizon_client::save::WorldPreset::Flat);
+        self.world_debug = horizon_client::save::WorldGen::read(&save_root)
+            .is_some_and(|w| w.preset == horizon_client::save::WorldPreset::Debug);
         self.block_ticks = Ticks::new(self.level.seed as i32);
         self.tick_chunks.clear();
         self.clear_entities();
@@ -12354,6 +12436,9 @@ impl Game<'_> {
             if !emptied {
                 return Ok(UseResult::Fail);
             }
+            if self.dim == Dim::Nether && content.is_water() {
+                self.evaporation_smoke(target);
+            }
             // `BucketItem.emptyContents` uses `playSound(player, …)`: the
             // actor's client already played the empty / evaporate sound from
             // its DryLevel prediction (#4684).
@@ -12927,6 +13012,18 @@ impl Game<'_> {
             let attack = attacks[i];
             let inverse_height =
                 horizon_client::first_person::equip_displacement(heights[i], scale);
+            let mut canceled = false;
+            self.native_render_hand(
+                hand,
+                item.as_ref(),
+                a,
+                attack,
+                inverse_height,
+                &mut canceled,
+            );
+            if canceled {
+                continue;
+            }
             // The main hand on its arm, the off hand on the other one.
             let left = self.settings.main_hand_left != (hand == Hand::Off);
             let Some(stack) = item else {
@@ -13019,24 +13116,18 @@ impl Game<'_> {
                         .item_renderer
                         .models
                         .components(&horizon_client::item_render::stack_view(&stack));
-                    let animation = components
+                    let mut animation = components
                         .get("minecraft:consumable")
-                        .map(horizon_client::first_person::consumable_animation);
-                    if matches!(
+                        .map_or(horizon_world::consumable::UseAnimation::None, |c| {
+                            horizon_client::first_person::consumable_animation(c)
+                        });
+                    self.native_use_animation(&stack, &mut animation);
+                    item_use::use_pose(
                         animation,
-                        Some(
-                            horizon_world::consumable::UseAnimation::Eat
-                                | horizon_world::consumable::UseAnimation::Drink
-                        )
-                    ) {
-                        ItemPose::Eat {
-                            remaining: owner.use_item_remaining_ticks as f32,
-                            duration: owner.use_duration as f32,
-                            partial: a,
-                        }
-                    } else {
-                        ItemPose::Using
-                    }
+                        owner.use_item_remaining_ticks as f32,
+                        owner.use_duration as f32,
+                        a,
+                    )
                 }
                 _ if spinning => ItemPose::SpinAttack,
                 // ItemInHandRenderer: a STAB swing of this hand jabs.
@@ -14470,6 +14561,12 @@ impl Game<'_> {
                         || !self.block_action_restricted(h.pos)
                         || self.can_place_on_in_adventure(h.pos)
                 })
+                .filter(|h| {
+                    let state = self.world.block(h.pos[0], h.pos[1], h.pos[2]);
+                    let mut canceled = false;
+                    self.native_block_highlight(h.pos, state, alpha as f32, &mut canceled);
+                    !canceled
+                })
                 .map(|h| {
                     let state = self.world.block(h.pos[0], h.pos[1], h.pos[2]);
                     let f = self.res.facts().get(state);
@@ -15812,6 +15909,39 @@ impl Game<'_> {
             return;
         }
         let result: Result<()> = (|| {
+            // ScreenEvent.MouseButtonPressed.Pre / MouseButtonReleased.Pre:
+            // the open screen hears of the press before anything reads it, and
+            // a cancelled one goes no further — no hotbar key, no slot, no
+            // button, no sort, no drag. First in the event, so none of the
+            // arms below (which hold the container hotkey and the sort and
+            // header buttons too) see it. A click the pad or the keyboard's
+            // focus made up is not the mouse: it fires nothing.
+            if let WindowEvent::MouseInput { state, button, .. } = &event
+                && !self.pad_synthetic_input()
+                && let Some(screen) = self.screen_view_now()
+            {
+                let (button, modifiers) = (glfw_button(*button), glfw_modifiers(self.modifiers));
+                let mut canceled = false;
+                if *state == ElementState::Pressed {
+                    self.native_screen_mouse_button_pressed_pre(
+                        &screen,
+                        button,
+                        modifiers,
+                        &mut canceled,
+                    );
+                } else {
+                    self.native_screen_mouse_button_released_pre(
+                        &screen,
+                        button,
+                        modifiers,
+                        &mut canceled,
+                    );
+                }
+                if canceled {
+                    return Ok(());
+                }
+            }
+            self.key_focus_mouse_press(&event);
             match event {
                 WindowEvent::CloseRequested => {
                     if !self.settings.quit_shortcuts
@@ -15927,6 +16057,27 @@ impl Game<'_> {
                         }) * wheel_sensitivity
                     };
                     let d = scaled(raw_y) as f32;
+                    // ScreenEvent.MouseScrolled.Pre: the open screen hears of
+                    // the wheel before anything scrolls, and a cancelled turn
+                    // scrolls nothing — no bundle, no list, slider or
+                    // scrollbar. The hotbar below reads the wheel only while
+                    // playing, which the gate excludes. A wheel the pad or the
+                    // keyboard's focus made up is not the mouse: it fires
+                    // nothing.
+                    if !self.pad_synthetic_input()
+                        && let Some(screen) = self.screen_view_now()
+                    {
+                        let mut canceled = false;
+                        self.native_screen_mouse_scrolled_pre(
+                            &screen,
+                            [scaled(raw_x), scaled(raw_y)],
+                            glfw_modifiers(self.modifiers),
+                            &mut canceled,
+                        );
+                        if canceled {
+                            return Ok(());
+                        }
+                    }
                     if self.dialog_open() {
                         self.dialog_scroll(d);
                     } else if self.code_of_conduct.is_some() {
@@ -17083,13 +17234,14 @@ impl<'a> Game<'a> {
             attack_item: None,
             last_hurt_by_player: HashMap::new(),
             love_cause: HashMap::new(),
-            died: HashSet::new(),
+            died: Default::default(),
             be_anims: {
                 let mut anims = horizon_client::block_entity_anim::BlockEntityAnims::default();
                 anims.classify(registry);
                 anims
             },
             using: None,
+            use_duration: 0,
             view: Default::default(),
             limiter: horizon_client::window::FramerateLimiter::new(0),
             frame_clock: Default::default(),
@@ -17140,6 +17292,7 @@ impl<'a> Game<'a> {
             dim: Dim::Overworld,
             world_root: PathBuf::new(),
             world_flat: false,
+            world_debug: false,
             travelling: None,
             server_trips: Vec::new(),
             level_teleports: Vec::new(),
@@ -17197,11 +17350,15 @@ impl<'a> Game<'a> {
             remote_knots: Default::default(),
             knot_ids: Default::default(),
             text_display_vertices: 0,
-            skin_downloads: RefCell::new(horizon_client::skins::Downloader::new(
-                std::env::current_dir()
-                    .unwrap_or_default()
-                    .join("assets/skins"),
-            )),
+            skin_downloads: RefCell::new({
+                let mut downloads = horizon_client::skins::Downloader::new(
+                    std::env::current_dir()
+                        .unwrap_or_default()
+                        .join("assets/skins"),
+                );
+                downloads.set_resource_root(root.clone());
+                downloads
+            }),
             skin_profiles: RefCell::new(horizon_client::skins::Resolver::new()),
             skin_slots: horizon_client::skins::SkinSlots::new(horizon_client::hud::SKIN_SLOTS),
             trim_slots: Vec::new(),
@@ -19668,6 +19825,60 @@ mod tests {
         assert_eq!(Screen::Playing.id(), "playing");
         assert_eq!(Screen::Inventory.id(), "inventory");
         assert_eq!(Screen::Win.id(), "win");
+    }
+
+    /// The `modifiers` a native mod's input hooks hand over are GLFW's bits
+    /// (`GLFW_MOD_SHIFT` 1, `GLFW_MOD_CONTROL` 2, `GLFW_MOD_ALT` 4,
+    /// `GLFW_MOD_SUPER` 8), each on its own and all together.
+    #[test]
+    fn glfw_modifier_bits_are_glfw_modifier_bits() {
+        use winit::keyboard::ModifiersState;
+        for (state, bits) in [
+            (ModifiersState::empty(), 0),
+            (ModifiersState::SHIFT, 1),
+            (ModifiersState::CONTROL, 2),
+            (ModifiersState::ALT, 4),
+            (ModifiersState::SUPER, 8),
+            (ModifiersState::SHIFT | ModifiersState::ALT, 5),
+            (ModifiersState::CONTROL | ModifiersState::SUPER, 10),
+            (ModifiersState::SHIFT | ModifiersState::CONTROL, 3),
+            (
+                ModifiersState::SHIFT
+                    | ModifiersState::CONTROL
+                    | ModifiersState::ALT
+                    | ModifiersState::SUPER,
+                15,
+            ),
+        ] {
+            assert_eq!(glfw_modifiers(state), bits, "{state:?}");
+        }
+        // Every modifier GLFW has a bit for, and no other.
+        assert_eq!(glfw_modifiers(ModifiersState::all()), 15);
+    }
+
+    /// The `button` a native mod's mouse hooks hand over is GLFW's index (0
+    /// left, 1 right, 2 middle, 3 back, 4 forward, else the button's number),
+    /// the one `keybinds::mouse_name` names (`key.mouse.<index + 1>` from the
+    /// back button on).
+    #[test]
+    fn glfw_button_indices_are_glfw_indices() {
+        for (button, index, name) in [
+            (MouseButton::Left, 0, "key.mouse.left"),
+            (MouseButton::Right, 1, "key.mouse.right"),
+            (MouseButton::Middle, 2, "key.mouse.middle"),
+            (MouseButton::Back, 3, "key.mouse.4"),
+            (MouseButton::Forward, 4, "key.mouse.5"),
+        ] {
+            assert_eq!(glfw_button(button), index);
+            assert_eq!(horizon_client::keybinds::mouse_name(button), name);
+        }
+        for n in 5..12u16 {
+            assert_eq!(glfw_button(MouseButton::Other(n)), i32::from(n));
+            assert_eq!(
+                horizon_client::keybinds::mouse_name(MouseButton::Other(n)),
+                format!("key.mouse.{}", n + 1)
+            );
+        }
     }
 
     /// F3 left on when leaving a world kept the axes on the title screen.

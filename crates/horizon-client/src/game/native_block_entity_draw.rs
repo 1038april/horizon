@@ -7,6 +7,7 @@ use super::{Dim, Game};
 use glam::{DVec3, Mat4, Quat, Vec3};
 use horizon_assets::{
     bake::{bake_flat_face, default_uv},
+    item_model::DisplayContext,
     model::{Direction, Material},
 };
 use horizon_client::{
@@ -15,6 +16,7 @@ use horizon_client::{
     fast_hash::FxHashMap,
     gfx::Cull,
     hud::Rect,
+    items::ItemStack,
     mesher::Vertex,
 };
 use horizon_world::registry::BlockStateId;
@@ -51,6 +53,8 @@ pub struct BlockEntityDraw {
     /// (`LevelRenderer.getLightCoords`), 16 times sky light in bits 0..8 and
     /// 16 times block light in bits 8..16; set it to light a part otherwise.
     pub light: u32,
+    /// The block drawn, for `native_draw_item`'s owner.
+    block: [i32; 3],
     poses: Vec<Mat4>,
     lights: (Vec3, Vec3),
     vertices: Vec<Vertex>,
@@ -263,6 +267,7 @@ impl Game<'_> {
             partial,
             game_time: self.world.game_time,
             light: 0,
+            block: [0; 3],
             poses: Vec::new(),
             lights: diffuse_lights(self.dim == Dim::Nether),
             vertices: std::mem::take(out),
@@ -312,6 +317,7 @@ impl Game<'_> {
             self.mark_block_entity(start, state);
             // Drawn relative to the block, then moved to the camera, so what
             // is kept can be moved again.
+            draw.block = pos;
             draw.poses.clear();
             draw.poses.push(Mat4::IDENTITY);
             draw.light = light;
@@ -340,7 +346,7 @@ impl Game<'_> {
     /// from its front), textured with the `uv` rectangle (u0, v0, u1, v1 in
     /// texels of 16 per side) of `sprite` (`mymod:entity/screen`,
     /// `mymod:block/casing`, `block/stone`) times the 0xRRGGBB `tint`
-    /// (0xFFFFFF for none). False for an unknown sprite. API @API:block_entity_submit@.
+    /// (0xFFFFFF for none). False for an unknown sprite. API 71.
     pub(super) fn native_draw_quad(
         &self,
         draw: &mut BlockEntityDraw,
@@ -367,7 +373,7 @@ impl Game<'_> {
     /// `Direction` (down, up, north, south, west, east), baked as a model
     /// element's are (`FaceBakery`), times the 0xRRGGBB `tint`. A turned box
     /// is drawn under a turned pose (`BlockEntityDraw::rotate_about`). False
-    /// when a face's sprite is unknown; that face is left out. API @API:block_entity_submit@.
+    /// when a face's sprite is unknown; that face is left out. API 71.
     pub(super) fn native_draw_cube(
         &self,
         draw: &mut BlockEntityDraw,
@@ -400,7 +406,7 @@ impl Game<'_> {
     /// under `draw`'s pose, as vanilla's `submitBlockModel` draws a block in
     /// an entity's place: a block's baked model, with its default tints. A
     /// moving part is often a block of the mod's own, never placed. False for
-    /// an unknown block or property. API @API:block_entity_submit@.
+    /// an unknown block or property. API 71.
     pub(super) fn native_draw_block(
         &self,
         draw: &mut BlockEntityDraw,
@@ -428,6 +434,57 @@ impl Game<'_> {
         self.block_model_vertices(id, 42, pose, draw.light, true, &mut draw.vertices);
         true
     }
+
+    /// Draws `stack` under `draw`'s pose as an item is drawn in the world
+    /// (`ItemModelResolver.updateForTopItem` and `ItemStackRenderState.submit`), centred on the
+    /// pose's origin, in its model's `display` transform: `Fixed` as a
+    /// campfire's or an item frame's, `Ground` as a dropped item's. `seed`
+    /// picks among random models (a campfire passes its slot plus its
+    /// position's hash). `owner_yaw` makes the block entity the item's
+    /// owner (`ItemOwner`), at the block's centre and turned that many
+    /// degrees (`getVisualRotationYInDegrees`), as a shelf is: a compass on
+    /// it points to its target from there. None draws it with no owner, as
+    /// a campfire does. False for an empty stack or one with no model. The
+    /// client's copy of a block entity has no item slots (`entity.items` is
+    /// empty there): send the stacks you draw in
+    /// `native_block_entity_update_tag` and read them from `entity.nbt`.
+    /// API @API:block_entity_draw_item@.
+    pub(super) fn native_draw_item(
+        &self,
+        draw: &mut BlockEntityDraw,
+        stack: &ItemStack,
+        display: DisplayContext,
+        owner_yaw: Option<f32>,
+        seed: i32,
+    ) -> bool {
+        // ShelfBlockEntity.position(): Vec3.atCenterOf(getBlockPos()).
+        let owner = owner_yaw
+            .map(|yaw| super::item_draw::owner_at(draw.block.map(|c| f64::from(c) + 0.5), yaw, ""));
+        let item = self.resolve_item(stack, display, owner.as_ref(), seed);
+        if item.is_empty() {
+            return false;
+        }
+        let pose = draw.pose();
+        self.submit_item_world(&item, pose, draw.light, &mut draw.vertices);
+        true
+    }
+
+    /// Property `key` of block state `state` (a machine's `facing`, from the
+    /// `state` `native_block_entity_submit` gets), if it has one: no lookup in
+    /// the world, so cheap each frame. API @API:block_entity_draw_item@.
+    pub(super) fn native_block_state_property(
+        &self,
+        state: BlockStateId,
+        key: &str,
+    ) -> Option<&str> {
+        self.pack
+            .assets
+            .registry
+            .state(state)?
+            .properties
+            .get(key)
+            .map(String::as_str)
+    }
 }
 
 #[cfg(test)]
@@ -439,6 +496,7 @@ mod tests {
             partial: 0.0,
             game_time: 0,
             light: 0xF0F0,
+            block: [0; 3],
             poses: vec![Mat4::from_translation(Vec3::new(10.0, 0.0, 0.0))],
             lights: diffuse_lights(false),
             vertices: Vec::new(),

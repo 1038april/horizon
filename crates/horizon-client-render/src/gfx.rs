@@ -94,6 +94,7 @@ mod native_material;
 mod native_pack;
 mod native_post;
 pub mod native_render;
+mod native_shadow;
 mod native_sky;
 mod occlusion;
 mod oit;
@@ -607,9 +608,11 @@ pub struct Renderer {
     group: wgpu::BindGroup,
     globals: wgpu::Buffer,
     lightmap: wgpu::Texture,
-    /// The block sprites, [`SPRITE_SPLIT`] layers per array (the first is
+    /// The block sprites, `sprite_split` layers per array (the first is
     /// `sprites` in terrain.wgsl, the others `sprites_1`...).
     sprite_textures: Vec<wgpu::Texture>,
+    /// Block sprite layers per array on this device ([`layer_split`]).
+    sprite_split: u32,
     /// A 1-layer array bound where a pack needs fewer arrays.
     sprite_unused: wgpu::TextureView,
     mip_levels: u32,
@@ -777,18 +780,45 @@ pub struct Renderer {
 }
 /// Every layer's mip levels, layer major (`first` is the first layer's
 /// index into `settings`), made by `MipmapGenerator`.
-/// Block sprite layers per texture array: the smallest
-/// `max_texture_array_layers` of the GPUs Horizon runs on. Mods add sprites
-/// past it into more arrays (terrain.wgsl's `sprite`).
+/// Block sprite layers per texture array at most: the
+/// `max_texture_array_layers` of most GPUs. Mods add sprites past it into more
+/// arrays (terrain.wgsl's `sprite`); a GPU with fewer layers per array gets a
+/// smaller split ([`layer_split`]).
 pub(crate) const SPRITE_SPLIT: u32 = 2048;
-/// [`SPRITE_SPLIT`], or a smaller split from `HORIZON_SPRITE_SPLIT` (dev
-/// only: vanilla's sprites drawn from several arrays must look the same).
-fn sprite_split() -> u32 {
+/// A smaller split from `HORIZON_SPRITE_SPLIT` (dev only: vanilla's sprites
+/// drawn from several arrays must look the same).
+fn requested_split() -> Option<u32> {
     std::env::var("HORIZON_SPRITE_SPLIT")
         .ok()
         .and_then(|v| v.parse().ok())
         .filter(|&n| (1..=SPRITE_SPLIT).contains(&n))
-        .unwrap_or(SPRITE_SPLIT)
+}
+/// The split the CPU mip chains are cut by before the adapter is known.
+fn sprite_split() -> u32 {
+    requested_split().unwrap_or(SPRITE_SPLIT)
+}
+/// The block sprite layers per texture array on an adapter that holds
+/// `max_layers` layers per array: [`SPRITE_SPLIT`], `requested`
+/// (`HORIZON_SPRITE_SPLIT`) or `max_layers`, whichever is smallest, with a full
+/// array still fitting once [`array_layers`] pads it for OpenGL. Errors when
+/// `layers` sprites need more than the [`SPRITE_ARRAYS`] arrays terrain.wgsl binds.
+fn layer_split(
+    max_layers: u32,
+    gl: bool,
+    requested: Option<u32>,
+    layers: u32,
+) -> std::result::Result<u32, String> {
+    let mut split = requested.unwrap_or(SPRITE_SPLIT).min(max_layers).max(1);
+    if split > 1 && array_layers(split, gl) > max_layers {
+        split -= 1;
+    }
+    if layers > split * SPRITE_ARRAYS {
+        return Err(format!(
+            "GPU supports {max_layers} texture layers per array; {layers} block textures need \
+             more than the {SPRITE_ARRAYS} arrays of {split} Horizon draws from"
+        ));
+    }
+    Ok(split)
 }
 /// Sprite arrays terrain.wgsl binds (`sprites`, `sprites_1`...).
 const SPRITE_ARRAYS: u32 = 8;
@@ -891,6 +921,8 @@ fn terrain_group(
 /// construction so the temporary mip chains are released after GPU upload.
 pub struct PreparedTextures {
     sprites: Vec<(Vec<u8>, u32)>,
+    /// The sprite layers per array `sprites` is cut by.
+    split: u32,
     forcefield: (Vec<u8>, u32),
 }
 impl PreparedTextures {
@@ -922,8 +954,32 @@ impl PreparedTextures {
                     mip_chain(&pixels[start..], size, settings, first, count)
                 })
                 .collect(),
+            split,
             forcefield: mip_chain(forcefield.0, forcefield.1, &[], 0, 1),
         }
+    }
+
+    /// The same mip chains cut by `split` layers per array: chains made before
+    /// the adapter was known, for a GPU with fewer layers per array.
+    fn resplit(mut self, layers: u32, split: u32) -> Self {
+        if self.split == split || layers <= split.min(self.split) {
+            self.split = split;
+            return self;
+        }
+        let levels = self.sprites[0].1;
+        let all: Vec<u8> = self
+            .sprites
+            .drain(..)
+            .flat_map(|(bytes, _)| bytes)
+            .collect();
+        // Every layer's mip levels are contiguous (layer major).
+        let layer_bytes = all.len() / layers as usize;
+        self.sprites = all
+            .chunks(layer_bytes * split as usize)
+            .map(|chunk| (chunk.to_vec(), levels))
+            .collect();
+        self.split = split;
+        self
     }
 }
 
@@ -1093,16 +1149,13 @@ fn describe_adapter(adapter: &wgpu::Adapter) {
 }
 /// Whether an adapter's texture arrays hold the block textures Horizon puts
 /// in one array.
-fn check_layers(limits: &wgpu::Limits, layers: u32) -> Result<()> {
-    let needed = layers.min(sprite_split());
-    if limits.max_texture_array_layers < needed {
-        return Err(format!(
-            "GPU supports {} texture layers; {needed} required",
-            limits.max_texture_array_layers
-        )
-        .into());
-    }
-    Ok(())
+fn check_layers(adapter: &wgpu::Adapter, layers: u32) -> Result<u32> {
+    Ok(layer_split(
+        adapter.limits().max_texture_array_layers,
+        adapter.get_info().backend == wgpu::Backend::Gl,
+        requested_split(),
+        layers,
+    )?)
 }
 /// Whether the swapchain can take a window of `width` x `height`: each side from 1 to the
 /// device's `max_texture_dimension_2d` (`max`), else `Surface::configure` panics. 0 is a
@@ -1273,7 +1326,7 @@ async fn open_backend(
     describe_adapter(&adapter);
     let info = adapter.get_info();
     let limits = adapter.limits();
-    if let Err(e) = check_layers(&limits, layers) {
+    if let Err(e) = check_layers(&adapter, layers) {
         return Err(NoDevice::Failed(format!("{name}: {e}")));
     }
     // Mappable primary buffers: section pages that no longer fit in
@@ -1437,14 +1490,6 @@ impl Renderer {
         previous: Option<&Self>,
         api: GraphicsApi,
     ) -> Result<Self> {
-        let split = sprite_split();
-        if layers > split * SPRITE_ARRAYS {
-            return Err(format!(
-                "{layers} block textures; Horizon draws at most {}",
-                split * SPRITE_ARRAYS
-            )
-            .into());
-        }
         let Opened {
             instance,
             surface,
@@ -1458,7 +1503,7 @@ impl Renderer {
             // window.
             Some(renderer) => {
                 describe_adapter(&renderer.adapter);
-                check_layers(&renderer.adapter.limits(), layers)?;
+                check_layers(&renderer.adapter, layers)?;
                 Opened {
                     surface: if offscreen {
                         None
@@ -1482,6 +1527,12 @@ impl Renderer {
             }
             None => open_device(&window, offscreen, api, layers).await?,
         };
+        // Computed once: the sprite arrays, the shaders' constants and the
+        // shader pack atlas all cut the sprites by it.
+        let split = check_layers(&adapter, layers)?;
+        if split < sprite_split() {
+            log::info!("Horizon: {split} block textures per array (the GPU's limit)");
+        }
         let info = adapter.get_info();
         crate::graphics::suggest_reduced_far_detail(crate::graphics::lod_capped(&info));
         let size = window.inner_size();
@@ -1859,9 +1910,17 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let prepared = prepared.unwrap_or_else(|| {
-            PreparedTextures::new(sprite_pixels, sprite_size, layers, sprite_mips, forcefield)
-        });
+        let prepared = match prepared {
+            Some(prepared) => prepared.resplit(layers, split),
+            None => PreparedTextures::with_split(
+                sprite_pixels,
+                sprite_size,
+                layers,
+                sprite_mips,
+                forcefield,
+                split,
+            ),
+        };
         let mut mip_levels = 1;
         let gl = adapter.get_info().backend == wgpu::Backend::Gl;
         let sprite_textures: Vec<wgpu::Texture> = prepared
@@ -3115,6 +3174,7 @@ impl Renderer {
             mipmaps: mip_levels - 1,
             terrain_layout: bindings,
             terrain_sprites: sprite_constants.map(|(_, v)| v),
+            sprite_split: split,
             sprite_sampler,
             texture_filtering: 0,
             max_anisotropy: 1,
@@ -3567,7 +3627,8 @@ impl Renderer {
     /// origins bound: one indirect multi-draw, or a loop without it.
     /// Consecutive draws in one arena page share a vertex buffer binding,
     /// keeping the list's order (translucent sections go back to front).
-    /// `indirect` holds the list's draws from `base`.
+    /// `indirect` holds the list's draws from `base`. Leaves the quad
+    /// indices bound, as the draws after it expect.
     fn draw_sections(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
@@ -3596,6 +3657,12 @@ impl Renderer {
                 }
             }
             i += run;
+        }
+        if pages[first as usize..end]
+            .iter()
+            .any(|(_, sorted)| sorted.is_some())
+        {
+            pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
         }
     }
     fn release_section(&mut self, key: SectionKey) {
@@ -4179,7 +4246,7 @@ impl Renderer {
                 &self.device,
                 &mut encoder,
                 &self.sprite_textures,
-                sprite_split(),
+                self.sprite_split,
                 layers,
                 self.sprite_textures[0].width(),
             );
@@ -4851,7 +4918,13 @@ impl Renderer {
             .as_ref()
             .and_then(|p| p.1.as_ref())
             .filter(|_| !frame.title)
-            .and_then(|p| p.shadow_view(frame));
+            .and_then(|p| p.shadow_view(frame))
+            .or_else(|| {
+                // One of Horizon's own packs with `[shadow]` uses the same lists.
+                let native = self.native.as_ref().filter(|_| !frame.title)?;
+                native.shadow.as_ref()?;
+                native.frame.shadow_view(frame)
+            });
         let mut shadow_visible = std::mem::take(&mut self.shadow_visible);
         shadow_visible.clear();
         if let Some(v) = &shadow_view {
@@ -5790,6 +5863,69 @@ impl Renderer {
                 t.begin(&self.device, &self.queue);
                 native_sky_pass =
                     native.sky.is_some() && t.recording() && sky_visible && frame.skybox;
+            }
+        }
+        // One of Horizon's own packs with `[shadow]`: the solid terrain the light sees, from the
+        // shadow camera's lists, into the pack's shadow map (a pack without one gets its 1×1 map
+        // cleared to "far" once).
+        if !frame.title
+            && let Some(native) = &mut self.native
+        {
+            native.frame.shadow_map.clear_blank(&mut encoder);
+        }
+        if !frame.title
+            && shadow_view.is_some()
+            && let Some(native) = &self.native
+            && let Some(shadow) = &native.shadow
+        {
+            let mut pass = native
+                .frame
+                .shadow_map
+                .begin(&mut encoder, "Native shader pack shadow");
+            pass.set_bind_group(0, &self.group, &[]);
+            pass.set_bind_group(horizon_shader_api::stages::GROUP, &shadow.group, &[]);
+            if flat_frame
+                && let Some(flat) = &self.flat
+                && let Some(pipeline) = &shadow.flat
+            {
+                pass.set_pipeline(pipeline);
+                let [first, translucent] = flat.shadow_calls;
+                flat.draw(&mut pass, &flat.calls[first..translucent], |p| {
+                    self.arena.buffer(p)
+                });
+            } else if !flat_frame {
+                pass.set_pipeline(&shadow.solid);
+                pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.set_vertex_buffer(1, self.instances.slice(..));
+                self.draw_sections(&mut pass, &self.indirect, 0, shadow_first, shadow_solid);
+            }
+            drop(pass);
+            let mut pass = native
+                .frame
+                .shadow_map
+                .begin_translucent(&mut encoder, "Native shader pack translucent shadow");
+            pass.set_bind_group(0, &self.group, &[]);
+            pass.set_bind_group(horizon_shader_api::stages::GROUP, &shadow.group, &[]);
+            if flat_frame
+                && let Some(flat) = &self.flat
+                && let Some(pipeline) = &shadow.flat_translucent
+            {
+                pass.set_pipeline(pipeline);
+                let [_, translucent] = flat.shadow_calls;
+                flat.draw(&mut pass, &flat.calls[translucent..], |p| {
+                    self.arena.buffer(p)
+                });
+            } else if !flat_frame {
+                pass.set_pipeline(&shadow.translucent);
+                pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.set_vertex_buffer(1, self.instances.slice(..));
+                self.draw_sections(
+                    &mut pass,
+                    &self.indirect,
+                    0,
+                    shadow_first + shadow_solid,
+                    shadow_translucent,
+                );
             }
         }
         if native_sky_pass
@@ -8066,7 +8202,50 @@ mod sprite_upload_tests {
                 .collect();
             assert_eq!(actual, expected.0);
             assert_eq!(prepared.forcefield, mip_chain(&border, size, &[], 0, 1));
+            // Chains cut before the adapter was known, cut again for it.
+            for to in [1, 2, 3, 5, 8] {
+                let direct = PreparedTextures::with_split(
+                    &pixels,
+                    size,
+                    layers,
+                    &settings,
+                    (&border, size),
+                    to,
+                );
+                let resplit = PreparedTextures::with_split(
+                    &pixels,
+                    size,
+                    layers,
+                    &settings,
+                    (&border, size),
+                    split,
+                )
+                .resplit(layers, to);
+                assert_eq!(resplit.split, to);
+                assert_eq!(resplit.sprites, direct.sprites, "{split} -> {to}");
+            }
         }
+    }
+
+    #[test]
+    fn sprite_split_follows_the_adapters_layer_limit() {
+        // The Discord report: 512 layers per array, 1291 block textures (3 arrays).
+        assert_eq!(layer_split(512, false, None, 1291), Ok(512));
+        assert_eq!(layer_split(512, true, None, 1291), Ok(512));
+        assert_eq!(layer_split(2048, false, None, 1291), Ok(SPRITE_SPLIT));
+        assert_eq!(layer_split(8192, false, None, 1291), Ok(SPRITE_SPLIT));
+        // HORIZON_SPRITE_SPLIT only lowers it.
+        assert_eq!(layer_split(2048, false, Some(512), 1291), Ok(512));
+        assert_eq!(layer_split(256, false, Some(512), 1291), Ok(256));
+        // OpenGL pads a multiple of 6 by a layer: a full array must still fit.
+        assert_eq!(layer_split(600, true, None, 1291), Ok(599));
+        assert_eq!(layer_split(600, false, None, 1291), Ok(600));
+        assert_eq!(array_layers(599, true), 599);
+        // Past the arrays terrain.wgsl binds.
+        assert_eq!(layer_split(256, false, None, 256 * SPRITE_ARRAYS), Ok(256));
+        let err = layer_split(128, false, None, 1291).unwrap_err();
+        assert!(err.contains("128 texture layers per array"), "{err}");
+        assert!(layer_split(512, false, None, 512 * SPRITE_ARRAYS + 1).is_err());
     }
 
     #[test]
