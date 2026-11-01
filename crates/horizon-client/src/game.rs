@@ -187,6 +187,7 @@ mod names;
 mod narrator;
 mod native_components;
 mod native_entities;
+mod native_explosions;
 mod native_hooks;
 mod native_lifecycle;
 mod native_menus;
