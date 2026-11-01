@@ -2928,7 +2928,7 @@ impl Game<'_> {
     /// (`ClientboundSetTimePacket`), advanced each tick between packets; none
     /// on the title screen. API @API:native_clock@.
     pub(super) fn native_clock(&self) -> Option<NativeClock> {
-        self.player.is_some().then(|| NativeClock {
+        self.player.is_some().then_some(NativeClock {
             game_time: self.world.game_time,
             day_time: self.world.day_time,
         })
