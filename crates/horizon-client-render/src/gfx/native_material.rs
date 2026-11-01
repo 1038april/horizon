@@ -18,6 +18,14 @@ const PREFIX: &str = "horizon_terrain_";
 /// The entries around the pack's `material`: vanilla's vertex work without the lightmap
 /// product, then the material, the alpha test and fog as `fs_solid` and `fs_translucent` do.
 const ENTRIES: &str = "
+// The manifest's `[material] fog`: false when the pack fogs its surfaces itself.
+override horizon_material_fog: bool = true;
+fn horizon_material_fogged(color: vec4<f32>, spherical: f32, cylindrical: f32) -> vec4<f32> {
+    if horizon_material_fog {
+        return horizon_terrain_apply_fog(color, spherical, cylindrical);
+    }
+    return color;
+}
 struct HorizonMaterialOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -93,12 +101,12 @@ fn horizon_material_color(in: HorizonMaterialOut, translucent: bool) -> vec4<f32
     let color = horizon_material_color(in, false);
     // Bit 15 of the layer marks opaque leaves (forceOpaque): no alpha cutout.
     if color.a < 0.5 && (in.layer & 0x8000u) == 0u { discard; }
-    return horizon_terrain_apply_fog(vec4(color.rgb, 1.0), in.spherical, in.cylindrical);
+    return horizon_material_fogged(vec4(color.rgb, 1.0), in.spherical, in.cylindrical);
 }
 @fragment fn horizon_material_fs_translucent(in: HorizonMaterialOut) -> @location(0) vec4<f32> {
     let color = horizon_material_color(in, true);
     if color.a < 0.01 { discard; }
-    return horizon_terrain_apply_fog(color, in.spherical, in.cylindrical);
+    return horizon_material_fogged(color, in.spherical, in.cylindrical);
 }
 ";
 
@@ -174,6 +182,7 @@ impl NativeMaterial {
         frame: &NativeFrame,
         stage: &CheckedStage,
         constants: &[(String, f64)],
+        fog: bool,
     ) -> Result<Self, String> {
         let module = module(stage, shape.sprite_tags)?;
         let mut constants = present_constants(&module, constants);
@@ -182,6 +191,7 @@ impl NativeMaterial {
             "horizon_terrain_SPRITE_SPLIT",
         ];
         constants.extend(sprite_names.into_iter().zip(shape.sprites));
+        constants.push(("horizon_material_fog", f64::from(u8::from(fog))));
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some(&stage.label),
