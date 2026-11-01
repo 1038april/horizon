@@ -20,6 +20,8 @@ use crate::properties::Properties;
 
 /// The most variants one rule lists (`textures.1=1-100000` stays small).
 const MAX_TEXTURES: usize = 256;
+/// The most rules one file holds.
+pub const MAX_RULES: usize = 1024;
 
 /// What a rule can ask about an entity. `None` is a fact the entity doesn't have (a creeper's
 /// profession): a rule asking for it doesn't match.
@@ -128,6 +130,8 @@ impl Rules {
             .collect();
         numbers.sort_unstable();
         numbers.dedup();
+        // Each rule reads every entry: a file of thousands of rules stops at the first MAX_RULES.
+        numbers.truncate(MAX_RULES);
         let rules = numbers
             .into_iter()
             .filter_map(|n| Rule::parse(props, n))
@@ -707,6 +711,22 @@ mod tests {
             let r = rules(&format!("textures.1=2 3\nweights.1={weights}"));
             assert_eq!(r.select(&Facts::default(), 1), 3, "{weights}");
         }
+    }
+
+    #[test]
+    fn rules_stop_at_max_rules() {
+        let text: String = (1..=MAX_RULES + 5)
+            .map(|n| format!("textures.{n}=2\nbaby.{n}=true\n"))
+            .chain(["textures.99999=3\n".to_owned()])
+            .collect();
+        let r = rules(&text);
+        assert_eq!(r.rules.len(), MAX_RULES);
+        // Rule 99999 would match an adult; it is past the cap.
+        let adult = Facts {
+            baby: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(r.select(&adult, 0), 1);
     }
 
     #[test]
