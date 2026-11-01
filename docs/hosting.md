@@ -155,6 +155,7 @@ enforce_whitelist = false
 view_distance = 10
 simulation_distance = 10
 max_view_distance = 0        # past view_distance, saved chunks only, up to this (0: off)
+admin_feedback_to_ops = true # operators see each other's commands ([name: ...]); false: only the log
 
 [world]
 name = "world"
@@ -192,6 +193,13 @@ The defaults are vanilla 26.3's. Unknown keys and values vanilla would refuse ar
 start instead of being ignored. When the game changes a setting itself (`/whitelist on`), the change is copied
 back into `server.toml` when it stops, and your comments are kept. Changes to the file apply at the next
 restart: there is no live reload yet.
+
+### Operators' commands: `admin_feedback_to_ops`
+
+On by default, as vanilla: when an operator runs a command that reports to admins (`/gamemode`, `/give`, `/tp`...),
+the other operators read `[name: ...]` in gray, and the console logs it. Players who aren't operators never see it
+either way. `false` keeps it to the console's log (`logs/latest.log`): nobody in game sees an operator's commands,
+while each operator still reads their own command's answer.
 
 ### Seeing further: `max_view_distance`
 
@@ -360,9 +368,9 @@ enabled = true                                     # false pauses it and keeps t
 The lines of each 2 seconds are drawn as one picture of the in-game chat (transparent, shadowed letters, colours
 included), and a channel gets at most one post every 2 seconds (more when Discord asks for it: a burst beyond 20
 lines is counted, not drawn). Only `chat` is forwarded, never a message the server's chat filter held back. Posts
-never ping: they allow no mention, and an `@everyone` typed in game reaches Discord defused. One player's lines
-carry their head as the avatar (mc-heads.net, by UUID); players' addresses are never sent, and a player is always
-named by their account's name (a nickname only next to it). The server only makes outgoing HTTPS calls to Discord;
+never ping: they allow no mention, and an `@everyone` typed in game reaches Discord defused. Every post comes
+from the webhook's own name and avatar (set them in Discord), never a player's; players' addresses are never sent,
+and a player is always named by their account's name (a nickname only next to it). The server only makes outgoing HTTPS calls to Discord;
 the API and the panel show the webhook as `(set)`. The letters are Pixelify Sans (SIL Open Font License,
 `crates/horizon-theme/fonts`), not Minecraft's font.
 
@@ -401,6 +409,33 @@ Where vanilla refuses to start without a keystore, Horizon makes one:
 
 Keep the protocol on `localhost` or your tailnet even so. `management-server-tls-enabled = false` turns TLS off.
 As in vanilla, a wrong secret or keystore stops the server from starting.
+
+### Tools that speak RCON
+
+Hosting panels, Discord bridges and scripts often run commands through RCON, vanilla's remote console, and Horizon's
+server serves it. It's off by default and needs a password; turn it on in `server.toml` (the dotted keys are
+quoted in TOML):
+
+```toml
+[properties]
+enable-rcon = true
+"rcon.port" = 25575
+"rcon.password" = "a long random string"
+```
+
+It listens on the address `[server] bind` names (`server-ip`; every address when it's empty), as vanilla's does.
+
+A client logs in with the password and each command runs as one typed in the server's console, with the same
+output (`horizon-server cmd` does the same from the shell). RCON isn't encrypted: the password and every command
+travel in clear text, and it gives full control of the server. Keep its port closed to the internet: a firewall, a
+tailnet or an SSH tunnel. As in vanilla, an empty password or a port outside 1 to 65535 leaves RCON off with a
+warning in the log, and a port already in use is a warning too, not a server that doesn't start. The settings are
+read when the server starts. To turn it off again, set `enable-rcon = false`: taking the lines out of
+`server.toml` leaves what `server.properties` already holds, as for any other key.
+
+Where it differs from vanilla: a connection that hasn't logged in within 30 seconds is closed, at most 16 are open
+at once, and a command a client's TCP splits in two still works. A command shows as the console's (`Server`, not
+`Rcon`), and `broadcast-rcon-to-ops` isn't honoured yet.
 
 ## 7. Backups
 

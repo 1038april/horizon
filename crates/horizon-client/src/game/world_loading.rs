@@ -89,6 +89,20 @@ impl WorldRequest {
             )
             .into());
         }
+        // LevelSummary.isCompatible, which the dedicated server's `Main` checks before it fixes
+        // a world: a world from another series is refused, never upgraded in place.
+        if let Some(version) = horizon_client::save::incompatible_version(&save_root) {
+            let version = if version.is_empty() {
+                "unknown".to_owned()
+            } else {
+                version
+            };
+            return Err(format!(
+                "Failed to load world \"{folder}\": it was last played in version {version}, \
+                 which cannot be opened in this version."
+            )
+            .into());
+        }
         horizon_client::save::upgrade_older_world_with(&save_root, upgrade)?;
         horizon_client::save::migrate_legacy(&save_root)?;
         let session_lock = horizon_client::save::SessionLock::acquire(&save_root)?;
@@ -482,6 +496,27 @@ pub(super) fn packed_biomes(
     }
     Arc::new(base.with_packs(packed.iter().map(|(i, v)| (i.as_str(), v))))
 }
+/// The Create screen's chosen packs' worldgen entries over the game's own
+/// (`applyNewPackConfig` reloads the world with the new pack config): the
+/// packs the temp folder and the resources root hold, the selection the
+/// Create screen made.
+pub(super) fn creation_worldgen_overrides(
+    pack_dir: Option<&std::path::Path>,
+    resources: &std::path::Path,
+    data_packs: &[String],
+    biomes: &horizon_client::biome::Biomes,
+) -> horizon_world::worldgen::overrides::WorldgenOverrides {
+    let empty = std::path::PathBuf::new();
+    let packs =
+        horizon_client::datapack::discover_with_features(pack_dir.unwrap_or(&empty), resources);
+    let enabled: Vec<_> = data_packs
+        .iter()
+        .filter_map(|id| packs.iter().find(|p| &p.id == id))
+        .collect();
+    let (overrides, _) =
+        horizon_client::datapack::worldgen_overrides(&enabled, |b| biomes.contains(b));
+    overrides
+}
 /// The worldgen entries of the world's enabled data packs, logging what
 /// the generator leaves out of them.
 fn world_worldgen_overrides(
@@ -603,7 +638,58 @@ pub(super) fn make_streaming(
                 shape,
             )
         });
-    let mut streaming = if let Some(inner) = flat {
+    // `FlatLevelSource.createState`: a superflat world whose settings let structure sets
+    // generate runs them on its flat ground.
+    let flat_structures = (dim == Dim::Overworld)
+        .then(|| horizon_client::save::world_gen_settings(world_root))
+        .flatten()
+        .and_then(|s| horizon_client::flatgen::FlatTerrain::structure_settings(&s))
+        .filter(|_| horizon_client::save::WorldGen::read(world_root).is_none_or(|w| w.structures));
+    // A generator that cannot be built (a layer block the registry lacks, a level shorter
+    // than the noise) leaves the world on its flat ground, as it was before.
+    let flat_vanilla = flat_structures.and_then(|settings| {
+        let overrides =
+            world_worldgen_overrides(world_root, &options.resources, &biomes, enabled_features);
+        match VanillaTerrain::for_flat(
+            &options.resources.join("worldgen"),
+            &overrides,
+            pack.assets.registry,
+            &biomes,
+            seed,
+            &settings,
+            true,
+        ) {
+            Ok(terrain) => Some(Arc::new(terrain)),
+            Err(e) => {
+                log::warn!("Horizon: the superflat structures are unavailable: {e}");
+                None
+            }
+        }
+    });
+    let mut streaming = if let Some(inner) = flat_vanilla {
+        inner.search_rings_behind();
+        inner.set_reference_file(world_root.join("data").join(format!(
+            "horizon_structure_references_{}.json",
+            dim.id().replace(':', "_")
+        )));
+        {
+            let save = save.clone();
+            inner.set_saved_references(Arc::new(move |name, x, z| {
+                save.start_references(x, z, name)
+            }));
+        }
+        locator = Some(inner.clone());
+        Streaming::new(
+            Arc::new(Persistent {
+                inner,
+                save: save.clone(),
+                registry: pack.assets.clone(),
+                biomes: biomes.clone(),
+            }),
+            pack.context.clone(),
+            res.threads(),
+        )
+    } else if let Some(inner) = flat {
         Streaming::new(
             Arc::new(Persistent {
                 inner: Arc::new(inner),

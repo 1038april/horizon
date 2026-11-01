@@ -417,6 +417,9 @@ pub struct Title {
     /// The backup `OptimizeConfirm` asked for starts the optimization when done (with the
     /// Erase Cached Data choice).
     optimize_after_backup: Option<bool>,
+    /// The backup `RecoverWorldDataScreen.attemptRestore` makes first; the restore runs when it
+    /// is done, whether the backup worked or not.
+    restore_after_backup: bool,
     /// The running `WorldUpgrader` of `Mode::Optimize`.
     optimize: Option<WorldUpgrader>,
     /// The Erase Cached Data box as last drawn: x, y, width, height.
@@ -689,6 +692,7 @@ impl Title {
             backup_shown: Cell::new(false),
             backup_then_open: None,
             optimize_after_backup: None,
+            restore_after_backup: false,
             optimize: None,
             erase_check: Cell::new([0.0; 4]),
             open_request: None,
@@ -844,6 +848,16 @@ impl Title {
     pub fn preparing(&self) -> bool {
         self.preparing
     }
+    /// The Create screen's chosen packs: the temp folder and the selected
+    /// ids, for the worldgen data the preparing read loads.
+    pub fn creation_packs(&self) -> Option<(Option<std::path::PathBuf>, Vec<String>)> {
+        match &self.mode {
+            Mode::Create { options, .. } => {
+                Some((options.pack_dir.clone(), options.data_packs.clone()))
+            }
+            _ => None,
+        }
+    }
     /// The read finished: the flag goes, and the create screen opens — a
     /// fresh one entering from the world list, the one the player already
     /// filled in after the data packs changed (`openCreateWorldScreen`).
@@ -853,8 +867,6 @@ impl Title {
             self.mode = Self::new_world();
         }
     }
-    /// The Data Packs screen's Done (`applyNewPackConfig`): its selection for
-    /// the new world.
     /// `PackSelectionScreen.onFilesDrop`: a pack dropped on the window joins
     /// the Create New World screen's data packs (the screen's watcher lists
     /// it within a second).
@@ -906,6 +918,21 @@ impl Title {
     /// Whether the confirm screen declined: the Data Packs screen reopens.
     pub fn take_reopen_data_packs(&mut self) -> bool {
         std::mem::take(&mut self.reopen_data_packs)
+    }
+    /// `onAbort`: the Data Packs screen reopens with the selection and the
+    /// folder it had (`take_reopen_data_packs` said it wants to).
+    pub fn reopen_data_packs_action(&mut self) -> Option<Action> {
+        if !self.take_reopen_data_packs() {
+            return None;
+        }
+        let (dir, selected) = match &self.mode {
+            Mode::Create { options, .. } => (
+                options.pack_dir.clone().unwrap_or_default(),
+                options.data_packs.clone(),
+            ),
+            _ => (Default::default(), Vec::new()),
+        };
+        Some(Action::DataPacks { dir, selected })
     }
     pub fn set_data_packs(&mut self, ids: Vec<String>) {
         if let Mode::Create { options, .. } = &mut self.mode {
@@ -1058,7 +1085,11 @@ impl Title {
         if let Mode::Backup { world } = &self.mode {
             let world = world.clone();
             let folder = world.folder.clone();
-            if let Some(erase_cache) = self.optimize_after_backup.take() {
+            if std::mem::take(&mut self.restore_after_backup) {
+                // `makeBackupAndShowToast(..).thenAcceptAsync(..)` in attemptRestore: the restore
+                // runs, backup failed or not.
+                self.attempt_restore(world.clone());
+            } else if let Some(erase_cache) = self.optimize_after_backup.take() {
                 // `conditionallyMakeBackupAndShowToast(..).thenAcceptAsync(..)`: the toast shows
                 // and OptimizeWorldScreen opens, backup failed or not.
                 self.begin_optimize(world.clone(), erase_cache);
@@ -3403,8 +3434,11 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
                 Action::None
             }
             (Mode::Recover { world, .. }, Some(90)) => {
+                // attemptRestore: the world is backed up first (`makeBackupAndShowToast`), and the
+                // restore runs once that is done.
                 let world = world.clone();
-                self.attempt_restore(world);
+                self.restore_after_backup = true;
+                self.start_backup(world);
                 Action::None
             }
             (Mode::Recovered { world, .. }, Some(92)) => {
@@ -3526,6 +3560,10 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
     }
     /// EditBox.charTyped / insertText at the cursor.
     pub fn type_text(&mut self, text: &str) {
+        // `GenericMessageScreen`: no field takes input during the read.
+        if self.preparing {
+            return;
+        }
         self.edit_field(|edit| edit.insert_text(text));
     }
     pub fn backspace(&mut self) {
@@ -3533,6 +3571,9 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
     }
     /// EditBox.keyPressed: moving and deleting in the focused field.
     pub fn field_key(&mut self, key: winit::keyboard::KeyCode, ctrl: bool, shift: bool) -> bool {
+        if self.preparing {
+            return false;
+        }
         let mut handled = false;
         self.edit_field(|edit| handled = edit.key(key, ctrl, shift));
         handled
@@ -4144,6 +4185,11 @@ Would you like to enable the Narrator or visit the Accessibility Settings?",
         }
     }
     pub fn escape(&mut self) {
+        // GenericMessageScreen.shouldCloseOnEsc is false: the preparing
+        // read takes no input, the player's options survive it.
+        if self.preparing {
+            return;
+        }
         if self.confirm_experiments.get_mut().take().is_some() {
             self.reopen_data_packs = true;
             return;
