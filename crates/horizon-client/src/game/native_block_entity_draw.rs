@@ -83,6 +83,7 @@ impl BlockEntityDraw {
             poses: vec![pose],
             lights,
             vertices,
+            kept: false,
         }
     }
     /// The vertices drawn, with those it was made with first.

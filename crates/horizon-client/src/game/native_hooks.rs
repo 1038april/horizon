@@ -1533,6 +1533,7 @@ impl Game<'_> {
     /// glowing outline draw as for any mob. Asked for every mob in view but
     /// players; a mob your server half spawned (`native_spawn_mob`) is told
     /// apart by its id, sent with mod messages, or by its custom name.
+    /// A mob is drawn afresh each frame: `draw.keep()` does nothing here.
     /// API @API:mob_submit@.
     pub(super) fn native_mob_submit(
         &self,
