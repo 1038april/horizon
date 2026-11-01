@@ -48,6 +48,18 @@ pub fn check_path(name: &str) -> Result<(), String> {
 }
 
 /// A vanilla identifier, `minecraft:path`.
+/// `Identifier.isValidNamespace` and `isValidPath` on an id with both parts
+/// given: `[a-z0-9_.-]`, and `/` in the path too.
+fn namespaced_id(id: &str) -> bool {
+    let ok = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b);
+    id.split_once(':').is_some_and(|(namespace, path)| {
+        !namespace.is_empty()
+            && !path.is_empty()
+            && namespace.bytes().all(ok)
+            && path.bytes().all(|b| ok(b) || b == b'/')
+    })
+}
+
 fn vanilla_id(id: &str) -> bool {
     id.strip_prefix("minecraft:").is_some_and(|path| {
         !path.is_empty()
@@ -538,7 +550,7 @@ impl Content {
     }
 }
 
-/// Vanilla component types only, removals as `{}`, and none of `fields`,
+/// Namespaced component types, removals as `{}`, and none of `fields`,
 /// which the file sets with its own keys.
 fn check_components(
     components: &BTreeMap<String, serde_json::Value>,
@@ -549,10 +561,8 @@ fn check_components(
             Some(kind) => (true, kind),
             None => (false, key.as_str()),
         };
-        if !vanilla_id(kind) {
-            return Err(format!(
-                "component {key:?} is not a vanilla type (minecraft:...)"
-            ));
+        if !namespaced_id(kind) {
+            return Err(format!("component {key:?} must be namespaced and valid"));
         }
         if let Some(own) = kind
             .strip_prefix("minecraft:")
@@ -1040,14 +1050,34 @@ capabilities = ["registries"]
         );
         for (case, components, why) in [
             (
-                "modded-component",
-                r#"{"ruby:mana": 3}"#,
-                "not a vanilla type",
-            ),
-            (
                 "bare-component",
                 r#"{"max_damage": 3}"#,
-                "not a vanilla type",
+                "must be namespaced",
+            ),
+            (
+                "uppercase-path",
+                r#"{"minecraft:Foo": 3}"#,
+                "must be namespaced and valid",
+            ),
+            (
+                "uppercase-namespace",
+                r#"{"Example:charge": 3}"#,
+                "must be namespaced and valid",
+            ),
+            (
+                "empty-namespace",
+                r#"{":charge": 3}"#,
+                "must be namespaced and valid",
+            ),
+            (
+                "empty-path",
+                r#"{"example:": 3}"#,
+                "must be namespaced and valid",
+            ),
+            (
+                "invalid-removal",
+                r#"{"!example:Foo": {}}"#,
+                "must be namespaced and valid",
             ),
             (
                 "own-key",
@@ -1087,11 +1117,6 @@ capabilities = ["registries"]
             assert!(e.contains("crafting_remainder"), "{case}: {e}");
         }
         for (case, block, why) in [
-            (
-                "block-modded-component",
-                r#"{"template": "minecraft:stone", "components": {"ruby:mana": 3}}"#,
-                "not a vanilla type",
-            ),
             (
                 "block-removal-value",
                 r#"{"template": "minecraft:stone", "components": {"!minecraft:lore": []}}"#,
