@@ -2101,11 +2101,19 @@ impl Game<'_> {
                     let cart_kind = super::minecarts::CartKind::from_id(&kind)
                         .unwrap_or(super::minecarts::CartKind::Rideable);
                     self.next_entity += 1;
-                    let cart = super::minecarts::Minecart::new(
+                    let mut cart = super::minecarts::Minecart::new(
                         self.next_entity,
                         cart_kind,
                         Vec3::new(pos[0], pos[1], pos[2]),
                     );
+                    // SummonCommand.createEntity loads even an empty compound, so a
+                    // spawner minecart's BaseSpawner.load runs: SpawnPotentials becomes
+                    // WeightedList.of(new SpawnData()).
+                    if cart.spawner.is_some() {
+                        use horizon_client::mobs::spawner::{Spawner, SpawnerExt};
+                        let empty = horizon_world::nbt::Tag::Compound(Default::default());
+                        cart.spawner = Some(Box::new(Spawner::load(&empty)));
+                    }
                     self.carts.push(cart);
                     name = Text::translate(&format!("entity.minecraft.{k}"), &[]);
                 }
