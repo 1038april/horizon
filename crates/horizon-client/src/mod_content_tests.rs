@@ -1112,6 +1112,189 @@ fn content_root_carries_a_structure_mod() {
     let _ = fs::remove_dir_all(&scratch);
 }
 
+/// `FlatLevelSource.createState`: a superflat world runs the structure sets its
+/// `structure_overrides` allow (the classic flat world: strongholds and villages) on its
+/// flat ground, and no other set, with the layers where the terrain would be.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn a_superflat_world_runs_its_structure_sets_on_flat_ground() {
+    use crate::streaming::ChunkGenerator;
+    let Some(base) = prepared() else {
+        return;
+    };
+    let assets = Assets::load(&base).unwrap();
+    let biomes = crate::biome::Biomes::load(&base).unwrap();
+    let flat = horizon_world::worldgen::generator::FlatSettings {
+        layers: vec![
+            ("minecraft:bedrock".into(), 1),
+            ("minecraft:dirt".into(), 2),
+            ("minecraft:grass_block".into(), 1),
+        ],
+        biome: "minecraft:plains".into(),
+        structure_overrides: Some(vec![
+            "minecraft:strongholds".into(),
+            "minecraft:villages".into(),
+        ]),
+    };
+    let terrain = crate::vanillagen::VanillaTerrain::for_flat(
+        &base.join("worldgen"),
+        &Default::default(),
+        assets.registry,
+        &biomes,
+        1234,
+        &flat,
+        true,
+    )
+    .unwrap();
+    // A village and a stronghold are found; a mineshaft is not in the overrides.
+    let village = terrain.locate(&["minecraft:village_plains".to_owned()], [0, 64, 0], 12);
+    assert!(village.is_some(), "no plains village near the origin");
+    assert!(
+        terrain
+            .locate(&["minecraft:stronghold".to_owned()], [0, 64, 0], 12)
+            .is_some()
+    );
+    assert!(
+        terrain
+            .locate(&["minecraft:mineshaft".to_owned()], [0, 64, 0], 12)
+            .is_none()
+    );
+    // The layers: bedrock, two dirt and grass from the level's minimum Y, air above.
+    let mut worker = terrain.worker();
+    let chunk = terrain.finish(terrain.proto(&mut worker, 3, 3));
+    let name = |y| {
+        let id = chunk.block(3 * 16 + 5, y, 3 * 16 + 7);
+        assets.registry.state(id).unwrap().name.clone()
+    };
+    assert_eq!(
+        [-65, -64, -63, -62, -61, -60].map(name),
+        [
+            "minecraft:air",
+            "minecraft:bedrock",
+            "minecraft:dirt",
+            "minecraft:dirt",
+            "minecraft:grass_block",
+            "minecraft:air"
+        ]
+        .map(String::from)
+    );
+}
+
+/// `createForFlat` searches the stronghold rings with seed 0, so a superflat world's
+/// strongholds are in the same place on every seed; a layer that is not opaque to
+/// `MOTION_BLOCKING` is `null`, left out of `buildTerrain` for the fill after the structures.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn a_superflat_world_keeps_its_strongholds_on_every_seed_and_leaves_null_layers_for_the_fill() {
+    use crate::streaming::ChunkGenerator;
+    let Some(base) = prepared() else {
+        return;
+    };
+    let assets = Assets::load(&base).unwrap();
+    let biomes = crate::biome::Biomes::load(&base).unwrap();
+    let flat = horizon_world::worldgen::generator::FlatSettings {
+        layers: vec![
+            ("minecraft:bedrock".into(), 1),
+            ("minecraft:dirt".into(), 2),
+            ("minecraft:snow".into(), 1),
+        ],
+        biome: "minecraft:plains".into(),
+        structure_overrides: Some(vec!["minecraft:strongholds".into()]),
+    };
+    let make = |seed| {
+        crate::vanillagen::VanillaTerrain::for_flat(
+            &base.join("worldgen"),
+            &Default::default(),
+            assets.registry,
+            &biomes,
+            seed,
+            &flat,
+            true,
+        )
+        .unwrap()
+    };
+    let stronghold = |seed| {
+        make(seed)
+            .locate(&["minecraft:stronghold".to_owned()], [0, 64, 0], 100)
+            .expect("a stronghold")
+    };
+    assert_eq!(stronghold(1234), stronghold(-987654321));
+    // `moveBelowSeaLevel(-63, ChunkGenerator.getMinY() = 0, ..)`: the sea level less 10 is far
+    // below the room's height above 0, so the stronghold's top lands at `ySpan + 1` above Y 0
+    // (with the level's -64 it would sit 64 blocks lower). The start's box is inflated by 12
+    // for the terrain adaptation: the pieces span Y 2 to 36, the box -10 to 48.
+    let (_, at) = stronghold(1234);
+    let starts = make(1234).starts_at(at[0] >> 4, at[2] >> 4);
+    let start = starts
+        .iter()
+        .find(|s| s.name == "minecraft:stronghold")
+        .expect("the stronghold start");
+    assert!(
+        start.bounding_box.min[1] >= -12,
+        "the stronghold sits below the generator's Y 0: {:?}",
+        start.bounding_box
+    );
+    let terrain = make(1234);
+    let mut worker = terrain.worker();
+    let chunk = terrain.finish(terrain.proto(&mut worker, 3, 3));
+    let name = |y| {
+        let id = chunk.block(3 * 16 + 5, y, 3 * 16 + 7);
+        assets.registry.state(id).unwrap().name.clone()
+    };
+    // The snow layer (index 3, y -61) is filled later, not by the terrain.
+    assert_eq!(
+        [-64, -63, -62, -61].map(name),
+        [
+            "minecraft:bedrock",
+            "minecraft:dirt",
+            "minecraft:dirt",
+            "minecraft:air"
+        ]
+        .map(String::from)
+    );
+}
+
+/// `structure_overrides` is a lenient field: a list naming a structure set that does not exist
+/// fails to decode and counts as absent, so every set generates.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn a_superflat_structure_override_naming_no_set_lets_every_set_generate() {
+    let Some(base) = prepared() else {
+        return;
+    };
+    let assets = Assets::load(&base).unwrap();
+    let biomes = crate::biome::Biomes::load(&base).unwrap();
+    let flat = horizon_world::worldgen::generator::FlatSettings {
+        layers: vec![
+            ("minecraft:bedrock".into(), 1),
+            ("minecraft:dirt".into(), 2),
+            ("minecraft:grass_block".into(), 1),
+        ],
+        biome: "minecraft:plains".into(),
+        structure_overrides: Some(vec!["minecraft:village".into()]),
+    };
+    let terrain = crate::vanillagen::VanillaTerrain::for_flat(
+        &base.join("worldgen"),
+        &Default::default(),
+        assets.registry,
+        &biomes,
+        1234,
+        &flat,
+        true,
+    )
+    .unwrap();
+    assert!(
+        terrain
+            .locate(&["minecraft:stronghold".to_owned()], [0, 64, 0], 12)
+            .is_some()
+    );
+    assert!(
+        terrain
+            .locate(&["minecraft:village_plains".to_owned()], [0, 64, 0], 12)
+            .is_some()
+    );
+}
+
 /// A mod's mob effect gets the network id after vanilla's last, on the game
 /// and its server alike, and joins the ids `/effect` and its suggestions
 /// check.
