@@ -1042,7 +1042,7 @@ enum Kept {
 /// an earlier run stays in use, so sign-ins don't come and go with a keychain that answers only
 /// some of the time; signing every account out removes it. Otherwise the keychain if it answers
 /// `probe`, else the file.
-fn kept(no_keychain: bool, file_there: bool, probe: impl FnOnce() -> bool) -> Kept {
+fn keep_in(no_keychain: bool, file_there: bool, probe: impl FnOnce() -> bool) -> Kept {
     if no_keychain {
         Kept::Memory
     } else if file_there {
@@ -1072,7 +1072,7 @@ pub fn store() -> &'static dyn SecretStore {
             ))]
             {
                 let file = FileStore::launcher();
-                match kept(
+                match keep_in(
                     std::env::var_os("HORIZON_NO_KEYCHAIN").is_some(),
                     file.path.exists(),
                     || SystemStore.get("probe").is_ok(),

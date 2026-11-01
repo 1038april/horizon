@@ -1045,7 +1045,11 @@ fn the_secrets_file_keeps_sign_ins_across_starts() {
     accounts.add(&store, notch(), &signed_in).unwrap();
     // The next start reads the same file.
     let again = FileStore::new(path.clone());
-    assert_eq!(secrets_in(&again, UUID), Some(signed_in));
+    let read = secrets_in(&again, UUID).expect("kept across starts");
+    assert_eq!(
+        (read.minecraft_token, read.refresh_token, read.owns),
+        (signed_in.minecraft_token, signed_in.refresh_token, true)
+    );
     // Never in accounts.json.
     assert!(!serde_json::to_string(&accounts)
         .unwrap()
@@ -1088,13 +1092,13 @@ fn the_secrets_file_keeps_each_key_apart() {
 #[test]
 fn the_file_takes_over_where_no_keychain_answers() {
     // HORIZON_NO_KEYCHAIN: memory, whatever is there.
-    assert_eq!(kept(true, true, || true), Kept::Memory);
+    assert_eq!(keep_in(true, true, || true), Kept::Memory);
     // The keychain first, and the file only when it doesn't answer.
-    assert_eq!(kept(false, false, || true), Kept::Keychain);
-    assert_eq!(kept(false, false, || false), Kept::File);
+    assert_eq!(keep_in(false, false, || true), Kept::Keychain);
+    assert_eq!(keep_in(false, false, || false), Kept::File);
     // A file from an earlier start stays in use, without asking the keychain.
     assert_eq!(
-        kept(false, true, || panic!("the keychain isn't asked")),
+        keep_in(false, true, || panic!("the keychain isn't asked")),
         Kept::File
     );
 }
