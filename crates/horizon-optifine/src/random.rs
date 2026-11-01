@@ -731,7 +731,13 @@ mod tests {
             "names.1=Bob !",
         ] {
             let r = rules(&format!("textures.1=2\n{rule}\ntextures.2=3"));
-            assert_eq!(r.select(&Facts::default(), 0), 3, "{rule}");
+            // A named mob in plains: what a dropped `!` entry would let through.
+            let bob = Facts {
+                biome: Some("minecraft:plains"),
+                name: Some("Bob"),
+                ..Default::default()
+            };
+            assert_eq!(r.select(&bob, 0), 3, "{rule}");
         }
         // Case doesn't matter where Java's parsers ignore it.
         let baby = Facts {

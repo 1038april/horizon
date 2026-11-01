@@ -4,7 +4,8 @@
 //! `optifine/` (or legacy `mcpatcher/`) folders that hold them. Each feature's own rules sit in
 //! a module of their own (`random`: random entity textures), free of the game's types.
 //!
-//! Written from OptiFine's public documentation of the file formats; no mod's source was read.
+//! Written from OptiFine's public documentation of the file formats (and ETF's, for its additions
+//! to random entities); no mod's source was read.
 
 pub mod matchers;
 pub mod paths;
