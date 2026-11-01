@@ -4,8 +4,8 @@
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-/// How many threads copy and hash at once, HORIZON_PREPARE_JOBS, else the processors (at most 8):
-/// with 1 the lanes run one after another too.
+/// How many threads each copying, hashing or compiling step spreads over: HORIZON_PREPARE_JOBS,
+/// else the processors (at most 8). With 1 the lanes run one after another too.
 pub(crate) fn jobs() -> usize {
     std::env::var("HORIZON_PREPARE_JOBS")
         .ok()
