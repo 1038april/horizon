@@ -890,6 +890,17 @@ pub(crate) struct NativePlayer {
     pub(crate) dimension: &'static str,
 }
 
+/// The world's clock as a client mod reads it (`native_clock`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct NativeClock {
+    /// Ticks since the world was created (`Level.getGameTime`).
+    pub(crate) game_time: i64,
+    /// The time of day in ticks (`Level.getDayTime`): 0 at sunrise, 24000 a
+    /// day. It keeps counting past 24000 (`/time add`, days going by), so take
+    /// it modulo 24000 for the hour; `/time set` can make it negative.
+    pub(crate) day_time: i64,
+}
+
 /// A native mod as Options > Mods lists it (`native_mods`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct NativeMod {
@@ -3032,6 +3043,16 @@ impl Game<'_> {
             yaw: self.yaw,
             pitch: self.pitch,
             dimension: self.dim.id(),
+        })
+    }
+    /// The clock of the world this window shows, for client mods: its game
+    /// time and time of day as the server last sent them
+    /// (`ClientboundSetTimePacket`), advanced each tick between packets; none
+    /// on the title screen. API @API:native_clock@.
+    pub(super) fn native_clock(&self) -> Option<NativeClock> {
+        self.player.is_some().then_some(NativeClock {
+            game_time: self.world.game_time,
+            day_time: self.world.day_time,
         })
     }
     /// The frame counter: frames in the last second, the slowest frame and
