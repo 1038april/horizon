@@ -21,11 +21,14 @@ pub fn resolve(props: &str, value: &str) -> Option<String> {
     in_root(resolve_unchecked(props, value))
 }
 
-/// `path` when it stays inside the resource root ([`resolve`]'s test).
+/// `path` when it stays inside the resource root ([`resolve`]'s test). A `\` is refused too:
+/// Windows would read it as a separator (vanilla's resource paths never hold one).
 pub(crate) fn in_root(path: String) -> Option<String> {
-    path.split('/')
-        .all(|segment| !matches!(segment, "" | "." | ".."))
-        .then_some(path)
+    (!path.contains('\\')
+        && path
+            .split('/')
+            .all(|segment| !matches!(segment, "" | "." | "..")))
+    .then_some(path)
 }
 
 fn resolve_unchecked(props: &str, value: &str) -> String {
@@ -134,6 +137,7 @@ mod tests {
             "a//b",
             "/etc/passwd",
             "a/./b",
+            "~/..\\..\\x",
         ] {
             assert_eq!(resolve(props, bad), None, "{bad}");
         }

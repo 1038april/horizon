@@ -298,8 +298,14 @@ impl Rule {
             (Some(h), ..) => Some(height_list(h).ok_or(format!("bad heights {h}"))?),
             (None, None, None) => None,
             (None, lo, hi) => {
-                let bound = |v: Option<&str>, d| v.and_then(|v| v.parse().ok()).unwrap_or(d);
-                Some(RangeList(vec![(bound(lo, i32::MIN), bound(hi, i32::MAX))]))
+                let bound = |v: Option<&str>, d| match v {
+                    Some(v) => v.parse().map_err(|_| format!("bad height {v}")),
+                    None => Ok(d),
+                };
+                Some(RangeList(vec![(
+                    bound(lo, i32::MIN)?,
+                    bound(hi, i32::MAX)?,
+                )]))
             }
         };
 
@@ -425,6 +431,9 @@ fn tile_list(props: &str, value: &str) -> Option<Vec<Tile>> {
     };
     let mut out = Vec::new();
     for token in value.split_whitespace() {
+        if out.len() > MAX_TILES {
+            return None;
+        }
         match token {
             "<skip>" => out.push(Tile::Skip),
             "<default>" => out.push(Tile::Default),
@@ -447,7 +456,7 @@ fn tile_list(props: &str, value: &str) -> Option<Vec<Tile>> {
                 if let Some((a, b)) = t.split_once('-')
                     && let (Ok(a), Ok(b)) = (a.parse::<u32>(), b.parse::<u32>())
                 {
-                    if a.abs_diff(b) as usize >= MAX_TILES - out.len() {
+                    if out.len() + a.abs_diff(b) as usize >= MAX_TILES {
                         return None;
                     }
                     let dir = props.rsplit_once('/').map_or("", |(d, _)| d);
@@ -495,9 +504,12 @@ fn height_list(value: &str) -> Option<RangeList> {
     for token in value.split([' ', ',']).filter(|t| !t.is_empty()) {
         match token.split_once("..") {
             Some((lo, hi)) => {
-                let lo: Option<i32> = (!lo.is_empty()).then(|| lo.parse().ok()).flatten();
-                let hi: Option<i32> = (!hi.is_empty()).then(|| hi.parse().ok()).flatten();
-                out.push(match (lo, hi) {
+                // An empty side is open; anything else must be a number.
+                let side = |v: &str| match v {
+                    "" => Some(None),
+                    v => v.parse::<i32>().ok().map(Some),
+                };
+                out.push(match (side(lo)?, side(hi)?) {
                     (Some(a), Some(b)) => (a.min(b), a.max(b)),
                     (Some(a), None) => (a, i32::MAX),
                     (None, Some(b)) => (i32::MIN, b),
@@ -716,6 +728,15 @@ mod tests {
         // A pack can't ask for billions of tiles, or a pattern too big to count.
         assert!(r("tiles=0-4294967295").is_err());
         assert!(r("tiles=0-2999 3000-5000").is_err());
+        assert!(r("tiles=0-4096").is_err());
+        assert!(r(&format!("tiles={}0-0", "<skip> ".repeat(4097))).is_err());
+        // Namespaced tiles stay in the resource root too, and a `\` (written `\\` in the file)
+        // is no separator on any platform.
+        for bad in ["mymod:../../x", "..:x", r"~/..\\..\\x", r"a\\b"] {
+            assert!(r(&format!("tiles={bad}")).is_err(), "{bad}");
+        }
+        assert!(r("tiles=0\nheights=abc..64").is_err());
+        assert!(r("tiles=0\nminHeight=abc").is_err());
         assert_eq!(r("tiles=0-4095").unwrap().unwrap().tiles.len(), 4096);
         let repeat = "matchBlocks=stone\nmethod=repeat\nwidth=65536\nheight=65536\ntiles=0";
         assert!(rule("a.properties", repeat).is_err());
