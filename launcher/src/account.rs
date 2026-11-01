@@ -590,11 +590,10 @@ impl SecretStore for MemoryStore {
 /// The secrets file in the launcher's data folder, when no keychain answers (#5095): many Linux
 /// systems run no Secret Service, and sign-ins would otherwise last one run. One JSON object, key
 /// to secret, readable and writable by the player only (0600 on Unix), replaced whole on every
-/// write. Gone once the last account signs out, and the keychain is used again from the next start.
+/// write. A lock file beside it keeps each read-modify-replace whole across every launcher and CLI
+/// process. The keychain takes its secrets back at the first start it answers ([`store`]).
 pub struct FileStore {
     path: PathBuf,
-    /// Writes are read-modify-write: one at a time.
-    lock: Mutex<()>,
 }
 
 /// The secrets file's name in the launcher's data folder.
@@ -602,10 +601,7 @@ pub const SECRETS_FILE: &str = "account-secrets.json";
 
 impl FileStore {
     pub fn new(path: PathBuf) -> Self {
-        Self {
-            path,
-            lock: Mutex::new(()),
-        }
+        Self { path }
     }
 
     /// The launcher's own: [`SECRETS_FILE`] in its data folder.
@@ -613,32 +609,58 @@ impl FileStore {
         Self::new(crate::backend::data_dir().join(SECRETS_FILE))
     }
 
+    fn shown(&self, e: std::io::Error) -> String {
+        format!("{}: {e}", self.path.display())
+    }
+
+    /// Runs `f` holding the lock file (`account-secrets.lock`): other processes wait.
+    fn locked<T>(&self, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        if let Some(dir) = self.path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| self.shown(e))?;
+        }
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.path.with_extension("lock"))
+            .map_err(|e| self.shown(e))?;
+        lock.lock().map_err(|e| self.shown(e))?;
+        // Closing the file releases the lock, after `f` whatever it answers.
+        f()
+    }
+
     fn read(&self) -> Result<std::collections::BTreeMap<String, String>, String> {
         match std::fs::read(&self.path) {
-            // The error says where the file breaks, never what it holds.
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|e| format!("{} can't be read: {e}", self.path.display())),
+            // Only where the file breaks: serde's own message can quote what the file holds.
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
+                format!(
+                    "{} can't be read ({:?} error at line {}, column {}).",
+                    self.path.display(),
+                    e.classify(),
+                    e.line(),
+                    e.column()
+                )
+            }),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
-            Err(e) => Err(format!("{}: {e}", self.path.display())),
+            Err(e) => Err(self.shown(e)),
         }
     }
 
-    /// Replaces the file with `secrets` through a temporary file beside it, so a crash leaves the
-    /// old file or the new one; removes it when there are none left.
+    /// Replaces the file with `secrets` through a temporary file of this write's own beside it, so
+    /// a crash leaves the old file or the new one; removes it when there are none left.
     fn write(&self, secrets: &std::collections::BTreeMap<String, String>) -> Result<(), String> {
-        let shown = |e: std::io::Error| format!("{}: {e}", self.path.display());
         if secrets.is_empty() {
             return match std::fs::remove_file(&self.path) {
-                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(shown(e)),
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(self.shown(e)),
                 _ => Ok(()),
             };
         }
-        if let Some(dir) = self.path.parent() {
-            std::fs::create_dir_all(dir).map_err(shown)?;
-        }
+        static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let tmp = self
+            .path
+            .with_extension(format!("json.{}.{n}.tmp", std::process::id()));
         let json = serde_json::to_vec(secrets).map_err(|e| e.to_string())?;
-        let tmp = self.path.with_extension("json.tmp");
-        let _ = std::fs::remove_file(&tmp);
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -649,30 +671,47 @@ impl FileStore {
         });
         if let Err(e) = written.and_then(|()| std::fs::rename(&tmp, &self.path)) {
             let _ = std::fs::remove_file(&tmp);
-            return Err(shown(e));
+            return Err(self.shown(e));
         }
         Ok(())
+    }
+
+    /// Moves every secret into `keychain`, then removes the file. Nothing is removed unless the
+    /// keychain took them all, and the file's copy wins: it was written while the keychain was
+    /// away, so it is the newer one.
+    fn move_into(&self, keychain: &dyn SecretStore) -> Result<(), String> {
+        if !self.path.exists() {
+            return Ok(());
+        }
+        self.locked(|| {
+            let secrets = self.read()?;
+            for (key, secret) in &secrets {
+                keychain.set(key, secret)?;
+            }
+            self.write(&Default::default())
+        })
     }
 }
 
 impl SecretStore for FileStore {
     fn get(&self, key: &str) -> Result<Option<String>, String> {
-        let _held = self.lock.lock().unwrap();
-        Ok(self.read()?.remove(key))
+        self.locked(|| Ok(self.read()?.remove(key)))
     }
     fn set(&self, key: &str, secret: &str) -> Result<(), String> {
-        let _held = self.lock.lock().unwrap();
-        let mut secrets = self.read()?;
-        secrets.insert(key.into(), secret.into());
-        self.write(&secrets)
+        self.locked(|| {
+            let mut secrets = self.read()?;
+            secrets.insert(key.into(), secret.into());
+            self.write(&secrets)
+        })
     }
     fn delete(&self, key: &str) -> Result<(), String> {
-        let _held = self.lock.lock().unwrap();
-        let mut secrets = self.read()?;
-        if secrets.remove(key).is_none() {
-            return Ok(());
-        }
-        self.write(&secrets)
+        self.locked(|| {
+            let mut secrets = self.read()?;
+            if secrets.remove(key).is_none() {
+                return Ok(());
+            }
+            self.write(&secrets)
+        })
     }
     fn persistent(&self) -> bool {
         true
@@ -1033,24 +1072,21 @@ pub fn no_keychain() -> Option<String> {
 #[derive(Debug, PartialEq, Eq)]
 enum Kept {
     Keychain,
-    /// [`FileStore`]: the file is already there, or the keychain didn't answer.
     File,
     Memory,
 }
 
-/// `HORIZON_NO_KEYCHAIN` keeps secrets in memory (the launcher's own tests). A secrets file left by
-/// an earlier run stays in use, so sign-ins don't come and go with a keychain that answers only
-/// some of the time; signing every account out removes it. Otherwise the keychain if it answers
-/// `probe`, else the file.
-fn keep_in(no_keychain: bool, file_there: bool, probe: impl FnOnce() -> bool) -> Kept {
+/// `HORIZON_NO_KEYCHAIN` keeps secrets in memory (the launcher's own tests). Otherwise the keychain
+/// if it answers, once the secrets the file kept while it didn't have moved into it: an account
+/// signed in on a start the keychain missed comes back beside the ones it always held. Else the
+/// file, which then holds only what this run signs in.
+fn keep_in(no_keychain: bool, keychain: &dyn SecretStore, file: &FileStore) -> Kept {
     if no_keychain {
         Kept::Memory
-    } else if file_there {
+    } else if keychain.get("probe").is_err() || file.move_into(keychain).is_err() {
         Kept::File
-    } else if probe() {
-        Kept::Keychain
     } else {
-        Kept::File
+        Kept::Keychain
     }
 }
 
@@ -1072,11 +1108,8 @@ pub fn store() -> &'static dyn SecretStore {
             ))]
             {
                 let file = FileStore::launcher();
-                match keep_in(
-                    std::env::var_os("HORIZON_NO_KEYCHAIN").is_some(),
-                    file.path.exists(),
-                    || SystemStore.get("probe").is_ok(),
-                ) {
+                let no_keychain = std::env::var_os("HORIZON_NO_KEYCHAIN").is_some();
+                match keep_in(no_keychain, &SystemStore, &file) {
                     Kept::Keychain => return Box::new(SystemStore),
                     Kept::File => return Box::new(file),
                     Kept::Memory => {

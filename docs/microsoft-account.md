@@ -138,10 +138,13 @@ one is selected. "Sign out" deletes the account's secrets from the keychain.
   account is selected. Never a token.
 - No keychain available (a Linux box without a Secret Service, a locked keychain, #5095): the
   secrets go to `account-secrets.json` in the launcher's data folder instead, readable and writable
-  by the player only (0600 on Unix) and replaced whole on every write, as most launchers keep them.
-  Once that file exists the launcher keeps using it, without asking the keychain, so sign-ins don't
-  come and go with a keychain that answers only some of the time; signing the last account out
-  removes it, and the keychain is asked again from the next start. `HORIZON_NO_KEYCHAIN` keeps
+  by the player only (0600 on Unix), as most launchers keep them. Every change holds
+  `account-secrets.lock` across its read and replace, so launcher and CLI processes signing in or out
+  at once lose nothing, and each write goes through a temporary file of its own. At the first start
+  the keychain answers again, the file's secrets move into it (they are the newer ones) and the file
+  is removed, so accounts signed in on a start the keychain missed sit beside the ones it always
+  held; if the keychain refuses any of them, the file stays whole and in use for that run. A broken
+  file is an error naming only its line and column, never what it holds. `HORIZON_NO_KEYCHAIN` keeps
   secrets in memory for the run instead (the launcher's own tests), and the launcher then says "No
   keychain available: you are signed in until the launcher closes".
 - Tokens never appear in logs, errors, `horizon-launcher` CLI output, MCP results or crash reports.

@@ -1034,6 +1034,20 @@ fn secrets_file(name: &str) -> PathBuf {
     dir.join("launcher").join(SECRETS_FILE)
 }
 
+fn remove_secrets_dir(path: &Path) {
+    let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+}
+
+/// The files beside the secrets file, by name.
+fn files_beside(path: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
 #[test]
 fn the_secrets_file_keeps_sign_ins_across_starts() {
     let path = secrets_file("starts");
@@ -1060,13 +1074,17 @@ fn the_secrets_file_keeps_sign_ins_across_starts() {
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600, "only the player reads it");
     }
-    assert!(!path.with_extension("json.tmp").exists());
-    // Signing the last account out removes the file: the keychain is used again from the next start.
+    // No temporary file left behind.
+    assert_eq!(
+        files_beside(&path),
+        ["account-secrets.json", "account-secrets.lock"]
+    );
+    // Signing the last account out removes the file.
     accounts.remove(&again, UUID).unwrap();
     assert_eq!(again.get(UUID).unwrap(), None);
     assert!(!path.exists());
     again.delete(UUID).unwrap();
-    let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+    remove_secrets_dir(&path);
 }
 
 #[test]
@@ -1081,24 +1099,153 @@ fn the_secrets_file_keeps_each_key_apart() {
         (store.get("a").unwrap(), store.get("b").unwrap()),
         (Some("three".into()), None)
     );
-    // A broken file is an error, never secrets lost in silence, and the error doesn't show it.
-    std::fs::write(&path, "{\"a\":\"leaked-secret").unwrap();
-    let said = store.get("a").unwrap_err();
-    assert!(!said.contains("leaked-secret"), "{said}");
-    assert!(store.set("c", "four").is_err());
-    let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+    remove_secrets_dir(&path);
 }
 
 #[test]
-fn the_file_takes_over_where_no_keychain_answers() {
-    // HORIZON_NO_KEYCHAIN: memory, whatever is there.
-    assert_eq!(keep_in(true, true, || true), Kept::Memory);
-    // The keychain first, and the file only when it doesn't answer.
-    assert_eq!(keep_in(false, false, || true), Kept::Keychain);
-    assert_eq!(keep_in(false, false, || false), Kept::File);
-    // A file from an earlier start stays in use, without asking the keychain.
+fn a_broken_secrets_file_is_an_error_that_never_shows_it() {
+    let path = secrets_file("broken");
+    let store = FileStore::new(path.clone());
+    // Cut short, and a lone string: serde's own messages quote the latter.
+    for broken in [
+        "{\"a\":\"leaked-secret",
+        "\"leaked-secret\"",
+        "[\"leaked-secret\"]",
+    ] {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, broken).unwrap();
+        let said = store.get("a").unwrap_err();
+        assert!(!said.contains("leaked-secret"), "{said}");
+        assert!(said.contains("line 1"), "{said}");
+        // Never written over: the secrets in it aren't lost in silence.
+        assert!(store.set("c", "four").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
+    }
+    remove_secrets_dir(&path);
+}
+
+/// Separate stores share nothing but the files, as separate launcher and CLI processes do.
+#[test]
+fn processes_sharing_the_secrets_file_lose_nothing() {
+    let path = secrets_file("processes");
+    FileStore::new(path.clone()).set("signed-out", "x").unwrap();
+    let writers: Vec<_> = (0..8)
+        .map(|w| {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                let store = FileStore::new(path);
+                for i in 0..25 {
+                    store
+                        .set(&format!("{w}-{i}"), &format!("secret-{w}-{i}"))
+                        .unwrap();
+                }
+                if w == 0 {
+                    store.delete("signed-out").unwrap();
+                }
+            })
+        })
+        .collect();
+    for writer in writers {
+        writer.join().unwrap();
+    }
+    let store = FileStore::new(path.clone());
+    for w in 0..8 {
+        for i in 0..25 {
+            assert_eq!(
+                store.get(&format!("{w}-{i}")).unwrap(),
+                Some(format!("secret-{w}-{i}"))
+            );
+        }
+    }
+    assert_eq!(store.get("signed-out").unwrap(), None);
     assert_eq!(
-        keep_in(false, true, || panic!("the keychain isn't asked")),
-        Kept::File
+        files_beside(&path),
+        ["account-secrets.json", "account-secrets.lock"]
     );
+    remove_secrets_dir(&path);
+}
+
+/// A keychain that can be away, as a Secret Service that didn't start.
+#[derive(Default)]
+struct Keychain {
+    kept: MemoryStore,
+    away: std::sync::atomic::AtomicBool,
+    refuses_writes: std::sync::atomic::AtomicBool,
+}
+
+impl Keychain {
+    fn answer(&self) -> Result<(), String> {
+        if self.away.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err("The name org.freedesktop.secrets was not provided".into());
+        }
+        Ok(())
+    }
+}
+
+impl SecretStore for Keychain {
+    fn get(&self, key: &str) -> Result<Option<String>, String> {
+        self.answer()?;
+        self.kept.get(key)
+    }
+    fn set(&self, key: &str, secret: &str) -> Result<(), String> {
+        self.answer()?;
+        if self
+            .refuses_writes
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Err("the keychain is full".into());
+        }
+        self.kept.set(key, secret)
+    }
+    fn delete(&self, key: &str) -> Result<(), String> {
+        self.answer()?;
+        self.kept.delete(key)
+    }
+    fn persistent(&self) -> bool {
+        true
+    }
+}
+
+#[test]
+fn the_keychain_takes_back_what_the_file_kept_while_it_was_away() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let path = secrets_file("recovery");
+    let file = FileStore::new(path.clone());
+    let keychain = Keychain::default();
+    // HORIZON_NO_KEYCHAIN: memory, whatever answers.
+    assert_eq!(keep_in(true, &keychain, &file), Kept::Memory);
+    // A is signed in while the keychain answers: no file.
+    assert_eq!(keep_in(false, &keychain, &file), Kept::Keychain);
+    keychain.set("A", "secret-a").unwrap();
+    assert!(!path.exists());
+    // A start the keychain misses: B goes to the file.
+    keychain.away.store(true, Relaxed);
+    assert_eq!(keep_in(false, &keychain, &file), Kept::File);
+    file.set("B", "secret-b").unwrap();
+    // The keychain is back: it holds both, and the file is gone.
+    keychain.away.store(false, Relaxed);
+    assert_eq!(keep_in(false, &keychain, &file), Kept::Keychain);
+    assert_eq!(
+        (keychain.get("A").unwrap(), keychain.get("B").unwrap()),
+        (Some("secret-a".into()), Some("secret-b".into()))
+    );
+    assert!(!path.exists());
+    remove_secrets_dir(&path);
+}
+
+#[test]
+fn a_keychain_that_refuses_the_move_leaves_the_file_whole() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let path = secrets_file("refused");
+    let file = FileStore::new(path.clone());
+    file.set("A", "secret-a").unwrap();
+    file.set("B", "secret-b").unwrap();
+    let keychain = Keychain::default();
+    keychain.refuses_writes.store(true, Relaxed);
+    assert_eq!(keep_in(false, &keychain, &file), Kept::File);
+    assert_eq!(
+        (file.get("A").unwrap(), file.get("B").unwrap()),
+        (Some("secret-a".into()), Some("secret-b".into()))
+    );
+    remove_secrets_dir(&path);
 }
