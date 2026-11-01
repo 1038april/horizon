@@ -469,7 +469,7 @@ impl Post {
         pass.set_bind_group(0, &taa.resolve[i], &[]);
         pass.draw(0..3, 0..1);
         drop(pass);
-        self.finish_with(encoder, screen, &taa.show[i], timing.as_deref_mut());
+        self.finish_with(encoder, screen, &taa.show[i], timing);
     }
 
     /// Draw what `group` binds (`bind`) onto `screen`.

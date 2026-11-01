@@ -734,7 +734,7 @@ impl Oit {
         }
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("OIT composite"),
-            timestamp_writes: timing.as_deref_mut().and_then(|t| t.writes("OIT composite")),
+            timestamp_writes: timing.and_then(|t| t.writes("OIT composite")),
             color_attachments: &[attachment(color, wgpu::LoadOp::Load)],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: depth,

@@ -1129,7 +1129,7 @@ impl PostEffects {
             (target, size),
             0.0,
             format,
-            timing.as_deref_mut(),
+            timing,
         );
         self.blit = Some(blit);
         self.work = Some(work);
