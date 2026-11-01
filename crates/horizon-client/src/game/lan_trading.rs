@@ -57,9 +57,8 @@ impl Game<'_> {
             state.session.update_special_prices();
         }
         let title = self.merchant_display_name(&state);
-        // The container or workstation the trading screen replaces is closed.
-        self.guest_container_closed(host, conn);
-        self.lan_station_closed(host, conn, None);
+        // ServerPlayer.openMenu closes the menu that was open.
+        self.guest_close_all(host, conn);
         let Some(window) = host.hub.open_merchant_window(conn, title) else {
             self.merchant_closed(&mut state);
             return;

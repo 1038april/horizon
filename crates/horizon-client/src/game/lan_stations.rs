@@ -69,10 +69,8 @@ impl Game<'_> {
         let Some((menu_type, kind, _)) = menu_of(station.kind) else {
             return false;
         };
-        self.lan_station_closed(host, conn, None);
-        self.lan_crafting_closed(host, conn, None);
-        // The container it replaces loses its opener.
-        self.guest_container_closed(host, conn);
+        // ServerPlayer.openMenu closes the menu that was open.
+        self.guest_close_all(host, conn);
         let title = horizon_protocol::text::translatable(station.kind.title_key(), &[]);
         let Some(window) = host.hub.open_window(conn, menu_type, title) else {
             return true;
@@ -151,9 +149,8 @@ impl Game<'_> {
     /// `LecternBlock.openScreen` for a guest: `minecraft:lectern` over the
     /// block entity, with its book and page.
     pub(super) fn lan_open_lectern(&mut self, host: &mut LanHost, conn: u32, key: (i32, i32, i32)) {
-        self.lan_station_closed(host, conn, None);
-        self.lan_crafting_closed(host, conn, None);
-        self.guest_container_closed(host, conn);
+        // ServerPlayer.openMenu closes the menu that was open.
+        self.guest_close_all(host, conn);
         let title = horizon_protocol::text::translatable("container.lectern", &[]);
         let Some(window) = host.hub.open_window(conn, "minecraft:lectern", title) else {
             return;

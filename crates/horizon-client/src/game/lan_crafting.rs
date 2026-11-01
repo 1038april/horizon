@@ -436,10 +436,8 @@ impl Game<'_> {
 
     /// The guest opened a crafting table (`CraftingTableBlock.getMenuProvider`).
     pub(super) fn lan_open_crafting(&mut self, host: &mut LanHost, conn: u32, pos: [i32; 3]) {
-        self.lan_crafting_closed(host, conn, None);
-        self.lan_station_closed(host, conn, None);
-        // The container it replaces loses its opener.
-        self.guest_container_closed(host, conn);
+        // ServerPlayer.openMenu closes the menu that was open.
+        self.guest_close_all(host, conn);
         let title = horizon_protocol::text::translatable("container.crafting", &[]);
         let Some(window) = host.hub.open_window(conn, "minecraft:crafting", title) else {
             return;
