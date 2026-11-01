@@ -422,6 +422,17 @@ impl Game<'_> {
         self.carts.retain(|c| c.id != id);
         self.boats.retain(|b| b.id != id);
         self.armor_stands.retain(|a| a.id != id);
+        // `Entity.setRemoved`: the cushion's rider gets off where it sat
+        // (`LivingEntity.dismountVehicle`), not inside the block below.
+        if self.riding == Some(id)
+            && let Some(y) = self
+                .cushions
+                .iter()
+                .find(|c| c.id == id)
+                .map(|c| c.position.y)
+        {
+            self.dismount_removed_vehicle(y);
+        }
         self.cushions.retain(|c| c.id != id);
         self.item_frames.retain(|f| f.id != id);
         self.paintings.retain(|p| p.id != id);
