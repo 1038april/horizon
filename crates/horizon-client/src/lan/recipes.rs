@@ -187,10 +187,18 @@ pub struct ContentPart {
 }
 
 /// The payloads for `types`' recipes among `sources` (`Recipes::sources`,
-/// vanilla's ids bare), ids made whole (`minecraft:<name>`); empty when no
-/// type is asked for. A recipe too big for a payload of its own is left out.
-pub fn encode_content(types: &[String], sources: &[(String, Value)]) -> Vec<Vec<u8>> {
-    if types.is_empty() {
+/// vanilla's ids bare), ids made whole (`minecraft:<name>`). With no type
+/// asked for: nothing, or with `reset` (this server sent recipes before) one
+/// last part with no types, which puts its clients back on their own. A
+/// recipe too big for a payload of its own is left out.
+pub fn encode_content(types: &[String], sources: &[(String, Value)], reset: bool) -> Vec<Vec<u8>> {
+    // The last part carries the types: they count against its cap too.
+    let types_len = serde_json::to_string(types).map_or(0, |t| t.len()) + 32;
+    if types_len > CONTENT_MAX {
+        log::warn!("Horizon: too many recipe types to send to clients");
+        return Vec::new();
+    }
+    if types.is_empty() && !reset {
         return Vec::new();
     }
     let mut out = Vec::new();
@@ -224,6 +232,16 @@ pub fn encode_content(types: &[String], sources: &[(String, Value)]) -> Vec<Vec<
         size += len;
         part.push((id, v.clone()));
     }
+    if size + types_len > CONTENT_MAX {
+        let recipes = std::mem::take(&mut part);
+        out.push(
+            serde_json::to_vec(&ContentPart {
+                recipes,
+                last: None,
+            })
+            .unwrap_or_default(),
+        );
+    }
     let last = ContentPart {
         recipes: part,
         last: Some(types.to_vec()),
@@ -238,7 +256,18 @@ static CONTENT: Mutex<Option<Arc<Vec<Vec<u8>>>>> = Mutex::new(None);
 /// The recipe content the server sends from now on, at a join and after a
 /// `/reload` (one server per process, as `lan::sync_data`).
 pub fn set_content(payloads: Vec<Vec<u8>>) {
+    if !payloads.is_empty() {
+        SENT.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     *CONTENT.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(payloads));
+}
+
+/// Whether this server sent its clients recipes before: a later load that
+/// asks for none must put them back on their own (`encode_content`'s reset).
+static SENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn sent_before() -> bool {
+    SENT.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// The payloads to send a Horizon client; none when no mod asked.
@@ -265,13 +294,19 @@ mod content_tests {
             ),
             ("mymod:crush".to_owned(), json!({"type": "mymod:crusher"})),
         ];
-        assert!(encode_content(&[], &sources).is_empty());
+        assert!(encode_content(&[], &sources, false).is_empty());
+        // After a sync that sent recipes, asking for none sends an empty last part.
+        let reset = encode_content(&[], &sources, true);
+        assert_eq!(reset.len(), 1);
+        let part: ContentPart = serde_json::from_slice(&reset[0]).unwrap();
+        assert!(part.recipes.is_empty());
+        assert_eq!(part.last.as_deref(), Some(&[][..]));
         let types = vec![
             "minecraft:smelting".to_owned(),
             "mymod:crusher".to_owned(),
             "x:none".to_owned(),
         ];
-        let parts = encode_content(&types, &sources);
+        let parts = encode_content(&types, &sources, false);
         assert_eq!(parts.len(), 1);
         let part: ContentPart = serde_json::from_slice(&parts[0]).unwrap();
         let ids: Vec<&str> = part.recipes.iter().map(|(id, _)| id.as_str()).collect();
@@ -285,7 +320,7 @@ mod content_tests {
         let sources: Vec<_> = (0..10)
             .map(|i| (format!("m:r{i}"), json!({"type": "m:t", "pad": big})))
             .collect();
-        let parts = encode_content(&["m:t".to_owned()], &sources);
+        let parts = encode_content(&["m:t".to_owned()], &sources, false);
         assert!(parts.len() >= 3);
         let mut n = 0;
         for (i, p) in parts.iter().enumerate() {
@@ -295,5 +330,23 @@ mod content_tests {
             n += part.recipes.len();
         }
         assert_eq!(n, 10);
+    }
+
+    #[test]
+    fn a_long_type_list_keeps_the_last_part_under_the_cap() {
+        let types: Vec<String> = (0..5000)
+            .map(|i| format!("mod{i}:type_with_a_long_name"))
+            .collect();
+        let big = "x".repeat(1_000_000);
+        let sources = vec![(
+            "m:r".to_owned(),
+            json!({"type": "mod0:type_with_a_long_name", "pad": big}),
+        )];
+        let parts = encode_content(&types, &sources, false);
+        assert_eq!(parts.len(), 2);
+        assert!(parts.iter().all(|p| p.len() <= 1_048_576));
+        let last: ContentPart = serde_json::from_slice(&parts[1]).unwrap();
+        assert!(last.recipes.is_empty());
+        assert_eq!(last.last.map(|t| t.len()), Some(5000));
     }
 }

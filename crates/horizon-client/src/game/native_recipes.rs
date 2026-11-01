@@ -375,7 +375,11 @@ impl Game<'_> {
                     Vec::new()
                 })
         };
-        recipes::set_content(recipes::encode_content(&types, &sources));
+        recipes::set_content(recipes::encode_content(
+            &types,
+            &sources,
+            recipes::sent_before(),
+        ));
     }
     /// A `horizon:recipe_content` part the server sent the window. On the
     /// last, the window's tables take the server's recipes of those types in
@@ -400,6 +404,16 @@ impl Game<'_> {
             return;
         };
         let received = std::mem::take(&mut self.recipe_tables.incoming);
+        // No type any more: back on the window's own recipes.
+        if types.is_empty() {
+            if self.recipe_tables.synced.take().is_some() {
+                self.recipe_tables.tables = None;
+                self.forget_book();
+                self.recipe_tables.received = Some(types);
+                self.recipes_received_now();
+            }
+            return;
+        }
         let root = &self.options.resources;
         let overlay = horizon_world::loot::PackOverlay::NONE;
         let built = horizon_client::crafting::Recipes::sources(root, &overlay).and_then(|own| {
