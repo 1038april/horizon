@@ -412,6 +412,18 @@ pub fn compose(pack: &Pack, kind: StageKind, file: &str) -> Composed {
     for shared in pack.manifest.shared.iter().filter(|s| *s != file) {
         push(shared, pack.source(shared).unwrap_or_default());
     }
+    // The stage's own extra files, between the shared ones and its file.
+    let m = &pack.manifest;
+    let stage = match kind {
+        StageKind::Sky => m.sky.as_ref(),
+        StageKind::Material => m.material.as_ref(),
+        StageKind::Post => m.post.iter().find(|s| s.file == file),
+    };
+    for extra in stage.into_iter().flat_map(|s| &s.files) {
+        if extra != file && !m.shared.contains(extra) {
+            push(extra, pack.source(extra).unwrap_or_default());
+        }
+    }
     push(file, pack.source(file).unwrap_or_default());
     push("<entries>", kind.entries());
     composed
