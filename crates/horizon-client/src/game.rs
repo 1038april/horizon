@@ -2614,12 +2614,12 @@ struct Game<'a> {
     panel: native_panel::Panel,
     /// Horizon's own shader pack, while one is picked (`game/native_shaders.rs`).
     native_shaders: native_shaders::NativeShaders,
-    /// The mod whose own screen is open (`Screen::Mod`).
-    native_mod_screen: Option<String>,
     /// The native lifecycle bookkeeping.
     native_lifecycle: native_lifecycle::NativeLifecycle,
     /// Native mods' messages waiting (`game/native_net.rs`).
     native_net: native_net::NativeNet,
+    /// The mod whose own screen is open (`Screen::Mod`).
+    native_mod_screen: Option<String>,
     /// Meshed sections waiting for an upload budget (Horizon settings).
     pending_uploads: Vec<((i32, i32, i32), horizon_client::mesher::SectionMesh)>,
     /// This frame's view frustum, for culling entities and block entities.
@@ -17481,9 +17481,9 @@ impl<'a> Game<'a> {
             recipe_tables: Default::default(),
             panel: Default::default(),
             native_shaders: Default::default(),
-            native_mod_screen: None,
             native_lifecycle: Default::default(),
             native_net: Default::default(),
+            native_mod_screen: None,
             sky_darken_memo: Default::default(),
             water_plane_memo: Default::default(),
             water_plane_scan: Default::default(),
