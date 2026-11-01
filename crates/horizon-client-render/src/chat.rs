@@ -574,11 +574,14 @@ impl Chat {
         let entry_height = o.line_height();
         let bottom_to_text =
             (8.0 * (o.line_spacing + 1.0) - 4.0 * o.line_spacing + 0.5).floor() as i32;
+        // Vanilla's 200-tick fade reads the whole GUI ticks
+        // (`Gui.getGuiTicks`); only the smooth chat extra eases it per frame.
+        let fade_ticks = if self.smooth { ticks } else { ticks.floor() };
         let alpha_of = |line: &Line| {
             if focused {
                 1.0
             } else {
-                time_alpha(ticks, line.added)
+                time_alpha(fade_ticks, line.added)
             }
         };
         // The smooth chat extra: how far into its intro a line is, 0 at the
