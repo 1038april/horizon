@@ -723,12 +723,17 @@ impl Game<'_> {
             }
             return self.give(stack);
         }
+        // Inside a player's hook their state is in place and the records of
+        // the others may hold swapped state (turns nest): only they are
+        // reached, as the doc says.
+        if self.lan_acting.is_some() {
+            return Some(stack);
+        }
         let max = self
             .res
             .items()
             .get(&stack.item)
             .map_or(64, |i| i.max_stack);
-        let acting = self.lan_acting;
         let Some(host) = self.lan.as_mut() else {
             return Some(stack);
         };
@@ -736,10 +741,11 @@ impl Game<'_> {
             .hub
             .guests
             .iter_mut()
-            .find(|g| g.placed && !g.dead && g.uuid == uuid && acting != Some(g.conn))
+            .find(|g| g.placed && !g.dead && g.uuid == uuid)
         else {
             return Some(stack);
         };
+        // inventory_add indexes the 36 main slots.
         if g.inventory.len() < 36 {
             g.inventory.resize(36, None);
         }
