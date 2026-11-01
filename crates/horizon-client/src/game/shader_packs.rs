@@ -81,6 +81,18 @@ fn active_pack<'a>(picked: &'a str, mods: &horizon_client::mod_list::ModList) ->
     }
 }
 
+/// Whether the pack `settings` pick (or `HORIZON_SHADER_PACK`) is one of Horizon's own: only
+/// then do resource loads read the resource packs' LabPBR maps (`sprites::set_labpbr_maps`).
+pub(super) fn picks_native_pack(settings: &horizon_client::settings::Settings) -> bool {
+    let dev = std::env::var("HORIZON_SHADER_PACK").ok();
+    let picked = active_pack(
+        dev.as_deref().unwrap_or(&settings.horizon.shader_pack),
+        &settings.mods,
+    );
+    !picked.is_empty()
+        && horizon_shader_api::package::is_pack(&Game::shader_packs_dir().join(picked))
+}
+
 /// The ids a pack gives entities and block entities (4.1, 5.3), for the spans of the entity
 /// geometry.
 pub(super) struct PackIds {
@@ -273,6 +285,13 @@ impl Game<'_> {
             rainfall: info.map_or(0.0, |b| b.downfall),
             held_items,
             held_light,
+            right_handed: !self.settings.main_hand_left,
+            on_ground: self.player.as_ref().is_some_and(|p| p.ground.on_ground),
+            min_y: self.world.shape.min_y,
+            height: self.world.shape.height,
+            logical_height: self.world.shape.logical_height,
+            has_skylight: self.world.shape.sky_light,
+            has_ceiling: self.dim == Dim::Nether,
             mod_params: self.native_shader_params_now(partial),
         }
     }
