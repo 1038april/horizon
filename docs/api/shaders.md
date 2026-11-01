@@ -62,6 +62,7 @@ fog = false                # optional: the pack fogs its surfaces itself (Horizo
 
 [weather]                  # the colour of rain and snow streaks
 file = "weather.wgsl"
+
 [shadow]                   # optional, needs [material] or [[post]]: a shadow map from the sun (the moon by night)
 resolution = 2048          # its side in texels, 256 to 8192
 distance = 128.0           # half the side of the square it covers, in blocks, 32 to 512
