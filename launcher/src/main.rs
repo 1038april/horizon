@@ -4026,7 +4026,7 @@ impl Launcher {
                             .child(version_tag(tag).text_color(t.ink))
                             .child(caps(meta.join("  ·  ")).text_color(t.muted)),
                     )
-                    .children(selected.then(|| caps("In use").text_color(t.accent)))
+                    .children(selected.then(|| caps(tr("In use")).text_color(t.accent)))
                     .child(
                         div()
                             .flex()
@@ -4090,7 +4090,7 @@ impl Launcher {
                     .flex()
                     .flex_col()
                     .gap(px(8.))
-                    .child(caps("Native mod builds").text_color(t.muted))
+                    .child(caps(tr("Native mod builds")).text_color(t.muted))
                     .children(
                         native
                             .iter()
