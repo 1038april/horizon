@@ -442,10 +442,11 @@ impl Item {
     pub fn parent(self) -> Option<Item> {
         use Item::*;
         Some(match self {
+            UiSoundReserve => return None,
             MouseTweaksWheel => MouseTweaks,
             SortKey => Sort,
-            Fullbright | DynamicLights | OwnNameTag | MouseTweaks | Sort | AutoReconnect
-            | UiSoundReserve | NoAi | AgentControl | DiscordPresence => {
+            Fullbright | DynamicLights | OwnNameTag | MouseTweaks | Sort | AutoReconnect | NoAi
+            | AgentControl | DiscordPresence => {
                 return None;
             }
         })
@@ -494,12 +495,11 @@ impl Item {
         use crate::graphics_style::Cost;
         match self {
             Item::Fullbright => Some(Cost::None),
+            Item::UiSoundReserve => Some(Cost::None),
             Item::DynamicLights => Some(Cost::Low),
-            Item::OwnNameTag
-            | Item::AutoReconnect
-            | Item::UiSoundReserve
-            | Item::MouseTweaks
-            | Item::Sort => Some(Cost::None),
+            Item::OwnNameTag | Item::AutoReconnect | Item::MouseTweaks | Item::Sort => {
+                Some(Cost::None)
+            }
             _ => None,
         }
     }
