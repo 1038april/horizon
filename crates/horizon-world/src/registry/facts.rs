@@ -8,7 +8,7 @@ use serde::{
     Deserialize, Deserializer,
     de::{self, IgnoredAny, MapAccess, SeqAccess, Visitor},
 };
-use std::{cell::RefCell, collections::BTreeMap, fmt, sync::Arc};
+use std::{cell::RefCell, collections::BTreeMap, fmt};
 
 #[derive(Deserialize)]
 pub(super) struct Facts {
@@ -65,7 +65,7 @@ pub(super) fn with_shared_strings<T>(read: impl FnOnce() -> T) -> T {
 }
 
 /// A property name or value, shared with the other states' equal ones.
-struct Shared(Arc<String>);
+struct Shared(&'static String);
 impl<'de> Deserialize<'de> for Shared {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct SharedVisitor;
@@ -77,7 +77,7 @@ impl<'de> Deserialize<'de> for Shared {
             fn visit_str<E: de::Error>(self, text: &str) -> Result<Shared, E> {
                 Ok(Shared(STRINGS.with(|s| match s.borrow_mut().as_mut() {
                     Some(strings) => strings.get(text),
-                    None => Arc::new(text.to_owned()),
+                    None => SharedStrings::default().get(text),
                 })))
             }
         }

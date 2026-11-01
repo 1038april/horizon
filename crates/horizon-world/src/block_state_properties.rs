@@ -1,8 +1,10 @@
 //! A block state's properties: a few name/value pairs, sorted by name, read
 //! like the `BTreeMap<String, String>` they replace. A registry's states share
 //! their strings (35,723 vanilla states hold 158,409 properties made of 237
-//! distinct strings): one `Arc` per string instead of a B-tree leaf (544
-//! bytes) and two allocations per property.
+//! distinct strings): one string for the whole process instead of a B-tree
+//! leaf (544 bytes) and two allocations per property. Shared strings are
+//! never freed, nor counted: cloning a state copies pointers, so world
+//! generation threads cloning the same states don't contend on counters.
 use std::{
     borrow::Borrow,
     cmp::Ordering,
@@ -10,14 +12,14 @@ use std::{
     fmt,
     hash::{Hash, Hasher},
     ops::Deref,
-    sync::Arc,
+    sync::Mutex,
 };
 
 /// A property name or value: owned, or one string a registry shares.
 #[derive(Clone)]
 enum Text {
     Owned(String),
-    Shared(Arc<String>),
+    Shared(&'static String),
 }
 impl Deref for Text {
     type Target = String;
@@ -32,7 +34,7 @@ impl Text {
     fn into_string(self) -> String {
         match self {
             Self::Owned(s) => s,
-            Self::Shared(s) => Arc::try_unwrap(s).unwrap_or_else(|s| (*s).clone()),
+            Self::Shared(s) => s.clone(),
         }
     }
     fn to_mut(&mut self) -> &mut String {
@@ -46,16 +48,31 @@ impl Text {
     }
 }
 
-/// Strings shared by the states of one registry ([`BlockProperties::share`]).
+type Interned = horizon_core::fast_hash::FxHashMap<&'static str, &'static String>;
+/// Every string a registry's states share, for the process: registries'
+/// names and values only (a few hundred), never a player's.
+static INTERNED: Mutex<Option<Interned>> = Mutex::new(None);
+
+/// The strings one registry's states share ([`BlockProperties::share`]):
+/// the process's, with the ones already met at hand.
 #[derive(Default)]
-pub struct SharedStrings(horizon_core::fast_hash::FxHashMap<String, Arc<String>>);
+pub struct SharedStrings(Interned);
 impl SharedStrings {
-    pub fn get(&mut self, text: &str) -> Arc<String> {
+    pub fn get(&mut self, text: &str) -> &'static String {
         if let Some(shared) = self.0.get(text) {
-            return shared.clone();
+            return shared;
         }
-        let shared = Arc::new(text.to_owned());
-        self.0.insert(text.to_owned(), shared.clone());
+        let mut interned = INTERNED.lock().unwrap_or_else(|e| e.into_inner());
+        let interned = interned.get_or_insert_with(Interned::default);
+        let shared = match interned.get(text) {
+            Some(shared) => *shared,
+            None => {
+                let shared: &'static String = Box::leak(Box::new(text.to_owned()));
+                interned.insert(shared.as_str(), shared);
+                shared
+            }
+        };
+        self.0.insert(shared.as_str(), shared);
         shared
     }
 }
@@ -140,7 +157,7 @@ impl BlockProperties {
         }
     }
     /// Shared names and values, collected as a `BTreeMap` collects them.
-    pub fn from_shared(mut pairs: Vec<(Arc<String>, Arc<String>)>) -> Self {
+    pub fn from_shared(mut pairs: Vec<(&'static String, &'static String)>) -> Self {
         pairs.sort_by(|a, b| a.0.cmp(&b.0));
         let mut kept: Vec<(Text, Text)> = Vec::with_capacity(pairs.len());
         for (k, v) in pairs {
@@ -391,7 +408,7 @@ mod tests {
         let (Text::Shared(x), Text::Shared(y)) = (&a.0[0].1, &b.0[0].1) else {
             panic!("not shared");
         };
-        assert!(Arc::ptr_eq(x, y));
+        assert!(std::ptr::eq(*x, *y));
         // Changing one state's value leaves the other's.
         a.get_mut("facing").unwrap().push_str("_east");
         assert_eq!(a.get("facing").map(String::as_str), Some("north_east"));
