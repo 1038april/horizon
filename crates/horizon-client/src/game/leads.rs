@@ -134,7 +134,7 @@ impl Game<'_> {
         self.drop_leash(id, drop, false, true);
     }
     fn drop_leash(&mut self, id: u32, drop: bool, sound: bool, used: bool) {
-        let killer = self.lead_killers.remove(&id);
+        let killer = self.lead_killers.remove(&id).map(|(killer, _)| killer);
         let Some(m) = self.mobs.iter_mut().find(|m| m.id == id) else {
             return;
         };
@@ -186,10 +186,11 @@ impl Game<'_> {
     /// holder that never shows up drops the lead after 100 ticks.
     pub(super) fn tick_leads(&mut self) {
         // A corpse gone without dropping its lead takes its killer along.
+        // Only this level's: the others' mobs aren't in place.
         if !self.lead_killers.is_empty() {
-            let mobs = &self.mobs;
+            let (mobs, dim) = (&self.mobs, self.dim);
             self.lead_killers
-                .retain(|id, _| mobs.iter().any(|m| m.id == *id && !m.removed));
+                .retain(|id, (_, at)| *at != dim || mobs.iter().any(|m| m.id == *id && !m.removed));
         }
         let player_uuid = self.level.player_uuid.unwrap_or([0, 0, 0, 1]);
         for i in 0..self.mobs.len() {

@@ -2334,8 +2334,9 @@ struct Game<'a> {
     /// it was by connection (None: the host).
     last_hurt_by_player: HashMap<u32, Option<u32>>,
     /// Leashed mobs a player killed, with the killer's UUID: the lead drops
-    /// on the corpse's next tick (`Leashable.tickLeash`), for the mods.
-    lead_killers: HashMap<u32, u128>,
+    /// on the corpse's next tick (`Leashable.tickLeash`), for the mods. With
+    /// the corpse's dimension: each level's tick prunes only its own.
+    lead_killers: HashMap<u32, (u128, Dim)>,
     /// Animals a player fed into love (`Animal.loveCause`), with the guest it was by
     /// connection (None: the host). Breeding credits them, wherever they are.
     love_cause: HashMap<u32, Option<u32>>,
