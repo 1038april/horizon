@@ -5,6 +5,7 @@ use horizon_shader_api::{Report, StageKind};
 
 use super::native_material::{NativeMaterial, TerrainShape};
 use super::native_post::{NativeFrame, NativePost};
+use super::native_shadow::NativeShadow;
 use super::native_sky::NativeSky;
 use super::pack_timing::PassTiming;
 
@@ -13,6 +14,8 @@ pub struct NativePack {
     pub sky: Option<NativeSky>,
     pub material: Option<NativeMaterial>,
     pub post: Option<NativePost>,
+    /// The draw of the shadow map the stages read, if the pack asks for one.
+    pub shadow: Option<NativeShadow>,
     /// GPU time of each pass, while the renderer asks for it (`pack_timing.rs`).
     pub timing: Option<PassTiming>,
 }
@@ -31,7 +34,16 @@ impl NativePack {
     ) -> Result<(Self, Vec<String>), String> {
         let (globals, format) = (terrain.globals, terrain.format);
         let textures = super::native_post::pack_textures(device, queue, &report);
-        let mut frame = NativeFrame::new(device, textures);
+        let settings = report
+            .shadow
+            .as_ref()
+            .map(|settings| super::native_shadow::fitted(device, settings));
+        let mut frame = NativeFrame::new(device, settings.as_ref(), textures);
+        let shadow = report
+            .shadow
+            .as_ref()
+            .map(|_| NativeShadow::new(device, terrain, &frame))
+            .transpose()?;
         // The mirror is drawn for a material that reads it, while `[reflection] option` is on.
         let option = report.reflection.as_ref().and_then(|r| r.option.as_ref());
         frame.reflects = report
@@ -77,6 +89,7 @@ impl NativePack {
             sky,
             material,
             post,
+            shadow,
             timing: None,
         };
         Ok((pack, labels))

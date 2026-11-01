@@ -93,6 +93,8 @@ pub struct Report {
     pub stages: Vec<CheckedStage>,
     /// The manifest's `[reflection]`.
     pub reflection: Option<crate::manifest::Reflection>,
+    /// The manifest's `[shadow]`.
+    pub shadow: Option<crate::manifest::Shadow>,
     /// The manifest's `[[textures]]`, and each image decoded, in that order.
     pub textures: Vec<(crate::manifest::PackTexture, Image)>,
 }
@@ -197,6 +199,7 @@ pub fn check(pack: &Pack) -> Result<Report, Vec<Problem>> {
             stages: checked,
             textures,
             reflection: m.reflection.clone(),
+            shadow: m.shadow.clone(),
         })
     } else {
         Err(problems)
