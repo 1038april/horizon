@@ -42,7 +42,7 @@ use std::{
     net::{IpAddr, SocketAddr, TcpListener, TcpStream},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering},
         mpsc::{Receiver, Sender, channel},
     },
     thread::JoinHandle,
@@ -341,6 +341,9 @@ pub struct Shared {
     connections: AtomicUsize,
     /// Those connections by address.
     by_address: Mutex<HashMap<IpAddr, usize>>,
+    /// Those not playing yet (handshake, status, login, configuration), oldest first.
+    waiting: Mutex<Vec<Waiting>>,
+    next_connection: AtomicU64,
     /// Connections turned away since the last report of them, and when that was.
     turned_away: Mutex<(usize, Option<Instant>)>,
 }
@@ -544,6 +547,8 @@ impl Lan {
             stop: AtomicBool::new(false),
             connections: AtomicUsize::new(0),
             by_address: Mutex::new(HashMap::new()),
+            waiting: Mutex::new(Vec::new()),
+            next_connection: AtomicU64::new(0),
             turned_away: Mutex::new((0, None)),
             random: Mutex::new(crate::server::java_properties::now_millis() as u64 | 1),
             config,
@@ -683,10 +688,30 @@ fn shared_address(ip: IpAddr) -> bool {
 /// How often the log says how many connections were turned away, and who held the places.
 const TURNED_AWAY_EVERY: Duration = Duration::from_secs(60);
 
+/// How long a connection may wait before a full server closes it for a new one.
+const MAKE_ROOM_AFTER: Duration = Duration::from_secs(2);
+
+/// A network connection not playing yet.
+struct Waiting {
+    id: u64,
+    since: Instant,
+    stream: TcpStream,
+}
+
+thread_local! {
+    /// The [`Waiting`] connection this thread serves.
+    static WAITING: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
 /// An accepted connection, uncounted once its thread ends (or couldn't start).
-struct Counted(Arc<Shared>, IpAddr);
+struct Counted(Arc<Shared>, IpAddr, u64);
 impl Drop for Counted {
     fn drop(&mut self) {
+        self.0
+            .waiting
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|w| w.id != self.2);
         let mut by = self.0.by_address.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(n) = by.get_mut(&self.1) {
             *n -= 1;
@@ -699,19 +724,65 @@ impl Drop for Counted {
 }
 
 impl Shared {
-    /// Counts a connection from `ip`, or None when the server holds its most, or `ip` its own.
+    /// Counts a connection from `ip`, or None when `ip` holds its own most, or the server its
+    /// most and no connection that waits could be closed to make room ([`Shared::make_room`]).
     fn count(self: &Arc<Self>, ip: IpAddr) -> Option<Counted> {
         let most = self.max_players().saturating_add(SPARE_CONNECTIONS);
         let mut by = self.by_address.lock().unwrap_or_else(|e| e.into_inner());
         let here = by.get(&ip).copied().unwrap_or(0);
         if here >= PER_ADDRESS && !shared_address(ip)
-            || self.connections.load(Ordering::Acquire) >= most
+            || self.connections.load(Ordering::Acquire) >= most && !self.make_room()
         {
             return None;
         }
         by.insert(ip, here + 1);
         self.connections.fetch_add(1, Ordering::AcqRel);
-        Some(Counted(self.clone(), ip))
+        let id = self.next_connection.fetch_add(1, Ordering::Relaxed);
+        Some(Counted(self.clone(), ip, id))
+    }
+
+    /// Notes `stream`, counted as `counted`, as waiting until it plays.
+    fn wait(&self, counted: &Counted, stream: &TcpStream) {
+        if let Ok(stream) = stream.try_clone() {
+            let w = Waiting {
+                id: counted.2,
+                since: Instant::now(),
+                stream,
+            };
+            self.waiting
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(w);
+        }
+    }
+
+    /// The connection this thread serves plays now: a full server no longer closes it.
+    pub(crate) fn entered_play(&self) {
+        if let Some(id) = WAITING.take() {
+            self.waiting
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .retain(|w| w.id != id);
+        }
+    }
+
+    /// The server is full: closes the connection that has waited longest, if for more than
+    /// [`MAKE_ROOM_AFTER`] (a login or a server-list ping takes a fraction of that), so that a
+    /// crowd of sockets that never finish can't keep players out. Its thread ends at once. A
+    /// player in the game is never closed.
+    fn make_room(&self) -> bool {
+        let mut waiting = self.waiting.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(oldest) = waiting
+            .first()
+            .filter(|w| w.since.elapsed() > MAKE_ROOM_AFTER)
+        else {
+            return false;
+        };
+        let _ = oldest.stream.shutdown(std::net::Shutdown::Both);
+        waiting.remove(0);
+        drop(waiting);
+        self.turned_away();
+        true
     }
 
     /// A connection was turned away: once a minute the log says how many, how many places were
@@ -755,8 +826,9 @@ impl Shared {
             "Server Connection Thread",
             "WARN",
             &format!(
-                "Turned away {count} connection(s): {} of {most} places taken, by {addresses} \
-                 address(es), most by {top} (at most {PER_ADDRESS} an address)",
+                "Turned away {count} connection(s), or closed one that waited to make room: {} of \
+                 {most} places taken, by {addresses} address(es), most by {top} (at most \
+                 {PER_ADDRESS} an address)",
                 self.connections.load(Ordering::Acquire)
             ),
         );
@@ -776,9 +848,13 @@ fn accept_loop(listener: TcpListener, shared: Arc<Shared>, stop: &AtomicBool) {
                     shared.turned_away();
                     continue;
                 };
+                shared.wait(&counted, &stream);
                 let _ = std::thread::Builder::new()
                     .name("horizon-lan-conn".into())
-                    .spawn(move || handle(stream, addr, counted.0.clone()));
+                    .spawn(move || {
+                        WAITING.set(Some(counted.2));
+                        handle(stream, addr, counted.0.clone());
+                    });
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(25));
@@ -880,5 +956,49 @@ mod tests {
         drop((one, local));
         assert!(lan.shared.by_address.lock().unwrap().is_empty());
         assert_eq!(lan.shared.connections.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn a_full_server_closes_the_connection_that_waited_longest() {
+        use std::io::Read;
+        let config = NetConfig {
+            announce: false,
+            listen: false,
+            ..NetConfig::lan(0, "Room".into(), 1)
+        };
+        let lan = Lan::start_with(Arc::new(data::SyncData::empty()), config).unwrap();
+        let shared = &lan.shared;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server_side, _) = listener.accept().unwrap();
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+        let most = shared.max_players() + SPARE_CONNECTIONS;
+        let mut held: Vec<Counted> = (0..most).map(|_| shared.count(ip).unwrap()).collect();
+        // A player who reached the game, and a socket that never finished its login.
+        let playing = shared.count(ip);
+        assert!(playing.is_none(), "full");
+        shared.wait(&held[1], &server_side);
+        assert!(shared.count(ip).is_none(), "a fresh wait isn't closed");
+        shared.waiting.lock().unwrap()[0].since -= MAKE_ROOM_AFTER * 2;
+        let newcomer = shared.count(ip).expect("room made");
+        let mut byte = [0u8; 1];
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        assert_eq!(
+            client.read(&mut byte).unwrap(),
+            0,
+            "the waiting socket was closed"
+        );
+        assert!(shared.waiting.lock().unwrap().is_empty());
+        assert!(shared.count(ip).is_none(), "nothing else to close");
+        // Its thread ends and uncounts it; a connection that plays is never closed.
+        held.remove(1);
+        shared.wait(&newcomer, &server_side);
+        WAITING.set(Some(newcomer.2));
+        shared.entered_play();
+        assert!(shared.waiting.lock().unwrap().is_empty());
+        drop((held, newcomer));
+        assert_eq!(shared.connections.load(Ordering::Acquire), 0);
     }
 }

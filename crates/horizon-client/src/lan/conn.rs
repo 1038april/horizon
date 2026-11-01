@@ -1193,6 +1193,7 @@ fn wait_alive<T>(
 }
 
 fn play(c: Connection, shared: &Arc<Shared>, parts: Parts, address: std::net::SocketAddr) {
+    shared.entered_play();
     let conn_id = shared.next_id();
     let events = shared.events.clone();
     let _ = c.reader.set_read_timeout(Some(READ_TIMEOUT));
