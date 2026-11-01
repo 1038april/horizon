@@ -1351,6 +1351,17 @@ impl Game<'_> {
     pub(super) fn native_zoom(&self, zoom: &mut Option<NativeZoom>) {
         let _ = zoom;
     }
+    /// Computed world fog RGB, after ordinary effects and before upload. Title panoramas skip it.
+    /// Only finite RGB components in 0..=1 are accepted; alpha and distances stay unchanged.
+    pub(super) fn native_compute_fog_color(
+        &self,
+        partial: f32,
+        camera: [f64; 3],
+        fog_type: horizon_client::fog::FogType,
+        rgb: &mut [f32; 3],
+    ) {
+        let _ = (partial, camera, fog_type, rgb);
+    }
     /// The camera shake native mods ask for in this frame, `partial` ticks
     /// past the last tick (0 to 1): add your pitch, yaw and roll in degrees
     /// and your offset in blocks, along the camera's right, up and back, to
