@@ -5408,17 +5408,21 @@ def leave_vehicle(player, kind):
 
 
 def break_vehicle(player, vehicle_id, kind):
-    """Hit it with fists until it breaks: VehicleEntity.tick takes 1 off its damage every tick."""
+    """Hit it with fists until it breaks. VehicleEntity.hurtServer adds the hit's damage times 10 and
+    breaks it past 40; AbstractBoat.tick and AbstractMinecart.tick take 1 off every tick.
+    Player.attack scales a hit by its charge, 0.2 + s * s * 0.8, and a fist charges in
+    20 / 4 = 5 ticks. Punches 2 ticks apart do 0.4 each, a net 2 after decay, and break it only on
+    the 17th. Punches 5 ticks apart are fully charged: 10, then a net 5 each, broken on the 8th. A
+    tick of drift either way still nets at least 4 a punch."""
     here = [o for o in player('status')['objects'] if o['id'] == vehicle_id]
     if not here:
         return
     vp = here[0]['position']
-    # Keep the original ten hits/two-tick spacing in one connection. Starting
-    # several ctl processes per hit lets the vehicle's damage decay between hits.
+    # One connection: a ctl process per hit spaces the hits by however long it takes to start.
     player.script([f'look-at {vp[0]:.2f} {vp[1] + 0.3:.2f} {vp[2]:.2f}',
-                   *[line for _ in range(10) for line in ('mouse left click', 'wait 2')]])
+                   *[line for _ in range(12) for line in ('mouse left click', 'wait 5')]])
     assert not any(o['id'] == vehicle_id for o in player('status')['objects']), \
-        f'ten hits left the {kind} in place'
+        f'twelve punches 5 ticks apart left the {kind} in place'
 
 
 def check_boats(host, guest, out):
