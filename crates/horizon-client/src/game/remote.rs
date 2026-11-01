@@ -8496,9 +8496,15 @@ impl Game<'_> {
         }
     }
     /// A server's trading window (MerchantScreen over a ClientSideMerchant).
-    fn remote_open_merchant(&mut self, container: i32, title: String) {
+    fn remote_open_merchant(
+        &mut self,
+        container: i32,
+        title: String,
+        text: horizon_client::text::Text,
+    ) {
         if let Some(r) = self.remote.as_mut() {
             r.menu = Some((container, "minecraft:merchant".to_owned()));
+            r.menu_title = Some(text);
         }
         let session = horizon_client::merchant::Session::new(Vec::new(), true);
         self.open_remote_merchant(session, (!title.is_empty()).then_some(title));
@@ -8589,7 +8595,7 @@ impl Game<'_> {
                     .map(|r| r.lang.clone())
                     .unwrap_or_default(),
             );
-            self.remote_open_merchant(p.container, title);
+            self.remote_open_merchant(p.container, title, menu_title(&p.title));
             return;
         }
         let entity = match menu.as_str() {
