@@ -12,6 +12,7 @@ use horizon_assets::{
 use horizon_client::{
     block_entity_render::{diffuse, diffuse_lights, vertex_light},
     containers::BlockEntity,
+    gfx::Cull,
     hud::Rect,
     mesher::Vertex,
 };
@@ -26,11 +27,7 @@ const DEFAULT_BOUNDS: [f32; 6] = [-1.0, -1.0, -1.0, 2.0, 2.0, 2.0];
 /// Whether `bounds` (min then max, in blocks from `origin`, the block's corner
 /// relative to the camera) meet the frustum; an infinite bound always does
 /// (NeoForge's `INFINITE_EXTENT_AABB`), as does a frame without a frustum.
-fn in_frustum(
-    frustum: Option<&horizon_client::gfx::Frustum>,
-    origin: Vec3,
-    bounds: [f32; 6],
-) -> bool {
+fn in_frustum(frustum: Option<&impl Cull>, origin: Vec3, bounds: [f32; 6]) -> bool {
     if bounds.iter().any(|b| !b.is_finite()) {
         return true;
     }
@@ -366,12 +363,24 @@ mod tests {
         assert_eq!(v.color >> 24, 0xFF);
     }
 
+    /// A frustum that sees nothing.
+    struct Blind;
+    impl Cull for Blind {
+        fn intersects(&self, _: Vec3, _: Vec3) -> bool {
+            false
+        }
+        fn contains(&self, _: Vec3, _: Vec3) -> bool {
+            false
+        }
+    }
+
     #[test]
     fn infinite_bounds_and_frames_without_a_frustum_are_never_culled() {
         let origin = Vec3::new(1.0e6, 0.0, 0.0);
-        assert!(in_frustum(None, origin, DEFAULT_BOUNDS));
         let infinite = [f32::NEG_INFINITY, 0.0, 0.0, f32::INFINITY, 1.0, 1.0];
-        assert!(in_frustum(None, origin, infinite));
+        assert!(!in_frustum(Some(&Blind), origin, DEFAULT_BOUNDS));
+        assert!(in_frustum(Some(&Blind), origin, infinite));
+        assert!(in_frustum(None::<&Blind>, origin, DEFAULT_BOUNDS));
     }
 
     #[test]
