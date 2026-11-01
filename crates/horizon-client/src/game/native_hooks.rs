@@ -1084,6 +1084,18 @@ impl Game<'_> {
     /// and on servers), and the server's own (`native_window` is false
     /// there: the single player server thread, a dedicated server).
     pub(super) fn native_tick(&mut self) {}
+    /// Append an item's custom decorations after its default bar, cooldown and count.
+    /// Coordinates are the icon's top-left in GUI units; the batch uses screen coordinates.
+    /// Runs wherever the shared item-decoration path is used (hotbar, menus and tooltips).
+    pub(super) fn native_item_decorations(
+        &self,
+        stack: &ItemStack,
+        x: f32,
+        y: f32,
+        batch: &mut HudBatch,
+    ) {
+        let _ = (stack, x, y, batch);
+    }
     /// The world frame's local visual sources. Push requests; Horizon validates
     /// and limits them before rendering. Called only while a world is visible.
     pub(super) fn native_visuals(
