@@ -793,6 +793,9 @@ impl Game<'_> {
             .collect();
         let gone = vehicle_tree(root, &mounts);
         self.mobs.retain(|m| !gone.contains(&m.id));
+        for &id in &gone {
+            self.release_vehicle_container(id);
+        }
         self.boats.retain(|b| !gone.contains(&b.id));
         self.carts.retain(|c| !gone.contains(&c.id));
         for g in gone {
