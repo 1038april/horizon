@@ -1119,8 +1119,9 @@ impl Game<'_> {
     /// (`ScreenEvent.MouseButtonPressed.Pre`, vanilla's
     /// `Screen.mouseClicked`): `screen` is the screen it is, `screen.mouse`
     /// where the pointer is (so there is no position of its own), `button` the
-    /// button's GLFW index (0 left, 1 right, 2 middle, 3 back, 4 forward, else
-    /// the button's number) and `modifiers` GLFW's bits (shift 1, control 2,
+    /// button's GLFW index (0 left, 1 right, 2 middle, 3 back, 4 forward; a
+    /// button past those is the platform's own number, which differs between
+    /// systems) and `modifiers` GLFW's bits (shift 1, control 2,
     /// alt 4, super 8). Set `canceled` and the press goes no further: no slot,
     /// no screen button, no drag, no hotbar key, no sort or header button.
     ///

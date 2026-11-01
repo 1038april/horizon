@@ -1950,9 +1950,11 @@ fn glfw_modifiers(modifiers: winit::keyboard::ModifiersState) -> u32 {
 }
 
 /// The GLFW mouse button index `button` is, as the native mods' mouse hooks
-/// hand it over: 0 left, 1 right, 2 middle, 3 back, 4 forward, and `Other(n)`
-/// is n — the numbering `keybinds::mouse_name` names (`key.mouse.<index + 1>`)
-/// and vanilla's `InputConstants` reads.
+/// hand it over: 0 left, 1 right, 2 middle, 3 back, 4 forward. `Other(n)` is
+/// winit's n, the platform's own number (X11 or evdev on Linux), so a button
+/// past 4 is not GLFW's index everywhere. Buttons 0–4 are the numbering
+/// `keybinds::mouse_name` names (`key.mouse.<index + 1>`) and vanilla's
+/// `InputConstants` reads.
 fn glfw_button(button: MouseButton) -> i32 {
     match button {
         MouseButton::Left => 0,
