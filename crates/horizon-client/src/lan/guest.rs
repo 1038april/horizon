@@ -459,9 +459,21 @@ impl Guest {
                 Some(k) => Change::Knockback(k),
                 None => return,
             },
-            C::UpdateAttributes(p) if own(p.id) => Change::State,
-            C::UpdateMobEffect(p) if own(p.id) => Change::State,
-            C::RemoveMobEffect(p) if own(p.id) => Change::State,
+            C::UpdateAttributes(p) if own(p.id) => {
+                let speed = self.motion.as_ref().and_then(|m| {
+                    m.attributes
+                        .key("minecraft:movement_speed")
+                        .map(|k| k.attribute().registry_id())
+                });
+                let sprint = p
+                    .values
+                    .iter()
+                    .find(|a| Some(a.attribute) == speed)
+                    .map(|a| a.modifiers.iter().any(|m| m.id == "minecraft:sprinting"));
+                Change::Attributes { sprint }
+            }
+            C::UpdateMobEffect(p) if own(p.id) => Change::Effects,
+            C::RemoveMobEffect(p) if own(p.id) => Change::Effects,
             C::PlayerAbilities(_) => Change::Abilities,
             // The chest slot (InventoryMenu's slot 6): a glider.
             C::ContainerSetSlot(p) if p.container == 0 && p.slot == 6 => Change::Abilities,
@@ -1011,6 +1023,16 @@ fn network_stack(
         stack.added.push((
             horizon_protocol::item::component::ITEM_MODEL,
             horizon_protocol::item::Component::Ident(model),
+        ));
+    }
+    // Arbitrary NBT other mods and item models read back client-side
+    // (`item_model.rs`'s `custom_data_at`), as vanilla's DataComponentPatch does.
+    if let Some(tag @ horizon_world::nbt::Tag::Compound(_)) =
+        s.data().and_then(|d| d.other("minecraft:custom_data"))
+    {
+        stack.added.push((
+            horizon_protocol::item::component::CUSTOM_DATA,
+            horizon_protocol::item::Component::Nbt(tag.clone()),
         ));
     }
     if let Some(t) = s

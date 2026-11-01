@@ -54,6 +54,13 @@ fails, with its problems in the chat. While it runs, the game looks at the pack 
 and the pack is checked and rebuilt in place ("Shader pack ... reloaded"); if the new version fails, the chat says
 where and the last good version keeps drawing. All three stages run.
 
+A picked pack in the `shaders/` format gets a Shader Options... button at the top of the page: its options on the
+screens and with the names the pack gives them, its profiles, and Reset. A click picks an option's next value, a
+right click the one before, shift-click the pack's default, and the options the pack lists in `sliders` are sliders;
+values that differ from the pack's are yellow. Hovering one shows what the pack says of it (`option.NAME.comment`),
+and the whole label when its name was shortened to fit. Leaving the page saves them to
+`shaderpacks/<pack>.txt` (`NAME=value` lines) and loads the pack again with them.
+
 ## A pack
 
 A folder (or the same files zipped as a `.hshader`) with `horizon-shaders.toml` and WGSL files:
@@ -118,6 +125,11 @@ sprites = ["block/glass", "block/*_stained_glass"]
 Terrain carries its sprite, not its block, so a sprite drawn by several blocks gets the tag for all of them.
 
 ## Options
+
+A picked pack with options gets a Shader Options... button at the top of the Shader Packs page. A click picks an
+option's next value, a right click the one before, shift-click its default, and Reset all of them; hovering one shows its
+`description`. Each change is saved to `shaderpacks/<pack>.txt` (`id=value` lines, values at their defaults left out) and
+the pack reloads with it within half a second.
 
 Each `[[options]]` entry is a WGSL `override` of the same name, set when the game builds the pipeline: no text
 substitution, no recompiling a different program per value.

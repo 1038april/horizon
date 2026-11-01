@@ -7,7 +7,8 @@ use std::fmt::Write;
 use naga::ShaderStage;
 
 use super::scan::{
-    LATER_KEYWORDS, Stage, UNIFORM_STATE, VERTEX_INPUTS, is_ident, is_sampler_type, significant,
+    LATER_KEYWORDS, NOT_CONSTANT, Stage, UNIFORM_STATE, VERTEX_INPUTS, is_ident, is_sampler_type,
+    significant,
 };
 use super::{Sampler, split_sampler};
 
@@ -202,6 +203,10 @@ impl Stage<'_> {
                 out.push_str(t);
                 continue;
             }
+            // A local `const` that calls a built-in naga cannot evaluate: an ordinary local.
+            if t == "const" && depth > 0 && self.calls_not_constant(i) {
+                continue;
+            }
             // A parameter's `const` (`const in float x`, which naga's parser refuses): it only
             // promises the function does not write the parameter.
             if t == "const" && depth == 0 && !calls.is_empty() {
@@ -312,14 +317,16 @@ impl Stage<'_> {
                 "gl_FragCoord" => Some("hz_FragCoord".into()),
                 "gl_FrontColor" => Some("hz_FrontColor".into()),
                 "gl_Fog" => Some("hz_Fog".into()),
+                // Before the compatibility inputs, of which `gl_Vertex` is a prefix.
+                "gl_VertexID" => Some("gl_VertexIndex".into()),
+                "gl_InstanceID" => Some("gl_InstanceIndex".into()),
+                "gl_VertexIndex" | "gl_InstanceIndex" => None,
                 _ if UNIFORM_STATE.iter().any(|b| t.starts_with(b)) => {
                     Some(format!("hz_{}", &t[3..]))
                 }
                 _ if !fragment && VERTEX_INPUTS.iter().any(|b| t.starts_with(b)) => {
                     Some(format!("hz_{}", &t[3..]))
                 }
-                "gl_VertexID" => Some("gl_VertexIndex".into()),
-                "gl_InstanceID" => Some("gl_InstanceIndex".into()),
                 _ if old && LATER_KEYWORDS.contains(&t) => Some(format!("hz_kw_{t}")),
                 _ => None,
             };
@@ -330,6 +337,21 @@ impl Stage<'_> {
 }
 
 impl Stage<'_> {
+    /// Whether the declaration after token `i` calls a built-in in `NOT_CONSTANT` before its `;`.
+    pub(super) fn calls_not_constant(&self, i: usize) -> bool {
+        for (j, &t) in self.tokens.iter().enumerate().skip(i + 1) {
+            if matches!(t, ";" | "{" | "}") {
+                return false;
+            }
+            if NOT_CONSTANT.contains(&t)
+                && self.tokens[j + 1..].iter().find(|t| significant(t)) == Some(&"(")
+            {
+                return true;
+            }
+        }
+        false
+    }
+
     /// When the `[` at token `i` begins two or more array dimensions of a type (after a type
     /// name, `float[2][3]`, or after the name a type declares, `float x[2][3]`), each one's
     /// first and last token. naga's frontend nests such dimensions the other way round.

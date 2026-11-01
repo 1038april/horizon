@@ -13,6 +13,7 @@
 
 use std::collections::HashMap;
 
+use glam::{DMat4, DVec3};
 use horizon_shaders::{Format, Group, Kind, Post, Val};
 
 use super::pack_draw::DrawUniforms;
@@ -186,15 +187,29 @@ impl Entities {
 enum Image {
     Color(usize),
     Custom(usize),
+    /// The copy of a buffer or a pack image taken before a dispatch, which its loads read.
+    ColorBefore(usize),
+    CustomBefore(usize),
 }
 
 impl Image {
     fn buffer(self) -> Option<usize> {
         match self {
             Image::Color(b) => Some(b),
-            Image::Custom(_) => None,
+            _ => None,
         }
     }
+}
+
+/// The buffers and the pack images (masks) `images` read as copies taken before a dispatch.
+fn befores(images: &[(u32, Image)]) -> (u16, u64) {
+    images
+        .iter()
+        .fold((0, 0), |(colors, customs), i| match i.1 {
+            Image::ColorBefore(b) => (colors | 1 << b, customs),
+            Image::CustomBefore(k) => (colors, customs | 1 << k),
+            _ => (colors, customs),
+        })
 }
 
 /// The color buffers of `images`, as a mask.
@@ -203,6 +218,83 @@ fn image_buffers(images: &[(u32, Image)]) -> u16 {
         .iter()
         .filter_map(|i| i.1.buffer())
         .fold(0, |m, b| m | 1 << b)
+}
+
+/// The format of the sink of passes that write only images.
+const SINK: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
+
+/// What packs use of the device beyond drawing. OpenGL ES and older drivers lack some of it: a
+/// program that needs what is missing is skipped with a note, and the game runs on without it.
+#[derive(Clone, Copy)]
+struct Gpu {
+    compute: bool,
+    /// Images and storage buffers written by fragment shaders.
+    fragment_storage: bool,
+    /// Storage read and written by vertex shaders (a geometry stage).
+    vertex_storage: bool,
+    /// `clear_texture`; without it images are cleared by copying zeros.
+    clear: bool,
+    adapter_formats: bool,
+}
+
+impl Gpu {
+    fn of(adapter: &wgpu::Adapter, features: wgpu::Features) -> Self {
+        use wgpu::DownlevelFlags as D;
+        let flags = adapter.get_downlevel_capabilities().flags;
+        let mut gpu = Gpu {
+            compute: flags.contains(D::COMPUTE_SHADERS),
+            fragment_storage: flags.contains(D::FRAGMENT_WRITABLE_STORAGE),
+            vertex_storage: flags.contains(D::VERTEX_STORAGE)
+                && features.contains(wgpu::Features::VERTEX_WRITABLE_STORAGE),
+            clear: features.contains(wgpu::Features::CLEAR_TEXTURE),
+            adapter_formats: features
+                .contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES),
+        };
+        // `HORIZON_SHADER_PACK_WITHOUT=compute,fragment-storage,vertex-storage,clear` tries the
+        // fallbacks on a device that has it all.
+        let without = std::env::var("HORIZON_SHADER_PACK_WITHOUT").unwrap_or_default();
+        for w in without.split(',') {
+            match w.trim() {
+                "compute" => gpu.compute = false,
+                "fragment-storage" => gpu.fragment_storage = false,
+                "vertex-storage" => gpu.vertex_storage = false,
+                "clear" => gpu.clear = false,
+                _ => {}
+            }
+        }
+        gpu
+    }
+
+    /// Whether textures of `format` can be bound as images.
+    fn storable(
+        self,
+        adapter: &wgpu::Adapter,
+        format: wgpu::TextureFormat,
+        features: wgpu::Features,
+    ) -> bool {
+        let usages = if self.adapter_formats {
+            adapter.get_texture_format_features(format).allowed_usages
+        } else {
+            format.guaranteed_format_features(features).allowed_usages
+        };
+        (self.compute || self.fragment_storage)
+            && usages.contains(wgpu::TextureUsages::STORAGE_BINDING)
+    }
+
+    /// The stages that may bind images and storage buffers.
+    fn storage_stages(self) -> wgpu::ShaderStages {
+        let mut stages = wgpu::ShaderStages::NONE;
+        if self.compute {
+            stages |= wgpu::ShaderStages::COMPUTE;
+        }
+        if self.fragment_storage {
+            stages |= wgpu::ShaderStages::FRAGMENT;
+        }
+        if self.vertex_storage {
+            stages |= wgpu::ShaderStages::VERTEX;
+        }
+        stages
+    }
 }
 
 /// A pass's pipeline: a draw, or a compute dispatch.
@@ -259,6 +351,15 @@ struct Pass {
     copies: u16,
     /// Compute programs dispatched before this pass.
     compute: Vec<Pass>,
+    /// Writes no buffer, only images: draws into `Targets::sink`.
+    sink: bool,
+    /// Instances to draw for a geometry stage folded into the vertex stage; 0 without one.
+    geometry: u32,
+    /// The pack's images (bit n: `image.*` n) this pass samples and stores: sampled from a copy
+    /// taken just before it.
+    image_copies: u64,
+    /// The pack's images a compute pass's loads read as they were before it: copied first.
+    snapshots: u64,
 }
 
 impl Pass {
@@ -292,6 +393,8 @@ struct Targets {
     scratch: [Option<wgpu::TextureView>; BUFFERS],
     /// Each buffer's size: the render size, or its `size.buffer`.
     sizes: [[u32; 2]; BUFFERS],
+    /// The attachment of passes that write only images.
+    sink: wgpu::TextureView,
 }
 
 /// What a pack's gbuffers programs read and draw from the game's world.
@@ -332,9 +435,33 @@ pub(super) struct Weather {
     pub generation: u64,
 }
 
+/// Shadow cache: the key of the shadow map the shadow targets hold. Only the
+/// shadow passes write those targets, so while the key matches they still hold
+/// it and the pass is skipped.
+#[derive(Default)]
+struct ShadowCache {
+    key: Option<ShadowCacheKey>,
+}
+
+/// Key for validating the shadow cache.
+/// Must match the cache state exactly to be considered valid.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ShadowCacheKey {
+    sun_angle: f32,
+    moon_angle: f32,
+    snapped_camera: Option<DVec3>,
+    shadow_settings_hash: u64,
+    shadow_scene_revision: (u64, u64),
+    ticks: u64,
+    day_time: i64,
+    shadow_uniforms_hash: u64,
+}
+
 pub struct PackPost {
     pub notes: Vec<String>,
     passes: Vec<Pass>,
+    /// Shadow cache for temporal reprojection.
+    shadow_cache: ShadowCache,
     /// What draws terrain (`gbuffers_terrain` or its fallback), between `prepare` and `deferred`.
     terrain: Option<Pass>,
     /// What draws translucent terrain (`gbuffers_water` or its fallback), after `deferred`.
@@ -408,6 +535,13 @@ pub struct PackPost {
     dummy_1d: wgpu::TextureView,
     /// `image.*` and `bufferObject.*`.
     images: Vec<pack_images::PackImage>,
+    /// Set 5 of programs with a geometry stage.
+    indices: Option<wgpu::BindGroupLayout>,
+    shadow_culling: horizon_shaders::ShadowCulling,
+    gpu: Gpu,
+    /// Zeros to clear images by copying, where the device has no `clear_texture`.
+    zeros: Option<wgpu::Buffer>,
+    dump: Option<pack_images::Dump>,
     buffers: pack_images::Buffers,
     textures: Vec<pack_textures::PackTexture>,
     /// The stand-in shadow map and its comparison sampler; cleared on the first frame.
@@ -752,8 +886,14 @@ impl TerrainList {
 
 /// Draws the game's terrain of one list into a pass; calls its third argument with each arena
 /// page before drawing from it.
-pub(super) type TerrainDraw<'a> =
-    dyn FnMut(&mut wgpu::RenderPass<'_>, TerrainList, &dyn Fn(&mut wgpu::RenderPass<'_>, u32)) + 'a;
+/// Draws a list's terrain: indexed, or for a program with a geometry stage, without indices and
+/// with that many instances (and its index buffer bound in set 5 by this layout).
+pub(super) type TerrainDraw<'a> = dyn FnMut(
+        &mut wgpu::RenderPass<'_>,
+        TerrainList,
+        &dyn Fn(&mut wgpu::RenderPass<'_>, u32),
+        Option<(u32, &wgpu::BindGroupLayout)>,
+    ) + 'a;
 
 /// What the shadow camera sees of the terrain, for the game's draw lists: its view and
 /// projection in wgpu's clip space, the direction toward the light, and how far from the camera
@@ -762,6 +902,9 @@ pub(super) struct ShadowView {
     pub cull: glam::Mat4,
     pub light: glam::Vec3,
     pub distance: Option<f32>,
+    /// Draw everything, every face, within this many blocks (`shadow.culling=false|reversed`):
+    /// packs that voxelize the world in their shadow pass need all of it.
+    pub unculled: Option<f32>,
 }
 
 /// Set 3 of flat terrain, read by the vertex stage: `mc_Entity`'s table (-1 pairs when empty)
@@ -816,6 +959,11 @@ struct Resources<'a> {
     /// The images this device can't make.
     left_out: &'a [horizon_shaders::CustomImage],
     buffers: &'a pack_images::Buffers,
+    /// Set 5 of a program with a geometry stage: the draw's indices.
+    indices: Option<&'a wgpu::BindGroupLayout>,
+    gpu: Gpu,
+    /// The buffers whose format can be bound as an image.
+    storable: u16,
 }
 
 /// A program's bind group layout (its uniform block, samplers and images) and how each sampler
@@ -1014,6 +1162,22 @@ fn bindings(
         let (target, actual) = match (buffer, own) {
             (_, Some(k)) => (Image::Custom(k), pack.images[k].format),
             (Some(b), None) => (Image::Color(b), formats[b]),
+            (None, None) if i.before.is_some() => {
+                // Bound as the image it copies.
+                let of = i.before.as_deref().unwrap_or_default();
+                let buffer = of
+                    .strip_prefix("colorimg")
+                    .and_then(|n| n.parse::<usize>().ok())
+                    .filter(|&n| n < BUFFERS && !group.shadow());
+                match (buffer, pack.images.iter().position(|c| c.def.name == of)) {
+                    (_, Some(k)) => (Image::CustomBefore(k), pack.images[k].format),
+                    (Some(b), None) => (Image::ColorBefore(b), formats[b]),
+                    (None, None) => {
+                        notes.push(format!("{name}: image `{of}` is not provided yet"));
+                        return None;
+                    }
+                }
+            }
             (None, None) => {
                 notes.push(format!("{name}: image `{}` is not provided yet", i.name));
                 return None;
@@ -1041,9 +1205,18 @@ fn bindings(
         } else {
             wgpu::TextureViewDimension::D2
         };
+        if let Image::Color(b) | Image::ColorBefore(b) = target
+            && pack.storable & 1 << b == 0
+        {
+            notes.push(format!(
+                "{name}: `{}` can't be an image on this GPU; skipped",
+                i.name
+            ));
+            return None;
+        }
         entries.push(wgpu::BindGroupLayoutEntry {
             binding: i.binding,
-            visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
+            visibility: pack.gpu.storage_stages(),
             ty: wgpu::BindingType::StorageTexture {
                 access,
                 format,
@@ -1133,6 +1306,21 @@ fn build_pass(
     let program = p.program.take()?;
     let interface = &program.interface;
     let draw = interface.draw;
+    let storage = !interface.images.is_empty() || !interface.buffers.is_empty();
+    if storage && !pack.gpu.fragment_storage {
+        notes.push(format!(
+            "{}: this GPU can't write images from a fragment shader; skipped",
+            p.name
+        ));
+        return None;
+    }
+    if p.geometry_triangles > 0 && (pack.indices.is_none() || !pack.gpu.vertex_storage) {
+        notes.push(format!(
+            "{}: this GPU can't run a geometry stage; skipped",
+            p.name
+        ));
+        return None;
+    }
     let (entries, samplers, slots, reads, shadow_reads, images) = bindings(
         features, interface, &p.name, p.group, &p.buffers, geometry, formats, shadow, notes, pack,
     )?;
@@ -1168,7 +1356,16 @@ fn build_pass(
     while targets.last().is_some_and(Option::is_none) {
         targets.pop();
     }
-    if !final_pass && writes.is_empty() {
+    // A program that only writes images draws into a sink that keeps nothing; one drawing
+    // geometry has the depth buffer, and draws with no colour target at all.
+    let sink = !final_pass && writes.is_empty() && !program.interface.images.is_empty();
+    if sink && geometry.is_none() {
+        targets = vec![Some(wgpu::ColorTargetState {
+            format: SINK,
+            blend: None,
+            write_mask: wgpu::ColorWrites::empty(),
+        })];
+    } else if !final_pass && writes.is_empty() && !sink {
         notes.push(format!("{}: writes no buffer; skipped", p.name));
         return None;
     }
@@ -1197,6 +1394,7 @@ fn build_pass(
                 draw.then_some(draws),
                 geometry.and_then(|g| g.ids),
                 (!interface.buffers.is_empty()).then_some(&pack.buffers.layout),
+                pack.indices.filter(|_| p.geometry_triangles > 0),
             ],
             ..Default::default()
         });
@@ -1215,12 +1413,17 @@ fn build_pass(
                 module: &vs,
                 entry_point: Some("main"),
                 compilation_options: Default::default(),
-                buffers: geometry.map_or(&[], |g| g.buffers),
+                // A geometry stage reads its vertices itself.
+                buffers: geometry
+                    .filter(|_| p.geometry_triangles == 0)
+                    .map_or(&[], |g| g.buffers),
             },
             // Rows flipped to GL's turn front faces clockwise.
             primitive: wgpu::PrimitiveState {
                 front_face: wgpu::FrontFace::Cw,
-                cull_mode: geometry.filter(|g| g.cull).map(|_| wgpu::Face::Back),
+                cull_mode: geometry
+                    .filter(|g| g.cull && p.geometry_triangles == 0)
+                    .map(|_| wgpu::Face::Back),
                 ..Default::default()
             },
             depth_stencil: geometry.map(|g| wgpu::DepthStencilState {
@@ -1259,6 +1462,7 @@ fn build_pass(
     if !missing.is_empty() {
         notes.push(format!("{}: zero for now: {}", p.name, missing.join(" ")));
     }
+    let image_copies = image_copies(&samplers, &images);
     Some(Pass {
         ubo: device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(&p.name),
@@ -1291,7 +1495,22 @@ fn build_pass(
         buffers: !interface.buffers.is_empty(),
         images,
         compute: Vec::new(),
+        sink,
+        geometry: p.geometry_triangles,
+        image_copies,
+        snapshots: 0,
     })
+}
+
+/// The pack's images a pass both samples and stores.
+fn image_copies(samplers: &[Binding], images: &[(u32, Image)]) -> u64 {
+    samplers
+        .iter()
+        .filter_map(|s| match s.source {
+            Source::Image(k) if images.iter().any(|i| i.1 == Image::Custom(k)) => Some(k),
+            _ => None,
+        })
+        .fold(0, |m, k| m | 1 << k)
 }
 
 /// The pass of compute program `c` of a `group` program: `None` (with a note) when wgpu refuses
@@ -1368,6 +1587,8 @@ fn build_compute(
         }
     };
     let written = image_buffers(&images);
+    let image_copies = image_copies(&samplers, &images);
+    let (before_colors, snapshots) = befores(&images);
     Some(Pass {
         ubo: device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(&name),
@@ -1393,7 +1614,7 @@ fn build_compute(
         samplers,
         writes: Vec::new(),
         flip: 0,
-        copies: written & reads,
+        copies: written & reads | before_colors,
         reads: reads | written,
         shadow_reads,
         written,
@@ -1405,6 +1626,10 @@ fn build_compute(
         buffers: !interface.buffers.is_empty(),
         images,
         compute: Vec::new(),
+        sink: false,
+        geometry: 0,
+        image_copies,
+        snapshots,
     })
 }
 
@@ -1413,6 +1638,7 @@ impl PackPost {
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        adapter: &wgpu::Adapter,
         mut post: Post,
         screen: wgpu::TextureFormat,
         world: World<'_>,
@@ -1463,29 +1689,78 @@ impl PackPost {
                 .filter(|_| i < 2)
                 .map_or(formats[i], |f| f[i])
         });
-        let (mut storage, mut copied) = (0u16, 0u16);
-        // An image this device can't make: the programs using it are skipped.
+        let (mut storage, mut copied, mut image_copied, mut snapshotted) = (0u16, 0u16, 0u64, 0u64);
+        let gpu = Gpu::of(adapter, features);
+        if !gpu.compute {
+            notes.push("this GPU has no compute shaders: compute programs are skipped".into());
+        }
+        // An image this device can't make or store into: the programs using it are skipped.
         let mut image_defs = std::mem::take(&mut post.images);
         let mut left_out = Vec::new();
-        image_defs.retain(|def| match pack_images::makeable(device, def) {
-            Ok(()) => true,
-            Err(e) => {
+        image_defs.retain(|def| {
+            let made = pack_images::makeable(device, def).and_then(|()| {
+                if gpu.storable(adapter, pack_images::format(def.format), features) {
+                    Ok(())
+                } else {
+                    Err("this GPU can't store into its format".into())
+                }
+            });
+            if let Err(e) = &made {
                 notes.push(format!("image `{}`: {e}", def.name));
                 left_out.push(def.clone());
-                false
             }
+            made.is_ok()
         });
+        // A mask of a pass's images holds this many.
+        let kept = image_defs.len().min(pack_images::IMAGES);
+        for def in image_defs.drain(kept..) {
+            notes.push(format!(
+                "image `{}`: past the {} images a pack may have",
+                def.name,
+                pack_images::IMAGES
+            ));
+            left_out.push(def);
+        }
         let images = pack_images::images(image_defs);
-        let buffers = pack_images::Buffers::new(device, std::mem::take(&mut post.buffer_objects));
+        let mut objects = std::mem::take(&mut post.buffer_objects);
+        if gpu.storage_stages().is_empty() {
+            objects.clear();
+        }
+        let buffers = pack_images::Buffers::new(device, objects, gpu.storage_stages());
+        let storable = (0..BUFFERS)
+            .filter(|&i| gpu.storable(adapter, formats[i], features))
+            .fold(0u16, |m, i| m | 1 << i);
+        let indices = gpu.vertex_storage.then(|| {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Shader pack geometry indices"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            })
+        });
         let pack = Resources {
             textures: &textures,
             images: &images,
             left_out: &left_out,
             buffers: &buffers,
+            indices: indices.as_ref(),
+            gpu,
+            storable,
         };
         let mut build = |mut p: horizon_shaders::PostProgram, geometry: Option<&Geometry<'_>>| {
             let in_shadow = p.group.shadow();
-            let compute = std::mem::take(&mut p.compute);
+            let mut compute = std::mem::take(&mut p.compute);
+            if !gpu.compute {
+                compute.clear();
+                p.program.as_ref()?;
+            }
             let group = p.group;
             let mut computes: Vec<Pass> = compute
                 .into_iter()
@@ -1547,6 +1822,8 @@ impl PackPost {
                     used |= p.reads | p.written | p.flip;
                 }
                 storage |= image_buffers(&p.images);
+                image_copied |= p.image_copies;
+                snapshotted |= p.snapshots;
                 copied |= p.copies;
             }
             Some(pass)
@@ -1986,8 +2263,20 @@ impl PackPost {
                 .cloned()
                 .unwrap_or_else(|| noise(device, queue)),
             dummy: texture(device, queue, "Shader pack stand-in", 1, &white),
-            images,
+            images: {
+                let mut images = images;
+                for (k, image) in images.iter_mut().enumerate() {
+                    image.copied = image_copied & 1 << k != 0;
+                    image.snapshotted = snapshotted & 1 << k != 0;
+                }
+                images
+            },
             buffers,
+            indices,
+            shadow_culling: post.shadow_culling,
+            gpu,
+            zeros: None,
+            dump: pack_images::Dump::new(),
             dummy_3d: device
                 .create_texture(&wgpu::TextureDescriptor {
                     label: Some("Shader pack 3D stand-in"),
@@ -2066,6 +2355,7 @@ impl PackPost {
                 u.shadow = shadow_config;
                 u
             },
+            shadow_cache: Default::default(),
         }
     }
 
@@ -2080,6 +2370,7 @@ impl PackPost {
         pass: &mut Pass,
         out: [u32; 2],
     ) -> wgpu::BindGroup {
+        pack_images::copy(encoder, &self.images, pass.image_copies);
         if let Some(targets) = &self.targets {
             for i in (0..BUFFERS).filter(|i| pass.copies & 1 << i != 0) {
                 if let (Some(t), Some(copy)) = (&targets.color[i], &targets.scratch[i]) {
@@ -2185,6 +2476,9 @@ impl PackPost {
                         &self.dummy_1d
                     }
                     Source::Dummy => &self.dummy,
+                    Source::Image(k) if pass.image_copies & 1 << k != 0 => {
+                        self.images[k].copy.as_ref().unwrap_or(&self.dummy)
+                    }
                     Source::Image(k) => self.images[k].view.as_ref().unwrap_or(&self.dummy),
                     Source::Custom { index, .. } => match &self.textures[index].image {
                         pack_textures::Image::View(v) => v,
@@ -2224,6 +2518,8 @@ impl PackPost {
                         targets.color[i].as_ref().map_or(&self.dummy, |t| &t[side])
                     }
                     Image::Custom(k) => self.images[k].view.as_ref().unwrap_or(&self.dummy),
+                    Image::ColorBefore(i) => targets.scratch[i].as_ref().unwrap_or(&self.dummy),
+                    Image::CustomBefore(k) => self.images[k].before.as_ref().unwrap_or(&self.dummy),
                 };
                 entries.push(wgpu::BindGroupEntry {
                     binding,
@@ -2262,6 +2558,9 @@ impl PackPost {
             [n(0), n(1), 1]
         });
         let (pipeline, groups) = (pipeline.clone(), groups);
+        for image in (0..self.images.len()).filter(|k| pass.snapshots & 1 << k != 0) {
+            pack_images::snapshot(encoder, &self.images[image]);
+        }
         let group = self.bind(device, queue, encoder, pass, size);
         let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some(&pass.name),
@@ -2381,7 +2680,12 @@ impl PackPost {
                     rp.set_bind_group(3, group, &[]);
                 }
             };
-            draw(&mut rp, list, &page);
+            let geometry = self
+                .indices
+                .as_ref()
+                .filter(|_| pass.geometry > 0)
+                .map(|indices| (pass.geometry, indices));
+            draw(&mut rp, list, &page, geometry);
         }
         if !pass.group.shadow() {
             self.mips_valid &= !pass.written;
@@ -2822,6 +3126,11 @@ impl PackPost {
             cull: pack_uniforms::shadow_culling(frame, shadow),
             light: pack_uniforms::shadow_light(frame, shadow),
             distance: (shadow.render_mul > 0.0).then_some(shadow.distance * shadow.render_mul),
+            unculled: match self.shadow_culling {
+                horizon_shaders::ShadowCulling::On => None,
+                horizon_shaders::ShadowCulling::Off => Some(f32::INFINITY),
+                horizon_shaders::ShadowCulling::Reversed => Some(shadow.voxel_distance),
+            },
         })
     }
 
@@ -2933,6 +3242,15 @@ impl PackPost {
                 let mut attachment = wgpu::TextureUsages::RENDER_ATTACHMENT;
                 if self.storage & 1 << i != 0 {
                     attachment |= wgpu::TextureUsages::STORAGE_BINDING;
+                    // Atomics on a texture need it made for them (Metal ignores them otherwise).
+                    if device.features().contains(wgpu::Features::TEXTURE_ATOMIC)
+                        && matches!(
+                            self.formats[i],
+                            wgpu::TextureFormat::R32Sint | wgpu::TextureFormat::R32Uint
+                        )
+                    {
+                        attachment |= wgpu::TextureUsages::STORAGE_ATOMIC;
+                    }
                 }
                 if self.copied & 1 << i != 0 {
                     attachment |= wgpu::TextureUsages::COPY_SRC;
@@ -2986,18 +3304,31 @@ impl PackPost {
         });
         let scratch = std::array::from_fn(|i| {
             (self.copied & 1 << i != 0).then(|| {
+                // A copy also read as an image before a dispatch.
+                let image = if self.storage & 1 << i != 0 {
+                    wgpu::TextureUsages::STORAGE_BINDING
+                } else {
+                    wgpu::TextureUsages::empty()
+                };
                 texture_sized(
                     &format!("colortex{i} copy"),
                     self.formats[i],
-                    wgpu::TextureUsages::COPY_DST,
+                    wgpu::TextureUsages::COPY_DST | image,
                     1,
                     sizes[i],
                 )
                 .create_view(&Default::default())
             })
         });
+        let sink = texture(
+            "Shader pack sink",
+            SINK,
+            wgpu::TextureUsages::RENDER_ATTACHMENT,
+        )
+        .create_view(&Default::default());
         self.targets = Some(Targets {
             size,
+            sink,
             sizes,
             scratch,
             color,
@@ -3012,6 +3343,45 @@ impl PackPost {
     /// The shadow pass (2.1, passes 2 and 3): the shadow buffers cleared, then the `shadowcomp`
     /// programs, each drawing into the "alt" side of what it writes and flipping it after.
     fn run_shadow(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        terrain: &mut TerrainDraw<'_>,
+        frame: &super::Frame,
+    ) {
+        // Opt-in only (`horizon-graphics.txt` shadowCache). Off: always redraw, drop any cache.
+        if !frame.shadow_cache {
+            self.shadow_cache = ShadowCache::default();
+            self.draw_shadow_pass(device, queue, encoder, terrain);
+            return;
+        }
+
+        // Compute the current frame's cache key before borrowing shadow_targets mutably.
+        let cache_key = self.compute_shadow_cache_key(frame);
+
+        // Entity vertices are interpolated each frame, so their shadows cannot be reused.
+        let has_shadow_entities = self
+            .entities
+            .as_ref()
+            .is_some_and(|entities| entities.geometry.draws.iter().any(|draw| draw.shadow));
+        // Custom images are cleared each frame (`pack_images::clear`) before the
+        // shadow pass writes them, so a pack with any redraws it too.
+        let cache_hit = !has_shadow_entities
+            && self.images.is_empty()
+            && self.shadow_cache.key == Some(cache_key)
+            && self.shadow_targets.is_some();
+        if cache_hit {
+            // The targets still hold this map (and `main`, the A/B side
+            // `shadowcomp` left current).
+            return;
+        }
+        self.draw_shadow_pass(device, queue, encoder, terrain);
+        self.shadow_cache.key = self.shadow_targets.is_some().then_some(cache_key);
+    }
+
+    /// The shadow pass body: terrain, entities, clears, and `shadowcomp`.
+    fn draw_shadow_pass(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -3092,6 +3462,106 @@ impl PackPost {
         self.shadow_comp = comp;
     }
 
+    /// Computes the cache key for the current frame.
+    fn compute_shadow_cache_key(&self, frame: &super::Frame) -> ShadowCacheKey {
+        let shadow = &self.uniforms.shadow;
+        // Use the same logic as shadow_camera to compute the light direction and snapped camera.
+        // Use the public shadow_light function which returns the normalized light direction.
+        let light = super::pack_uniforms::shadow_light(frame, shadow);
+        let light = light.as_dvec3();
+        let up = if light.z.abs() > 0.99 {
+            DVec3::Y
+        } else {
+            DVec3::Z
+        };
+        let rotation = DMat4::look_to_rh(DVec3::ZERO, -light, up);
+        let at = rotation.transform_vector3(frame.camera);
+        let step = f64::from(shadow.interval);
+        let snapped_camera = if step > 0.0 {
+            Some((at / step).floor() * step)
+        } else {
+            Some(at)
+        };
+
+        // Hash the shadow settings that affect the shadow map.
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        shadow.resolution.hash(&mut hasher);
+        shadow.distance.to_bits().hash(&mut hasher);
+        shadow.render_mul.to_bits().hash(&mut hasher);
+        shadow.interval.to_bits().hash(&mut hasher);
+        shadow.sun_path_rotation.to_bits().hash(&mut hasher);
+        shadow.fov.map(|f| f.to_bits()).hash(&mut hasher);
+        shadow.near.to_bits().hash(&mut hasher);
+        shadow.far.to_bits().hash(&mut hasher);
+        for hf in &shadow.hardware_filtering {
+            hf.hash(&mut hasher);
+        }
+        for color in &shadow.colors {
+            format!("{:?}", color.format).hash(&mut hasher);
+            color.clear.hash(&mut hasher);
+            if let Some(cc) = color.clear_color {
+                for c in cc {
+                    c.to_bits().hash(&mut hasher);
+                }
+            }
+            color.mipmap.hash(&mut hasher);
+        }
+        let shadow_settings_hash = hasher.finish();
+        let shadow_uniforms_hash = self.shadow_uniforms_hash();
+
+        ShadowCacheKey {
+            sun_angle: frame.sky.sun_angle,
+            moon_angle: frame.sky.moon_angle,
+            snapped_camera,
+            shadow_settings_hash,
+            shadow_scene_revision: frame.shadow_scene_revision,
+            ticks: frame.ticks,
+            day_time: frame.pack.day_time,
+            shadow_uniforms_hash,
+        }
+    }
+
+    fn shadow_uniforms_hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let passes = self
+            .shadow_terrain
+            .iter()
+            .chain(self.shadow_water.iter())
+            .chain(self.shadow_comp.iter())
+            .chain(
+                self.entities
+                    .iter()
+                    .flat_map(|entities| entities.shadow.iter().flatten()),
+            );
+        for pass in passes {
+            pass.name.hash(&mut hasher);
+            for (index, ty, offset) in &pass.uniforms {
+                index.hash(&mut hasher);
+                ty.hash(&mut hasher);
+                offset.hash(&mut hasher);
+                let Some(value) = index.and_then(|index| self.uniforms.values.get(index)) else {
+                    continue;
+                };
+                match value {
+                    pack_uniforms::Value::F(values) => {
+                        0u8.hash(&mut hasher);
+                        for value in values {
+                            value.to_bits().hash(&mut hasher);
+                        }
+                    }
+                    pack_uniforms::Value::I(values) => {
+                        1u8.hash(&mut hasher);
+                        values.hash(&mut hasher);
+                    }
+                }
+            }
+        }
+        hasher.finish()
+    }
+
     /// Runs the pack over the world drawn into `world` (colour) and `world_depth`, then draws
     /// the result onto `screen`.
     #[allow(clippy::too_many_arguments)]
@@ -3147,10 +3617,19 @@ impl PackPost {
         if self.targets.is_none() {
             return;
         }
-        // Images the shadow and shadowcomp programs write start the frame cleared, as every
-        // other program sees them.
-        pack_images::clear(encoder, &self.images);
-        self.run_shadow(device, queue, encoder, terrain);
+        // Images start the frame cleared, before the shadow pass writes them.
+        if let Some(dump) = &mut self.dump {
+            dump.read(device);
+            dump.copy(device, encoder, &self.images);
+        }
+        pack_images::clear(
+            device,
+            encoder,
+            &self.images,
+            self.gpu.clear,
+            &mut self.zeros,
+        );
+        self.run_shadow(device, queue, encoder, terrain, frame);
         let Some(targets) = &self.targets else { return };
         let main = |m: u16, i: usize| usize::from(m & 1 << i != 0);
         let view = |m: u16, i: usize, alt: bool| {
@@ -3329,6 +3808,8 @@ impl PackPost {
             if final_pass {
                 attachments.push(attach(screen, overwrite));
                 shown = true;
+            } else if pass.sink {
+                attachments.push(attach(&targets.sink, overwrite));
             } else {
                 for &(location, buffer) in &pass.writes {
                     let l = location as usize;
@@ -3403,6 +3884,36 @@ impl PackPost {
 mod tests {
     use super::*;
     use wgpu::TextureFormat as T;
+
+    #[test]
+    fn shadow_cache_key_tracks_world_and_time_changes() {
+        let key = ShadowCacheKey {
+            sun_angle: 0.0,
+            moon_angle: 180.0,
+            snapped_camera: Some(DVec3::ZERO),
+            shadow_settings_hash: 1,
+            shadow_scene_revision: (2, 3),
+            ticks: 4,
+            day_time: 5,
+            shadow_uniforms_hash: 6,
+        };
+
+        assert_ne!(
+            key,
+            ShadowCacheKey {
+                shadow_scene_revision: (8, 3),
+                ..key
+            }
+        );
+        assert_ne!(key, ShadowCacheKey { day_time: 9, ..key });
+        assert_ne!(
+            key,
+            ShadowCacheKey {
+                shadow_uniforms_hash: 10,
+                ..key
+            }
+        );
+    }
 
     /// Two textures with a sampler each become two textures sharing one sampler variable.
     #[test]
