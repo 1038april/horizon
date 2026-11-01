@@ -14629,7 +14629,9 @@ impl Game<'_> {
             self.bolt_instances(camera)
         };
         let mut additive = Vec::new();
-        if !title && self.dim == Dim::End {
+        // The dragon is drawn in every dimension, as any entity: a dragon
+        // summoned outside the End (the server's AddEntity) is shown too.
+        if !title {
             let mut dragon = Vec::new();
             self.dragon_geometry(camera, alpha, &mut dragon, &mut additive);
             self.dragon_fireball_geometry(camera, alpha, &mut dragon);
