@@ -3453,9 +3453,15 @@ mod tests {
         let start = source[..hook].rfind("///").unwrap();
         let body = &source[start..start + source[start..].find("\n}\n").unwrap()];
         for line in body.lines() {
-            assert!(!line.contains("cfg"), "a cfg in the loot hook point: {line}");
+            assert!(
+                !line.contains("cfg"),
+                "a cfg in the loot hook point: {line}"
+            );
             for mac in ["!(", "![", "! {", "!{"] {
-                assert!(!line.contains(mac), "a macro in the loot hook point: {line}");
+                assert!(
+                    !line.contains(mac),
+                    "a macro in the loot hook point: {line}"
+                );
             }
         }
     }
