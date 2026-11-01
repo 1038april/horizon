@@ -223,6 +223,34 @@ public final class VanillaCommandExecOracle {
                     }
                     case "settle" -> settle();
                     case "portal" -> portal();
+                    case "falling" -> {
+                        String dimension = op.get("dimension").getAsString();
+                        String block = op.get("block").getAsString();
+                        boolean noGravity = op.get("no_gravity").getAsBoolean();
+                        var key = net.minecraft.resources.ResourceKey.create(Registries.DIMENSION,
+                            net.minecraft.resources.Identifier.parse(dimension));
+                        var portalLevel = this.getLevel(key);
+                        var inspected = new ArrayList<net.minecraft.world.entity.item.FallingBlockEntity>();
+                        for (var entity : portalLevel.getAllEntities()) {
+                            if (entity instanceof net.minecraft.world.entity.item.FallingBlockEntity f
+                                && net.minecraft.core.registries.BuiltInRegistries.BLOCK
+                                    .getKey(f.getBlockState().getBlock()).toString().equals(block)
+                                && f.isNoGravity() == noGravity) inspected.add(f);
+                        }
+                        int count = inspected.size();
+                        if (op.has("discard") && op.get("discard").getAsBoolean())
+                            inspected.forEach(f -> f.discard());
+                        JsonObject record = new JsonObject();
+                        record.addProperty("cmd", "#falling " + dimension + " " + block + " " + noGravity);
+                        record.add("messages", new JsonArray());
+                        JsonArray result = new JsonArray();
+                        result.add(true);
+                        result.add(count);
+                        JsonArray results = new JsonArray();
+                        results.add(result);
+                        record.add("results", results);
+                        out.append(gson.toJson(record)).append('\n');
+                    }
                     default -> throw new IllegalArgumentException(line);
                 }
             }
