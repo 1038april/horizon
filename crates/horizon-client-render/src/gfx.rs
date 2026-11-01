@@ -5494,7 +5494,8 @@ impl Renderer {
         // Where the tail of materials the classic and the improved passes
         // both draw ends: the shadows, particles and items count back from it.
         let base_quads = world_quads - oit_entity_quads;
-        let cloud_quads = if let Some(input) = &frame.clouds {
+        let native_clouds = self.native.as_ref().is_none_or(|n| n.vanilla_clouds);
+        let cloud_quads = if let Some(input) = frame.clouds.as_ref().filter(|_| native_clouds) {
             let (rebuilt, uniform) =
                 crate::spans::time("clouds", || self.cloud_mesh.prepare(input));
             let vertices = self.cloud_mesh.vertices.len() as u64;
@@ -6193,12 +6194,24 @@ impl Renderer {
                         self.end_sky.draw(&mut pass);
                     }
                     if celestial_vertices > 0 && !pack_draws_celestial {
+                        // The Overworld's bodies start with the sun's quad
+                        // (`Game::celestial_geometry`): a pack sky drawing its own skips it.
+                        let own_sun = !frame.end_sky
+                            && self
+                                .native
+                                .as_ref()
+                                .is_some_and(|n| n.sky.is_some() && !n.vanilla_sun);
+                        let first = if own_sun { 6 } else { 0 };
                         pass.set_vertex_buffer(0, self.celestial_buffer.slice(..));
-                        pass.draw_indexed(0..(celestial_vertices as u32 / 4) * 6, 0, 0..1);
+                        pass.draw_indexed(first..(celestial_vertices as u32 / 4) * 6, 0, 0..1);
                     }
                     pass.set_bind_group(0, &self.group, &[]);
                 }
-                if !frame.title && frame.stars.is_some() && !pack_draws_sky {
+                let own_stars = self
+                    .native
+                    .as_ref()
+                    .is_some_and(|n| n.sky.is_some() && !n.vanilla_stars);
+                if !frame.title && frame.stars.is_some() && !pack_draws_sky && !own_stars {
                     self.stars.draw(&mut pass);
                     pass.set_bind_group(0, &self.group, &[]);
                 }
