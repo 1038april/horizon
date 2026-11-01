@@ -3012,21 +3012,21 @@ impl Game<'_> {
     /// API @API:native_mod_screen@.
     pub(super) fn native_quad(&self, batch: &mut HudBatch, points: [[f32; 2]; 4], argb: u32) {
         let [a, r, g, b] = argb.to_be_bytes();
-        let uv = horizon_client::gfx::lightning::white_uv(&self.gui.atlas.font.white());
-        batch.quad(points, [uv; 4], rgba(r, g, b, a));
+        batch.fill_quad(&self.gui.atlas, points, rgba(r, g, b, a));
     }
     /// Opens a screen of mod `mod_id`'s own over the world: the screen hooks
-    /// fire over it as over any other (its `NativeScreenView.id` is `mod`), so
-    /// the mod draws it in `native_screen_render_post` and takes its clicks,
-    /// scroll, keys and typing there; the mouse is freed, and Escape closes it.
-    /// True when it is open: false while another screen is (or another mod's).
-    /// API @API:native_mod_screen@.
+    /// fire over it as over any other, so the mod draws it in
+    /// `native_screen_render_post` and takes its clicks, scroll, keys and
+    /// typing there; the mouse is freed, and Escape closes it. Every mod's own
+    /// screen has the `NativeScreenView.id` `mod`, so a mod's screen hooks
+    /// check `native_mod_screen()` is its own before drawing. It doesn't pause
+    /// a single-player game (as the inventory doesn't). True when it is open:
+    /// false while another screen is (or another mod's), or on the title
+    /// screen. API @API:native_mod_screen@.
     pub(super) fn native_mod_screen_open(&mut self, mod_id: &str) -> bool {
-        if self.screen == Screen::Mod {
-            return self.native_mod_screen.as_deref() == Some(mod_id);
-        }
-        if self.screen != Screen::Playing || self.title.is_some() {
-            return false;
+        let owner = self.native_mod_screen();
+        if let Some(open) = mod_screen_opens(self.screen, self.title.is_some(), owner, mod_id) {
+            return open;
         }
         self.native_mod_screen = Some(mod_id.to_owned());
         self.screen = Screen::Mod;
@@ -4229,8 +4229,54 @@ fn box_meets(b: &horizon_core::geometry::Aabb, min: [f64; 3], max: [f64; 3]) -> 
         && hi.z > min[2]
 }
 
+/// What `native_mod_screen_open(mod_id)` does over `screen` (the title screen
+/// up or not, `owner`'s own screen open): `None` opens it, `Some` answers
+/// without changing anything (true: `mod_id`'s is already open).
+fn mod_screen_opens(
+    screen: Screen,
+    title: bool,
+    owner: Option<&str>,
+    mod_id: &str,
+) -> Option<bool> {
+    if screen == Screen::Mod {
+        return Some(owner == Some(mod_id));
+    }
+    if screen != Screen::Playing || title {
+        return Some(false);
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// A mod's own screen opens only over the world, never over another
+    /// screen, the title screen or another mod's; opening it again is a no-op.
+    #[test]
+    fn a_mod_screen_opens_only_over_the_world() {
+        use super::{Screen, mod_screen_opens};
+        assert_eq!(mod_screen_opens(Screen::Playing, false, None, "a"), None);
+        assert_eq!(
+            mod_screen_opens(Screen::Playing, true, None, "a"),
+            Some(false)
+        );
+        for other in [
+            Screen::Paused,
+            Screen::Inventory,
+            Screen::Chat,
+            Screen::Options,
+        ] {
+            assert_eq!(mod_screen_opens(other, false, None, "a"), Some(false));
+        }
+        assert_eq!(
+            mod_screen_opens(Screen::Mod, false, Some("a"), "a"),
+            Some(true)
+        );
+        assert_eq!(
+            mod_screen_opens(Screen::Mod, false, Some("b"), "a"),
+            Some(false)
+        );
+    }
 
     /// The characters a `ScreenEvent.CharacterTyped.Pre` sees are the
     /// printable ones of a text: a cancelled one leaves that text and a
