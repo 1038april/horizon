@@ -704,6 +704,123 @@ impl Game<'_> {
     }
 }
 
+/// An experience orb as a server mod reads it (`native_experience_orbs`).
+/// Read by mods only.
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
+pub(super) struct NativeExperienceOrb {
+    /// The entity's ID, as `native_entity_join_level` names it.
+    pub id: u32,
+    pub position: [f64; 3],
+    /// `ExperienceOrb.value`: the points one pickup gives.
+    pub value: u32,
+    /// `ExperienceOrb.count`: orbs merged into this one, each worth `value`.
+    pub count: u32,
+}
+
+/// Whether an orb at `position` (its box: 0.5 wide and high, standing on
+/// it) meets the box `min`..`max`, touching faces excluded (`AABB.intersects`).
+fn orb_meets(position: [f64; 3], min: [f64; 3], max: [f64; 3]) -> bool {
+    position[0] - 0.25 < max[0]
+        && position[0] + 0.25 > min[0]
+        && position[1] < max[1]
+        && position[1] + 0.5 > min[1]
+        && position[2] - 0.25 < max[2]
+        && position[2] + 0.25 > min[2]
+}
+
+/// Experience for server mods. API @API:give_experience@.
+#[allow(dead_code)]
+impl Game<'_> {
+    /// The experience orbs of the server level `dimension` whose box meets
+    /// the box `min`..`max`, in the level's order: what a mod reads before it
+    /// cancels an orb in `native_entity_join_level`, to give its points with
+    /// `native_give_experience`. Empty for a level not in place and on a
+    /// client of a server.
+    pub(super) fn native_experience_orbs(
+        &self,
+        dimension: &str,
+        min: [f64; 3],
+        max: [f64; 3],
+    ) -> Vec<NativeExperienceOrb> {
+        if (self.serving.is_none() && self.options.dedicated.is_none())
+            || dimension != self.dim.id()
+        {
+            return Vec::new();
+        }
+        self.orbs
+            .iter()
+            .filter(|o| o.count > 0)
+            .map(|o| NativeExperienceOrb {
+                id: o.id,
+                position: [o.position.x, o.position.y, o.position.z],
+                value: o.value,
+                count: o.count,
+            })
+            .filter(|o| orb_meets(o.position, min, max))
+            .collect()
+    }
+    /// Gives `points` of experience to the player `uuid` as an orb they touch
+    /// does (`ExperienceOrb.playerTouch`): Mending repairs their damaged items
+    /// with it first (`repairPlayerItems`), then the rest goes to their
+    /// experience (`Player.giveExperiencePoints`), with the level-up sound
+    /// every fifth level. No orb pickup sound. False, and nothing given, for
+    /// a player who isn't here or is dead, and for another player than the one
+    /// whose state is swapped in (inside that player's hook, only they are
+    /// reached). Their bar follows as for any change to their experience.
+    pub(super) fn native_give_experience(&mut self, uuid: u128, points: u32) -> bool {
+        self.native_as_player(uuid, |game| {
+            let rest = if points > 0 { game.mending(points) } else { 0 };
+            if rest > 0 {
+                game.give_orb_points(rest);
+            }
+        })
+    }
+    /// Adds `levels` to the player `uuid`'s level, or takes them off when
+    /// negative (`Player.giveExperienceLevels`): what the anvil and the
+    /// enchanting table charge with, and a mod can charge or reward with.
+    /// Below level 0 the level and the points are 0. The progress toward the
+    /// next level is kept. False, and nothing changed, as for
+    /// `native_give_experience`.
+    pub(super) fn native_give_levels(&mut self, uuid: u128, levels: i32) -> bool {
+        self.native_as_player(uuid, |game| game.give_levels(levels))
+    }
+    /// Runs `f` with the player `uuid`'s state in place: theirs already when
+    /// they are the acting player (the host, or a guest swapped in), else a
+    /// guest's through `as_guest`, only where no other player is swapped in.
+    /// False when it didn't run: no such player here, or dead.
+    fn native_as_player(&mut self, uuid: u128, f: impl FnOnce(&mut Self)) -> bool {
+        if uuid == self.native_acting_id() {
+            if self
+                .player
+                .as_ref()
+                .is_none_or(|p| p.health.health() <= 0.0)
+            {
+                return false;
+            }
+            f(self);
+            return true;
+        }
+        if self.lan_acting.is_some() {
+            return false;
+        }
+        let Some(mut host) = self.lan.take() else {
+            return false;
+        };
+        let conn = host
+            .hub
+            .guests
+            .iter()
+            .find(|g| g.placed && !g.dead && g.uuid == uuid)
+            .map(|g| g.conn);
+        let ran = conn
+            .and_then(|conn| self.as_guest(&mut host, conn, f))
+            .is_some();
+        self.lan = Some(host);
+        ran
+    }
+}
+
 fn system_chat(line: &Text) -> C {
     C::SystemChat(play::SystemChat {
         content: component_nbt(&line.component()),
@@ -841,6 +958,24 @@ mod tests {
             add_to(slots(&mut inv, &mut off), 0, "minecraft:diamond", 64, 1),
             0
         );
+    }
+
+    #[test]
+    fn orbs_are_found_by_their_half_block_box() {
+        // A block's cell, as a mod asks for a broken block's drops.
+        let (min, max) = ([10.0, 64.0, -3.0], [11.0, 65.0, -2.0]);
+        assert!(orb_meets([10.5, 64.2, -2.5], min, max), "inside");
+        assert!(
+            orb_meets([11.2, 64.0, -2.5], min, max),
+            "its box reaches in"
+        );
+        assert!(
+            orb_meets([10.5, 63.6, -2.5], min, max),
+            "standing just below"
+        );
+        assert!(!orb_meets([11.25, 64.0, -2.5], min, max), "a face touching");
+        assert!(!orb_meets([10.5, 63.5, -2.5], min, max), "its top touching");
+        assert!(!orb_meets([10.5, 65.0, -2.5], min, max), "standing on top");
     }
 
     #[test]
