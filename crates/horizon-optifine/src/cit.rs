@@ -154,7 +154,7 @@ impl ComponentTest {
             return None;
         }
         let (source, mut path) = if legacy {
-            legacy_source(segments)
+            legacy_source(segments)?
         } else {
             let id = namespaced(&segments.remove(0));
             (Source::Component(id), segments)
@@ -182,20 +182,24 @@ impl ComponentTest {
 
 /// Where a pre-1.20.5 `nbt.` path lives since items moved to data components. Tags that became
 /// no component of their own were moved into `minecraft:custom_data` by the game's data fixer,
-/// so every other path is read there.
-fn legacy_source(path: Vec<String>) -> (Source, Vec<String>) {
+/// so paths outside the tags 1.20.5 knew are read there. `None` for a tag that became a component
+/// whose shape no longer matches the old one (`AttributeModifiers`, `pages`...): such a test
+/// would never pass, or always pass when negated.
+fn legacy_source(path: Vec<String>) -> Option<(Source, Vec<String>)> {
     let component = |id: &str, prefix: &[&str], rest: &[String]| {
         let path = prefix.iter().map(|s| (*s).to_owned());
-        (
+        Some((
             Source::Component(format!("minecraft:{id}")),
             path.chain(rest.iter().cloned()).collect(),
-        )
+        ))
     };
     let strs: Vec<&str> = path.iter().map(String::as_str).collect();
     match strs[..] {
         ["display", "Name", ..] => component("custom_name", &[], &path[2..]),
         ["display", "Lore", ..] => component("lore", &[], &path[2..]),
         ["display", "color", ..] => component("dyed_color", &[], &path[2..]),
+        ["display", "MapColor", ..] => component("map_color", &[], &path[2..]),
+        ["display", ..] => None,
         ["CustomModelData", ..] => component("custom_model_data", &["floats", "0"], &path[1..]),
         ["Potion", ..] => component("potion_contents", &["potion"], &path[1..]),
         ["CustomPotionColor", ..] => component("potion_contents", &["custom_color"], &path[1..]),
@@ -204,14 +208,52 @@ fn legacy_source(path: Vec<String>) -> (Source, Vec<String>) {
         ["Trim", ..] => component("trim", &[], &path[1..]),
         ["title", ..] => component("written_book_content", &["title", "raw"], &path[1..]),
         ["author", ..] => component("written_book_content", &["author"], &path[1..]),
-        ["Enchantments", ..] => (
+        ["generation", ..] => component("written_book_content", &["generation"], &path[1..]),
+        ["SkullOwner"] | ["SkullOwner", "Name", ..] => {
+            component("profile", &["name"], path.get(2..).unwrap_or_default())
+        }
+        ["SkullOwner", "Id", ..] => component("profile", &["id"], &path[2..]),
+        ["Fireworks", "Flight", ..] => component("fireworks", &["flight_duration"], &path[2..]),
+        ["map", ..] => component("map_id", &[], &path[1..]),
+        ["EntityTag", ..] => component("entity_data", &[], &path[1..]),
+        ["BlockEntityTag", ..] => component("block_entity_data", &[], &path[1..]),
+        ["BlockStateTag", ..] => component("block_state", &[], &path[1..]),
+        ["Enchantments", ..] => Some((
             Source::LegacyEnchantments { stored: false },
             path[1..].to_vec(),
-        ),
-        ["StoredEnchantments", ..] => (
+        )),
+        ["StoredEnchantments", ..] => Some((
             Source::LegacyEnchantments { stored: true },
             path[1..].to_vec(),
-        ),
+        )),
+        [
+            "Unbreakable"
+            | "CanDestroy"
+            | "CanPlaceOn"
+            | "HideFlags"
+            | "AttributeModifiers"
+            | "CustomPotionEffects"
+            | "effects"
+            | "Decorations"
+            | "LodestoneDimension"
+            | "LodestonePos"
+            | "LodestoneTracked"
+            | "pages"
+            | "filtered_pages"
+            | "filtered_title"
+            | "resolved"
+            | "Fireworks"
+            | "Explosion"
+            | "BucketVariantTag"
+            | "Items"
+            | "ChargedProjectiles"
+            | "Charged"
+            | "Recipes"
+            | "DebugProperty"
+            | "instrument"
+            | "CustomCreativeLock",
+            ..,
+        ] => None,
         _ => component("custom_data", &[], &path),
     }
 }
@@ -244,7 +286,8 @@ pub struct Rule {
 }
 
 impl Rule {
-    /// The rule `props` (at resource path `path`) describes. `exists` answers whether a resource
+    /// The rule `props` (at resource path `path`, read with `Properties::parse_equals_first` as
+    /// CIT Resewn reads them) describes. `exists` answers whether a resource
     /// path names a file, to find textures and models the way OptiFine and CIT Resewn look for
     /// them. `None` for an unknown type, a malformed condition, or a rule that changes nothing.
     pub fn parse(path: &str, props: &Properties, exists: impl Fn(&str) -> bool) -> Option<Self> {
@@ -277,7 +320,7 @@ impl Rule {
             Some(v) => Some(Damage {
                 ranges: RangeList::parse(&v.replace('%', ""))?,
                 percent: v.contains('%'),
-                mask: optional(props, "damageMask", int)?,
+                mask: optional(props, &["damageMask", "damage_mask"], int)?,
             }),
             None => None,
         };
@@ -301,8 +344,8 @@ impl Rule {
         let model_at = |v: &str| asset(path, v, "json", "models", &exists);
         // A named asset that is not there drops the rule, as in CIT Resewn: half a bow's textures
         // would draw a vanilla frame among custom ones.
-        let mut texture = optional(props, "texture", tex)?;
-        let mut model = optional(props, "model", model_at)?;
+        let mut texture = optional(props, &["texture"], tex)?;
+        let mut model = optional(props, &["model"], model_at)?;
         let textures = props
             .with_prefix("texture.")
             .map(|(name, v)| Some((name.to_owned(), tex(v)?)))
@@ -331,9 +374,13 @@ impl Rule {
         Some(Self {
             path: path.to_owned(),
             kind,
-            weight: optional(props, "weight", int)?.unwrap_or(0),
+            weight: optional(props, &["weight", "cit_weight", "citWeight"], int)?.unwrap_or(0),
             items,
-            stack_size: optional(props, "stackSize", RangeList::parse)?,
+            stack_size: optional(
+                props,
+                &["stackSize", "stack_size", "amount"],
+                RangeList::parse,
+            )?,
             damage,
             hand: match props.get("hand").map(str::to_ascii_lowercase).as_deref() {
                 // CIT Resewn's spellings too.
@@ -343,7 +390,11 @@ impl Rule {
                 Some(_) => return None,
             },
             enchantments,
-            enchantment_levels: optional(props, "enchantmentLevels", RangeList::parse)?,
+            enchantment_levels: optional(
+                props,
+                &["enchantmentLevels", "enchantment_levels"],
+                RangeList::parse,
+            )?,
             components,
             texture,
             textures,
@@ -359,13 +410,14 @@ impl Rule {
     }
 }
 
-/// An optional key: `Some(None)` when absent, `None` (dropping the rule) when malformed.
+/// An optional key, under any of its names (CIT Resewn's aliases): `Some(None)` when absent,
+/// `None` (dropping the rule) when malformed.
 fn optional<T>(
     props: &Properties,
-    key: &str,
+    keys: &[&str],
     parse: impl Fn(&str) -> Option<T>,
 ) -> Option<Option<T>> {
-    match props.get(key) {
+    match keys.iter().find_map(|k| props.get(k)) {
         Some(v) => parse(v).map(Some),
         None => Some(None),
     }
@@ -484,7 +536,9 @@ mod tests {
     use super::*;
 
     fn rule(path: &str, text: &str, files: &[&str]) -> Option<Rule> {
-        Rule::parse(path, &Properties::parse(text), |p| files.contains(&p))
+        Rule::parse(path, &Properties::parse_equals_first(text), |p| {
+            files.contains(&p)
+        })
     }
 
     const SWORD: &str = "assets/minecraft/optifine/cit/swords/flame.properties";
@@ -513,8 +567,8 @@ mod tests {
             ("main_hand", Hand::Main),
             ("*", Hand::Any),
         ] {
-            let r = rule(SWORD, &format!("items=stick\nhand={v}"), &files).unwrap();
-            assert_eq!(r.hand, hand, "{v}");
+            let spelled = rule(SWORD, &format!("items=stick\nhand={v}"), &files).unwrap();
+            assert_eq!(spelled.hand, hand, "{v}");
         }
         let stack = r.stack_size.as_ref().unwrap();
         assert!(stack.contains(1) && !stack.contains(2));
@@ -568,6 +622,7 @@ mod tests {
         assert_eq!(r.model.as_deref(), Some(&*format!("{dir}/stick.json")));
         assert_eq!(r.texture, None);
         let r = rule(&path, "", &both[1..]).unwrap();
+        assert_eq!(r.texture.as_deref(), Some(&*format!("{dir}/stick.png")));
         // The file name is a bare id: a minecraft one even in another namespace's folder.
         let other = rule(
             "assets/mymod/optifine/cit/stick.properties",
@@ -575,7 +630,6 @@ mod tests {
             &["assets/mymod/optifine/cit/stick.png"],
         );
         assert_eq!(other.unwrap().items, ["minecraft:stick"]);
-        assert_eq!(r.texture.as_deref(), Some(&*format!("{dir}/stick.png")));
         // Nothing to draw: no rule.
         assert!(rule(&path, "", &[]).is_none());
     }
@@ -619,7 +673,7 @@ mod tests {
         assert_eq!(tex("../../../x").as_deref(), Some("assets/minecraft/x.png"));
         assert_eq!(tex("../../../../x"), None);
         assert_eq!(tex("../../../../../x"), None);
-        // A Windows `\\` is refused by `paths::valid`, whose tests cover it.
+        // A Windows `\` is refused by `paths::valid`, whose tests cover it.
     }
 
     #[test]
@@ -775,6 +829,45 @@ mod tests {
     }
 
     #[test]
+    fn resewn_key_spellings() {
+        let files = ["assets/minecraft/optifine/cit/swords/flame.png"];
+        let text = "items=arrow\namount=64\ncitWeight=5\ndamage=3\ndamage_mask=15\n\
+                    enchantment_levels=2\ncomponents.minecraft:custom_name=Quiver\n";
+        let r = rule(SWORD, text, &files).unwrap();
+        assert!(r.stack_size.unwrap().contains(64));
+        assert_eq!(r.weight, 5);
+        assert_eq!(r.damage.unwrap().mask, Some(15));
+        assert!(r.enchantment_levels.unwrap().contains(2));
+        let [name] = &r.components[..] else { panic!() };
+        assert_eq!(
+            name.source,
+            Source::Component("minecraft:custom_name".into())
+        );
+    }
+
+    #[test]
+    fn tags_that_became_components_are_read_there_or_drop_the_rule() {
+        let at = |key: &str| {
+            let t = ComponentTest::parse(true, key, "x")?;
+            let Source::Component(id) = t.source else {
+                return None;
+            };
+            Some((id, t.path.join(".")))
+        };
+        let is = |id: &str, path: &str| Some((format!("minecraft:{id}"), path.to_owned()));
+        assert_eq!(at("SkullOwner"), is("profile", "name"));
+        assert_eq!(at("SkullOwner.Name"), is("profile", "name"));
+        assert_eq!(at("generation"), is("written_book_content", "generation"));
+        assert_eq!(at("EntityTag.CustomName"), is("entity_data", "CustomName"));
+        assert_eq!(at("Fireworks.Flight"), is("fireworks", "flight_duration"));
+        // Moved to a component of another shape: no test, and so no rule.
+        assert_eq!(at("AttributeModifiers.0.Amount"), None);
+        assert_eq!(at("display.HideFlags"), None);
+        let files = ["assets/minecraft/optifine/cit/swords/flame.png"];
+        assert!(rule(SWORD, "items=stick\nnbt.Unbreakable=!1", &files).is_none());
+    }
+
+    #[test]
     fn malformed_conditions_drop_the_rule() {
         let files = ["assets/minecraft/optifine/cit/swords/flame.png"];
         for bad in [
@@ -782,7 +875,7 @@ mod tests {
             "damage=3\ndamageMask=abc",
             "stackSize=1-x",
             "hand=left",
-            "texture=a\nmodel=typo",
+            "texture=flame\nmodel=typo",
             "weight=heavy",
             "type=hat",
             "nbt.display.Name=regex:(",

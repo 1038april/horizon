@@ -14,6 +14,19 @@ pub struct Properties {
 
 impl Properties {
     pub fn parse(text: &str) -> Self {
+        Self::read(text, split)
+    }
+
+    /// As CIT Resewn reads its files: a line with an unescaped `=` splits there, so a key may
+    /// hold an unescaped `:` (`components.minecraft:custom_name=Bob`); other lines as `parse`.
+    pub fn parse_equals_first(text: &str) -> Self {
+        Self::read(text, |line| match unescaped_equals(line) {
+            Some(i) => (line[..i].trim_end(), line[i + 1..].trim_start()),
+            None => split(line),
+        })
+    }
+
+    fn read(text: &str, split: impl Fn(&str) -> (&str, &str)) -> Self {
         let mut out = Self::default();
         let mut lines = text.lines();
         while let Some(first) = lines.next() {
@@ -60,6 +73,19 @@ impl Properties {
 /// An odd number of trailing backslashes.
 fn ends_in_continuation(line: &str) -> bool {
     line.bytes().rev().take_while(|&b| b == b'\\').count() % 2 == 1
+}
+
+fn unescaped_equals(line: &str) -> Option<usize> {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2,
+            b'=' => return Some(i),
+            _ => i += 1,
+        }
+    }
+    None
 }
 
 /// The key ends at the first unescaped `=`, `:` or whitespace; then whitespace and at most one
@@ -136,6 +162,19 @@ mod tests {
         assert_eq!(p.get("key=with:colon"), Some("a\tb"));
         // An even number of backslashes is an escaped backslash, not a continuation.
         assert_eq!(p.get("last\\"), Some("x"));
+    }
+
+    #[test]
+    fn equals_first_keeps_colons_in_keys() {
+        let text = "components.minecraft:custom_name = Bob\nnbt.a\\=b=c\ntype:item\n";
+        let p = Properties::parse_equals_first(text);
+        assert_eq!(p.get("components.minecraft:custom_name"), Some("Bob"));
+        assert_eq!(p.get("nbt.a=b"), Some("c"), "an escaped = is the key's");
+        assert_eq!(p.get("type"), Some("item"), "no = at all: Java's rules");
+        assert_eq!(
+            Properties::parse(text).get("components.minecraft"),
+            Some("custom_name = Bob")
+        );
     }
 
     #[test]
