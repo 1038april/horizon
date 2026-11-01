@@ -117,6 +117,12 @@ pub(super) fn overlay_files(
     // A path's mod files in contribution order, under the pack files.
     let mut mods: std::collections::BTreeMap<String, Vec<Vec<u8>>> = Default::default();
     for (path, bytes) in contributed {
+        // One bad file would fail its whole table and drop the world's pack
+        // content with it, so it is skipped alone: every kind is JSON.
+        if let Err(e) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+            log::warn!("Horizon: a native mod's data pack file {path} is not JSON, skipped: {e}");
+            continue;
+        }
         mods.entry(path).or_default().push(bytes);
     }
     for (path, versions) in files.iter_mut() {
@@ -1045,6 +1051,21 @@ mod tests {
             tags["pkg:mod_only"].iter().collect::<Vec<_>>(),
             ["pkg:second_load"]
         );
+        // A file that isn't JSON is skipped alone, not the whole load.
+        let files = overlay_files(
+            &dir,
+            std::path::Path::new(""),
+            true,
+            &[],
+            vec![
+                ("tags/pkg:item/mod_only".to_owned(), b"{not json".to_vec()),
+                ("tags/pkg:item/good".to_owned(), tag("pkg:good")),
+            ],
+        );
+        let overlay = horizon_world::loot::PackOverlay { files: &files };
+        let tags = horizon_items::items::load_tags(&dir, "item", &overlay).unwrap();
+        assert!(!tags.contains_key("pkg:mod_only"));
+        assert!(tags["pkg:good"].contains("pkg:good"));
         // With nothing contributed the overlay is the packs' own.
         assert_eq!(
             overlay_files(&dir, std::path::Path::new(""), true, &[], Vec::new()),
