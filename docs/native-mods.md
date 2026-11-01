@@ -507,6 +507,23 @@ API 57 adds chunks and players coming and going, on the server: `native_chunk_lo
 API 58 adds [the renderer's hook points](#render-hook-points): `native_world_drawn`, called once the world is drawn with its colour, depth, matrices and entity geometry, and
 `native_render_needs`, where a mod asks for the entity runs and the world's depth without a shader pack. Bundles that use them need `"hooks": 58`.
 
+API 59 adds [entities](#entities) for server mods: `native_summon(dimension, kind, pos, nbt)` spawns any entity from its compound
+as `/summon` does, and `native_move_entity`, `native_set_display` (a display's transformation, eased over ticks) and
+`native_remove_entity` move, pose and remove displays, markers and interactions: models that move, from a mod's own
+item models. Bundles that use them need `"hooks": 59`.
+
+API 60 adds `native_item_bar(stack, bar)`: the small bar `GuiGraphicsExtractor.itemDecorations` draws under an item,
+wherever the game shows one. `bar` arrives holding
+vanilla's choice (the damage bar, or a bundle's fullness, already applied); set it to a width `0..=13` and an
+`rgb` colour, or to `None` to hide it. Asked each frame a stack is drawn. Client-side (NeoForge has no event for
+this; vanilla's `Item.isBarVisible`/`getBarWidth`/`getBarColor`). Bundles that use it need `"hooks": 60`.
+
+API 61 adds mods' own sound events in `native_play_sound`: an event of another namespace than `minecraft` (`mymod:machine_hum`) is sent to players by
+name, as vanilla sends a sound that isn't in its registry, and they hear it when their resources define it (a content mod's `assets/mymod/sounds.json`
+and its `.ogg` files). `minecraft:` events must still be registered. Bundles that play their own sounds need `"hooks": 61`.
+
+API 62 adds nicknames for server mods: `native_set_nickname(uuid, Option<&str>)` shows a name in place of a player's in chat (their messages, `/me`, `/msg`) and the Tab list, the real name on hover and everywhere else; `native_text_allowed(text)` asks the server's chat filter. Both outside a player's hook. Bundles need "hooks": 62.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page, into the instance picked on the left ("Installs into
@@ -903,6 +920,20 @@ whatever conditions the mod reads:
   player is swapped in (`native_tick`, a menu hook), as `native_run_command`. True means the player was reached, not
   that anything was granted. It returns false otherwise, when the player isn't on, and for a `minecraft:` trigger or a
   name without a namespace: the game fires vanilla's triggers from its own events.
+
+### Explosions
+
+`crates/horizon-client/src/game/native_explosions.rs`: a helper for server mods, for the level in place, on a server only. It
+names the level it means by its `dimension` (`minecraft:overworld`), as `native_set_block` does, and is refused when another
+level is in place.
+
+- `native_explode(dimension, center, radius, fire, blast)` sets off an explosion as `Level.explode` with no source entity
+  does: blocks break (`native_explosion_detonate` sees them first and can spare some), entities are hurt and pushed, `fire`
+  lights a third of the air above solid blocks, and nearby players hear and see it. `blast` is `NativeBlast::Keep` (no
+  block breaks), `Block` (drops by `block_explosion_drop_decay`) or `Tnt` (by `tnt_explosion_drop_decay`). It answers false,
+  doing nothing, on a client, for another dimension, a chunk that isn't loaded, or a radius outside `0 < radius <= 32`
+  (TNT is 4, vanilla's largest is 7).
+- A blast set off inside `native_explosion_detonate` runs that hook again, so a mod that chains blasts keeps its own guard.
 
 ### Mod messages
 
