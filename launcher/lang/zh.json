@@ -227,7 +227,6 @@
   "Saved: the next Play {what}.": "已保存：下次点击“开始游戏”时 {what}。",
   "{count} playing now": "{count} 人正在游玩",
   "Mods": "模组",
-  "Microsoft account · signed in": "Microsoft 账户 · 已登录",
   "A shell command, run in the instance's folder. The game starts only if it succeeds.": "在实例文件夹中运行的 shell 命令。仅当命令成功时游戏才会启动。",
   "Host a world for your friends on this computer. Create one, press Start, and give them the address.": "在此计算机上为好友托管世界。创建一个服务器，点击“启动”，然后将地址发给他们。",
   "No ratings yet": "暂无评分",

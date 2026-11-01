@@ -227,7 +227,6 @@
   "Saved: the next Play {what}.": "Сохранено: при следующем запуске {what}.",
   "{count} playing now": "{count} сейчас в игре",
   "Mods": "Моды",
-  "Microsoft account · signed in": "Аккаунт Microsoft · вход выполнен",
   "A shell command, run in the instance's folder. The game starts only if it succeeds.": "Команда оболочки, выполняемая в папке сборки. Игра запустится только при успешном выполнении.",
   "Host a world for your friends on this computer. Create one, press Start, and give them the address.": "Запустите мир для друзей на этом компьютере. Создайте сервер, нажмите «Запустить» и дайте им адрес.",
   "No ratings yet": "Оценок пока нет",
